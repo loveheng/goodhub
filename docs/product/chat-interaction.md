@@ -1,0 +1,53 @@
+---
+status: active
+updated: 2026-10-11
+---
+
+# GoodHub 交互设计 · 双轨消息流（聊天主页）
+
+> 本文是宿主聊天交互的 **SSOT**（信息架构 / 交互流 / 轨道语义）；视觉语言 SSOT = [ui-design.md](ui-design.md)（tokens 落点 `.agents/skills/goodhub-ui`），本文不重复视觉规格。来源：F5.1 / U1（requirements.md）+ architecture §5/§10/§15 + M4-T3（[../design/m4.md](../design/m4.md)）。工程实现 = `lib/ui/chat_page.dart`（M4-T3）。
+> 立项：2026-10-11，自 M4-T2 收官移交。**D9/D10/D11 已拍板（2026-10-11）**：D9 = 聊天页接管应用首页（M1 任务循环页降 debug 入口，服务大厅/联调入口移聊天页工具栏）；D10 = 对话历史**落盘可恢复**（T3 先落内存态，持久化拆 T3b：ConversationStore + 会话列表 + 恢复装配）；D11 = 同页多轮上下文共享（messages 跨 run 累积，§15 对齐；AgentLoop run 增 history 入参 + LoopFinished 回 transcript）。
+
+## 1. 信息架构
+
+- **三段式**：顶部状态胶囊（StatusCapsule，ui-design §3.1）｜中部双轨消息流（阅读轨 + 操作轨**同轴混排**，ui-design §3.2）｜底部输入栏（多行自适应 + 发送按钮）。
+- **运行中**：输入栏禁用（M 阶段不排队——一次一个 Run，§15 前台会话语义）；胶囊常驻 + `[ABORT]` 高反差入口。
+- **首页接管（D9）**：`main.dart` home = ChatPage；服务大厅入口移聊天页 AppBar；联调页与 M1 任务循环页降 kDebugMode 入口。
+- 联调页（gateway_loop_debug_page）降级为纯 debug 工具，正式面由本页承接。
+
+## 2. 事件 → 轨道映射（AgentLoopEvent 为唯一数据源）
+
+| AgentLoop 事件 | 轨道呈现 |
+|---|---|
+| 用户发送 | **TrackUser**：Indigo 竖条卡（数据指针色 + 「你」等宽标签）——同轴卡片族，拒绝左右气泡 |
+| `LoopTextDelta` | 阅读轨流式追加（RichTextView Markdown 渲染，同一 TrackText 重建不碎卡） |
+| `LoopToolCallStarted` | 操作轨插 CallCard（Emerald 执行中） |
+| `LoopToolProgress` | 卡片微型进度标注（`p/total · message`）+ 胶囊同步 |
+| `LoopToolCallFinished` | 卡终态锁定：成功 Emerald / 失败 Rose / 拒绝显示 reason / Abort 灰阶 `⊘ Cancelled`（区别 Failed，§10） |
+| `LoopFinished` | 阅读轨收尾（text 非空时）+ 胶囊回 idle + **transcript 落会话历史**（D11 续接口径） |
+
+- **卡片组件全量复用 M2/M3 正式实现，不另造**：L2 确认卡（GateDelegate → ConfirmationCard，含 C7 会话豁免勾选）、熔断排查卡（BlockDelegate → BreakerCard 三操作）、围栏拦截卡（FenceBlockCard 双选项）、跨源授权卡（CrossSourceConsentCard）。
+- 错误路径（连接失败/装配失败/流异常）以 Rose 通告行进轨道，不弹裸对话框。
+- **工程实现**：`lib/ui/chat_page.dart` + `lib/ui/components/dual_track_stream.dart`（公共组件，T3b 恢复装配复用）；阅读轨渲染 = `RichTextView`（D12 拍板：goodshare 自写 parser 随迁 + 宿主只读渲染器，弃 flutter_markdown 系三方包）。
+
+## 3. 会话生命周期（§15 会话模型对齐）
+
+- **页面 = 一个会话**：AgentLoop 实例 + SkillRegistry 激活集（+ RefStore 会话粒度）随页面建立；发送 = 一次 `run()`，**同页多轮上下文共享**（D11：上轮 transcript 作下轮 history 传入——滑动窗口在发送边界裁剪，本地历史不裁，§12/T6 既有口径）。
+- **Abort**：胶囊 `[ABORT]` → `loop.abort()` + `face.cancelActiveRequest()`（§10 级联，M3-T2 已落语义）→ 卡片 Cancelled 终态。
+- **页面退出 = 会话焚**（激活集/RefStore 即清，§9/§15）；记忆沙盒（T2）跨会话持久。
+- **历史持久化（D10）**：T3 落内存态（页面退出焚）；**T3b 落 ConversationStore**（`lib/sandbox/`，每会话一 JSON：轨道条目 + CloudChatMessage 序列化——assistant/tool 结果配对完整是恢复前提，拆对即协议 400）+ 会话列表页 + 恢复装配。
+
+## 4. 连接配置（M 阶段过渡态）
+
+- 服务端点 + API Key：页内设置弹层（SharedPreferences 持久化）；M4-T5 服务大厅 Server 节点/BYOK 面板落地后迁移收编。
+
+## 5. 边界（不在 T3）
+
+- 胶囊系统化（应用内胶囊 → 系统通知/悬浮）——M3-D2 拍板独立评估不纳入；
+- 会话历史持久化 → **T3b**（D10 拍板拆分）；语音/多模态输入；@提及与工具补全；iOS Live Activity；
+- 装配线与联调页暂各自持有（chat 页生产子集：无故障注入/脚本引擎）；T5 大厅余项落地时统一装配线收编。
+
+## 6. 验收口径
+
+- widget 测试：事件流→轨道映射（五类事件）、Abort 终态灰阶 `Cancelled`、L2 卡经 GateDelegate 拒绝回填 `user_rejected`；AgentLoop history/transcript 单测（多轮上下文）。
+- 真机联调第三批（T5 收官）：自然语言 → 工具环 → L2 卡 → 回显全链；update_memory 经聊天页 L2 卡可视；Abort 半程明示。
