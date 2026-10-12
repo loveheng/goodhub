@@ -21,7 +21,6 @@ import 'dart:async';
 
 import '../llm/cloud/cloud_llm.dart';
 import 'pii_fence.dart';
-import 'package:flutter/foundation.dart' show visibleForTesting;
 
 /// 遮蔽失败拦截委托（D4 有人值守面）：T5c 挂双选项确认卡。
 abstract interface class PiiFenceDelegate {
@@ -62,7 +61,7 @@ class FencedCloudEngine implements CloudLlmEngine {
   FencedCloudEngine({
     required this.inner,
     this.delegate,
-    @visibleForTesting this.maskOverride,
+    this.maskOverride,
   });
 
   final CloudLlmEngine inner;

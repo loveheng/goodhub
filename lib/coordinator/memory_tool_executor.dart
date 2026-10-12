@@ -115,7 +115,7 @@ class MemoryToolExecutor implements ToolExecutor {
   /// 本地记忆工具的审计包装：成功/失败都落 ops.log（server='local'）。
   Future<ToolExecutionResult> _audited(
     AssembledToolCall call,
-    Future<ToolExecutionResult> inner_(),
+    Future<ToolExecutionResult> Function() inner_,
   ) async {
     final result = await inner_();
     try {

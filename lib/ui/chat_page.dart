@@ -96,7 +96,6 @@ class _ChatPageState extends State<ChatPage> {
     super.initState();
     unawaited(_loadConfig());
     unawaited(_initConversations());
-    unawaited(_initConversations());
   }
 
   @override

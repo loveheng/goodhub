@@ -132,10 +132,14 @@ class CowOverridesStore {
   }
 
   /// 覆写名单（M3-T4 编辑面）：覆写段键集（无覆写为空表，升序）。
+  /// 注意级联不可挂在三元表达式上——`cond ? const [] : list..sort()` 的
+  /// `..sort()` 会作用于整个表达式（空表分支对 const 列表排序即抛）。
   Future<List<String>> overrideNames() async {
     await _load();
     final o = _section('overrides');
-    return o == null ? const [] : o.keys.toList()..sort();
+    if (o == null) return const [];
+    final names = o.keys.toList()..sort();
+    return names;
   }
 
   /// 覆写时间（M3-T4 编辑面展示；无记录 null）。

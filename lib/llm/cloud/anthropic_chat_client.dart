@@ -15,7 +15,7 @@ import 'package:http/http.dart' as http;
 import '../../core/errors/cloud_llm_error.dart';
 import 'cloud_http.dart';
 import 'cloud_llm.dart';
-import 'sse_parser.dart';
+import 'sse_parser.dart' show SseEvent;
 
 class AnthropicChatClient implements CloudLlmEngine {
   AnthropicChatClient({

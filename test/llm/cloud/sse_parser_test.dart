@@ -47,7 +47,7 @@ void main() {
   test('跨块断行拼接（网络分片不丢字）', () async {
     final events = await parse(
       '',
-      chunks: ['data: {"a"', '":1}\n\n', 'data: [DO', 'NE]\n\n'],
+      chunks: ['data: {"a"', ':1}\n\n', 'data: [DO', 'NE]\n\n'],
     ).toList();
     expect(events.map((e) => e.data), ['{"a":1}', '[DONE]']);
   });

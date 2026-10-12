@@ -55,6 +55,7 @@ class ServerCapabilities {
     }
     final caps = result['capabilities'];
     bool has(String key) => caps is Map && caps[key] != null;
+    final resources = caps is Map ? caps['resources'] : null;
     final serverInfo = result['serverInfo'];
     return ServerCapabilities(
       protocolVersion:
@@ -62,6 +63,8 @@ class ServerCapabilities {
       hasTools: has('tools'),
       hasPrompts: has('prompts'),
       hasResources: has('resources'),
+      hasSampling: has('sampling'),
+      hasSubscriptions: resources is Map && resources['subscribe'] == true,
       serverName:
           serverInfo is Map && serverInfo['name'] is String ? serverInfo['name'] as String : null,
       serverVersion: serverInfo is Map && serverInfo['version'] is String

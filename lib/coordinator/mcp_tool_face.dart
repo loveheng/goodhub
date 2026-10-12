@@ -98,6 +98,30 @@ class McpToolFace implements ToolExecutor {
 
   @override
   Future<ToolExecutionResult> execute(AssembledToolCall call) async {
+    final sw = Stopwatch()..start();
+    final result = await _executeInner(call);
+    sw.stop();
+    final log = opsLog;
+    if (log != null) {
+      try {
+        await log.audit(
+          server: serverId,
+          tool: call.name,
+          ok: !result.isError,
+          durationMs: sw.elapsedMilliseconds,
+          error: result.isError ? _clip(result.content) : null,
+        );
+      } catch (e) {
+        debugPrint('[DEGRADE] mcp-tool-face: ops audit failed: $e');
+      }
+    }
+    return result;
+  }
+
+  String _clip(String text) =>
+      text.length <= _auditClip ? text : '${text.substring(0, _auditClip)}…';
+
+  Future<ToolExecutionResult> _executeInner(AssembledToolCall call) async {
     final Object? args;
     try {
       args = call.argumentsJson.trim().isEmpty

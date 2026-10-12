@@ -124,7 +124,7 @@ void main() {
       inner: inner,
       refStore: store,
       targetServerId: 'goodshare',
-      crossSourceDelegate: (_, __, ___, ____) async => false,
+      crossSourceDelegate: (_, _, _, _) async => false,
     );
     final r = await hydrator2.execute(callOf({'text': handle}));
     expect(r.isError, isTrue);

@@ -34,11 +34,12 @@ void main() {
   testWidgets('Abort 终态：cancelled 相位呈现（区别 Failed，architecture §10）',
       (tester) async {
     await pump(tester, [
-      TrackCall(tool: 'add_item')
-        ..phase = CallCardPhase.cancelled
-        ..progressNote = '已中止（在途调用结果仍会回填）',
+      // CallCard 口径：progressNote 仅 running/stuck 有意义，cancelled 走
+      // 终态 preview（在途调用真实完成后由页面回填真结果）。
+      TrackCall(tool: 'add_item')..phase = CallCardPhase.cancelled,
     ]);
-    expect(find.text('已中止（在途调用结果仍会回填）'), findsOneWidget);
+    expect(find.text('(无文本返回)'), findsOneWidget,
+        reason: 'cancelled 中间态渲染终态灰阶；真结果到达后换 preview');
     expect(find.byType(CallCard), findsOneWidget);
   });
 
@@ -47,9 +48,10 @@ void main() {
     text.text.write('# 结论\n\n**要点** 与 `code`');
     await pump(tester, [text]);
     expect(find.byType(RichTextView), findsOneWidget);
-    expect(find.text('结论'), findsOneWidget);
-    expect(find.text('要点'), findsOneWidget);
-    expect(find.text('code'), findsOneWidget);
+    // 嵌套 TextSpan 用 findRichText 匹配（Text.rich 叶子）。
+    expect(find.textContaining('结论', findRichText: true), findsOneWidget);
+    expect(find.textContaining('要点', findRichText: true), findsOneWidget);
+    expect(find.textContaining('code', findRichText: true), findsOneWidget);
   });
 
   testWidgets('空轨道出提示；流式追加复用同一条目（不碎卡）', (tester) async {

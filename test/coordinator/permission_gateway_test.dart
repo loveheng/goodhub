@@ -100,7 +100,6 @@ void main() {
 
   group('L2 确认卡', () {
     late ScriptedDelegate delegate;
-    late PermissionGateway gated;
 
     setUp(() {
       delegate = ScriptedDelegate();

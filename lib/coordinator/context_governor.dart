@@ -9,15 +9,17 @@
 /// - 「原文退化为引用」M2 以「宿主注」标记落位，$ref 暂存池引用归 M3 Skill 编排。
 library;
 
+import '../core/tokens.dart';
 import '../llm/cloud/cloud_llm.dart';
 import '../llm/llm.dart';
 
+/// token 字符级粗估口径已下沉 core/tokens.dart（M4-T1：记忆沙盒需同口径且
+/// 层级更低，沙盒 ④ 不得逆向依赖编排 ②）——原位 re-export 保持既有 import
+/// 兼容（agent_loop / skill_registry / 测试三处引用零改动）。
+export '../core/tokens.dart' show estimateTokens;
+
 /// 工具结果摘要器：原文 > 阈值时回填前调用。失败抛异常，由调用方按 E1 兜底。
 typedef ToolResultSummarizer = Future<String> Function(String original);
-
-/// token 字符级粗估：CJK 主场 1 字符 ≈ 1 token 的上界口径（与
-/// hybrid_inference `maxInputChars` 同族），阈值初值 T7 真机实测调参。
-int estimateTokens(String text) => text.length;
 
 /// 摘要化后的回填内容：摘要正文 + 宿主注引用标记（原文体量留审计可观测）。
 /// [refHandle]（M3-T3 put 端）：原文已落 $ref 暂存池时升级为句柄注记——

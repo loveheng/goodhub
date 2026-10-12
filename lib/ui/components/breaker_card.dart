@@ -211,17 +211,23 @@ class _BreakerCardState extends State<BreakerCard> {
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(t.cardRadius),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Container(width: 4, color: barColor),
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.all(10),
-                child: child,
+        // IntrinsicHeight：ListView 无界高度下 stretch 竖条须按内容自量
+        child: IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Container(width: 4, color: barColor),
+              Expanded(
+                child: Material(
+                  type: MaterialType.transparency,
+                  child: Padding(
+                    padding: const EdgeInsets.all(10),
+                    child: child,
+                  ),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

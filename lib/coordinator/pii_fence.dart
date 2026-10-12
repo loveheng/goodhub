@@ -293,7 +293,7 @@ final List<_PiiRule> _rules = [
   _PiiRule(
     label: '手机号',
     pattern: RegExp(
-        r'(?<![0-9A-Za-z])1[3-9]\d{2}[- \t\u3000]\d{4}[- \t\u3000]\d{4}'
+        r'(?<![0-9A-Za-z])1[3-9]\d[- \t\u3000]\d{4}[- \t\u3000]\d{4}'
         r'(?![0-9A-Za-z])'),
     normalize: _stripDigitSeparators,
   ),

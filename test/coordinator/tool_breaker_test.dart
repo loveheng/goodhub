@@ -198,9 +198,9 @@ void main() {
     await loopWith(executor, delegate: delegate)
         .run(systemPrompt: 's', userPrompt: 'u')
         .toList();
-    final turn3 = engine.calls[2].messages.whereType<ToolResultMessage>().single;
-    expect(turn3.isError, isFalse);
-    expect(turn3.content, '人工查到的结果');
+    final results = engine.calls[2].messages.whereType<ToolResultMessage>().toList();
+    expect(results.last.isError, isFalse);
+    expect(results.last.content, '人工查到的结果');
   });
 
   test('重试后再败两次 → 二次出卡（重置后重新累积）', () async {

@@ -179,7 +179,12 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
             if (store == null)
               const Padding(
                 padding: EdgeInsets.all(8),
-                child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+                // 静态文案不用 spinner：无限动画会让 pumpAndSettle 永不收口，
+                // 且加载是瞬时路径（本地文件读），控制台风格无 spin 语义。
+                child: Center(
+                  child: Text('读取覆写库…',
+                      style: TextStyle(fontSize: 12)),
+                ),
               )
             else ...[
               for (final name in _entries.keys) _cowItem(context, t, name),

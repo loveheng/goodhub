@@ -250,8 +250,11 @@ class McpClient {
 
   Future<Object?> notify(String method, {Object? params}) async {
     final req = JsonRpcRequest(method, params: params, notify: true);
+    // 鉴权头必须带上（M3-T2 修复）：notify 走同一端点，带 token 的 server
+    // 对无鉴权通知回 401——negotiate 的 initialized 通知此前一直被 DEGRADE
+    // 静默吞掉（每连接必现的潜在失败），notifications/cancelled 同路受益。
     final resp = await _http.post(Uri.parse(baseUrl),
-        headers: _headers, body: req.encode());
+        headers: _requestHeaders, body: req.encode());
     if (resp.statusCode >= 400) {
       throw McpNetworkException('HTTP ${resp.statusCode}',
           statusCode: resp.statusCode);

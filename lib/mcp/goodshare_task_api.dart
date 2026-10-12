@@ -121,10 +121,30 @@ class GoodshareTaskApi {
   /// MCP 工具调用走 `tools/call` 信封（method 固定，工具名在 params.name）。
   /// 工具名用 goodshare 注册的裸名（如 `claim_ai_task`）——服务端 tools/list
   /// 即裸名（app-split 契约的 `goodshare__` 前缀是宿主侧路由命名空间，不进线上名）。
-  Future<Object?> _tool(String name, {Object? params}) => _client.call(
-        'tools/call',
-        params: {'name': name, 'arguments': params},
-      );
+  ///
+  /// 结果解包（T7 实测修复）：goodshare T4d 包装层起 tools/call 结果为 MCP
+  /// 标准信封 `{content:[{type:'text',text}], isError}`，任务载荷 JSON 在首
+  /// text 块里——与 McpToolFace 扁平化同口径；非 JSON 文本（如 touch 的 ok）
+  /// 原样返回。M1 时代载荷直挂 result，包装层标准化后任务侧须跟着解包。
+  Future<Object?> _tool(String name, {Object? params}) async {
+    final result = await _client.call(
+      'tools/call',
+      params: {'name': name, 'arguments': params},
+    );
+    if (result is! Map) return result;
+    final content = result['content'];
+    if (content is! List || content.isEmpty) return result;
+    final first = content.first;
+    if (first is! Map || first['type'] != 'text' || first['text'] is! String) {
+      return result;
+    }
+    final text = first['text'] as String;
+    try {
+      return json.jsonDecode(text);
+    } on FormatException {
+      return text;
+    }
+  }
 
   Future<ClaimedTask> claim() async =>
       ClaimedTask.parse(await _tool('claim_ai_task'));

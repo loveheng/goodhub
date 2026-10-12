@@ -167,12 +167,12 @@ void main() {
   });
 
   group('失败拦截 · D4', () {
-    Future<String> _boom(String _) async =>
+    Future<String> boom(String _) async =>
         throw const PiiMaskException('遮蔽超时（3s）');
 
     test('无 delegate = fail-closed 拦截，请求绝不外发', () async {
       final inner = _CapturingEngine(const []);
-      final engine = FencedCloudEngine(inner: inner, maskOverride: _boom);
+      final engine = FencedCloudEngine(inner: inner, maskOverride: boom);
       await expectLater(
         engine.send(const CloudChatRequest(
             messages: [UserMessage('含 PII $phone')])),
@@ -185,7 +185,7 @@ void main() {
       final inner = _CapturingEngine(const []);
       final delegate = _ApproveDelegate(false);
       final engine = FencedCloudEngine(
-          inner: inner, delegate: delegate, maskOverride: _boom);
+          inner: inner, delegate: delegate, maskOverride: boom);
       await expectLater(
         engine.send(const CloudChatRequest(
             messages: [UserMessage('含 PII $phone')])),
@@ -200,7 +200,7 @@ void main() {
           [const CloudDone(finishReason: CloudFinishReason.stop)]);
       final delegate = _ApproveDelegate(true);
       final engine = FencedCloudEngine(
-          inner: inner, delegate: delegate, maskOverride: _boom);
+          inner: inner, delegate: delegate, maskOverride: boom);
       await _collect(engine.send(const CloudChatRequest(
           messages: [UserMessage('含 PII $phone')])));
 

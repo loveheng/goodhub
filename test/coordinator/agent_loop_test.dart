@@ -352,7 +352,7 @@ void main() {
       expect(backfill, contains('[宿主注：原工具结果约 1001 tokens'));
       expect(backfill, contains('传引用'), reason: '句柄注记带用法引导（ref-pipeline 同口径）');
       final handle =
-          RegExp(r'\\$ref:goodshare:[0-9a-f]{16}').firstMatch(backfill)!.group(0)!;
+          RegExp(r'\$ref:goodshare:[0-9a-f]{16}').firstMatch(backfill)!.group(0)!;
       expect(store.length, 1);
       expect(await store.read(handle), original, reason: 'HydratingExecutor 读端注水依据');
     });

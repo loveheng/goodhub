@@ -218,7 +218,7 @@ void main() {
   });
 
   group('M3：server→client 反向请求分派（ai-app-split.md §3.11）', () {
-    http.Response _askSse() => _sse(
+    http.Response askSse() => _sse(
           'data: ${json.jsonEncode({
             'jsonrpc': '2.0',
             'id': 'srv_1',
@@ -246,7 +246,7 @@ void main() {
             answers.add(json.jsonDecode(req.body) as Map<String, Object?>);
             return http.Response('', 202);
           }
-          return _askSse();
+          return askSse();
         }),
       );
       client.onServerRequest = (method, params) async {
@@ -276,7 +276,7 @@ void main() {
             answers.add(json.jsonDecode(req.body) as Map<String, Object?>);
             return http.Response('', 202);
           }
-          return _askSse();
+          return askSse();
         }),
       );
       client.onServerRequest = (method, params) async {
@@ -302,7 +302,7 @@ void main() {
             answers.add(json.jsonDecode(req.body) as Map<String, Object?>);
             return http.Response('', 202);
           }
-          return _askSse();
+          return askSse();
         }),
       );
       final result = await client.callWithProgress(

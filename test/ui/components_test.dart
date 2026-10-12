@@ -130,6 +130,47 @@ void main() {
     });
   });
 
+  group('FenceBlockCard（N7 围栏拦截卡，D4）', () {
+    testWidgets('交互态：引擎名 + 失败原因 + 双选项，明文发送回传 true', (tester) async {
+      bool? sendRaw;
+      await tester.pumpWidget(host(FenceBlockCard(
+        engineName: 'openai/gpt-4o',
+        failureMessage: 'PII 遮蔽超时（3s）',
+        onDecision: (v) => sendRaw = v,
+      )));
+      expect(find.text('PII 围栏拦截'), findsOneWidget);
+      expect(find.text('openai/gpt-4o'), findsOneWidget);
+      expect(find.textContaining('遮蔽失败：PII 遮蔽超时'), findsOneWidget);
+
+      await tester.tap(find.text('我已知悉，明文发送一次'));
+      expect(sendRaw, isTrue);
+    });
+
+    testWidgets('取消发送回传 false（围栏拦截生效）', (tester) async {
+      bool? sendRaw;
+      await tester.pumpWidget(host(FenceBlockCard(
+        engineName: 'x',
+        failureMessage: 'boom',
+        onDecision: (v) => sendRaw = v,
+      )));
+      await tester.tap(find.text('取消发送'));
+      expect(sendRaw, isFalse);
+    });
+
+    testWidgets('终态锁定：灰阶文案、无按钮', (tester) async {
+      await tester.pumpWidget(host(FenceBlockCard(
+        engineName: 'x',
+        failureMessage: 'boom',
+        lockedSendRaw: true,
+        lockedAt: DateTime(2026, 10, 11, 12, 8),
+      )));
+      expect(find.textContaining('已于 12:08 明文发送一次'), findsOneWidget);
+      expect(find.textContaining('不记忆'), findsOneWidget);
+      expect(find.byType(TextButton), findsNothing);
+      expect(find.byType(FilledButton), findsNothing);
+    });
+  });
+
   testWidgets('StatusCapsule：等宽标签 + 语义色点', (tester) async {
     await tester.pumpWidget(host(const Column(
       children: [

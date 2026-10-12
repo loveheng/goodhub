@@ -48,6 +48,6 @@ void main() {
   test('流结束仍缺 id/name → CloudProtocolException（结算点暴露，禁兜底）', () {
     final acc = CloudStreamAccumulator()
       ..add(const CloudToolCallDelta(index: 0, argumentsDelta: '{}'));
-    expect(acc.toolCalls, throwsA(isA<CloudProtocolException>()));
+    expect(() => acc.toolCalls, throwsA(isA<CloudProtocolException>()));
   });
 }

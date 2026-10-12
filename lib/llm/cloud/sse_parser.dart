@@ -11,7 +11,6 @@
 /// id/retry 解析后丢弃（当前无断线重连语义，F1.4 属 M2.5+）。
 library;
 
-import 'dart:convert';
 
 import 'dart:async';
 
@@ -27,12 +26,30 @@ class SseEvent {
 }
 
 /// 把文本块流切成 SSE 事件流。纯解析、无 I/O，独立导出供单测。
+/// 手写分行器：当前 SDK 的 LineSplitter 在分片边界会复制边界字符（回归），
+/// 且需要 \r\n/\n 双兼容与跨块不丢字——自行缓冲切行。
+Stream<String> _splitLines(Stream<String> chunks) async* {
+  var buf = '';
+  await for (final c in chunks) {
+    buf += c;
+    while (true) {
+      final idx = buf.indexOf('\n');
+      if (idx < 0) break;
+      var line = buf.substring(0, idx);
+      if (line.endsWith('\r')) line = line.substring(0, line.length - 1);
+      buf = buf.substring(idx + 1);
+      yield line;
+    }
+  }
+  if (buf.isNotEmpty) yield buf;
+}
+
 Stream<SseEvent> parseSse(Stream<String> chunks) async* {
   var firstLine = true;
   var eventName = 'message';
   var dataLines = <String>[];
 
-  await for (final line in chunks.transform(const LineSplitter())) {
+  await for (final line in _splitLines(chunks)) {
     var l = line;
     if (firstLine) {
       // UTF-8 BOM（EF BB BF）解码残留

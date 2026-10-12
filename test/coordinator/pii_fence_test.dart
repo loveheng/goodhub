@@ -79,7 +79,8 @@ void main() {
       expect(a.text, '电话 [手机号1]');
       expect(a.newEntries['13800138000'], '[手机号1]',
           reason: '值取纯数字（3-4-4 标准分组）');
-      expect(await s.mask('备用 138-0013-8000'), s.mappings.isNotEmpty ? '' : '');
+      final second = await s.mask('备用 138-0013-8000');
+      expect(second.text, '备用 [手机号1]', reason: '连字符分组与空格分组同值同号');
       final b = await s.mask('再提 138-0013 8000 一次');
       expect(b.text, '再提 [手机号1] 一次',
           reason: '混合分隔符命中，与连续书写同值同号（D2）');

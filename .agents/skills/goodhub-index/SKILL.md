@@ -28,6 +28,7 @@ description: goodhub（AI 宿主 App）的「功能 → 代码落点 + 文档落
 | 阅读轨只读渲染器（console tokens 对齐） | `lib/ui/rich_text_view.dart` | M4-T3/D12；媒体块降级不吞内容；todo 只读字形 |
 | 记忆沙盒（三件套/FC1 锚点/scope 三层作用域/预算视图/审计/轮转） | `lib/sandbox/memory_store.dart` | M4-T1/T2；拍板 D4~D8 见 docs/design/m4.md §4；`underSupportDir` 生产装配 + 启动清扫挂 main |
 | 记忆读写内部工具面（update_memory/query_memory） | `lib/coordinator/memory_tool_executor.dart` | M4-T2；挂 Gateway 内侧（L2 裁决先于执行）；§7.1 描述引导 + §7.3 快照回显；审计三点合围见 m4.md T2 注记 |
+| 会话历史持久化（每会话一 JSON/原子重写） | `lib/sandbox/conversation_store.dart` | M4-T3b；CloudChatMessage 编解码在此，TrackEntry 编解码在 UI 层（dual_track_stream 静态）；恢复降级语义见 m4.md T3b 注记 |
 | 串行文件写队列（temp+rename 原子替换） | `lib/core/storage/sequential_file_writer.dart` | M4-T1；coding-standards §5.1 基准件（续链与透传分离修正） |
 | token 字符级粗估口径 SSOT | `lib/core/tokens.dart` | M4-T1 自 context_governor 下沉（层级纪律），governor 原位 re-export |
 

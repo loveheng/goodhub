@@ -68,11 +68,13 @@ class CrossSourceConsentCard extends StatelessWidget {
           _metaRow(t, '句柄', handle),
           _metaRow(t, '来源', '[$fromServer] → 目标 [$toServer]'),
           const SizedBox(height: 8),
-          Text(blindSign ? '数据摘要：（无预览——禁盲签，不可放行）' : '数据摘要：',
-              style: TextStyle(
-                  fontSize: 12,
-                  color: blindSign ? t.danger : Theme.of(context).hintColor)),
-          if (!blindSign) ...[
+          Text('数据摘要：',
+              style: TextStyle(fontSize: 12, color: Theme.of(context).hintColor)),
+          if (blindSign) ...[
+            const SizedBox(height: 4),
+            Text('（无预览——禁盲签，不可放行）',
+                style: TextStyle(fontSize: 12, color: t.danger)),
+          ] else ...[
             const SizedBox(height: 4),
             Container(
               width: double.infinity,

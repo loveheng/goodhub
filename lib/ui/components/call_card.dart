@@ -64,6 +64,8 @@ class CallCard extends StatelessWidget {
       CallCardPhase.running => progressNote ?? '执行中…',
       CallCardPhase.stuck =>
         '${progressNote ?? '执行中…'} ｜ ⚠ 疑似卡死：无更新超阈值（可中止）',
+      CallCardPhase.cancelled =>
+        progressNote ?? (preview.isEmpty ? '(无文本返回)' : preview),
       _ => preview.isEmpty ? '(无文本返回)' : preview,
     };
     return Container(

@@ -68,6 +68,7 @@ class ServerEndpointStore {
     SecureKeyValue? secure,
     SharedPreferencesLike? prefs,
   })  : _secure = secure ?? FlutterSecureKeyValue(),
+        // ignore: prefer_initializing_formals
         _prefs = prefs;
 
   /// 非敏感配置文件（注入：生产 = 应用支持目录/mcp_servers.json）。

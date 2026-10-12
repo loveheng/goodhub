@@ -108,14 +108,31 @@ class HybridCloudEngine implements CloudLlmEngine {
       // Stream.timeout 逐事件计隙：首事件迟到（首 Token 判据）与流中卡顿共用同一阈值，
       // 超时注入错误并取消底层订阅（级联断开云端连接）。
       // 注意：async* 里 try 包 yield* 接不住子流错误（sdk#30552），必须 await for + yield
+      var sawOutput = false;
       await for (final e in c.send(request).timeout(
         controller.firstTokenTimeout,
         onTimeout: (sink) => sink.addError(TimeoutException(
             '云端首 Token/事件间隙超时（判据 ${controller.firstTokenTimeout.inSeconds}s）')),
       )) {
+        switch (e) {
+          case CloudTextDelta() || CloudToolCallDelta():
+            sawOutput = true;
+          case CloudDone():
+            break;
+        }
         yield e;
       }
       controller.reportSuccess();
+      // T7 实测新增：流式契约干净完成但零可见产出——推理型模型把 max_tokens
+      // 烧在思维链（reasoning_content 不产可见 delta）时出现。产出优先语义下
+      // 走端侧兜底；无兜底（带工具）显式暴露，禁静默空产出。
+      if (!sawOutput) {
+        if (allowDeviceFallback) {
+          yield* _deviceSend(request, reason: '云端空产出（流完成但零可见内容）');
+        } else {
+          throw const InferenceException('云端空产出（流完成但零可见内容/工具调用）');
+        }
+      }
     } on TimeoutException {
       controller.reportTransportTimeout();
       if (allowDeviceFallback) {

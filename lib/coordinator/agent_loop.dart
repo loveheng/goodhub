@@ -145,8 +145,8 @@ class AgentLoop {
   /// 读端同域）；null = 不落池（宿主注维持 M2 引用标记形态）。
   final RefStore? refStore;
 
-  /// 落池句柄的来源 Server 绑定缺省值（单 Server 阶段恒 'goodshare'；多
-  /// Server 下仅作 [serverResolver] 缺席或宿主本地工具的兜底）。
+  /// 落池句柄的来源 Server 绑定（单 Server 阶段恒 'goodshare'，多 Server
+  /// ToolRouter 接线时随连接装配，与 McpToolFace.serverId 同口径）。
   final String refServerId;
 
   /// 前缀工具名 → 来源 serverId（M4-T6：装配层接 ToolRouter.serverFor）——
