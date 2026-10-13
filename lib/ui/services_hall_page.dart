@@ -8,33 +8,55 @@
 ///    走 SecureKeyValue（编辑留空 = 保持已存密钥）；装配语义 = 列表首位为生效
 ///    云端引擎（hybrid_assembly 取首个 profile），支持置顶切换生效配置；
 /// ③ **跨源授权语义面板**——D5 恒 L2 弹卡不豁免的口径展示 + 联调入口。
-/// Server 节点管理不在本期范围，留导航位。
-///
-/// 保存校验口径（评审注记修正 2026-10-11）：SkillRegistry 300T 闸只管
-/// Global scope（常驻预算），覆写 skill 是 appScoped 无该闸——编辑面校验
-/// = 非空 + 10000 字符防呆上限，不套 300T。
+/// ④ **Server 节点卡面板（M4-T5）**——每个配置端点一张节点卡（ui-design
+///    §3.3：端口 / 延迟毫秒 / 在线点 / 已暴露工具计数，等宽遥测轨）+ 鉴权态
+///    （401/403 待授权 Rose，禁与离线灰阶混淆）+ 挂载/卸载开关（卸载只摘出
+///    连接池，配置与令牌保留）。数据面 = lib/mcp/server_probe.dart 探活器；
+///    增删改编辑面归聊天页 ⚙ 设置（同一 ServerEndpointStore 文件）。
 library;
+
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../coordinator/cow_sync.dart';
 import '../llm/cloud/byok_store.dart';
 import '../llm/cloud/cloud_llm.dart';
+import '../mcp/server_endpoints.dart';
+import '../mcp/server_probe.dart';
 import 'gateway_loop_debug_page.dart';
 import 'tokens/console_tokens.dart';
 
 /// appScoped 覆写正文的防呆上限（无硬预算闸，防呆防手滑）。
 const kCowOverrideMaxChars = 10000;
 
+/// 节点卡探活入口（注入位：测试传假探活，生产落 [ServerProber.probe]）。
+typedef NodeProbeFn = Future<NodeProbeResult> Function(
+    String endpoint, {String? apiKey});
+
 class ServicesHallPage extends StatefulWidget {
-  const ServicesHallPage({super.key, this.storeOverride, this.byokStoreOverride});
+  const ServicesHallPage({
+    super.key,
+    this.storeOverride,
+    this.byokStoreOverride,
+    this.endpointStoreOverride,
+    this.probeOverride,
+  });
 
   /// 测试注入位；null = 生产路径（应用文档目录）。
   final CowOverridesStore? storeOverride;
 
   /// 测试注入位（M4-T5 BYOK 面板）；null = 生产路径（默认安全存储装配）。
   final ByokStore? byokStoreOverride;
+
+  /// 测试注入位（M4-T5 节点卡）；null = 生产路径（应用支持目录
+  /// /mcp_servers.json，与聊天页 ⚙ 设置同一文件）。
+  final ServerEndpointStore? endpointStoreOverride;
+
+  /// 测试注入位（M4-T5 节点卡）；null = 生产路径（[ServerProber] 真探活）。
+  final NodeProbeFn? probeOverride;
 
   @override
   State<ServicesHallPage> createState() => _ServicesHallPageState();
@@ -62,6 +84,12 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
   final _byokModelCtrl = TextEditingController();
   final _byokTempCtrl = TextEditingController();
   final _byokKeyCtrl = TextEditingController();
+
+  // —— Server 节点卡状态（M4-T5）——
+  ServerEndpointStore? _epStore;
+  var _endpoints = const <ServerEndpoint>[];
+  final _probeStates = <String, NodeProbeResult?>{}; // id → null = 探测中
+  var _probing = false;
 
   @override
   void initState() {
@@ -97,6 +125,80 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
     } catch (e) {
       debugPrint('[DEGRADE] byok-panel: 配置读取失败按空目录: $e');
     }
+    // 节点卡独立初始化：与聊天页 ⚙ 设置同一 ServerEndpointStore 文件
+    // （应用支持目录/mcp_servers.json + 旧单端点 SharedPreferences 迁移同口径）。
+    try {
+      final epStore = widget.endpointStoreOverride ?? await _epStoreProd();
+      await _reloadEndpoints(epStore);
+    } catch (e) {
+      debugPrint('[DEGRADE] nodes-panel: 端点目录读取失败按空目录: $e');
+    }
+  }
+
+  /// 生产装配（与 chat_page._epStore 同口径；文件同址，两页面读写互见）。
+  Future<ServerEndpointStore> _epStoreProd() async {
+    final support = await getApplicationSupportDirectory();
+    return ServerEndpointStore(
+      file: File('${support.path}/mcp_servers.json'),
+      prefs: flutterPrefsLike((key) =>
+          SharedPreferences.getInstance().then((sp) => sp.getString(key))),
+    );
+  }
+
+  Future<void> _reloadEndpoints(ServerEndpointStore store) async {
+    final eps = await store.load();
+    if (!mounted) return;
+    setState(() {
+      _epStore = store;
+      _endpoints = eps;
+      // 探活状态按现目录裁剪（删掉的端点不留残影）。
+      _probeStates.removeWhere((id, _) => eps.every((e) => e.id != id));
+    });
+  }
+
+  Future<void> _probeAll() async {
+    final prober = _epStore == null ? null : (widget.probeOverride ?? _prodProbe);
+    if (prober == null || _probing || _endpoints.isEmpty) return;
+    setState(() {
+      _probing = true;
+      for (final e in _endpoints) {
+        _probeStates[e.id] = null; // null = 探测中
+      }
+    });
+    await Future.wait([for (final e in _endpoints) _probeOne(e, prober)]);
+    if (mounted) setState(() => _probing = false);
+  }
+
+  Future<void> _probeOne(
+      ServerEndpoint ep, NodeProbeFn prober) async {
+    String? key;
+    try {
+      key = await _epStore?.apiKey(ep.id);
+    } on Object catch (e) {
+      debugPrint('[DEGRADE] nodes-panel: 令牌读取失败按无令牌探活: $e');
+    }
+    final r = await prober(
+      ep.endpoint,
+      apiKey: (key == null || key.isEmpty) ? null : key,
+    );
+    if (!mounted) return;
+    setState(() => _probeStates[ep.id] = r);
+  }
+
+  NodeProbeFn get _prodProbe => (endpoint, {String? apiKey}) =>
+      ServerProber().probe(endpoint, apiKey: apiKey);
+
+  /// 挂载开关（ui-design §3.3 物理开关质感语义）：卸载只摘出连接池
+  /// （_send 跳过 enabled=false），配置与令牌保留，重开即恢复。
+  Future<void> _toggleMounted(ServerEndpoint ep, bool value) async {
+    final store = _epStore;
+    if (store == null) return;
+    await store.save([
+      for (final e in _endpoints)
+        if (e.id == ep.id) e.copyWith(enabled: value) else e,
+    ]);
+    await _reloadEndpoints(store);
+    _flash(value ? '✓ 已挂载 ${ep.name}' : '⊘ 已卸载 ${ep.name}（配置与令牌保留）');
   }
 
   Future<void> _reloadByok(ByokStore store) async {
@@ -195,9 +297,9 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
                   const SizedBox(height: 12),
                   _byokPanel(context, t),
                   const SizedBox(height: 12),
-                  _crossSourcePanel(context, t),
+                  _nodesPanel(context, t),
                   const SizedBox(height: 12),
-                  _placeholderPanel(t),
+                  _crossSourcePanel(context, t),
                 ],
               ),
       ),
@@ -810,29 +912,157 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
         ]),
       );
 
-  // —— 导航位（M3+ 范围外） ——
+  // —— 面板四：Server 节点卡（M4-T5，ui-design §3.3） ——
 
-  Widget _placeholderPanel(ConsoleTokens t) => Card(
-        margin: EdgeInsets.zero,
-        child: Column(children: [
-          ListTile(
-            enabled: false,
-            dense: true,
-            leading: Icon(Icons.dns_outlined, size: 18, color: t.terminalMuted),
-            title: Text('Server 节点管理',
-                style: TextStyle(fontSize: 13, color: t.terminalMuted)),
-            subtitle: Text('端口/延迟/在线状态/挂载开关（M3+）',
-                style: TextStyle(fontSize: 11, color: t.terminalMuted)),
-          ),
-          ListTile(
-            enabled: false,
-            dense: true,
-            leading: Icon(Icons.dns_outlined, size: 18, color: t.terminalMuted),
-            title: Text('Server 节点管理',
-                style: TextStyle(fontSize: 13, color: t.terminalMuted)),
-            subtitle: Text('端口/延迟/在线状态/挂载开关（M3+）',
-                style: TextStyle(fontSize: 11, color: t.terminalMuted)),
-          ),
-        ]),
-      );
+  Widget _nodesPanel(BuildContext context, ConsoleTokens t) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              Text('Server 节点',
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+              const Spacer(),
+              if (_endpoints.isNotEmpty)
+                OutlinedButton.icon(
+                  key: const Key('nodes-probe-all'),
+                  onPressed: _probing ? null : _probeAll,
+                  icon: const Icon(Icons.radar_outlined, size: 16),
+                  label: Text(_probing ? '探测中…' : '探测全部'),
+                ),
+            ]),
+            const SizedBox(height: 4),
+            Text('已配置的 MCP 服务节点。卸载开关只把节点摘出会话装配，配置与'
+                '令牌保留；鉴权被拒（403）用红色标注，与离线区分。',
+                style: TextStyle(
+                    fontSize: 11.5, color: Theme.of(context).hintColor)),
+            const SizedBox(height: 8),
+            if (_epStore == null)
+              const Padding(
+                padding: EdgeInsets.all(8),
+                child: Center(
+                  child: Text('读取节点目录…', style: TextStyle(fontSize: 12)),
+                ),
+              )
+            else ...[
+              for (final ep in _endpoints)
+                _nodeItem(context, t, ep, _probeStates[ep.id]),
+              if (_endpoints.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  child: Text(
+                      '（暂无节点——聊天页 ⚙ 设置可添加，本地插件自动挂载不在此列）',
+                      style: TextStyle(
+                          fontSize: 12, color: Theme.of(context).hintColor)),
+                ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _nodeItem(
+    BuildContext context,
+    ConsoleTokens t,
+    ServerEndpoint ep,
+    NodeProbeResult? probe,
+  ) {
+    final probing = _probeStates.containsKey(ep.id) && probe == null;
+    return Container(
+      key: Key('node-item-${ep.id}'),
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(t.cardRadius),
+        border: Border.all(color: t.hairline),
+      ),
+      child: Row(children: [
+        _statusDot(t, probing, probe),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(children: [
+                  Flexible(
+                    child: Text(ep.name,
+                        style: TextStyle(
+                            fontFamily: t.monoFamily, fontSize: 12),
+                        overflow: TextOverflow.ellipsis),
+                  ),
+                  if (!ep.enabled) ...[
+                    const SizedBox(width: 6),
+                    Text('已卸载',
+                        style: TextStyle(
+                            fontSize: 10.5, color: t.terminalMuted)),
+                  ],
+                ]),
+                Text(
+                  '${ep.endpoint}\n'
+                  '端口 ${_portLabel(ep.endpoint)} · ${_metricsLabel(probe)} · '
+                  '${_authLabel(ep, probe)}',
+                  style: TextStyle(
+                      fontFamily: t.monoFamily,
+                      fontSize: 11,
+                      color: t.terminalMuted),
+                ),
+              ]),
+        ),
+        // 挂载/卸载开关（微型物理开关语义，Dual-Role 本地总线心智）。
+        Switch(
+          key: Key('node-switch-${ep.id}'),
+          value: ep.enabled,
+          onChanged: (v) => _toggleMounted(ep, v),
+        ),
+      ]),
+    );
+  }
+
+  /// 在线状态点（在线绿 / 待授权与离线 Rose / 探测中 Cyan / 未探测灰）。
+  Widget _statusDot(ConsoleTokens t, bool probing, NodeProbeResult? probe) {
+    final color = probing
+        ? t.l1Info
+        : probe == null
+            ? t.terminalMuted
+            : probe.online && !probe.authDenied
+                ? t.l1Ok
+                : t.danger;
+    return Container(
+      width: 10,
+      height: 10,
+      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+    );
+  }
+
+  /// 端口号：显式端口优先；缺省按 scheme 补 80/443，解析不出显示「?」。
+  String _portLabel(String endpoint) {
+    final uri = Uri.tryParse(endpoint);
+    if (uri == null) return '?';
+    if (uri.port != 0) return '${uri.port}';
+    return switch (uri.scheme) {
+      'https' => '443（默认）',
+      'http' => '80（默认）',
+      _ => '?',
+    };
+  }
+
+  String _metricsLabel(NodeProbeResult? probe) {
+    if (probe == null) return '延迟 — · 工具 —';
+    if (!probe.online) return '延迟 — · 工具 —';
+    final tool = probe.toolCount != null ? '${probe.toolCount}' : '?';
+    return '延迟 ${probe.latencyMs}ms · 工具 $tool';
+  }
+
+  /// 鉴权态（F1.17）：已授权 / 待授权 403（Rose）/ 离线；配合 hasKey 展示
+  /// 令牌存况（密钥纪律：永不回显真值）。
+  String _authLabel(ServerEndpoint ep, NodeProbeResult? probe) {
+    if (probe != null && probe.authDenied) return '⚠ 待授权(403)';
+    if (probe != null && probe.online) return '已授权';
+    if (probe != null) return '离线';
+    return ep.hasKey ? '未探测 · 已存令牌' : '未探测 · 无令牌';
+  }
 }

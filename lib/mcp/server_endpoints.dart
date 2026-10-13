@@ -25,6 +25,7 @@ class ServerEndpoint {
     required this.name,
     required this.endpoint,
     this.hasKey = false,
+    this.enabled = true,
   });
 
   /// 稳定标识（安全存储键锚点；不含 `__`——ToolRouter 前缀语义约束）。
@@ -39,12 +40,22 @@ class ServerEndpoint {
   /// 安全存储中是否已有令牌（真值经 [ServerEndpointStore.apiKey] 读取）。
   final bool hasKey;
 
-  ServerEndpoint copyWith({String? name, String? endpoint, bool? hasKey}) =>
+  /// 挂载位（M4-T5 节点卡开关，ui-design §3.3）：false = 卸载态——`_send`
+  /// 装配连接池时跳过；配置与令牌保留，重开开关即恢复挂载。旧 JSON 缺省 true。
+  final bool enabled;
+
+  ServerEndpoint copyWith({
+    String? name,
+    String? endpoint,
+    bool? hasKey,
+    bool? enabled,
+  }) =>
       ServerEndpoint(
         id: id,
         name: name ?? this.name,
         endpoint: endpoint ?? this.endpoint,
         hasKey: hasKey ?? this.hasKey,
+        enabled: enabled ?? this.enabled,
       );
 
   Map<String, Object?> toJson() => <String, Object?>{
@@ -52,6 +63,7 @@ class ServerEndpoint {
         'name': name,
         'endpoint': endpoint,
         'hasKey': hasKey,
+        'enabled': enabled,
       };
 
   static ServerEndpoint fromJson(Map<String, Object?> j) => ServerEndpoint(
@@ -59,6 +71,7 @@ class ServerEndpoint {
         name: j['name'] as String? ?? '',
         endpoint: j['endpoint'] as String? ?? '',
         hasKey: j['hasKey'] as bool? ?? false,
+        enabled: j['enabled'] as bool? ?? true,
       );
 }
 

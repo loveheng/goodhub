@@ -120,6 +120,32 @@ void main() {
     expect(loaded.map((e) => e.id), ['srv_ok', 'srv_ok2']);
   });
 
+  test('enabled 挂载位 round-trip（缺省 true，显式 false 落盘）', () async {
+    final store = buildStore();
+    await store.save([
+      ep1,
+      ep2.copyWith(enabled: false), // T5 节点卡卸载态
+    ]);
+    final loaded = await buildStore().load();
+    expect(loaded[0].enabled, isTrue, reason: '缺省 = 挂载');
+    expect(loaded[1].enabled, isFalse);
+
+    // 旧版 JSON 无 enabled 字段 → 解析缺省 true（零迁移兼容）。
+    await file.writeAsString('''
+[{"id": "srv_old", "name": "old", "endpoint": "http://x/mcp", "hasKey": false}]
+''');
+    final legacy = await buildStore().load();
+    expect(legacy.single.enabled, isTrue);
+  });
+
+  test('旧单端点迁移产物 enabled=true（迁移即挂载）', () async {
+    final store = buildStore(
+      prefs: _FakePrefs({'chat.mcp.endpoint': 'http://10.0.2.2:8000/mcp'}),
+    );
+    final loaded = await store.load();
+    expect(loaded.single.enabled, isTrue);
+  });
+
   test('setApiKey 空串/null 即删除密钥（防孤儿）', () async {
     final store = buildStore();
     await store.setApiKey('srv_a', 'sk-secret');

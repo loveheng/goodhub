@@ -608,7 +608,15 @@ class _ChatPageState extends State<ChatPage> {
     // 迁移）→ 每端点一个 McpClient + McpToolFace → ToolRouter（实例随会话建）——
     final support = await getApplicationSupportDirectory();
     final epStore = _epStore(support.path);
-    final endpoints = await epStore.load();
+    final allEndpoints = await epStore.load();
+    // T5 节点卡挂载位（ui-design §3.3）：enabled=false 的卸载节点不进连接池
+    // （配置与令牌保留，大厅节点卡可重开）。
+    final endpoints = allEndpoints.where((e) => e.enabled).toList();
+    final unmounted = allEndpoints.length - endpoints.length;
+    if (unmounted > 0) {
+      _add(TrackNote('⊘ 已卸载 $unmounted 项服务（服务大厅节点卡可重新挂载）',
+          danger: false));
+    }
     // T-trans-4：本地插件零配置发现（系统托管，不进手填配置）；与 HTTP 端点合并判定。
     final locals = <LocalPluginInfo>[];
     try {
