@@ -47,7 +47,7 @@ void main() {
   group('callWithProgress：SSE 分帧解析', () {
     test('progress 帧即达即回调，终帧返回 result，心跳 comment 忽略', () async {
       final progresses = <Object?>[];
-      final client = McpClient(
+      final client = McpClient.http(
         baseUrl: 'http://127.0.0.1:8765/mcp',
         httpClient: MockClient((req) async {
           expect(req.body, contains('"progressToken":1'),
@@ -75,7 +75,7 @@ void main() {
     });
 
     test('终帧 error → 抛 McpRpcException', () async {
-      final client = McpClient(
+      final client = McpClient.http(
         baseUrl: 'http://127.0.0.1:8765/mcp',
         httpClient: MockClient((_) async => _sse(_sseBody(
               resultJson:
@@ -90,7 +90,7 @@ void main() {
     });
 
     test('流结束无终帧 → 协议违规抛（server 断流防护）', () async {
-      final client = McpClient(
+      final client = McpClient.http(
         baseUrl: 'http://127.0.0.1:8765/mcp',
         httpClient: MockClient((_) async => _sse(
               'data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":1,"progress":0}}\n\n',
@@ -104,7 +104,7 @@ void main() {
     });
 
     test('单 JSON 回退：server 忽略 progressToken 回 application/json（Tier 2 兼容）', () async {
-      final client = McpClient(
+      final client = McpClient.http(
         baseUrl: 'http://127.0.0.1:8765/mcp',
         httpClient: MockClient((req) async {
           expect(req.body, contains('"progressToken"'),
@@ -125,7 +125,7 @@ void main() {
 
   group('McpToolFace progress 通道', () {
     test('onProgress 非 null → 走 callWithProgress，回调解出 progress/total/message', () async {
-      final client = McpClient(
+      final client = McpClient.http(
         baseUrl: 'http://127.0.0.1:8765/mcp',
         httpClient: MockClient((_) async => _sse(_sseBody(
               resultJson: json.jsonEncode({
@@ -160,7 +160,7 @@ void main() {
     });
 
     test('onProgress null → 不注入 progressToken（普通 call）', () async {
-      final client = McpClient(
+      final client = McpClient.http(
         baseUrl: 'http://127.0.0.1:8765/mcp',
         httpClient: MockClient((req) async {
           expect(req.body.contains('"progressToken"'), isFalse,
@@ -179,7 +179,7 @@ void main() {
 
     test('M3：server 声明 sampling → onProgress null 也强制走流式（反向请求通道）', () async {
       var sawProgressToken = false;
-      final client = McpClient(
+      final client = McpClient.http(
         baseUrl: 'http://127.0.0.1:8765/mcp',
         httpClient: MockClient((req) async {
           if (req.body.contains('"method":"initialize"')) {
@@ -239,7 +239,7 @@ void main() {
 
     test('分派 onServerRequest 并按 id POST 回程 result，流继续读终帧', () async {
       final answers = <Map<String, Object?>>[];
-      final client = McpClient(
+      final client = McpClient.http(
         baseUrl: 'http://127.0.0.1:8765/mcp',
         httpClient: MockClient((req) async {
           if (req.body.contains('"id":"srv_1"')) {
@@ -269,7 +269,7 @@ void main() {
 
     test('handler 抛 McpRpcException → error 帧原样回程（配额结构化拒绝）', () async {
       final answers = <Map<String, Object?>>[];
-      final client = McpClient(
+      final client = McpClient.http(
         baseUrl: 'http://127.0.0.1:8765/mcp',
         httpClient: MockClient((req) async {
           if (req.body.contains('"id":"srv_1"')) {
@@ -295,7 +295,7 @@ void main() {
 
     test('handler 缺失 → -32601 error 帧回程，server 不悬挂', () async {
       final answers = <Map<String, Object?>>[];
-      final client = McpClient(
+      final client = McpClient.http(
         baseUrl: 'http://127.0.0.1:8765/mcp',
         httpClient: MockClient((req) async {
           if (req.body.contains('"id":"srv_1"')) {
@@ -317,7 +317,7 @@ void main() {
 
   group('resources 封装', () {
     test('listResources 防御解析 + readResource 取首 text 块', () async {
-      final client = McpClient(
+      final client = McpClient.http(
         baseUrl: 'http://127.0.0.1:8765/mcp',
         httpClient: MockClient((req) async {
           if (req.body.contains('resources/list')) {
@@ -341,7 +341,7 @@ void main() {
     });
 
     test('resources/read contents 缺失/无 text → 协议违规抛', () async {
-      final client = McpClient(
+      final client = McpClient.http(
         baseUrl: 'http://127.0.0.1:8765/mcp',
         httpClient: MockClient((_) async => _json({'contents': []})),
       );

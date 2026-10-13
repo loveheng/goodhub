@@ -1,0 +1,8 @@
+com.zzh.goodhub.mcp.plugin.plugin-core-pngs-0 /home/zzh/app/goodhub/android-sdk/plugin-core/build/generated/res/pngs/debug
+com.zzh.goodhub.mcp.plugin.plugin-core-updated_navigation_xml-1 /home/zzh/app/goodhub/android-sdk/plugin-core/build/generated/updated_navigation_xml/debug
+com.zzh.goodhub.mcp.plugin.plugin-core-mergeDebugResources-2 /home/zzh/app/goodhub/android-sdk/plugin-core/build/intermediates/incremental/debug/mergeDebugResources/merged.dir
+com.zzh.goodhub.mcp.plugin.plugin-core-mergeDebugResources-3 /home/zzh/app/goodhub/android-sdk/plugin-core/build/intermediates/incremental/debug/mergeDebugResources/stripped.dir
+com.zzh.goodhub.mcp.plugin.plugin-core-debug-4 /home/zzh/app/goodhub/android-sdk/plugin-core/build/intermediates/merged_res/debug/mergeDebugResources
+com.zzh.goodhub.mcp.plugin.plugin-core-debug-5 /home/zzh/app/goodhub/android-sdk/plugin-core/build/intermediates/packaged_res/debug/packageDebugResources
+com.zzh.goodhub.mcp.plugin.plugin-core-debug-6 /home/zzh/app/goodhub/android-sdk/plugin-core/src/debug/res
+com.zzh.goodhub.mcp.plugin.plugin-core-main-7 /home/zzh/app/goodhub/android-sdk/plugin-core/src/main/res

@@ -30,6 +30,7 @@ import 'package:goodhub/core/errors/mcp_error.dart';
 import 'package:goodhub/llm/cloud/byok_store.dart';
 import 'package:goodhub/llm/cloud/cloud_llm.dart';
 import 'package:goodhub/llm/llm.dart';
+import 'package:goodhub/mcp/local_plugin_discovery.dart';
 import 'package:goodhub/mcp/mcp_client.dart';
 import 'package:goodhub/mcp/sampling.dart';
 import 'package:goodhub/mcp/server_capabilities.dart';
@@ -163,6 +164,10 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
           'content argument');
   var _running = false;
   final _track = <_Entry>[];
+
+  /// T-trans-4：已发现本地插件（扫描结果）；选中其一则 _run 走 Binder 而非 HTTP。
+  List<LocalPluginInfo> _localPlugins = const [];
+  LocalPluginInfo? _selectedLocal;
   final _scrollCtrl = ScrollController();
   var _pillLabel = 'idle';
   var _pillTone = CapsuleTone.idle;
@@ -185,6 +190,22 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
           ? '未预置（Agent Loop 带工具恒走云端，端侧不承接——无云端即「无可用引擎」）'
           : '已预置: ${profiles.first.name}（${profiles.first.model}）';
     });
+  }
+
+  /// T-trans-4：扫描已安装本地插件（宿主 PackageManager），结果进下拉供 _run 选 Binder 目标。
+  Future<void> _scanLocal() async {
+    final found = await localPluginDiscovery.scan();
+    if (!mounted) return;
+    setState(() {
+      _localPlugins = found;
+      _selectedLocal = found.isEmpty ? null : found.first;
+    });
+    _add(_NoteEntry(
+      found.isEmpty
+          ? '未发现本地插件（未安装，或缺少 com.zzh.goodhub.action.MCP_SERVER）'
+          : '发现本地插件: ${found.map((p) => p.serverId).join(', ')}',
+      danger: found.isEmpty,
+    ));
   }
 
   Future<void> _saveByok() async {
@@ -277,10 +298,16 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
     });
     RefStore? refStore;
     try {
-      final client = McpClient(
-        baseUrl: _urlCtrl.text.trim(),
-        apiKey: _keyCtrl.text.trim().isEmpty ? null : _keyCtrl.text.trim(),
-      );
+      final localTarget = _selectedLocal;
+      final client = localTarget == null
+          ? McpClient.http(
+              baseUrl: _urlCtrl.text.trim(),
+              apiKey: _keyCtrl.text.trim().isEmpty
+                  ? null
+                  : _keyCtrl.text.trim(),
+            )
+          : localPluginDiscovery.createClient(localTarget);
+      final serverId = localTarget?.serverId ?? 'goodshare';
       // M2.5-T2 能力协商接线：握手结果与 Tier 判定进轨迹；Tier 2（vanilla）
       // 额外生成静态摘要（C-4：500 字符封顶 + 「自动生成」标注）。
       final caps = await client.negotiate();
@@ -290,6 +317,7 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
       AgentLoop? loopBox;
       final face = McpToolFace(
         client: client,
+        serverId: serverId,
         // M2.5-T7：progress 通告 → 药丸 Running(progress) 最小呈现 + M3-T2
         // 桥接 AgentLoop 事件流（LoopToolProgress，卡状态机全量数据源）。
         // Tier 2（vanilla）额外生成静态摘要（C-4：500 字符封顶 + 「自动生成」标注）。
@@ -595,6 +623,40 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
                   ),
                   const SizedBox(width: 8),
                   StatusCapsule(label: _pillLabel, tone: _pillTone),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: DropdownButtonFormField<LocalPluginInfo?>(
+                      value: _selectedLocal,
+                      isExpanded: true,
+                      decoration: const InputDecoration(
+                        labelText: '本地插件（选中则走 Binder，否则走上方 HTTP）',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      items: [
+                        const DropdownMenuItem<LocalPluginInfo?>(
+                            value: null, child: Text('— HTTP 端点 —')),
+                        for (final p in _localPlugins)
+                          DropdownMenuItem<LocalPluginInfo?>(
+                              value: p,
+                              child: Text('${p.serverTitle} (${p.serverId})')),
+                      ],
+                      onChanged: _running
+                          ? null
+                          : (v) => setState(() => _selectedLocal = v),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton.tonal(
+                    onPressed: _running ? null : _scanLocal,
+                    child: const Text('扫描'),
+                  ),
                 ],
               ),
             ),

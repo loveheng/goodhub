@@ -13,5 +13,11 @@ class MainActivity : FlutterActivity() {
             flutterEngine.dartExecutor.binaryMessenger,
             "goodhub/llm",
         ).let { LlmBridge.register(it, this) }
+        // 本地插件 Binder 传输桥（T-trans-2）：goodhub/binder_mcp + goodhub/binder_mcp_events
+        BinderTransportBridge.register(this, flutterEngine.dartExecutor.binaryMessenger)
+        // 网关前台保活服务桥（G4）：goodhub/gateway_service
+        GatewayServiceBridge.register(this, flutterEngine.dartExecutor.binaryMessenger)
+        // 网关 L2 醒目呼叫通道（TC12）：goodhub/gateway_consent
+        GatewayConsentBridge.register(this, flutterEngine.dartExecutor.binaryMessenger)
     }
 }

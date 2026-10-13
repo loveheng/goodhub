@@ -28,7 +28,7 @@ McpClient _fakeClient({
         json.jsonEncode({'jsonrpc': '2.0', 'id': 1, 'result': {'ok': true}}), 200,
         headers: {'content-type': 'application/json'});
   });
-  return McpClient(baseUrl: 'http://fake', httpClient: mock);
+  return McpClient.http(baseUrl: 'http://fake', httpClient: mock);
 }
 
 void main() {

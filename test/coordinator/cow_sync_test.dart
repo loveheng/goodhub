@@ -26,7 +26,7 @@ http.Response _json(Object result) => http.Response(
   String template = '模板正文 {id} 尾部',
 }) {
   final rawRequested = <String>[];
-  final client = McpClient(
+  final client = McpClient.http(
     baseUrl: 'http://127.0.0.1:8765/mcp',
     httpClient: MockClient((req) async {
       final body = req.body;

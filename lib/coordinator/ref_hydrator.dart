@@ -48,7 +48,7 @@ class HydratingExecutor implements ToolExecutor {
 
   /// 前缀工具名 → 调用目标 serverId（M4-T6：装配层接 ToolRouter.serverFor）
   /// ——注水跨源校验按调用目标判定；null = 落 [targetServerId]。
-  final String Function(String toolName)? targetResolver;
+  final String? Function(String toolName)? targetResolver;
 
   /// 跨源授权面；null = 无人值守 fail-closed（跨源一律拒绝——D4 同构口径）。
   final CrossSourceDelegate? crossSourceDelegate;

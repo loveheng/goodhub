@@ -15,6 +15,7 @@ last-merge: 2026-10-11
 - [结论] **T3 ✓ 双轨消息流正式 UI**：ChatPage 首页接管（连接配置 SharedPreferences 过渡态）+ DualTrackStream 公共组件（TrackEntry 七类 sealed，卡片全量复用 M2/M3）+ RichTextView（D12 随迁 parser + 宿主只读渲染器，媒体块降级不吞内容）+ AgentLoop D11 多轮上下文（history 入参 / transcript 回传 / _sessionTranscript 未配对尾巴协议安全截断）；ClaimLoopPage/GrammarSpikePage 拆独立文件，main 收敛纯装配；tokens 补 codeBg/dataRef
 - [验证基线] flutter analyze 0 issue / 317 测试全绿（2026-10-11 T3 收官）；真机链路（记忆注入→L2 卡→ops.log、聊天页全链、Abort 半程明示）随 T5 真机联调第三批
 - [待办指针] T3b（D10 拆分）→ T4 连接韧性+订阅消费（并行线）→ T5 大厅余项+收官；全局遗留见 context/todos.md（§16 门槛三案、拦截卡三态真机验证等）
+- [结论] **T6 核心接线（JIT+装配）✓ 2026-10-12**：DiscoveryExecutor（get_connected_apps/activate_server_tools，执行链最外层 L1）+ AgentLoop.toolsProvider（每轮重算 tools）+ ChatPage._send 多连接池（ServerEndpointStore.load 多端点→多 McpClient+McpToolFace→ToolRouter，默认激活全部，resolver 接 router.serverFor，静态摘要「## 已挂载服务」节）+ 配置读写切 ServerEndpointStore（迁移旧 chat.mcp.*）；analyze 0 issue / discovery_executor_test 14 例全绿。T6 剩余：服务管理 UI（增删改列表）/ CoW 多 server 真机 / T6-4 真机联调（goodshare 经 ToolRouter 不回归 + 第二真实服务随用户接入）/ 已激活 Schema 1200T 精简模式（待拍板）
 
 ## 断点
-- [断点] 下一步：T3b 会话历史持久化（D10）：ConversationStore（lib/sandbox/，每会话一 JSON：轨道条目 + transcript 序列化——CloudChatMessage 配对完整是恢复前提）+ 会话列表页 + ChatPage 恢复装配
+- [断点] T6 核心接线（JIT+装配）已落（2026-10-12，见结论），**T6 剩余**：① ChatPage 服务管理 UI（设置弹层→服务列表增删改，apiKey 走安全存储）② CoW 多 server 真机（撞名跳过/通告）③ T6-4 真机联调（goodshare 经 ToolRouter 全链不回归 + 第二真实服务随用户接入）④ 已激活 Schema 1200T 精简模式（design 待拍板）；之后 **T5 大厅余项+收官**（BYOK 面板 / Server 节点卡 / 记忆看板 / 双仓全量验证）；T4 连接韧性可随时并行

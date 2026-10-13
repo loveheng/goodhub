@@ -1,4 +1,16 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- G4 前台保活（thirdconnect §7）：INTERNET（网关 HTTP + 出站 MCP）+
+         WifiLock（CHANGE_WIFI_STATE）+ WakeLock + 类型化 FGS（connectedDevice，
+         minSdk 34 强制）+ 通知（Android 13+ 运行时授权，未授权仅通知隐藏） -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <application
         android:label="goodhub"
         android:name="${applicationName}"
@@ -30,6 +42,24 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- TC-debug: 该 Oppo/ColorOS 机型的 Impeller(Vulkan) 后端静默不出首帧、
+             闪屏不移除→黑屏；回退 Skia/OpenGL 以解锁真机验证。生产构建可按需移除。 -->
+        <meta-data
+            android:name="io.flutter.embedding.android.EnableImpeller"
+            android:value="false" />
+        <!-- PC 远程网关前台保活服务（G4，thirdconnect §7）：息屏/Doze 不断连 -->
+        <service
+            android:name=".GatewayForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+        <!-- TC12 L2 醒目呼叫：专用全屏确认 Activity（息屏也能亮屏置顶；singleInstance
+             避免与 MainActivity 同栈堆叠）；由网关全屏通知（FULL_SCREEN_INTENT）拉起。 -->
+        <activity
+            android:name=".L2AlertActivity"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:taskAffinity=""
+            android:theme="@style/NormalTheme" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and
@@ -40,6 +70,10 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- 同机本地插件发现（thirdconnect T-trans-4，§1.2.4）：扫描声明该 Action 的服务 -->
+        <intent>
+            <action android:name="com.zzh.goodhub.action.MCP_SERVER" />
         </intent>
     </queries>
 </manifest>

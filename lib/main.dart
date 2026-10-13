@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 import 'llm/llm.dart';
 import 'sandbox/memory_store.dart';
 import 'ui/chat_page.dart';
+import 'ui/navigator_key.dart';
 
 void main() {
   runApp(const GoodHubApp());
@@ -76,6 +77,7 @@ class _GoodHubAppState extends State<GoodHubApp> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'GoodHub',
+      navigatorKey: appNavigatorKey, // 网关 L2 远程确认卡等后台弹层入口
       theme: ThemeData(colorScheme: .fromSeed(seedColor: Colors.indigo)),
       home: const ChatPage(),
     );

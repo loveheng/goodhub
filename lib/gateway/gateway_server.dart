@@ -1,0 +1,276 @@
+/// 嵌入式 MCP 网关服务器（G1，thirdconnect.md §7）。
+///
+/// - **Streamable HTTP（协议 2025-06-18）**：POST /mcp 按 Accept 回单 JSON 或
+///   SSE 帧流（tools/call 流式期间 progress 通知帧夹带，终帧 result）；
+///   GET /mcp 维持 SSE 长连接接收服务器主动通知（tools/list_changed 下行）；
+/// - **会话**：initialize 时下发 `Mcp-Session-Id`，后续请求须回带（缺失/未知
+///   → 400）；
+/// - **入站安全最小件（G3 起步）**：[requiredToken] 非空时强制
+///   `Authorization: Bearer <token>` 校验（局域网配对口径，§7 物理通道 2）；
+/// - **PC 60s 超时对策（TC12，收窄版）**：GET SSE 流每 15s 心跳注释帧重置
+///   PC 计时；tools/call 流式期间由 progress 帧天然喂狗（无 progress 的
+///   长调用 Keep-Alive 注入留 G 系列后续收口）。
+library;
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter/foundation.dart' show debugPrint;
+
+import 'mcp_gateway_handler.dart';
+
+class McpGatewayServer {
+  McpGatewayServer(this.handler);
+
+  final GatewayHandler handler;
+
+  HttpServer? _server;
+  var _port = 8766;
+  final Set<String> _sessions = {};
+  final Map<String, HttpResponse> _sseSubs = {};
+  StreamSubscription<void>? _listChangedSub;
+  Timer? _heartbeat;
+
+  /// 非空时强制 Bearer Token 校验（G3 最小鉴权；空 = 开放，仅建议 ADB/调试）。
+  String? requiredToken;
+
+  bool get running => _server != null;
+  int get port => _port;
+
+  Future<void> start({InternetAddress? address, int port = 8766}) async {
+    if (running) return;
+    _port = port;
+    _server = await HttpServer.bind(address ?? InternetAddress.anyIPv4, port);
+    _port = _server!.port; // port=0（测试）时回填实际绑定端口
+    debugPrint('[gateway] listening on '
+        '${address?.address ?? '0.0.0.0'}:$_port/mcp');
+    _listChangedSub =
+        handler.onToolsListChanged.listen((_) => _broadcastListChanged());
+    _heartbeat = Timer.periodic(const Duration(seconds: 15), (_) => _heartbeatPing());
+    _server!.listen(_onRequest,
+        onError: (Object e) => debugPrint('[DEGRADE] gateway: $e'));
+  }
+
+  Future<void> stop() async {
+    _heartbeat?.cancel();
+    _heartbeat = null;
+    await _listChangedSub?.cancel();
+    _listChangedSub = null;
+    for (final resp in _sseSubs.values) {
+      try {
+        await resp.close();
+      } on Object catch (_) {}
+    }
+    _sseSubs.clear();
+    _sessions.clear();
+    final s = _server;
+    _server = null;
+    await s?.close(force: true);
+  }
+
+  Future<void> _onRequest(HttpRequest req) async {
+    try {
+      if (req.uri.path != '/mcp') return _plain(req, 404, 'not found');
+      if (!_checkAuth(req)) return _plain(req, 401, 'unauthorized');
+      if (req.method == 'POST') return await _handlePost(req);
+      if (req.method == 'GET') return await _handleGet(req);
+      return _plain(req, 405, 'method not allowed');
+    } on Object catch (e) {
+      debugPrint('[DEGRADE] gateway: request error: $e');
+      try {
+        _plain(req, 500, 'internal error');
+      } on Object catch (_) {}
+    }
+  }
+
+  bool _checkAuth(HttpRequest req) {
+    final token = requiredToken;
+    if (token == null || token.isEmpty) return true;
+    return req.headers.value(HttpHeaders.authorizationHeader) == 'Bearer $token';
+  }
+
+  Future<void> _handlePost(HttpRequest req) async {
+    final body = await utf8.decoder.bind(req).join();
+    Object? decoded;
+    try {
+      decoded = body.trim().isEmpty ? null : jsonDecode(body);
+    } on FormatException {
+      return _jsonRpcError(req, null, -32700, 'parse error');
+    }
+    if (decoded is! Map) return _jsonRpcError(req, null, -32600, 'invalid request');
+    final method = decoded['method'];
+    final id = decoded['id'];
+    final params = decoded['params'];
+    final sessionId = req.headers.value('mcp-session-id');
+    final sse = (req.headers.value(HttpHeaders.acceptHeader) ?? '')
+        .contains('text/event-stream');
+
+    // initialize：新会话 + 下发 Mcp-Session-Id。
+    if (method == 'initialize') {
+      final sid =
+          'gw-${DateTime.now().microsecondsSinceEpoch}-${_sessions.length}';
+      _sessions.add(sid);
+      return _jsonRpcResult(req, id, handler.initialize(),
+          sessionId: sid, sse: sse);
+    }
+    // 其余请求须持有会话。
+    if (sessionId == null || !_sessions.contains(sessionId)) {
+      return _plain(req, 400, 'missing or unknown Mcp-Session-Id');
+    }
+    // 通知帧（无 id）：202 空体（notifications/initialized 等）。
+    if (id == null) return _plain(req, 202, '');
+    if (method == 'ping') {
+      return _jsonRpcResult(req, id, const <String, Object?>{},
+          sessionId: sessionId, sse: sse);
+    }
+    if (method == 'tools/list') {
+      return _jsonRpcResult(req, id, {'tools': handler.toolsList()},
+          sessionId: sessionId, sse: sse);
+    }
+    if (method == 'tools/call') {
+      final name = params is Map ? params['name'] : null;
+      if (name is! String || name.isEmpty) {
+        return _jsonRpcError(req, id, -32602, 'missing tool name',
+            sessionId: sessionId);
+      }
+      final args = (params is Map && params['arguments'] is Map)
+          ? Map<String, Object?>.from(params['arguments'] as Map)
+          : <String, Object?>{};
+      return _toolsCall(req, id, sessionId, name, args, sse);
+    }
+    return _jsonRpcError(req, id, -32601, 'method not found: $method',
+        sessionId: sessionId);
+  }
+
+  /// tools/call：SSE 模式流式回（progress 通知帧 + 终帧 result）；JSON 模式
+  /// 等待完成后单 JSON 返回。两路共用同一 [GatewayHandler.toolsCall]。
+  Future<void> _toolsCall(HttpRequest req, Object id, String sessionId,
+      String name, Map<String, Object?> args, bool sse) async {
+    final resp = req.response;
+    if (sse) {
+      resp.headers.contentType =
+          ContentType('text', 'event-stream', charset: 'utf-8');
+      resp.headers.set(HttpHeaders.cacheControlHeader, 'no-cache');
+      // SSE 帧必须即达即发：bufferOutput 默认 true 会把 progress/心跳帧缓冲到
+      // 连接关闭一次性吐出（goodshare M3-T1 同坑，AtomCode 真网实测抓到——
+      // progress 全部挤压在收尾 1ms 内到达）。教训见 lessons.md mcp/传输段。
+      resp.bufferOutput = false;
+    }
+    void onProgress(Map<String, Object?> p) {
+      if (!sse) return;
+      _sseFrame(resp, {
+        'jsonrpc': '2.0',
+        'method': 'notifications/progress',
+        'params': p,
+      });
+    }
+
+    final r =
+        await handler.toolsCall(name: name, arguments: args, onProgress: onProgress);
+    final result = {
+      'content': [
+        {'type': 'text', 'text': r.content},
+      ],
+      'isError': r.isError,
+    };
+    if (sse) {
+      _sseFrame(resp, {'jsonrpc': '2.0', 'id': id, 'result': result});
+      await resp.close();
+    } else {
+      _jsonRpcResult(req, id, result, sessionId: sessionId, sse: false);
+    }
+  }
+
+  /// GET /mcp：SSE 订阅通道（server→client 通知下行，§9.2）。
+  Future<void> _handleGet(HttpRequest req) async {
+    final sessionId = req.headers.value('mcp-session-id');
+    if (sessionId == null || !_sessions.contains(sessionId)) {
+      return _plain(req, 400, 'missing or unknown Mcp-Session-Id');
+    }
+    final resp = req.response;
+    resp.headers.contentType =
+        ContentType('text', 'event-stream', charset: 'utf-8');
+    resp.headers.set(HttpHeaders.cacheControlHeader, 'no-cache');
+    // 同 _toolsCall：订阅下行（list_changed/心跳）也须即达即发，防缓冲滞留。
+    resp.bufferOutput = false;
+    _sseSubs[sessionId] = resp;
+    resp.write(': gateway stream open\n\n');
+    await resp.done; // 客户端断连 / stop() 关闭时完成
+    _sseSubs.remove(sessionId);
+  }
+
+  /// 工具目录变更 → 全体 SSE 订阅者下行（§9.2，PC 自动重拉 tools/list）。
+  void _broadcastListChanged() {
+    for (final resp in _sseSubs.values) {
+      _sseFrame(resp, {
+        'jsonrpc': '2.0',
+        'method': 'notifications/tools/list_changed',
+      });
+    }
+  }
+
+  /// TC12 收窄版：GET SSE 流 15s 心跳（注释帧不计入 MCP 帧，仅喂狗）。
+  /// 注意：dart:io `IOSink.flush()` 以 `_isBound` 互斥、与 close 相撞会同步抛
+  /// StateError——此处（及全文件）不做显式 flush，写出即由 socket 自行调度。
+  void _heartbeatPing() {
+    for (final resp in _sseSubs.values) {
+      try {
+        resp.write(': keep-alive\n\n');
+      } on Object catch (_) {}
+    }
+  }
+
+  void _sseFrame(HttpResponse resp, Map<String, Object?> frame) {
+    resp.write('event: message\ndata: ${jsonEncode(frame)}\n\n');
+  }
+
+  void _jsonRpcResult(
+    HttpRequest req,
+    Object? id,
+    Object? result, {
+    String? sessionId,
+    bool sse = false,
+  }) {
+    final resp = req.response;
+    if (sessionId != null) resp.headers.set('Mcp-Session-Id', sessionId);
+    if (sse) {
+      resp.headers.contentType =
+          ContentType('text', 'event-stream', charset: 'utf-8');
+      _sseFrame(resp, {'jsonrpc': '2.0', 'id': id, 'result': result});
+      resp.close();
+    } else {
+      _json(resp, {'jsonrpc': '2.0', 'id': id, 'result': result});
+    }
+  }
+
+  void _jsonRpcError(
+    HttpRequest req,
+    Object? id,
+    int code,
+    String message, {
+    String? sessionId,
+  }) {
+    final resp = req.response;
+    if (sessionId != null) resp.headers.set('Mcp-Session-Id', sessionId);
+    _json(resp, {
+      'jsonrpc': '2.0',
+      'id': id,
+      'error': {'code': code, 'message': message},
+    });
+  }
+
+  void _json(HttpResponse resp, Map<String, Object?> body) {
+    resp.headers.contentType = ContentType.json;
+    resp.write(jsonEncode(body));
+    resp.close();
+  }
+
+  void _plain(HttpRequest req, int status, String message) {
+    final resp = req.response;
+    resp.statusCode = status;
+    resp.headers.contentType = ContentType.text;
+    resp.write(message);
+    resp.close();
+  }
+}

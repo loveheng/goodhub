@@ -40,3 +40,4 @@ app.*.map.json
 
 # dev-loop 个人指针（不入库）
 context/CURRENT
+.mcp.json

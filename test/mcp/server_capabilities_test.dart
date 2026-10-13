@@ -108,7 +108,7 @@ void main() {
     test('握手序列：initialize 请求（协议版本+clientInfo）→ initialized 通知 → 缓存幂等', () async {
       var initializeCalls = 0;
       var notifyCalls = 0;
-      final client = McpClient(
+      final client = McpClient.http(
         baseUrl: 'http://127.0.0.1:8765/mcp',
         httpClient: MockClient((req) async {
           final body = req.body;
@@ -140,7 +140,7 @@ void main() {
     });
 
     test('DEGRADE：initialized 通知失败不阻断握手（降级为无通知连接）', () async {
-      final client = McpClient(
+      final client = McpClient.http(
         baseUrl: 'http://127.0.0.1:8765/mcp',
         httpClient: MockClient((req) async {
           if (req.body.contains('"method":"initialize"')) {
@@ -159,7 +159,7 @@ void main() {
 
     test('协商失败（连不上）→ 抛出且缓存置空允许重试（区别于缺能力 Polyfill）', () async {
       var initializeCalls = 0;
-      final client = McpClient(
+      final client = McpClient.http(
         baseUrl: 'http://127.0.0.1:8765/mcp',
         httpClient: MockClient((req) async {
           if (req.body.contains('"method":"initialize"')) {

@@ -17,7 +17,7 @@ void main() {
       );
 
   McpClient client(Future<http.Response> Function(http.BaseRequest req) handler) =>
-      McpClient(baseUrl: 'http://10.0.0.5:8765/mcp', httpClient: MockClient(handler));
+      McpClient.http(baseUrl: 'http://10.0.0.5:8765/mcp', httpClient: MockClient(handler));
 
   group('listTools', () {
     test('tools/list → CloudToolSchema（缺省字段防御）', () async {
@@ -141,7 +141,7 @@ void main() {
           headers: {'content-type': 'text/event-stream; charset=utf-8'},
         );
 
-    McpClient streamingClient(List<String> bodies, {String? apiKey}) => McpClient(
+    McpClient streamingClient(List<String> bodies, {String? apiKey}) => McpClient.http(
           baseUrl: 'http://10.0.0.5:8765/mcp',
           apiKey: apiKey,
           httpClient: MockClient((req) async {

@@ -116,6 +116,7 @@ class AgentLoop {
     this.refStore,
     this.refServerId = 'goodshare',
     this.serverResolver,
+    this.toolsProvider,
   });
 
   final CloudLlmEngine engine;
@@ -151,7 +152,12 @@ class AgentLoop {
 
   /// 前缀工具名 → 来源 serverId（M4-T6：装配层接 ToolRouter.serverFor）——
   /// put 端 $ref 句柄来源按调用目标标注；null = 落 [refServerId]。
-  final String Function(String toolName)? serverResolver;
+  final String? Function(String toolName)? serverResolver;
+
+  /// 每轮工具清单提供器（M4-T6：支持运行时 JIT 激活后刷新 tools 列表——装配层
+  /// 接 `ToolRouter.activatedSchemas()` + JIT 元工具静态声明；null = 用 [run]
+  /// 传入的静态 [tools]）。
+  final List<CloudToolSchema> Function()? toolsProvider;
 
   /// 步数墙人工批准的单次放宽步长（C3 拍板：+10 续跑）。
   static const int stepWallRelaxStep = 10;
@@ -251,7 +257,7 @@ class AgentLoop {
         // 续跑时上下文完整；裁剪纯函数保证 Assistant/ToolResult 配对完整。
         CloudChatRequest(
           messages: trimMessagesToWindow(messages, windowRounds),
-          tools: tools,
+          tools: toolsProvider?.call() ?? tools,
         ),
       )) {
         if (_aborted) break; // 引擎流中途中止：断流结算（已收 delta 保留在 acc）

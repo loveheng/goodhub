@@ -19,7 +19,7 @@ http.Response _rpc(Object? result) => http.Response(
       headers: {'content-type': 'application/json'},
     );
 
-McpClient _clientWith(Object? Function() result) => McpClient(
+McpClient _clientWith(Object? Function() result) => McpClient.http(
       baseUrl: 'http://127.0.0.1:8765/mcp',
       httpClient: MockClient((_) async => _rpc(result())),
     );

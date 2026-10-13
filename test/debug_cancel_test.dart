@@ -12,7 +12,7 @@ void main() {
   test('debug', () async {
     final bodies = <String>[];
     late final McpToolFace face;
-    final client = McpClient(
+    final client = McpClient.http(
       baseUrl: 'http://10.0.0.5:8765/mcp',
       httpClient: MockClient((req) async {
         bodies.add(req.body);

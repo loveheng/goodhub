@@ -203,7 +203,7 @@ TaskLoopService buildApi({
   String? apiKey,
   required TaskInference inference,
 }) {
-  final client = McpClient(baseUrl: baseUrl, apiKey: apiKey);
+  final client = McpClient.http(baseUrl: baseUrl, apiKey: apiKey);
   return TaskLoopService(
     api: GoodshareTaskApi(client),
     inference: inference,

@@ -9,10 +9,13 @@
 library;
 
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+
+import 'trust_plugin_dialog.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -29,12 +32,19 @@ import '../coordinator/ref_store.dart';
 import '../coordinator/skill_activation_executor.dart';
 import '../coordinator/skill_registry.dart';
 import '../coordinator/tool_breaker.dart';
+import '../coordinator/discovery_executor.dart';
+import '../coordinator/tool_router.dart';
 import '../core/errors/mcp_error.dart';
 import '../llm/cloud/cloud_llm.dart';
 import '../mcp/mcp_client.dart';
+import '../mcp/local_plugin_discovery.dart';
+import '../mcp/trusted_plugins.dart';
 import '../mcp/sampling.dart';
+import '../mcp/server_capabilities.dart';
+import '../mcp/server_endpoints.dart';
 import '../sandbox/conversation_store.dart';
 import '../sandbox/memory_store.dart';
+import '../gateway/gateway_controller.dart';
 import 'components/call_card.dart';
 import 'components/cross_source_consent_card.dart';
 import 'components/dual_track_stream.dart';
@@ -45,9 +55,8 @@ import 'gateway_loop_debug_page.dart';
 import 'services_hall_page.dart';
 import 'claim_loop_page.dart';
 
-/// 连接配置持久化键（§4 过渡态：T5 服务大厅 Server 节点面板落地后迁移收编）。
-const _kEndpointKey = 'chat.mcp.endpoint';
-const _kApiKeyKey = 'chat.mcp.apiKey';
+/// 连接配置持久化（T6-2）：改走 [ServerEndpointStore]（多端点 JSON + apiKey
+/// 走安全存储）；旧单端点 SharedPreferences 由该 store 在首次 load 时迁移。
 
 class ChatPage extends StatefulWidget {
   const ChatPage({super.key});
@@ -66,15 +75,19 @@ class _ChatPageState extends State<ChatPage> {
   final _scrollCtrl = ScrollController();
   final _track = <TrackEntry>[];
 
-  // 连接配置（内存镜像；持久化见 [_loadConfig]）
-  var _endpoint = '';
-  var _apiKey = '';
+  // 连接配置：多端点持久化走 [ServerEndpointStore]（无单值内存镜像）；
+  // [_send] 每次 Run 启动从 store 全量加载，[_openSettings] 内联管理加/删/编辑。
 
   // 会话状态（页面 = 一个会话，§15）
   final List<CloudChatMessage> _history = [];
   SkillRegistry? _skills;
   DegradationController? _degradation;
   final SamplingQuota _samplingQuota = SamplingQuota(); // D3：重启清零
+
+  // PC 远程网关（G1）：设置面板开关 + 配对 Token（SharedPreferences 持久化）。
+  var _gatewayRunning = false;
+  var _gatewayLanAddrs = const <String>[]; // G5：运行中展示 PC 可配 URL
+  final _gatewayTokenCtrl = TextEditingController();
 
   // 会话持久化（M4-T3b，D10/D13）：当前会话 id + 标题 + 侧边栏列表
   ConversationStore? _convStore;
@@ -102,16 +115,15 @@ class _ChatPageState extends State<ChatPage> {
   void dispose() {
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
+    _gatewayTokenCtrl.dispose();
     super.dispose();
   }
 
+  /// T6：从 [ServerEndpointStore] 加载（首次 load 自动迁移旧 SharedPreferences
+  /// 单端点配置）；多端点管理在 [_openSettings] 内联编辑，本页不持单值镜像。
   Future<void> _loadConfig() async {
-    final sp = await SharedPreferences.getInstance();
-    if (!mounted) return;
-    setState(() {
-      _endpoint = sp.getString(_kEndpointKey) ?? '';
-      _apiKey = sp.getString(_kApiKeyKey) ?? '';
-    });
+    final support = await getApplicationSupportDirectory();
+    await _epStore(support.path).load(); // 触发旧配置迁移
   }
 
   // ---------------------------------------------------------------------------
@@ -234,15 +246,31 @@ class _ChatPageState extends State<ChatPage> {
         : '${d.month}/${d.day} ${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
   }
 
-  Future<void> _saveConfig(String endpoint, String apiKey) async {
-    final sp = await SharedPreferences.getInstance();
-    await sp.setString(_kEndpointKey, endpoint);
-    await sp.setString(_kApiKeyKey, apiKey);
-    if (!mounted) return;
-    setState(() {
-      _endpoint = endpoint;
-      _apiKey = apiKey;
-    });
+
+
+  /// T6-2：生产装配入口——[ServerEndpointStore] 指向应用支持目录/mcp_servers.json，
+  /// 旧单端点 SharedPreferences 经 [flutterPrefsLike] 注入迁移。
+  ServerEndpointStore _epStore(String supportPath) => ServerEndpointStore(
+        file: File('$supportPath/mcp_servers.json'),
+        prefs: flutterPrefsLike((key) =>
+            SharedPreferences.getInstance().then((sp) => sp.getString(key))),
+      );
+
+  /// T6：静态首级摘要「## 已挂载服务」（自动生成，标注工具名前缀格式）。
+  static String _mountedServicesSection(
+    ToolRouter router,
+    Map<String, String> summaries,
+  ) {
+    final lines = [
+      for (final id in router.serverIds)
+        '- $id: ${summaries[id] ?? '(无摘要)'}'
+        '${router.activatedServers.contains(id) ? '' : ' ［未激活，需 activate_server_tools］'}',
+    ];
+    final first = router.serverIds.isEmpty ? 'server_id' : router.serverIds.first;
+    return '\n\n## 已挂载服务（自动生成）\n'
+        '工具名带服务前缀，格式 `<server_id>__<tool>`，例如 `${first}__get_item`。\n'
+        '服务列表：\n${lines.join('\n')}\n'
+        '未激活服务用 get_connected_apps 查看、activate_server_tools 激活。';
   }
 
   void _add(TrackEntry entry) {
@@ -280,75 +308,254 @@ class _ChatPageState extends State<ChatPage> {
     });
   }
 
+  /// T6：通用多端点管理（规范驱动——任意满足接入规范的外界 MCP 服务均可添加，
+  /// 手填 id/endpoint/token，如 shuguang）。支持内联编辑、删除、新增。
   Future<void> _openSettings() async {
-    final endpointCtrl = TextEditingController(text: _endpoint);
-    final keyCtrl = TextEditingController(text: _apiKey);
+    final support = await getApplicationSupportDirectory();
+    final epStore = _epStore(support.path);
+    final initial = await epStore.load();
+    if (!mounted) return;
+    final eps = List<ServerEndpoint>.from(initial);
+    final keys = <String, String?>{};
+    for (final e in eps) {
+      keys[e.id] = await epStore.apiKey(e.id);
+    }
+    final prefs = await SharedPreferences.getInstance();
+    // §1.2.6 信任管理：预扫本地插件 + 加载信任白名单（设置面板内联管理）。
+    final localPlugins = await localPluginDiscovery.scan();
+    final trusted = await TrustedPlugins.instance;
+    _gatewayRunning = GatewayController.shared.running;
+    _gatewayLanAddrs =
+        _gatewayRunning ? await GatewayController.lanAddresses() : const [];
+    if (!mounted) return;
+    _gatewayTokenCtrl.text = prefs.getString('gateway.token') ?? '';
+    var editingId = '';
+    var adding = false;
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      builder: (ctx) => Padding(
-        padding: EdgeInsets.only(
-          left: 16,
-          right: 16,
-          top: 16,
-          bottom: 16 + MediaQuery.of(ctx).viewInsets.bottom,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('连接配置',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 4),
-            Text('服务端点与令牌暂存于此（T5 服务大厅收编）',
-                style: TextStyle(
-                    fontSize: 12, color: consoleTokens(ctx).terminalMuted)),
-            const SizedBox(height: 12),
-            TextField(
-              controller: endpointCtrl,
-              decoration: const InputDecoration(
-                labelText: 'MCP Endpoint（须含 /mcp 路径）',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) {
+          final t = consoleTokens(ctx);
+          return Padding(
+            padding: EdgeInsets.only(
+              left: 16,
+              right: 16,
+              top: 16,
+              bottom: 16 + MediaQuery.of(ctx).viewInsets.bottom,
             ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: keyCtrl,
-              obscureText: true,
-              decoration: const InputDecoration(
-                labelText: 'X-Api-Key（goodshare「MCP 服务」页可查，可留空）',
-                border: OutlineInputBorder(),
-                isDense: true,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // —— PC 远程网关（G1）：开关 + 配对 Token ——
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('PC 远程网关（:8766）'),
+                    subtitle: Text(
+                      _gatewayRunning
+                          ? '运行中——PC 配置：'
+                              '${_gatewayLanAddrs.isEmpty ? 'http://<手机IP>' : _gatewayLanAddrs.map((a) => 'http://$a').join(' 或 ')}'
+                              ':8766/mcp（ADB 场景 127.0.0.1:8766）'
+                          : '关闭——开启后 PC 经 Streamable HTTP 调用手机内全部服务',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    value: _gatewayRunning,
+                    onChanged: (v) async {
+                      final token = _gatewayTokenCtrl.text.trim();
+                      if (v) {
+                        await prefs.setString('gateway.token', token);
+                        try {
+                          await GatewayController.shared.start(
+                              port: 8766, token: token);
+                        } on Object catch (e) {
+                          if (mounted) {
+                            _add(TrackNote('⚠ 网关起服失败: $e', danger: true));
+                          }
+                        }
+                        _gatewayLanAddrs =
+                            await GatewayController.lanAddresses();
+                      } else {
+                        await GatewayController.shared.stop();
+                      }
+                      setSheet(() =>
+                          _gatewayRunning = GatewayController.shared.running);
+                    },
+                  ),
+                  TextField(
+                    controller: _gatewayTokenCtrl,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                      labelText: '配对 Token（可空；留空 = 不鉴权，仅建议 ADB 调试）',
+                      isDense: true,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text('本地插件信任（零配置发现，§1.2.6）',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 4),
+                  Text('同签名私有插件自动信任；第三方需手动信任（可在下方撤销）。',
+                      style: TextStyle(fontSize: 12, color: t.terminalMuted)),
+                  const SizedBox(height: 8),
+                  for (final p in localPlugins)
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: Text('${p.serverTitle}（${p.serverId}）'),
+                      subtitle: Text(
+                        '${p.packageName}${p.sameSignature ? ' · 同签名' : ' · 第三方'}',
+                        style: const TextStyle(
+                            fontFamily: 'monospace', fontSize: 12),
+                      ),
+                      value: p.sameSignature ||
+                          trusted.isTrusted(p.packageName),
+                      onChanged: p.sameSignature
+                          ? null
+                          : (v) async {
+                              if (v) {
+                                await trusted.add(p.packageName,
+                                    p.signatureSha256, p.serverTitle);
+                              } else {
+                                await trusted.remove(p.packageName);
+                              }
+                              setSheet(() {});
+                            },
+                    ),
+                  if (localPlugins.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Text(
+                          '未发现本地插件（安装声明 MCP_SERVER 的 App 后将出现）',
+                          style: TextStyle(fontSize: 12, color: t.terminalMuted)),
+                    ),
+                  const Divider(),
+                  const SizedBox(height: 16),
+                  const Text('服务端点（多 MCP 接入）',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 4),
+                  Text('连接任意满足接入规范的外界 MCP 服务（手填 endpoint + token）',
+                      style: TextStyle(fontSize: 12, color: t.terminalMuted)),
+                  const SizedBox(height: 12),
+                  for (final ep in eps)
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: Text('${ep.name}  (${ep.id})'),
+                          subtitle: Text(
+                              ep.endpoint.isEmpty
+                                  ? '（未配置 endpoint）'
+                                  : ep.endpoint,
+                              style: const TextStyle(
+                                  fontFamily: 'monospace', fontSize: 12)),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: Icon(editingId == ep.id
+                                    ? Icons.close
+                                    : Icons.edit_outlined),
+                                tooltip: editingId == ep.id ? '收起' : '编辑',
+                                onPressed: () => setSheet(() =>
+                                    editingId = editingId == ep.id ? '' : ep.id),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete_outline),
+                                tooltip: '删除',
+                                onPressed: () async {
+                                  eps.removeWhere((e) => e.id == ep.id);
+                                  await epStore.save(eps);
+                                  await epStore.setApiKey(ep.id, null);
+                                  setSheet(() {});
+                                  if (mounted) {
+                                    _add(TrackNote('✓ 已删除服务 ${ep.name}',
+                                        danger: false));
+                                  }
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (editingId == ep.id)
+                          _EditServiceForm(
+                            ep: ep,
+                            storedKey: keys[ep.id],
+                            onSave: (updated, token) async {
+                              final idx = eps.indexWhere((e) => e.id == ep.id);
+                              if (idx >= 0) eps[idx] = updated;
+                              await epStore.save(eps);
+                              await epStore.setApiKey(
+                                  ep.id, token.isEmpty ? null : token);
+                              keys[ep.id] = token.isEmpty ? null : token;
+                              setSheet(() => editingId = '');
+                              if (mounted) {
+                                _add(TrackNote('✓ 已更新服务 ${updated.name}',
+                                    danger: false));
+                              }
+                            },
+                            onCancel: () => setSheet(() => editingId = ''),
+                          ),
+                      ],
+                    ),
+                  if (eps.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Text(
+                          '暂无服务，点下方「添加服务」接入（如 shuguang）',
+                          style: TextStyle(fontSize: 12, color: t.terminalMuted)),
+                    ),
+                  const Divider(),
+                  if (!adding)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton.icon(
+                        onPressed: () => setSheet(() => adding = true),
+                        icon: const Icon(Icons.add),
+                        label: const Text('添加服务'),
+                      ),
+                    )
+                  else
+                    _AddServiceForm(
+                      onAdd: (id, name, endpoint, token) async {
+                        final newEp = ServerEndpoint(
+                          id: id,
+                          name: name.isEmpty ? id : name,
+                          endpoint: endpoint,
+                          hasKey: token.isNotEmpty,
+                        );
+                        eps.add(newEp);
+                        await epStore.save(eps);
+                        if (token.isNotEmpty) {
+                          await epStore.setApiKey(id, token);
+                        }
+                        keys[id] = token.isEmpty ? null : token;
+                        setSheet(() {
+                          adding = false;
+                          editingId = id;
+                        });
+                        if (mounted) {
+                          _add(TrackNote('✓ 已添加服务 $id', danger: false));
+                        }
+                      },
+                      onCancel: () => setSheet(() => adding = false),
+                    ),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: FilledButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      child: const Text('完成'),
+                    ),
+                  ),
+                ],
               ),
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
             ),
-            const SizedBox(height: 12),
-            Align(
-              alignment: Alignment.centerRight,
-              child: FilledButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('完成'),
-              ),
-            ),
-          ],
-        ),
+          );
+        },
       ),
     );
-    // 仅实际变更时通告（防「打开即存」噪音——关闭弹层也走保存路径）；
-    // 旧值先取（_saveConfig 会刷新 state）。
-    final oldEndpoint = _endpoint;
-    final oldKey = _apiKey;
-    await _saveConfig(endpointCtrl.text.trim(), keyCtrl.text.trim());
-    final changed =
-        endpointCtrl.text.trim() != oldEndpoint || keyCtrl.text.trim() != oldKey;
-    endpointCtrl.dispose();
-    keyCtrl.dispose();
-    if (mounted && changed) {
-      _add(TrackNote('✓ 连接配置已保存（${_endpoint.isEmpty ? '端点为空' : _endpoint}）',
-          danger: false));
-    }
   }
 
   /// D9：服务大厅/联调页/M1 任务循环入口收编（联调与任务循环仅 debug 构建）。
@@ -396,8 +603,22 @@ class _ChatPageState extends State<ChatPage> {
   Future<void> _send() async {
     final prompt = _inputCtrl.text.trim();
     if (prompt.isEmpty || _running) return;
-    if (_endpoint.isEmpty) {
-      _add(TrackNote('⚠ 尚未配置服务端点（右上角 ⚙ 设置）', danger: true));
+    // —— T6-2 多服务装配：ServerEndpointStore 读多端点（含旧 SharedPreferences
+    // 迁移）→ 每端点一个 McpClient + McpToolFace → ToolRouter（实例随会话建）——
+    final support = await getApplicationSupportDirectory();
+    final epStore = _epStore(support.path);
+    final endpoints = await epStore.load();
+    // T-trans-4：本地插件零配置发现（系统托管，不进手填配置）；与 HTTP 端点合并判定。
+    final locals = <LocalPluginInfo>[];
+    try {
+      locals.addAll(await localPluginDiscovery.scan());
+    } on Object {
+      // 发现通道不可用（宿主未就绪）→ 视为无本地插件，不阻断 HTTP 端点装配。
+    }
+    if (endpoints.isEmpty && locals.isEmpty) {
+      _add(TrackNote(
+          '⚠ 尚未配置任何 MCP 服务（右上角 ⚙ 设置），且未发现本地插件',
+          danger: true));
       unawaited(_openSettings());
       return;
     }
@@ -415,32 +636,93 @@ class _ChatPageState extends State<ChatPage> {
         : _conversationTitle;
     RefStore? refStore;
     try {
-      // —— 执行链装配（生产子集；与联调页同构，T5 统一装配线收编）——
-      final client = McpClient(
-        baseUrl: _endpoint,
-        apiKey: _apiKey.isEmpty ? null : _apiKey,
-      );
-      final caps = await client.negotiate();
-      _add(TrackNote(
-          '✓ ${caps.serverName ?? '?'} v${caps.serverVersion ?? '?'} ｜ '
-          '${caps.isTier1 ? 'Tier 1' : 'Tier 2（vanilla，Polyfill 接管）'}',
-          danger: false));
+      final memoryStore = MemoryStore.underSupportDir(support.path);
+      // T6-2 多连接池：每个端点一个 client + face（协商 + 能力目录）。
+      final faces = <String, McpToolFace>{};
+      final clients = <String, McpClient>{};
+      final summaries = <String, String>{};
+      final serverCaps = <String, ServerCapabilities>{};
       AgentLoop? loopBox;
-      final memoryStore = MemoryStore.underSupportDir(
-          (await getApplicationSupportDirectory()).path);
-      final face = McpToolFace(
-        client: client,
-        opsLog: memoryStore, // N4 审计（remote 侧）
-        onProgress: (tool, progress, total, message) {
-          loopBox?.emitToolProgress(tool, progress, total, message);
-          _setPill(
-              total != null ? '$tool $progress/$total' : '$tool $progress',
-              CapsuleTone.l1);
-        },
-      );
-      final schemas = await face.listTools();
-      // M4-T2 记忆工具面挂 Gateway 内侧：update_memory 先过 L2 裁决再执行。
-      final memoryTool = MemoryToolExecutor(inner: face, store: memoryStore);
+      for (final ep in endpoints) {
+        final key = await epStore.apiKey(ep.id);
+        final client = McpClient.http(baseUrl: ep.endpoint, apiKey: key);
+        final caps = await client.negotiate();
+        serverCaps[ep.id] = caps;
+        _add(TrackNote(
+            '✓ ${ep.name} ${caps.serverName ?? '?'} v${caps.serverVersion ?? '?'} ｜ '
+            '${caps.isTier1 ? 'Tier 1' : 'Tier 2（vanilla，Polyfill 接管）'}',
+            danger: false));
+        final face = McpToolFace(
+          client: client,
+          serverId: ep.id,
+          opsLog: memoryStore, // N4 审计（remote 侧）
+          onProgress: (tool, progress, total, message) {
+            loopBox?.emitToolProgress(tool, progress, total, message);
+            _setPill(
+                total != null ? '$tool $progress/$total' : '$tool $progress',
+                CapsuleTone.l1);
+          },
+        );
+        await face.listTools();
+        faces[ep.id] = face;
+        clients[ep.id] = client;
+        summaries[ep.id] =
+            '${caps.serverName ?? ep.name} ${caps.isTier1 ? 'Tier 1' : 'Tier 2'}';
+      }
+      // T-trans-4：本地插件自动挂载（系统托管，零配置）。每个插件 = 一个 Binder 传输的
+      // McpClient + McpToolFace，纳入同一 ToolRouter；onServerRequest(sampling) 由下方
+      // 统一循环接管（反向请求 e2e 闭环，§1.2.2 / §5）。
+      for (final info in locals) {
+        if (info.serverId.isEmpty || faces.containsKey(info.serverId)) continue;
+        // §1.2.6 信任闸门：同签名私有生态零弹窗自动信任；第三方首次需信任卡片确认，
+        // 确认后持久化入白名单，后续会话自动信任。
+        if (!info.sameSignature) {
+          final trusted = await TrustedPlugins.instance;
+          if (!trusted.isTrusted(info.packageName)) {
+            if (!mounted) continue;
+            final ok = await showTrustCard(context, info);
+            if (!ok) {
+              _add(TrackNote(
+                  '⚠ 未信任本地插件 ${info.serverTitle}，已跳过挂载',
+                  danger: true));
+              continue;
+            }
+          }
+        }
+        try {
+          final client = localPluginDiscovery.createClient(info);
+          final caps = await client.negotiate();
+          serverCaps[info.serverId] = caps;
+          final face = McpToolFace(
+            client: client,
+            serverId: info.serverId,
+            opsLog: memoryStore,
+            onProgress: (tool, progress, total, message) {
+              loopBox?.emitToolProgress(tool, progress, total, message);
+              _setPill(
+                  total != null ? '$tool $progress/$total' : '$tool $progress',
+                  CapsuleTone.l1);
+            },
+          );
+          await face.listTools();
+          faces[info.serverId] = face;
+          clients[info.serverId] = client;
+          summaries[info.serverId] =
+              '${caps.serverName ?? info.serverTitle} (本地) ${caps.isTier1 ? 'Tier 1' : 'Tier 2'}';
+          _add(TrackNote(
+              '✓ 本地插件 ${info.serverTitle} ${caps.serverName ?? '?'} ｜ 自动挂载',
+              danger: false));
+        } catch (e) {
+          _add(TrackNote(
+              '⚠ 本地插件 ${info.serverTitle} 挂载失败: $e', danger: true));
+        }
+      }
+      // T6：路由注册表（实例随会话建）+ 默认激活全部已挂载（保单服务回归）。
+      final router = ToolRouter(faces: faces);
+      router.activatedServers.addAll(router.serverIds);
+      // 链路序（T6 设计）：Loop → Discovery → SkillActivation → MemoryTool →
+      // Hydration → Gateway → ToolRouter → faces。
+      final memoryTool = MemoryToolExecutor(inner: router, store: memoryStore);
       final gateway = PermissionGateway(
         inner: memoryTool,
         delegate: _ChatGate(this),
@@ -449,7 +731,10 @@ class _ChatPageState extends State<ChatPage> {
           unawaited(HapticFeedback.selectionClick());
         },
       );
-      gateway.loadCatalog([...schemas, ...MemoryToolExecutor.toolSchemas()]);
+      gateway.loadCatalog([
+        ...router.activatedSchemas(),
+        ...MemoryToolExecutor.toolSchemas(),
+      ]);
       refStore = RefStore(
         cacheDir: await getTemporaryDirectory(),
         gcInterval: null, // 短会话，finally 即焚
@@ -457,7 +742,7 @@ class _ChatPageState extends State<ChatPage> {
       final hydration = HydratingExecutor(
         inner: gateway,
         refStore: refStore,
-        targetServerId: face.serverId,
+        targetResolver: router.serverFor,
         crossSourceDelegate: (handle, from, to, preview) async {
           // D5：恒 L2 弹卡、无豁免勾选；禁盲签由卡内兜底。
           final r = await showDialog<bool>(
@@ -482,18 +767,26 @@ class _ChatPageState extends State<ChatPage> {
       );
       _add(TrackNote('引擎: ${engine.name}', danger: false));
       _watcher = StuckWatcher(onStuck: _markActiveCallStuck);
-      final sampling = samplingRequestHandler(
-        engine: engine,
-        quota: _samplingQuota,
-        serverKey: face.serverId,
-      );
-      client.onServerRequest = (method, params) {
-        _watcher?.samplingBegin();
-        return sampling(method, params).whenComplete(() => _watcher?.samplingEnd());
-      };
+      // T6：每个 client 接管自身采样反向请求（serverKey = serverId）。
+      for (final entry in clients.entries) {
+        final sampling = samplingRequestHandler(
+          engine: engine,
+          quota: _samplingQuota,
+          serverKey: entry.key,
+        );
+        entry.value.onServerRequest = (method, params) {
+          _watcher?.samplingBegin();
+          return sampling(method, params)
+              .whenComplete(() => _watcher?.samplingEnd());
+        };
+      }
       // 会话粒度 SkillRegistry（§15）：激活集跨 Run 保留（同页多轮共享）。
       final skills = _skills ??= SkillRegistry()..registerAll(builtinSkills());
-      if (caps.hasPrompts) {
+      // T6：逐 server CoW 同步（有 prompts 能力者）；skill 名保持 cow/<promptName>
+      // 撞名跳过（design 口径）。
+      for (final entry in clients.entries) {
+        final caps = serverCaps[entry.key]!;
+        if (!caps.hasPrompts) continue;
         try {
           final cow = CowSyncService(
             store: CowOverridesStore(
@@ -518,11 +811,9 @@ class _ChatPageState extends State<ChatPage> {
               return r == true;
             },
           );
-          for (final i in await cow.sync(client, serverId: face.serverId)) {
+          for (final i in await cow.sync(entry.value, serverId: entry.key)) {
             if (i.content == null) continue;
-            final skill = CowSyncService.toSkill(i, face.serverId);
-            // 注册表会话粒度（§15）——跨 Run 重同步幂等跳过；SkillRegistry 禁
-            // 隐式覆盖（M2.5 口径），模板真更新走会话重启/覆写通道。
+            final skill = CowSyncService.toSkill(i, entry.key);
             if (skills.byName(skill.name) != null) continue;
             try {
               skills.register(skill);
@@ -537,20 +828,41 @@ class _ChatPageState extends State<ChatPage> {
       }
       final skillExecutor = SkillActivationExecutor(
           inner: hydration, registry: skills, opsLog: memoryStore);
+      // T6-3 JIT 两级发现：DiscoveryExecutor 挂最外层（SkillActivation 之前），
+      // 拦截 get_connected_apps / activate_server_tools（L1 本地，不走确认卡）。
+      final discovery = DiscoveryExecutor(
+        router: router,
+        inner: skillExecutor,
+        serverSummaries: summaries,
+        onActivation: (id) => _add(TrackNote(
+            '✓ 已激活服务 $id（后续轮次其工具可用）',
+            danger: false)),
+      );
       final loop = AgentLoop(
         engine: engine,
-        executor: skillExecutor,
+        executor: discovery,
         blockDelegate: _ChatBlock(this),
         refStore: refStore,
-        refServerId: face.serverId,
+        refServerId:
+            router.serverIds.isNotEmpty ? router.serverIds.first : 'goodshare',
+        serverResolver: router.serverFor,
+        toolsProvider: () => [
+          ...router.activatedSchemas(),
+          ...DiscoveryExecutor.staticSchemas(),
+          skills.activationToolSchema(),
+          ...MemoryToolExecutor.toolSchemas(),
+        ],
       );
       loopBox = loop;
       _activeLoop = loop;
-      _activeFace = face;
-      // M4-T2 记忆注入（D8 三层作用域）+ 超限可观测。
-      final memView = await memoryStore.memoryView(serverScopes: [face.serverId]);
-      final memSection =
-          await memoryPromptSection(memoryStore, serverScopes: [face.serverId]);
+      _activeFace = faces[router.serverIds.first]; // 主服务面（Abort 取消目标）
+      // M4-T2 记忆注入（D8 三层作用域）+ 超限可观测：作用域 = 全部已连服务。
+      final memView =
+          await memoryStore.memoryView(serverScopes: router.serverIds);
+      final memSection = await memoryPromptSection(
+          memoryStore, serverScopes: router.serverIds);
+      // T6：静态首级摘要「## 已挂载服务」（自动生成，标注工具名前缀格式）。
+      final mountedSection = _mountedServicesSection(router, summaries);
       _add(TrackNote(
           '记忆注入：${memView.entries.length} 条'
           '${memView.truncated ? '（预算外丢弃 ${memView.droppedCount} 条）' : ''}',
@@ -558,15 +870,12 @@ class _ChatPageState extends State<ChatPage> {
       _setPill('thinking', CapsuleTone.l1);
       await for (final e in loop.run(
         systemPrompt: skills.composeSystemPrompt(
-                _systemPrompt, connectedServerIds: [face.serverId]) +
+                _systemPrompt, connectedServerIds: router.serverIds) +
+            mountedSection +
             memSection,
         userPrompt: prompt,
         history: List.of(_history), // D11：上轮 transcript 续接
-        tools: [
-          ...schemas,
-          skills.activationToolSchema(),
-          ...MemoryToolExecutor.toolSchemas(),
-        ],
+        tools: const [],
       )) {
         switch (e) {
           case LoopTextDelta(:final text):
@@ -880,5 +1189,210 @@ class _ChatFence implements PiiFenceDelegate {
     final entry = TrackFence(info);
     _state._add(entry);
     return entry.completer.future;
+  }
+}
+
+/// T6：端点内联编辑表单（持有 controller，避免 StatefulBuilder 重建丢输入）。
+class _EditServiceForm extends StatefulWidget {
+  const _EditServiceForm({
+    required this.ep,
+    required this.storedKey,
+    required this.onSave,
+    required this.onCancel,
+  });
+
+  final ServerEndpoint ep;
+  final String? storedKey;
+  final void Function(ServerEndpoint updated, String token) onSave;
+  final VoidCallback onCancel;
+
+  @override
+  State<_EditServiceForm> createState() => _EditServiceFormState();
+}
+
+class _EditServiceFormState extends State<_EditServiceForm> {
+  late final _epCtrl = TextEditingController(text: widget.ep.endpoint);
+  late final _keyCtrl = TextEditingController(text: widget.storedKey ?? '');
+
+  @override
+  void dispose() {
+    _epCtrl.dispose();
+    _keyCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = consoleTokens(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12, left: 4, right: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            controller: _epCtrl,
+            decoration: const InputDecoration(
+              labelText: 'MCP Endpoint（须含 /mcp）',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _keyCtrl,
+            obscureText: true,
+            decoration: InputDecoration(
+              labelText: 'X-Api-Key（可留空）',
+              border: const OutlineInputBorder(),
+              isDense: true,
+              hintText: widget.storedKey?.isNotEmpty == true
+                  ? '已存令牌（留空不改）'
+                  : null,
+            ),
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(onPressed: widget.onCancel, child: const Text('取消')),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: () => widget.onSave(
+                  widget.ep.copyWith(endpoint: _epCtrl.text.trim()),
+                  _keyCtrl.text.trim(),
+                ),
+                child: const Text('保存'),
+              ),
+            ],
+          ),
+          if (widget.storedKey?.isNotEmpty == true)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                  '该服务已存令牌（安全存储）。留空密钥框 = 不改；填新值 = 覆盖。',
+                  style: TextStyle(fontSize: 11, color: t.terminalMuted)),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// T6：新增端点表单（id/name/endpoint/token；id 校验不含 `__`）。
+class _AddServiceForm extends StatefulWidget {
+  const _AddServiceForm({
+    required this.onAdd,
+    required this.onCancel,
+  });
+
+  final void Function(String id, String name, String endpoint, String token)
+      onAdd;
+  final VoidCallback onCancel;
+
+  @override
+  State<_AddServiceForm> createState() => _AddServiceFormState();
+}
+
+class _AddServiceFormState extends State<_AddServiceForm> {
+  final _idCtrl = TextEditingController();
+  final _nameCtrl = TextEditingController();
+  final _epCtrl = TextEditingController();
+  final _keyCtrl = TextEditingController();
+  var _err = '';
+
+  @override
+  void dispose() {
+    _idCtrl.dispose();
+    _nameCtrl.dispose();
+    _epCtrl.dispose();
+    _keyCtrl.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final id = _idCtrl.text.trim();
+    if (id.isEmpty) {
+      setState(() => _err = '服务标识不能为空');
+      return;
+    }
+    if (id.contains('__')) {
+      setState(() => _err = '服务标识不能含 "__"（工具名前缀分隔符）');
+      return;
+    }
+    widget.onAdd(
+      id,
+      _nameCtrl.text.trim(),
+      _epCtrl.text.trim(),
+      _keyCtrl.text.trim(),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = consoleTokens(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8, left: 4, right: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            controller: _idCtrl,
+            decoration: const InputDecoration(
+              labelText: '服务标识（如 shuguang，不含 __）',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _nameCtrl,
+            decoration: const InputDecoration(
+              labelText: '展示名（可空，默认同标识）',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _epCtrl,
+            decoration: const InputDecoration(
+              labelText: 'MCP Endpoint（须含 /mcp）',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _keyCtrl,
+            obscureText: true,
+            decoration: const InputDecoration(
+              labelText: 'X-Api-Key（可留空）',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+          ),
+          if (_err.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child:
+                  Text(_err, style: TextStyle(fontSize: 12, color: t.dangerDeep)),
+            ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(onPressed: widget.onCancel, child: const Text('取消')),
+              const SizedBox(width: 8),
+              FilledButton(onPressed: _submit, child: const Text('添加')),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 }
