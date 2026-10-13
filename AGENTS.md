@@ -7,6 +7,7 @@ goodhub —— AI 宿主 App（master / 交互式 MCP 客户端）：认领 good
 - **工作流事实源（构建/测试/运行命令唯一出处）**：`.agents/skills/goodhub-workflow/SKILL.md`
 - **功能落点索引（改前先定位）**：`.agents/skills/goodhub-index/SKILL.md`
 - **UI 规范落点（改 UI 前先读）**：`.agents/skills/goodhub-ui/SKILL.md`（正文 SSOT：`docs/product/ui-design.md`）
+- **文档规范落点（改 docs/ 前先读）**：`.agents/skills/goodhub-docs/SKILL.md`（机制 SSOT：全局 `docs-spec`；域表/lint 路径/例外在本表）
 - **记忆与日志体系（dev-loop）**：`context/`——会话开始先读 `context/CURRENT`，再只读对应 epic 的 `memory.md` 恢复上下文；代码变更须按协议追加 devlog
 - **MCP 接缝契约 SSOT（跨仓只读）**：goodshare 仓 `docs/design/ai-app-split.md`——改接缝须同轮修该文档
 - **MCP 对 AI 接口契约立法源（跨仓只读）**：goodshare 仓 `docs/engineering/ai-dev-spec.md` §4——goodhub 采纳条款见本仓 `docs/project/coding-standards.md` §7

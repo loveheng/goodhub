@@ -1,0 +1,134 @@
+#!/bin/sh
+# pre-commit 聚合门禁：提交前机械拦截——arch-guard 架构硬约束 + docs-lint 文档规范。
+# 复用既有单工具而非重写规则；无 lib/ 改动则跳过 arch-guard，无 docs/ 改动则跳过 docs-lint。
+#
+# toolbox-script
+# format: v1
+# name: pre-commit-gate
+# summary: 提交前门禁：按改动范围分派 arch-guard（lib/ 改动）与 docs-lint（docs/ 改动），任一 FAIL 拒绝提交
+# trigger: pre-commit
+# after: arch-guard,docs-lint
+# cat: test
+# alias: pcg
+# platform: unix
+# self-test: --self-test
+
+set -u
+ROOT=''; LIB_TOUCHED=0; DOC_TOUCHED=0; SELF_TEST=0; JSON_ONLY=0
+
+usage() {
+  cat <<'EOF'
+用法: pre-commit-gate.sh [选项]      （toolbox run pre-commit-gate [选项] 等价）
+  提交前门禁：git 取暂存区改动，涉及 lib/ 跑 arch-guard，涉及 docs/ 跑 docs-lint；
+  任一 FAIL → exit 1 拒绝提交（规则本身在各自工具内，本脚本只做分派与聚合）。
+选项:
+  --root <目录>  指定仓库根（默认 git 顶层 / 当前目录）
+  --json         只输出一行 JSON 结论（供 AI/钩子判定，不打印明细）
+  --self-test    金丝雀自测：证明能抓到坏样本
+  -h | --help    显示本帮助
+退出码: 0=通过 1=检查未通过 2=自身故障
+EOF
+  exit 0
+}
+
+json_out() { # $1=status $2=severity $3=message $4=remedy(可空)；只打印，退出码由调用方 return
+  if [ -n "${4:-}" ]; then
+    printf '{"status":"%s","severity":"%s","message":"%s","remedy":"%s"}\n' "$1" "$2" "$3" "$4"
+  else
+    printf '{"status":"%s","severity":"%s","message":"%s"}\n' "$1" "$2" "$3"
+  fi
+}
+
+detect_touched() {
+  # 暂存区有内容按暂存区，否则按工作区相对 HEAD（覆盖 git add -A 前的 pre-commit 直跑）
+  if git -C "$ROOT" diff --cached --quiet 2>/dev/null; then
+    LIB_TOUCHED=$(git -C "$ROOT" diff --name-only HEAD -- lib | wc -l)
+    DOC_TOUCHED=$(git -C "$ROOT" diff --name-only HEAD -- docs | wc -l)
+  else
+    LIB_TOUCHED=$(git -C "$ROOT" diff --cached --name-only -- lib | wc -l)
+    DOC_TOUCHED=$(git -C "$ROOT" diff --cached --name-only -- docs | wc -l)
+  fi
+  return 0
+}
+
+run() {
+  command -v git >/dev/null 2>&1 || { echo "FAIL 自身故障: git 不可用"; return 2; }
+  [ -d "$ROOT/.git" ] || { echo "FAIL 自身故障: $ROOT 不是 git 仓库"; return 2; }
+  detect_touched
+  local rc=0 agg=0
+  if [ "$LIB_TOUCHED" -gt 0 ]; then
+    echo "==> pre-commit-gate: lib/ 有改动，跑 arch-guard"
+    if [ -f "$SCRIPT_DIR/arch-guard.sh" ]; then
+      bash "$SCRIPT_DIR/arch-guard.sh" --root "$ROOT" || { rc=1; agg=$((agg+1)); }
+    else
+      echo "⚠ arch-guard.sh 缺失，跳过（fail-open）"
+    fi
+  fi
+  if [ "$DOC_TOUCHED" -gt 0 ]; then
+    echo "==> pre-commit-gate: docs/ 有改动，跑 docs-lint"
+    if [ -f "$SCRIPT_DIR/docs-lint.sh" ]; then
+      bash "$SCRIPT_DIR/docs-lint.sh" --root "$ROOT" || { rc=1; agg=$((agg+1)); }
+    else
+      echo "⚠ docs-lint.sh 缺失，跳过（fail-open）"
+    fi
+  fi
+  if [ "$rc" -eq 0 ]; then
+    if [ "$JSON_ONLY" -eq 1 ]; then
+      json_out "OK" "info" "pre-commit门禁通过" ""
+      return 0
+    fi
+    echo "OK: pre-commit 门禁通过（lib 改动=$LIB_TOUCHED docs 改动=$DOC_TOUCHED）"
+    return 0
+  fi
+  if [ "$JSON_ONLY" -eq 1 ]; then
+    json_out "FAIL" "error" "pre-commit门禁: $agg 项未过（lib=$LIB_TOUCHED docs=$DOC_TOUCHED）" "裸跑对应工具看明细；历史遗留加各工具白名单只减不增"
+    return 1
+  fi
+  echo "FAIL: $agg 项门禁未过，禁止提交"
+  echo "[remedy] 裸跑对应工具看逐条明细；历史遗留豁免加各工具白名单（只减不增）"
+  return 1
+}
+
+self_test() {
+  local tmp rc=0
+  tmp=$(mktemp -d) || return 2
+  (
+    cd "$tmp" && git init -q . && mkdir -p lib/ui docs
+    echo 'void x() {}' > lib/ui/bad.dart
+    printf -- '---\nstatus: active\nupdated: 2026-10-13\n---\n# doc\n' > docs/ok.md
+    printf '# index\n- [ok.md](ok.md)\n' > docs/README.md
+    git add -A
+    git -c user.email=t@t -c user.name=t commit -qm init --allow-empty
+    # 坏样本：UI 层直连 dart:io（arch-guard R1 应抓到）
+    printf "import 'dart:io';\nvoid f() { File('x'); }\n" > lib/ui/bad.dart
+    git add -A
+  )
+  sh "$0" --root "$tmp" >/dev/null 2>&1
+  local bad_rc=$?
+  ( cd "$tmp" && printf 'void ok() {}\n' > lib/ui/bad.dart && git add -A )
+  sh "$0" --root "$tmp" >/dev/null 2>&1
+  local good_rc=$?
+  rm -rf "$tmp"
+  if [ "$bad_rc" -eq 1 ] && [ "$good_rc" -eq 0 ]; then
+    echo "self-test PASS: 坏样本被拦(exit 1)、净样本放行(exit 0)"
+    return 0
+  fi
+  echo "FAIL self-test: bad_rc=$bad_rc good_rc=$good_rc（预期 1/0）"
+  return 1
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --root) ROOT="${2:-}"; shift 2 ;;
+    --json) JSON_ONLY=1; shift ;;
+    --self-test) SELF_TEST=1; break ;;
+    -h|--help) usage ;;
+    *) echo "未知参数: $1"; usage ;;
+  esac
+done
+
+ROOT="${ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ "$SELF_TEST" -eq 1 ]; then self_test; exit $?; fi
+run
+exit $?
