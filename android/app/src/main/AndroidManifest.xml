@@ -11,6 +11,9 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- TC 本地插件鉴权（thirdconnect §1.2.6）：goodshare 侧 Service 已挂 signature
+         权限，宿主须声明同名权限才可 bind；两包须同签名同批出包，否则 SecurityException -->
+    <uses-permission android:name="com.zzh.goodhub.permission.MCP_SERVER" />
     <application
         android:label="goodhub"
         android:name="${applicationName}"
