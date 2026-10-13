@@ -1,7 +1,0 @@
-com.zzh.goodhub.sample.dummy.sample-dummy-plugin-pngs-0 /home/zzh/app/goodhub/android-sdk/sample-dummy-plugin/build/generated/res/pngs/debug
-com.zzh.goodhub.sample.dummy.sample-dummy-plugin-updated_navigation_xml-1 /home/zzh/app/goodhub/android-sdk/sample-dummy-plugin/build/generated/updated_navigation_xml/debug
-com.zzh.goodhub.sample.dummy.sample-dummy-plugin-packageDebugResources-2 /home/zzh/app/goodhub/android-sdk/sample-dummy-plugin/build/intermediates/incremental/debug/packageDebugResources/merged.dir
-com.zzh.goodhub.sample.dummy.sample-dummy-plugin-packageDebugResources-3 /home/zzh/app/goodhub/android-sdk/sample-dummy-plugin/build/intermediates/incremental/debug/packageDebugResources/stripped.dir
-com.zzh.goodhub.sample.dummy.sample-dummy-plugin-debug-4 /home/zzh/app/goodhub/android-sdk/sample-dummy-plugin/build/intermediates/merged_res/debug/mergeDebugResources
-com.zzh.goodhub.sample.dummy.sample-dummy-plugin-debug-5 /home/zzh/app/goodhub/android-sdk/sample-dummy-plugin/src/debug/res
-com.zzh.goodhub.sample.dummy.sample-dummy-plugin-main-6 /home/zzh/app/goodhub/android-sdk/sample-dummy-plugin/src/main/res

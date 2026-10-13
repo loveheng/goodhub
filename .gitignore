@@ -41,3 +41,8 @@ app.*.map.json
 # dev-loop 个人指针（不入库）
 context/CURRENT
 .mcp.json
+
+# android-sdk（goodhub-mcp-plugin-core 独立 Gradle 工程）构建产物与机器本地配置
+android-sdk/.gradle/
+android-sdk/**/build/
+android-sdk/local.properties
