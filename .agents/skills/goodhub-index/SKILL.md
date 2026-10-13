@@ -32,6 +32,7 @@ description: goodhub（AI 宿主 App）的「功能 → 代码落点 + 文档落
 | 串行文件写队列（temp+rename 原子替换） | `lib/core/storage/sequential_file_writer.dart` | M4-T1；coding-standards §5.1 基准件（续链与透传分离修正） |
 | 多服务配置面（多端点 JSON + apiKey 安全存储 + 旧键迁移） | `lib/mcp/server_endpoints.dart`（`ServerEndpointStore`） | M4-T6-1；ChatPage ⚙ 设置面板（`_openSettings` 服务列表增删改）为其薄壳；单测 `test/mcp/server_endpoints_test.dart` |
 | 服务大厅（Skill 覆写管理 / BYOK 云端引擎面板 / 跨源授权口径） | `lib/ui/services_hall_page.dart` | M3-T4 建 + M4-T5 增 BYOK 面板（多 profile 增删改 + 置顶切换生效，首位=生效对齐 hybrid_assembly；apiKey 走 SecureKeyValue）；单测 `test/ui/byok_panel_test.dart` |
+| 记忆看板（三 Tab 查看/编辑/导出/粉碎 + ops.log 人类可读渲染） | `lib/ui/memory_board_page.dart` | M4-T5；store 编辑面 `updateEntry/deleteEntry/purgeUserScope/listOpsLog/exportAll`（memory_store.dart）；ChatPage 侧边栏入口；单测 `test/ui/memory_board_page_test.dart` + `test/sandbox/memory_board_store_test.dart` |
 | token 字符级粗估口径 SSOT | `lib/core/tokens.dart` | M4-T1 自 context_governor 下沉（层级纪律），governor 原位 re-export |
 
 ## 文档落点

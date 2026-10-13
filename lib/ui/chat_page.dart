@@ -54,6 +54,7 @@ import 'components/stuck_watcher.dart';
 import 'gateway_loop_debug_page.dart';
 import 'services_hall_page.dart';
 import 'claim_loop_page.dart';
+import 'memory_board_page.dart';
 
 /// 连接配置持久化（T6-2）：改走 [ServerEndpointStore]（多端点 JSON + apiKey
 /// 走安全存储）；旧单端点 SharedPreferences 由该 store 在首次 load 时迁移。
@@ -1034,11 +1035,14 @@ class _ChatPageState extends State<ChatPage> {
                     builder: (_) => const ServicesHallPage()));
               },
             ),
-            const ListTile(
-              leading: Icon(Icons.inventory_2_outlined),
-              title: Text('记忆看板'),
-              enabled: false,
-              subtitle: Text('M4-T5 落地'),
+            ListTile(
+              leading: const Icon(Icons.inventory_2_outlined),
+              title: const Text('记忆看板'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.of(context).push(MaterialPageRoute<void>(
+                    builder: (_) => const MemoryBoardPage()));
+              },
             ),
           ],
         ),

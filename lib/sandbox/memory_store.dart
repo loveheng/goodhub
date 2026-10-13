@@ -59,6 +59,25 @@ class MemoryEntry {
   final String content;
 }
 
+/// ops.log 单行渲染模型（M4-T5 看板消费；D7 JSONL 的类型化读面）。
+class OpsLogLine {
+  const OpsLogLine({
+    required this.ts,
+    required this.server,
+    required this.tool,
+    required this.ok,
+    this.durationMs,
+    this.error,
+  });
+
+  final String ts; // ISO8601
+  final String server;
+  final String tool;
+  final bool ok;
+  final int? durationMs;
+  final String? error;
+}
+
 /// 预算截断视图（T2 system prompt 注入消费）。
 class MemoryView {
   const MemoryView({
@@ -249,6 +268,87 @@ class MemoryStore {
       });
 
   // ---------------------------------------------------------------------------
+  // 看板编辑面（M4-T5/F5.3：查看/编辑/导出/粉碎；读写走同一串行链）
+  // ---------------------------------------------------------------------------
+
+  /// 编辑一条记忆/教训正文（看板用户编辑）。锚点保留（id/scope/tags 不变，
+  /// 防止编辑破坏 D8 作用域与 FC1 迁移锚），ts 刷新为编辑时刻。
+  /// 返回 false = 条目不存在（未找到不静默成功）。
+  Future<bool> updateEntry(String entryId, String content,
+          {bool lessons = false}) =>
+      _enqueue(() async {
+        final trimmed = content.trim();
+        if (trimmed.isEmpty) throw ArgumentError('记忆条目内容不能为空');
+        final fileName = lessons ? lessonsFileName : memoryFileName;
+        final entries = await _readEntries(fileName);
+        final idx = entries.indexWhere((e) => e.id == entryId);
+        if (idx < 0) return false;
+        entries[idx] = MemoryEntry(
+          id: entries[idx].id,
+          scope: entries[idx].scope,
+          tags: entries[idx].tags,
+          ts: _clock().millisecondsSinceEpoch,
+          content: trimmed,
+        );
+        await dir.create(recursive: true);
+        await (lessons ? _lessonsWriter : _memoryWriter)
+            .write(_renderFile(entries));
+        return true;
+      });
+
+  /// 删除单条记忆/教训（看板条目级粉碎）。返回 false = 条目不存在。
+  Future<bool> deleteEntry(String entryId, {bool lessons = false}) =>
+      _enqueue(() async {
+        final fileName = lessons ? lessonsFileName : memoryFileName;
+        final entries = await _readEntries(fileName);
+        final kept = entries.where((e) => e.id != entryId).toList();
+        if (kept.length == entries.length) return false;
+        await dir.create(recursive: true);
+        await (lessons ? _lessonsWriter : _memoryWriter)
+            .write(_renderFile(kept));
+        return true;
+      });
+
+  /// user 级全量粉碎（看板危险区，F4.3/F5.3「粉碎」；对 [purgeServerScope]
+  /// 注记的归属收口——user 级清空是用户显式行为，不走卸载清扫通道）。
+  /// 清 memory + lessons 两文件中 scope=='user' 的条目，返回清除总数。
+  Future<int> purgeUserScope() => _enqueue(() async {
+        var purged = 0;
+        for (final (fileName, writer) in [
+          (memoryFileName, _memoryWriter),
+          (lessonsFileName, _lessonsWriter),
+        ]) {
+          final entries = await _readEntries(fileName);
+          final kept =
+              entries.where((e) => e.scope != 'user').toList();
+          purged += entries.length - kept.length;
+          if (kept.length != entries.length) {
+            await dir.create(recursive: true);
+            await writer.write(_renderFile(kept));
+          }
+        }
+        return purged;
+      });
+
+  /// 导出记忆+教训全量原文（锚点行保留——FC1 免清洗迁移前提，备份可恢复）。
+  /// 两个文件均缺失时返回空串；单文件缺失跳过。
+  Future<String> exportAll() => _enqueue(() async {
+        final buf = StringBuffer();
+        for (final (title, fileName) in [
+          ('宿主记忆（memory.md）', memoryFileName),
+          ('踩坑教训（lessons.md）', lessonsFileName),
+        ]) {
+          final f = File('${dir.path}/$fileName');
+          if (!await f.exists()) continue;
+          buf
+            ..writeln('# $title')
+            ..writeln(await f.readAsString())
+            ..writeln();
+        }
+        return buf.toString().trimRight();
+      });
+
+  // ---------------------------------------------------------------------------
   // ops.log（JSONL 审计 + 10MB 单代轮转，N4 / architecture §11）
   // ---------------------------------------------------------------------------
 
@@ -288,6 +388,39 @@ class MemoryStore {
   }
 
   File get _opsFile => File('${dir.path}/$opsLogFileName');
+
+  /// ops.log 审计行（D7 JSONL 的看板渲染模型；坏行跳过不炸——审计面宁缺勿炸）。
+  Future<List<OpsLogLine>> listOpsLog({int limit = 200}) =>
+      _enqueue(() async {
+        final f = _opsFile;
+        if (!await f.exists()) return const [];
+        final lines = (await f.readAsString())
+            .split('\n')
+            .where((l) => l.trim().isNotEmpty)
+            .toList();
+        final out = <OpsLogLine>[];
+        // 新审计在后，倒序取最新 limit 条（看板默认视角 = 最近优先）。
+        for (final line in lines.reversed) {
+          if (out.length >= limit) break;
+          try {
+            final j = jsonDecode(line);
+            if (j is! Map) continue;
+            out.add(OpsLogLine(
+              ts: j['ts'] as String? ?? '',
+              server: j['server'] as String? ?? '?',
+              tool: j['tool'] as String? ?? '?',
+              ok: j['ok'] as bool? ?? false,
+              durationMs: j['durationMs'] is num
+                  ? (j['durationMs'] as num).toInt()
+                  : null,
+              error: j['error'] as String?,
+            ));
+          } on FormatException {
+            continue; // 半行/脏行跳过
+          }
+        }
+        return out;
+      });
 
   // ---------------------------------------------------------------------------
   // 启动维护（architecture §11「启动时清理超限旧档」；T2 挂冷启动流程）
