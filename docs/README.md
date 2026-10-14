@@ -21,3 +21,5 @@ updated: 2026-10-13
   - [design/goodshare-local-plugin-eval.md](design/goodshare-local-plugin-eval.md) — goodshare 接入本地插件机制评估（宿主侧契约对照）：现状 HTTP MCP server vs 目标本地 Binder 插件、goodshare 必须实现清单（对照 thirdconnect §1.2）
   - [design/goodhub-goodshare-binder-eval.md](design/goodhub-goodshare-binder-eval.md) — goodshare 本地 Binder 插件 PoC 阶段一评估报告（2026-10-13 真机联调后）：TC1~TC14 逐条合规核对、5 项真机必修 bug 清单
   - [design/goodshare-binder-poc-fix-request.md](design/goodshare-binder-poc-fix-request.md) — goodshare 侧 Binder PoC 修复请求（含真机联调前置步骤与 R1 双连接争写锁风险验证记录）
+  - [design/local-plugin-access-trust.md](design/local-plugin-access-trust.md) — 本地插件接入规范：私有（同签名）vs 第三方（信任卡片白名单）信任分级 SSOT
+  - [design/page-revamp.md](design/page-revamp.md) — 页面整改底子文档（全量 UI 评估结论 + P0~P2 整改分解与验收口径）

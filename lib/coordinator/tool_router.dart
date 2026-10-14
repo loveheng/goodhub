@@ -42,6 +42,10 @@ class ToolRouter implements ToolExecutor {
   /// 已激活 server 集（会话粒度——实例随会话建；JIT 元工具写，T6-3 接线）。
   final Set<String> activatedServers = {};
 
+  /// 聚焦 server（JIT 元工具 `use_server` 写；null = 未聚焦全量）。
+  /// 独占语义：聚焦后下发面仅含该 server，execute 拦截其他 server 引导恢复。
+  String? focusedServer;
+
   int get serverCount => _faces.length;
   List<String> get serverIds => _faces.keys.toList(growable: false);
   McpToolFace? faceOf(String serverId) => _faces[serverId];
@@ -74,6 +78,14 @@ class ToolRouter implements ToolExecutor {
         for (final id in activatedServers) ...schemasFor(id),
       ];
 
+  /// 聚焦生效面（T6-3 `use_server`）：聚焦已挂载 server 时仅其 schema，
+  /// 否则等同 [activatedSchemas]（聚焦 server 掉线 → 自动回退全量，不空面）。
+  List<CloudToolSchema> focusedSchemas() {
+    final f = focusedServer;
+    if (f == null || !_faces.containsKey(f)) return activatedSchemas();
+    return schemasFor(f);
+  }
+
   @override
   Future<ToolExecutionResult> execute(AssembledToolCall call) async {
     final parsed = parsePrefixedToolName(call.name);
@@ -97,6 +109,15 @@ class ToolRouter implements ToolExecutor {
         content: '服务 ${parsed.serverId} 未激活——'
             '先调用 activate_server_tools(server_id: "${parsed.serverId}") '
             '加载其工具，再重试',
+        isError: true,
+      );
+    }
+    final focus = focusedServer;
+    if (focus != null && parsed.serverId != focus) {
+      return ToolExecutionResult(
+        content: '当前聚焦服务 $focus（独占模式），'
+            '不可调用 ${parsed.serverId} 的工具——'
+            '用 use_server(server_id: "all") 恢复全量后再试',
         isError: true,
       );
     }

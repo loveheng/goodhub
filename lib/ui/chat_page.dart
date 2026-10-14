@@ -741,7 +741,7 @@ class _ChatPageState extends State<ChatPage> {
         },
       );
       gateway.loadCatalog([
-        ...router.activatedSchemas(),
+        ...router.focusedSchemas(),
         ...MemoryToolExecutor.toolSchemas(),
       ]);
       refStore = RefStore(
@@ -856,7 +856,7 @@ class _ChatPageState extends State<ChatPage> {
             router.serverIds.isNotEmpty ? router.serverIds.first : 'goodshare',
         serverResolver: router.serverFor,
         toolsProvider: () => [
-          ...router.activatedSchemas(),
+          ...router.focusedSchemas(),
           ...DiscoveryExecutor.staticSchemas(),
           skills.activationToolSchema(),
           ...MemoryToolExecutor.toolSchemas(),

@@ -116,7 +116,7 @@ GoodHub 经 `PackageManager.queryIntentServices(...)` 扫描匹配 Action 的服
 
 #### 1.2.6 鉴权
 
-Binder 侧经 `Binder.getCallingUid()` 验真——同签名私有生态（`<permission protectionLevel="signature">`）零弹窗；开放第三方时，首次接入弹信任卡片（包名 + 签名 SHA-256），确认后入白名单。
+Binder 侧经 `Binder.getCallingUid()` 验真——同签名私有生态（`<permission protectionLevel="signature">`）零弹窗；开放第三方时，首次接入弹信任卡片（包名 + 签名 SHA-256），确认后入白名单。信任分级的完整接入规范 SSOT = [`local-plugin-access-trust.md`](./local-plugin-access-trust.md)。
 
 #### 1.2.7 接入 SDK 契约约束（对齐 TC14 / §11）
 

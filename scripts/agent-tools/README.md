@@ -23,3 +23,4 @@
   commit-msg-gate.sh Conventional Commits 提交信息校验（commit-msg 钩子）
   docs-lint.sh       docs/ 机械校验：frontmatter、根目录平铺、README 双向覆盖
   pre-commit-gate.sh 提交前聚合门禁：按改动范围分派 arch-guard / docs-lint
+  check-same-signature.sh §5 签名一致性门禁 D.1：keytool 比对两 APK 证书 SHA-256，给同/异签名结论（#9 联调前置）

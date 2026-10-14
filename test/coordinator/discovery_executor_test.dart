@@ -22,6 +22,26 @@ class _FakeExecutor implements ToolExecutor {
 McpToolFace _fakeFace(String id) =>
     McpToolFace(client: McpClient.http(baseUrl: 'http://x/$id/mcp'), serverId: id);
 
+/// 带 schema 的假 face（覆写 cachedSchemas，不触网）——聚焦面过滤测试用。
+class _SchemaFace extends McpToolFace {
+  _SchemaFace({
+    required super.client,
+    required super.serverId,
+    required this.schemas,
+  });
+
+  final List<CloudToolSchema> schemas;
+
+  @override
+  List<CloudToolSchema> get cachedSchemas => List.unmodifiable(schemas);
+}
+
+CloudToolSchema _schema(String bareName) => CloudToolSchema(
+      name: bareName,
+      description: 'd',
+      parametersSchema: <String, Object?>{},
+    );
+
 void main() {
   group('parsePrefixedToolName', () {
     test('正常前缀解析', () {
@@ -129,6 +149,107 @@ void main() {
       await disc.execute(AssembledToolCall(
           id: '1', name: 's1__foo', argumentsJson: '{}'));
       expect(inner.calls, contains('s1__foo'));
+    });
+  });
+
+  group('use_server 聚焦（独占）', () {
+    late ToolRouter router;
+    late _FakeExecutor inner;
+    late DiscoveryExecutor disc;
+    setUp(() {
+      router = ToolRouter(faces: {
+        's1': _SchemaFace(
+            client: McpClient.http(baseUrl: 'http://x/s1/mcp'),
+            serverId: 's1',
+            schemas: [_schema('list_items'), _schema('get_item')]),
+        's2': _SchemaFace(
+            client: McpClient.http(baseUrl: 'http://x/s2/mcp'),
+            serverId: 's2',
+            schemas: [_schema('search')]),
+      });
+      inner = _FakeExecutor();
+      disc = DiscoveryExecutor(
+        router: router,
+        inner: inner,
+        serverSummaries: const {'s1': 'A', 's2': 'B'},
+      );
+    });
+
+    test('聚焦后 focusedSchemas 仅含该服务，并顺带激活', () async {
+      router.activatedServers.addAll(['s1', 's2']);
+      final res = await disc.execute(AssembledToolCall(
+          id: '1', name: DiscoveryExecutor.useServer,
+          argumentsJson: jsonEncode({'server_id': 's1'})));
+      expect(res.isError, isFalse);
+      expect(router.focusedServer, 's1');
+      final names =
+          router.focusedSchemas().map((s) => s.name).toList();
+      expect(names, ['s1__list_items', 's1__get_item']);
+      expect(router.activatedServers, containsAll(['s1', 's2']));
+    });
+
+    test('聚焦未激活服务顺带激活（聚焦前后激活集持久）', () async {
+      await disc.execute(AssembledToolCall(
+          id: '1', name: DiscoveryExecutor.useServer,
+          argumentsJson: jsonEncode({'server_id': 's2'})));
+      expect(router.activatedServers, contains('s2'));
+      expect(router.focusedServer, 's2');
+    });
+
+    test('"all" 解除聚焦恢复全量，激活集不变', () async {
+      router.activatedServers.addAll(['s1', 's2']);
+      router.focusedServer = 's1';
+      final res = await disc.execute(AssembledToolCall(
+          id: '1', name: DiscoveryExecutor.useServer,
+          argumentsJson: jsonEncode({'server_id': 'all'})));
+      expect(res.isError, isFalse);
+      expect(router.focusedServer, isNull);
+      expect(router.focusedSchemas().length,
+          router.activatedSchemas().length);
+      expect(router.activatedServers, containsAll(['s1', 's2']));
+    });
+
+    test('未聚焦时 focusedSchemas == activatedSchemas', () {
+      router.activatedServers.addAll(['s1', 's2']);
+      expect(router.focusedServer, isNull);
+      expect(router.focusedSchemas().length,
+          router.activatedSchemas().length);
+    });
+
+    test('聚焦 server 独占守卫：其他 server 调用 → isError 引导 use_server("all")',
+        () async {
+      router.activatedServers.addAll(['s1', 's2']);
+      router.focusedServer = 's1';
+      final res = await router.execute(
+          AssembledToolCall(id: '1', name: 's2__search', argumentsJson: '{}'));
+      expect(res.isError, isTrue);
+      expect(res.content, contains('use_server'));
+    });
+
+    test('未知 server_id → isError 不抛', () async {
+      final res = await disc.execute(AssembledToolCall(
+          id: '1', name: DiscoveryExecutor.useServer,
+          argumentsJson: jsonEncode({'server_id': 'bad'})));
+      expect(res.isError, isTrue);
+    });
+
+    test('缺参 / 入参损坏 → isError', () async {
+      final r1 = await disc.execute(AssembledToolCall(
+          id: '1', name: DiscoveryExecutor.useServer, argumentsJson: '{}'));
+      expect(r1.isError, isTrue);
+      final r2 = await disc.execute(AssembledToolCall(
+          id: '2', name: DiscoveryExecutor.useServer, argumentsJson: '{bad'));
+      expect(r2.isError, isTrue);
+    });
+
+    test('use_server 本身不被独占守卫拦截（聚焦态可切换/恢复）', () async {
+      router.activatedServers.add('s1');
+      router.focusedServer = 's1';
+      final res = await disc.execute(AssembledToolCall(
+          id: '1', name: DiscoveryExecutor.useServer,
+          argumentsJson: jsonEncode({'server_id': 'all'})));
+      expect(res.isError, isFalse);
+      expect(router.focusedServer, isNull);
     });
   });
 }
