@@ -18,7 +18,7 @@
 
 ## 工具一览
   arch-guard.sh      分层架构硬约束（UI 禁 dart:io/平台分支/MethodChannel），规则见 docs/project/coding-standards.md §1/§2
-  build-apk.sh       Android 编译：analyze + release 分包 + 产物校验，--abi/--debug/--fat/--install
+  build-apk.sh       Android 编译：analyze + 构建（默认 debug）+ 产物校验，--release/--abi/--fat/--install
   bump-version.sh    pubspec 版本号更新与设备防降级守卫（--guard 供 build-apk 构建前调用）
   commit-msg-gate.sh Conventional Commits 提交信息校验（commit-msg 钩子）
   docs-lint.sh       docs/ 机械校验：frontmatter、根目录平铺、README 双向覆盖

@@ -23,9 +23,10 @@ description: goodhub（AI 宿主 App）的「功能 → 代码落点 + 文档落
 | UI 组件（design tokens/药丸/确认卡/排查卡/围栏拦截卡） | `lib/ui/tokens/` + `lib/ui/components/` + `lib/ui/gateway_loop_debug_page.dart` | M2-T4c/T5c；tokens 唯一出处（goodhub-ui skill），debug 页全链接线（拍板 C4 边界） |
 | 应用装配入口（引擎预热/记忆清扫/首页挂载） | `lib/main.dart` | M4-T3/D9 收敛纯装配；M1 壳迁 `lib/ui/claim_loop_page.dart`（debug 入口） |
 | 聊天主页（AgentLoop 正式宿主面） | `lib/ui/chat_page.dart` | M4-T3/D9 首页接管；交互 SSOT `docs/product/chat-interaction.md`；连接配置 SharedPreferences 过渡态 |
-| 双轨消息流组件（TrackEntry/渲染映射） | `lib/ui/components/dual_track_stream.dart` | M4-T3；卡片全量复用 M2/M3；T3b 恢复装配复用 |
+| 双轨消息流组件（TrackEntry/渲染映射） | `lib/ui/components/dual_track_stream.dart` | M4-T3；卡片全量复用 M2/M3；T3b 恢复装配复用；阅读轨文本走 StreamingRichText（stream-perf P1） |
 | Markdown 子集解析器（goodshare 随迁） | `lib/doc/rich_text.dart` | M4-T3/D12 随迁（零依赖原样，随迁注记见文件头；双仓分叉风险已记） |
-| 阅读轨只读渲染器（console tokens 对齐） | `lib/ui/rich_text_view.dart` | M4-T3/D12；媒体块降级不吞内容；todo 只读字形 |
+| 阅读轨只读渲染器（console tokens 对齐） | `lib/ui/rich_text_view.dart` | M4-T3/D12；媒体块降级不吞内容；todo 只读字形；MathBlock/InlineMath 降级等宽呈现（2026-10-14 adopt 共享包演进） |
+| 流式性能优化（P0 流控缓冲 + P1 前缀块缓存） | `lib/ui/components/stream_text_buffer.dart` + `lib/ui/components/streaming_rich_text.dart` | stream-perf（设计 SSOT `docs/design/stream-perf.md`）；Buffer 40ms 节拍 + 流结束强制清空；安全切点增量解析 + RepaintBoundary 隔离；等价性 fuzz 门禁在 `test/ui/streaming_rich_text_test.dart` |
 | 记忆沙盒（三件套/FC1 锚点/scope 三层作用域/预算视图/审计/轮转） | `lib/sandbox/memory_store.dart` | M4-T1/T2；拍板 D4~D8 见 docs/design/m4.md §4；`underSupportDir` 生产装配 + 启动清扫挂 main |
 | 记忆读写内部工具面（update_memory/query_memory） | `lib/coordinator/memory_tool_executor.dart` | M4-T2；挂 Gateway 内侧（L2 裁决先于执行）；§7.1 描述引导 + §7.3 快照回显；审计三点合围见 m4.md T2 注记 |
 | 会话历史持久化（每会话一 JSON/原子重写） | `lib/sandbox/conversation_store.dart` | M4-T3b；CloudChatMessage 编解码在此，TrackEntry 编解码在 UI 层（dual_track_stream 静态）；恢复降级语义见 m4.md T3b 注记 |
@@ -36,6 +37,7 @@ description: goodhub（AI 宿主 App）的「功能 → 代码落点 + 文档落
 | 服务大厅（Skill 覆写管理 / BYOK 云端引擎面板 / 跨源授权口径） | `lib/ui/services_hall_page.dart` | M3-T4 建 + M4-T5 增 BYOK 面板（多 profile 增删改 + 置顶切换生效，首位=生效对齐 hybrid_assembly；apiKey 走 SecureKeyValue）；单测 `test/ui/byok_panel_test.dart` |
 | 记忆看板（三 Tab 查看/编辑/导出/粉碎 + ops.log 人类可读渲染） | `lib/ui/memory_board_page.dart` | M4-T5；store 编辑面 `updateEntry/deleteEntry/purgeUserScope/listOpsLog/exportAll`（memory_store.dart）；ChatPage 侧边栏入口；单测 `test/ui/memory_board_page_test.dart` + `test/sandbox/memory_board_store_test.dart` |
 | token 字符级粗估口径 SSOT | `lib/core/tokens.dart` | M4-T1 自 context_governor 下沉（层级纪律），governor 原位 re-export |
+| 应用内自更新（清单模型/下载校验/安装器/更新页） | `lib/update/` + `lib/ui/update_page.dart`（入口=chat_page ⚙ 调试菜单「检查更新」） | self-update epic（goodshare 同款移植）；发布侧 `scripts/release-r2.sh` + `upload-r2.mjs`；设计 SSOT `docs/design/self-update.md` |
 
 ## 文档落点
 

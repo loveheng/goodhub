@@ -23,3 +23,5 @@ updated: 2026-10-13
   - [design/goodshare-binder-poc-fix-request.md](design/goodshare-binder-poc-fix-request.md) — goodshare 侧 Binder PoC 修复请求（含真机联调前置步骤与 R1 双连接争写锁风险验证记录）
   - [design/local-plugin-access-trust.md](design/local-plugin-access-trust.md) — 本地插件接入规范：私有（同签名）vs 第三方（信任卡片白名单）信任分级 SSOT
   - [design/page-revamp.md](design/page-revamp.md) — 页面整改底子文档（全量 UI 评估结论 + P0~P2 整改分解与验收口径）
+  - [design/self-update.md](design/self-update.md) — 打包推 R2 + 应用内自动更新设计（goodshare 同款移植：发布脚本 + lib/update/ 三件 + 更新页）
+  - [design/stream-perf.md](design/stream-perf.md) — 流式输出性能优化（P0 流控缓冲 + P1 前缀块缓存；业界四维分层防御在 goodhub 的裁剪落地）

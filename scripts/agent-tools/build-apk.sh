@@ -1,10 +1,10 @@
 #!/bin/bash
-# build-apk — goodhub Android 编译脚本（默认 arm64 release 分包，--abi 指定平台）
+# build-apk — goodhub Android 编译脚本（默认 debug 包，--release/--abi 指定 release 分包）
 #
 # toolbox-script
 # format: v1
 # name: build-apk
-# summary: goodhub Android 编译：analyze+构建+产物校验，--abi 指定平台，支持 debug/整包/安装
+# summary: goodhub Android 编译：analyze+构建+产物校验，默认 debug，--release/--abi 指定平台，支持整包/安装
 # trigger: manual
 # platform: unix
 # alias: apk
@@ -13,6 +13,7 @@ set -euo pipefail
 
 BUILD_DEBUG=0
 BUILD_FAT=0
+BUILD_RELEASE=0
 INSTALL_AFTER=0
 RUN_ANALYZE=1
 FRESH_DAEMON=0
@@ -22,12 +23,13 @@ ABI_SPEC="arm64"
 usage() {
   cat <<'EOF'
 用法: build-apk.sh [选项]        （toolbox run build-apk [选项] 等价）
-  默认: flutter analyze + arm64 release 分包构建（产物 app-arm64-v8a-release.apk）
+  默认: flutter analyze + debug 包构建（产物 app-debug.apk）
 选项:
-  --abi <平台>  指定目标平台，逗号分隔可组合：
+  --abi <平台>  指定目标平台（隐含 release 分包），逗号分隔可组合：
                 arm64（默认，= arm64-v8a）/ arm|armv7（= armeabi-v7a）/ x64（= x86_64）
                 例: --abi arm  --abi arm64,x64
-  --debug       构建 debug 包（快，冒烟验证用；--abi 对 debug 不生效）
+  --debug       显式构建 debug 包（现在即默认行为；--abi 对 debug 不生效）
+  --release     构建 release 分包（默认 arm64，可与 --abi 组合指定其他平台）
   --fat         构建 release 整包（三架构全含，自更新兜底用）
   --install     构建成功后 adb 安装到已连接手机（多产物时装第一个匹配的）
   --skip-test   跳过 flutter analyze 门槛（0 issue 交付线）
@@ -104,8 +106,10 @@ while [ $# -gt 0 ]; do
     --abi)
       [ $# -ge 2 ] || { echo "FAIL: --abi 需要平台参数"; usage; exit 2; }
       ABI_SPEC="$2"; shift
+      BUILD_RELEASE=1
       ;;
     --debug) BUILD_DEBUG=1 ;;
+    --release) BUILD_RELEASE=1 ;;
     --fat) BUILD_FAT=1 ;;
     --install) INSTALL_AFTER=1 ;;
     --skip-test) RUN_ANALYZE=0 ;;
@@ -134,10 +138,15 @@ elif [ "$BUILD_FAT" = 1 ]; then
   BUILD_CMD="flutter build apk --release"
   ARTIFACTS="build/app/outputs/flutter-apk/app-release.apk"
   STEP_NAME="release 整包（三架构）"
-else
+elif [ "$BUILD_RELEASE" = 1 ]; then
   parse_abis
   BUILD_CMD="flutter build apk --release --split-per-abi --target-platform=$TP_JOINED"
   STEP_NAME="release 分包（$ABI_LABELS）"
+else
+  # 默认：debug 包
+  BUILD_CMD="flutter build apk --debug"
+  ARTIFACTS="build/app/outputs/flutter-apk/app-debug.apk"
+  STEP_NAME="debug 包（全架构）"
 fi
 
 STEPS=(

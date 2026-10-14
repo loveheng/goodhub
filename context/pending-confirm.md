@@ -7,6 +7,11 @@ format: v1
 - [ ] [2026-10-12] W1 本周主线是否按 D14 先做 T6 剩余（接线→JIT→服务管理UI→CoW→验证），T5 排周尾？（不定则周计划无法定稿）
 - [ ] [2026-10-12] W2 T4 连接韧性是否本周并行开（与 T6 穿插），还是 T6 收官后再启？（不定则并行线不排）
 
+## self-update（打包推 R2 + 应用内自动更新，模仿 goodshare）
+- [x] [2026-10-14] SU1 挂载：新建 epic `self-update` 还是挂 misc？→ 已确认：新建 epic self-update（2026-10-14 已 mount-init）
+- [x] [2026-10-14] SU2 新依赖引入：crypto + package_info_plus + open_filex（goodshare 同款三件）？→ 已确认：同意
+- [x] [2026-10-14] SU3 范围：仅整包自更新还是含 config 热更？→ 已确认：仅整包自更新（清单 versionCode/versionName/apkUrl/sha256/changelog；config 热更后续按需加）
+
 ## thirdconnect（同机 MCP 传输选型）
 - [x] [2026-10-12] TC1 同机传输主战场是否就是「同机 Android App 互通」（GoodHub↔好共享/第三方插件 App）？还是也含远端部署/标准 HTTP MCP server？（不定则 Binder 是否现在建无法定）→ 已确认：先做安卓底层方案，现有 HTTP 保持不变；长期各平台底层方案 + HTTP 优化
 - [x] [2026-10-12] TC2 同机传输选型：Binder(AIDL) 为主 / UDS(LocalSocket) 为主 / 两者都做？→ 已确认：选 Binder(AIDL) 为主，UDS 留作后续降级兜底
