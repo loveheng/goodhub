@@ -14,6 +14,8 @@
     <!-- TC 本地插件鉴权（thirdconnect §1.2.6）：goodshare 侧 Service 已挂 signature
          权限，宿主须声明同名权限才可 bind；两包须同签名同批出包，否则 SecurityException -->
     <uses-permission android:name="com.zzh.goodhub.permission.MCP_SERVER" />
+    <!-- 应用内自更新（self-update epic）：拉起系统安装器（Android 8+ 首次引导「安装未知应用」授权） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <application
         android:label="goodhub"
         android:name="${applicationName}"

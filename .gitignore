@@ -46,3 +46,7 @@ context/CURRENT
 android-sdk/.gradle/
 android-sdk/**/build/
 android-sdk/local.properties
+
+# R2 更新源本地凭证（self-update）
+.env
+updates/
