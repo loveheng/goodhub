@@ -37,6 +37,7 @@ class CallCard extends StatelessWidget {
     required this.phase,
     this.progressNote,
     this.preview = '',
+    this.fullResult,
   });
 
   final String tool;
@@ -50,11 +51,16 @@ class CallCard extends StatelessWidget {
   /// 终态结果预览（首两行）。
   final String preview;
 
+  /// 终态结果全文（非空且长于预览时可展开查看）。
+  final String? fullResult;
+
   @override
   Widget build(BuildContext context) {
     final t = consoleTokens(context);
     final isTerminal =
-        phase == CallCardPhase.success || phase == CallCardPhase.failed || phase == CallCardPhase.cancelled;
+        phase == CallCardPhase.success ||
+        phase == CallCardPhase.failed ||
+        phase == CallCardPhase.cancelled;
     final Color stripe = switch (phase) {
       CallCardPhase.running || CallCardPhase.success => t.l1Ok,
       CallCardPhase.stuck => t.l2Warn,
@@ -62,8 +68,7 @@ class CallCard extends StatelessWidget {
     };
     final String statusLine = switch (phase) {
       CallCardPhase.running => progressNote ?? '执行中…',
-      CallCardPhase.stuck =>
-        '${progressNote ?? '执行中…'} ｜ ⚠ 疑似卡死：无更新超阈值（可中止）',
+      CallCardPhase.stuck => '${progressNote ?? '执行中…'} ｜ ⚠ 响应停滞，可用顶部 [ABORT] 中止',
       CallCardPhase.cancelled =>
         progressNote ?? (preview.isEmpty ? '(无文本返回)' : preview),
       _ => preview.isEmpty ? '(无文本返回)' : preview,
@@ -79,8 +84,12 @@ class CallCard extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // ui-design §3.2：左侧状态竖条语义色
-            Container(width: 3, color: stripe),
+            // ui-design §3.2 左侧状态竖条语义色；§4.2 颜色随相位紧凑过渡。
+            AnimatedContainer(
+              width: 3,
+              duration: t.fastDuration,
+              color: stripe,
+            ),
             const SizedBox(width: 8),
             Expanded(
               child: Column(
@@ -90,29 +99,87 @@ class CallCard extends StatelessWidget {
                     tool,
                     style: TextStyle(
                       fontFamily: t.monoFamily,
-                      fontSize: 12,
+                      fontSize: Fsz.telemetry,
                       color: isTerminal && phase != CallCardPhase.failed
                           ? t.l1Ok
                           : stripe,
                     ),
                   ),
                   const SizedBox(height: 2),
-                  Text(
-                    statusLine,
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontFamily: isTerminal ? t.monoFamily : null,
-                      color: isTerminal
-                          ? t.terminalMuted // 终态锁定灰阶审计感
-                          : Theme.of(context).hintColor,
+                  if (isTerminal)
+                    _ExpandableResult(
+                      preview: statusLine,
+                      fullResult: fullResult,
+                    )
+                  else
+                    Text(
+                      statusLine,
+                      style: TextStyle(
+                        fontSize: Fsz.telemetry,
+                        color: Theme.of(context).hintColor,
+                      ),
                     ),
-                  ),
                 ],
               ),
             ),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// 终态结果区：默认两行截断预览，可展开全文（SelectableText 便于复制排障）。
+class _ExpandableResult extends StatefulWidget {
+  const _ExpandableResult({required this.preview, this.fullResult});
+
+  final String preview;
+  final String? fullResult;
+
+  @override
+  State<_ExpandableResult> createState() => _ExpandableResultState();
+}
+
+class _ExpandableResultState extends State<_ExpandableResult> {
+  var _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = consoleTokens(context);
+    final style = TextStyle(
+      fontSize: Fsz.telemetry,
+      fontFamily: t.monoFamily,
+      color: t.terminalMuted, // 终态锁定灰阶审计感
+    );
+    final full = widget.fullResult?.trim() ?? '';
+    final canExpand =
+        full.isNotEmpty && full != widget.preview.trim();
+    if (!canExpand) {
+      return Text(widget.preview, style: style);
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SelectableText(
+          _expanded ? widget.fullResult! : widget.preview,
+          style: style,
+          maxLines: _expanded ? null : 2,
+        ),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton(
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              minimumSize: const Size(0, 28),
+            ),
+            onPressed: () => setState(() => _expanded = !_expanded),
+            child: Text(
+              _expanded ? '收起' : '展开全文',
+              style: TextStyle(fontSize: Fsz.micro, color: t.terminalMuted),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

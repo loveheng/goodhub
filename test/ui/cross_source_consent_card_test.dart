@@ -66,7 +66,7 @@ void main() {
       lockedDecision: true,
       lockedAt: at,
     )));
-    expect(find.text('✓ 已允许注水 · 2026-10-11T12:00:00.000'), findsOneWidget);
+    expect(find.text('✓ 已允许注水 · 12:00'), findsOneWidget);
     expect(find.byType(FilledButton), findsNothing);
     expect(find.byType(TextButton), findsNothing);
     expect(() => CrossSourceConsentCard(

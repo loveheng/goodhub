@@ -36,11 +36,15 @@ Future<HybridCloudEngine> assembleDefaultHybridEngine({
     final store = ByokStore();
     final profiles = await store.load();
     if (profiles.isNotEmpty) {
-      final key = await store.apiKey(profiles.first.id);
+      // 生效位优先（用户显式选择，⚙ 设置/服务大厅置顶写入）；未选回退列表首位。
+      final preferred = await store.preferredProfileId();
+      final active = profiles.where((p) => p.id == preferred).firstOrNull ??
+          profiles.first;
+      final key = await store.apiKey(active.id);
       if (key != null && key.isNotEmpty) {
         cloud = FencedCloudEngine(
           inner: engineFor(
-            profiles.first,
+            active,
             apiKey: key,
             connectTimeout: ctrl.connectTimeout,
           ),

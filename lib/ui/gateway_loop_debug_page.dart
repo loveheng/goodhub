@@ -158,10 +158,12 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
   /// 大出参（2714 字符 >1000T）摘要化落池升级句柄 → 模型把句柄传给
   /// add_item → HydratingExecutor 注水写原文（须开「工具结果摘要化」开关）。
   final _promptCtrl = TextEditingController(
-      text: 'call get_item on id 2890388d-ba14-4652-96d4-1f6a602434c2, then '
-          'call add_item to save its full original text as a new note, '
-          'passing the ref handle mentioned in the host note verbatim as the '
-          'content argument');
+    text:
+        'call get_item on id 2890388d-ba14-4652-96d4-1f6a602434c2, then '
+        'call add_item to save its full original text as a new note, '
+        'passing the ref handle mentioned in the host note verbatim as the '
+        'content argument',
+  );
   var _running = false;
   final _track = <_Entry>[];
 
@@ -200,12 +202,14 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
       _localPlugins = found;
       _selectedLocal = found.isEmpty ? null : found.first;
     });
-    _add(_NoteEntry(
-      found.isEmpty
-          ? '未发现本地插件（未安装，或缺少 com.zzh.goodhub.action.MCP_SERVER）'
-          : '发现本地插件: ${found.map((p) => p.serverId).join(', ')}',
-      danger: found.isEmpty,
-    ));
+    _add(
+      _NoteEntry(
+        found.isEmpty
+            ? '未发现本地插件（未安装，或缺少 com.zzh.goodhub.action.MCP_SERVER）'
+            : '发现本地插件: ${found.map((p) => p.serverId).join(', ')}',
+        danger: found.isEmpty,
+      ),
+    );
   }
 
   Future<void> _saveByok() async {
@@ -311,9 +315,12 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
       // M2.5-T2 能力协商接线：握手结果与 Tier 判定进轨迹；Tier 2（vanilla）
       // 额外生成静态摘要（C-4：500 字符封顶 + 「自动生成」标注）。
       final caps = await client.negotiate();
-      _add(_TextEntry(
+      _add(
+        _TextEntry(
           '能力协商：${caps.serverName ?? '?'} v${caps.serverVersion ?? '?'} ｜ '
-          'protocol ${caps.protocolVersion} ｜ ${caps.isTier1 ? 'Tier 1（prompts+resources 全量）' : 'Tier 2（vanilla，Polyfill 接管）'}\n'));
+          'protocol ${caps.protocolVersion} ｜ ${caps.isTier1 ? 'Tier 1（prompts+resources 全量）' : 'Tier 2（vanilla，Polyfill 接管）'}\n',
+        ),
+      );
       AgentLoop? loopBox;
       final face = McpToolFace(
         client: client,
@@ -324,20 +331,26 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
         onProgress: (tool, progress, total, message) {
           loopBox?.emitToolProgress(tool, progress, total, message);
           _setPill(
-              total != null ? '$tool $progress/$total' : '$tool $progress',
-              CapsuleTone.l1);
+            total != null ? '$tool $progress/$total' : '$tool $progress',
+            CapsuleTone.l1,
+          );
         },
       );
       final schemas = await face.listTools();
       if (caps.isTier2) {
-        _add(_TextEntry('${buildStaticSummary([
-          for (final s in schemas) (name: s.name, description: s.description),
-        ])}\n'));
+        _add(
+          _TextEntry(
+            '${buildStaticSummary([for (final s in schemas) (name: s.name, description: s.description)])}\n',
+          ),
+        );
       } else if (caps.hasResources) {
         try {
           final resources = await client.listResources();
-          _add(_TextEntry(
-              '资源面：${resources.length} 条可读（resources/read 只读注入，§12）\n'));
+          _add(
+            _TextEntry(
+              '资源面：${resources.length} 条可读（resources/read 只读注入，§12）\n',
+            ),
+          );
         } on McpException catch (e) {
           _add(_TextEntry('资源面读取失败（Polyfill 降级为只读工具）：$e\n'));
         }
@@ -345,7 +358,8 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
       // M4-T2 记忆沙盒接线：应用支持目录/memory（全局持久，跨会话/跨窗口）。
       // 冷启动清扫挂 main（§11），此处直用。
       final memoryStore = MemoryStore.underSupportDir(
-          (await getApplicationSupportDirectory()).path);
+        (await getApplicationSupportDirectory()).path,
+      );
       final gateway = PermissionGateway(
         // M4-T2：记忆工具面挂 Gateway 内侧——update_memory（写）先过 L2 裁决
         // 再执行（F4.4 记忆类写路径强制 L2），query_memory 只读 L1。
@@ -395,7 +409,7 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
               // T7 拦截卡联调：注入遮蔽失败（须云端已预置，脚本引擎不经过）
               maskOverride: _injectMaskFailure
                   ? (_) async =>
-                      throw const PiiMaskException('联调注入：遮蔽失败（debug 开关）')
+                        throw const PiiMaskException('联调注入：遮蔽失败（debug 开关）')
                   : null,
             );
       _add(_NoteEntry('引擎: ${engine.name}', danger: false));
@@ -412,8 +426,10 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
       );
       client.onServerRequest = (method, params) {
         _watcher?.samplingBegin();
-        return sampling(method, params)
-            .whenComplete(() => _watcher?.samplingEnd());
+        return sampling(
+          method,
+          params,
+        ).whenComplete(() => _watcher?.samplingEnd());
       };
       final executor = _injectFaults
           ? _FaultInjector(inner: hydration, failTimesPerTool: _faultTimes)
@@ -426,23 +442,28 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
       if (caps.hasPrompts) {
         try {
           final cow = CowSyncService(
-            store:
-                CowOverridesStore(dir: await getApplicationDocumentsDirectory()),
+            store: CowOverridesStore(
+              dir: await getApplicationDocumentsDirectory(),
+            ),
             onMajorJump: (name, from, to) async {
               final r = await showDialog<bool>(
                 context: context,
                 builder: (ctx) => AlertDialog(
                   title: Text('模板大版本更新：$name'),
-                  content: Text('服务端模板 $from → $to（大版本跃迁）。\n'
-                      '你本地有覆写副本：重置将弃用覆写回服务端最新版；'
-                      '保留则以本地副本继续生效。'),
+                  content: Text(
+                    '服务端模板 $from → $to（大版本跃迁）。\n'
+                    '你本地有覆写副本：重置将弃用覆写回服务端最新版；'
+                    '保留则以本地副本继续生效。',
+                  ),
                   actions: [
                     TextButton(
-                        onPressed: () => Navigator.pop(ctx, false),
-                        child: const Text('保留本地')),
+                      onPressed: () => Navigator.pop(ctx, false),
+                      child: const Text('保留本地'),
+                    ),
                     FilledButton(
-                        onPressed: () => Navigator.pop(ctx, true),
-                        child: const Text('重置为服务端版')),
+                      onPressed: () => Navigator.pop(ctx, true),
+                      child: const Text('重置为服务端版'),
+                    ),
                   ],
                 ),
               );
@@ -458,18 +479,27 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
               _add(_NoteEntry('⚠ CoW Skill 注册跳过: $e', danger: true));
             }
           }
-          _add(_TextEntry(
-              'CoW 同步：${items.map((i) => '${i.promptName}(${i.action.name})').join(', ')}\n'));
+          _add(
+            _TextEntry(
+              'CoW 同步：${items.map((i) => '${i.promptName}(${i.action.name})').join(', ')}\n',
+            ),
+          );
         } on McpException catch (e) {
           _add(_TextEntry('CoW 同步失败（Polyfill 降级为无模板注入）：$e\n'));
         }
       }
       final skillExecutor = SkillActivationExecutor(
-          inner: executor, registry: skills, opsLog: memoryStore);
+        inner: executor,
+        registry: skills,
+        opsLog: memoryStore,
+      );
       if (_injectFaults) {
-        _add(_NoteEntry(
+        _add(
+          _NoteEntry(
             '⚠ 故障注入开启：每个工具前 $_faultTimes 次调用强制失败（联调熔断卡）',
-            danger: true));
+            danger: true,
+          ),
+        );
       }
       final loop = AgentLoop(
         engine: engine,
@@ -488,8 +518,10 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
       _activeFace = face;
       _setPill('thinking', CapsuleTone.l1);
       await for (final e in loop.run(
-        systemPrompt:
-            skills.composeSystemPrompt(_systemPrompt, connectedServerIds: [face.serverId]),
+        systemPrompt: skills.composeSystemPrompt(
+          _systemPrompt,
+          connectedServerIds: [face.serverId],
+        ),
         userPrompt: prompt,
         tools: [...schemas, skills.activationToolSchema()],
       )) {
@@ -504,21 +536,28 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
             _activeCallEntry = entry;
             _add(entry);
             _watcher?.start();
-          case LoopToolProgress(:final call, :final progress, :final total, :final message):
+          case LoopToolProgress(
+            :final call,
+            :final progress,
+            :final total,
+            :final message,
+          ):
             final entry = _activeCallEntry;
             if (entry != null && entry.tool == call.name) {
               setState(() {
                 final tail = message == null ? '' : ' · $message';
-                entry.progressNote =
-                    total != null ? '$progress/$total$tail' : '$progress$tail';
+                entry.progressNote = total != null
+                    ? '$progress/$total$tail'
+                    : '$progress$tail';
               });
             }
             _watcher?.onProgressFrame();
           case LoopToolCallFinished(:final call, :final result):
             final rejected = result.content.contains('"user_rejected"');
             final entry = _activeCallEntry;
-            final phase =
-                result.isError ? CallCardPhase.failed : CallCardPhase.success;
+            final phase = result.isError
+                ? CallCardPhase.failed
+                : CallCardPhase.success;
             if (entry != null && entry.tool == call.name) {
               // 真实结果优先于 Abort 的 cancelled 标记（在途调用完成后照常回填）
               setState(() {
@@ -528,9 +567,11 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
                   ..progressNote = null;
               });
             } else {
-              _add(_CallEntry(tool: call.name)
-                ..phase = phase
-                ..preview = _preview(result.content));
+              _add(
+                _CallEntry(tool: call.name)
+                  ..phase = phase
+                  ..preview = _preview(result.content),
+              );
             }
             _activeCallEntry = null;
             _watcher?.stop();
@@ -592,263 +633,294 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
   @override
   Widget build(BuildContext context) {
     final t = consoleTokens(context);
-    return Theme(
-      data: ThemeData(
-        useMaterial3: true,
-        colorScheme: Theme.of(context).colorScheme,
-        extensions: const [ConsoleTokens.fallback],
-      ),
-      child: Scaffold(
-        appBar: AppBar(title: const Text('网关/熔断联调')),
-        body: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _urlCtrl,
-                      enabled: !_running,
-                      decoration: const InputDecoration(
-                        labelText: 'MCP Endpoint（须含 /mcp 路径）',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                      style: TextStyle(
-                        fontFamily: t.monoFamily,
-                        fontSize: 12,
-                      ),
+    return Scaffold(
+      appBar: AppBar(title: const Text('网关/熔断联调')),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _urlCtrl,
+                    enabled: !_running,
+                    decoration: const InputDecoration(
+                      labelText: 'MCP Endpoint（须含 /mcp 路径）',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                    style: TextStyle(
+                      fontFamily: t.monoFamily,
+                      fontSize: Fsz.telemetry,
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  StatusCapsule(label: _pillLabel, tone: _pillTone),
+                ),
+                const SizedBox(width: 8),
+                StatusCapsule(label: _pillLabel, tone: _pillTone),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+            child: Row(
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<LocalPluginInfo?>(
+                    value: _selectedLocal,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      labelText: '本地插件（选中则走 Binder，否则走上方 HTTP）',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                    items: [
+                      const DropdownMenuItem<LocalPluginInfo?>(
+                        value: null,
+                        child: Text('— HTTP 端点 —'),
+                      ),
+                      for (final p in _localPlugins)
+                        DropdownMenuItem<LocalPluginInfo?>(
+                          value: p,
+                          child: Text('${p.serverTitle} (${p.serverId})'),
+                        ),
+                    ],
+                    onChanged: _running
+                        ? null
+                        : (v) => setState(() => _selectedLocal = v),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                FilledButton.tonal(
+                  onPressed: _running ? null : _scanLocal,
+                  child: const Text('扫描'),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+            child: TextField(
+              controller: _keyCtrl,
+              enabled: !_running,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'X-Api-Key（goodshare「MCP 服务」页可查看）',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+              style: TextStyle(
+                fontFamily: t.monoFamily,
+                fontSize: Fsz.telemetry,
+              ),
+            ),
+          ),
+          SwitchListTile(
+            value: _injectFaults,
+            onChanged: _running
+                ? null
+                : (v) => setState(() => _injectFaults = v),
+            dense: true,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+            title: const Text(
+              '故障注入（每工具前 2 次调用强制失败）',
+              style: TextStyle(fontSize: Fsz.body),
+            ),
+            subtitle: const Text(
+              '联调熔断排查卡专用：开启后运行，模型重试即触发',
+              style: TextStyle(fontSize: Fsz.micro),
+            ),
+          ),
+          SwitchListTile(
+            value: _useScriptedEngine,
+            onChanged: _running
+                ? null
+                : (v) => setState(() => _useScriptedEngine = v),
+            dense: true,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+            title: const Text(
+              '脚本引擎（确定性走环，不经云端/模型）',
+              style: TextStyle(fontSize: Fsz.body),
+            ),
+            subtitle: const Text(
+              '与故障注入同开 = 必出熔断卡；单开 = 确定性走 L1 真执行',
+              style: TextStyle(fontSize: Fsz.micro),
+            ),
+          ),
+          SwitchListTile(
+            value: _summarizeResults,
+            onChanged: _running
+                ? null
+                : (v) => setState(() => _summarizeResults = v),
+            dense: true,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+            title: const Text(
+              '工具结果摘要化（>1000T 端侧小模型摘要）',
+              style: TextStyle(fontSize: Fsz.body),
+            ),
+            subtitle: const Text(
+              'T6 上下文治理联调：回填前端侧摘要、失败保留原文'
+              '（DEGRADE 留痕）；滑动窗口 N=6 恒开',
+              style: TextStyle(fontSize: Fsz.micro),
+            ),
+          ),
+          SwitchListTile(
+            value: _injectMaskFailure,
+            onChanged: _running
+                ? null
+                : (v) => setState(() => _injectMaskFailure = v),
+            dense: true,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+            title: const Text(
+              '遮蔽失败注入（联调 PII 拦截卡）',
+              style: TextStyle(fontSize: Fsz.body),
+            ),
+            subtitle: const Text(
+              'T7 拦截卡三态：强制围栏抛 PiiMaskException 出'
+              '「取消/明文一次」卡；须云端已预置，脚本引擎不经过',
+              style: TextStyle(fontSize: Fsz.micro),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 0),
+            child: Card(
+              margin: EdgeInsets.zero,
+              child: ExpansionTile(
+                initiallyExpanded: _byokStatus.startsWith('未预置'),
+                title: Text(
+                  '云端引擎预置（BYOK）',
+                  style: const TextStyle(fontSize: Fsz.listPrimary),
+                ),
+                subtitle: Text(
+                  _byokStatus,
+                  style: const TextStyle(fontSize: Fsz.telemetrySm),
+                ),
+                childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+                children: [
+                  DropdownButtonFormField<CloudProtocol>(
+                    initialValue: _protocol,
+                    decoration: const InputDecoration(
+                      labelText: '协议',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                    items: const [
+                      DropdownMenuItem(
+                        value: CloudProtocol.openaiCompatible,
+                        child: Text('OpenAI 兼容（OpenAI/DeepSeek/Qwen/GLM）'),
+                      ),
+                      DropdownMenuItem(
+                        value: CloudProtocol.anthropic,
+                        child: Text('Anthropic'),
+                      ),
+                    ],
+                    onChanged: (v) =>
+                        setState(() => _protocol = v ?? _protocol),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _byokUrlCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Base URL',
+                      hintText: '如 https://api.openai.com/v1',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                    style: TextStyle(
+                      fontFamily: t.monoFamily,
+                      fontSize: Fsz.telemetry,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _byokModelCtrl,
+                    decoration: const InputDecoration(
+                      labelText: '模型 ID',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                    style: TextStyle(
+                      fontFamily: t.monoFamily,
+                      fontSize: Fsz.telemetry,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _byokKeyCtrl,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                      labelText: 'API Key（只入安全存储，不落明文）',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                    style: TextStyle(
+                      fontFamily: t.monoFamily,
+                      fontSize: Fsz.telemetry,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      FilledButton.tonal(
+                        onPressed: _saveByok,
+                        child: const Text('保存预置'),
+                      ),
+                    ],
+                  ),
                 ],
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: DropdownButtonFormField<LocalPluginInfo?>(
-                      value: _selectedLocal,
-                      isExpanded: true,
-                      decoration: const InputDecoration(
-                        labelText: '本地插件（选中则走 Binder，否则走上方 HTTP）',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                      items: [
-                        const DropdownMenuItem<LocalPluginInfo?>(
-                            value: null, child: Text('— HTTP 端点 —')),
-                        for (final p in _localPlugins)
-                          DropdownMenuItem<LocalPluginInfo?>(
-                              value: p,
-                              child: Text('${p.serverTitle} (${p.serverId})')),
-                      ],
-                      onChanged: _running
-                          ? null
-                          : (v) => setState(() => _selectedLocal = v),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _promptCtrl,
+                    enabled: !_running,
+                    minLines: 1,
+                    maxLines: 3,
+                    decoration: const InputDecoration(
+                      labelText: '任务指令（如：列出最近条目，再存一条备忘）',
+                      border: OutlineInputBorder(),
+                      isDense: true,
                     ),
                   ),
+                ),
+                const SizedBox(width: 8),
+                FilledButton(
+                  onPressed: _running ? null : _run,
+                  child: const Text('运行'),
+                ),
+                // M3-T2 Abort（architecture §10 级联的 UI 侧）：环内边界停下
+                // + notifications/cancelled 下发 + 在途卡 Cancelled 态。
+                if (_running) ...[
                   const SizedBox(width: 8),
                   FilledButton.tonal(
-                    onPressed: _running ? null : _scanLocal,
-                    child: const Text('扫描'),
+                    onPressed: _abort,
+                    style: FilledButton.styleFrom(
+                      foregroundColor: consoleTokens(context).danger,
+                    ),
+                    child: const Text('[ABORT]'),
                   ),
                 ],
-              ),
+              ],
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-              child: TextField(
-                controller: _keyCtrl,
-                enabled: !_running,
-                obscureText: true,
-                decoration: const InputDecoration(
-                  labelText: 'X-Api-Key（goodshare「MCP 服务」页可查看）',
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
-                style: TextStyle(fontFamily: t.monoFamily, fontSize: 12),
-              ),
-            ),
-            SwitchListTile(
-              value: _injectFaults,
-              onChanged: _running ? null : (v) => setState(() => _injectFaults = v),
-              dense: true,
-              contentPadding: const EdgeInsets.symmetric(horizontal: 12),
-              title: const Text('故障注入（每工具前 2 次调用强制失败）',
-                  style: TextStyle(fontSize: 13)),
-              subtitle: const Text('联调熔断排查卡专用：开启后运行，模型重试即触发',
-                  style: TextStyle(fontSize: 11)),
-            ),
-            SwitchListTile(
-              value: _useScriptedEngine,
-              onChanged: _running ? null : (v) => setState(() => _useScriptedEngine = v),
-              dense: true,
-              contentPadding: const EdgeInsets.symmetric(horizontal: 12),
-              title: const Text('脚本引擎（确定性走环，不经云端/模型）',
-                  style: TextStyle(fontSize: 13)),
-              subtitle: const Text('与故障注入同开 = 必出熔断卡；单开 = 确定性走 L1 真执行',
-                  style: TextStyle(fontSize: 11)),
-            ),
-            SwitchListTile(
-              value: _summarizeResults,
-              onChanged: _running ? null : (v) => setState(() => _summarizeResults = v),
-              dense: true,
-              contentPadding: const EdgeInsets.symmetric(horizontal: 12),
-              title: const Text('工具结果摘要化（>1000T 端侧小模型摘要）',
-                  style: TextStyle(fontSize: 13)),
-              subtitle: const Text('T6 上下文治理联调：回填前端侧摘要、失败保留原文'
-                  '（DEGRADE 留痕）；滑动窗口 N=6 恒开',
-                  style: TextStyle(fontSize: 11)),
-            ),
-            SwitchListTile(
-              value: _injectMaskFailure,
-              onChanged: _running ? null : (v) => setState(() => _injectMaskFailure = v),
-              dense: true,
-              contentPadding: const EdgeInsets.symmetric(horizontal: 12),
-              title: const Text('遮蔽失败注入（联调 PII 拦截卡）',
-                  style: TextStyle(fontSize: 13)),
-              subtitle: const Text('T7 拦截卡三态：强制围栏抛 PiiMaskException 出'
-                  '「取消/明文一次」卡；须云端已预置，脚本引擎不经过',
-                  style: TextStyle(fontSize: 11)),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 0, 12, 0),
-              child: Card(
-                margin: EdgeInsets.zero,
-                child: ExpansionTile(
-                  initiallyExpanded: _byokStatus.startsWith('未预置'),
-                  title: Text('云端引擎预置（BYOK）',
-                      style: const TextStyle(fontSize: 14)),
-                  subtitle: Text(_byokStatus,
-                      style: const TextStyle(fontSize: 11.5)),
-                  childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-                  children: [
-                    DropdownButtonFormField<CloudProtocol>(
-                      initialValue: _protocol,
-                      decoration: const InputDecoration(
-                        labelText: '协议',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                      items: const [
-                        DropdownMenuItem(
-                          value: CloudProtocol.openaiCompatible,
-                          child: Text('OpenAI 兼容（OpenAI/DeepSeek/Qwen/GLM）'),
-                        ),
-                        DropdownMenuItem(
-                          value: CloudProtocol.anthropic,
-                          child: Text('Anthropic'),
-                        ),
-                      ],
-                      onChanged: (v) =>
-                          setState(() => _protocol = v ?? _protocol),
-                    ),
-                    const SizedBox(height: 8),
-                    TextField(
-                      controller: _byokUrlCtrl,
-                      decoration: const InputDecoration(
-                        labelText: 'Base URL',
-                        hintText: '如 https://api.openai.com/v1',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                      style: TextStyle(
-                          fontFamily: t.monoFamily, fontSize: 12),
-                    ),
-                    const SizedBox(height: 8),
-                    TextField(
-                      controller: _byokModelCtrl,
-                      decoration: const InputDecoration(
-                        labelText: '模型 ID',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                      style: TextStyle(
-                          fontFamily: t.monoFamily, fontSize: 12),
-                    ),
-                    const SizedBox(height: 8),
-                    TextField(
-                      controller: _byokKeyCtrl,
-                      obscureText: true,
-                      decoration: const InputDecoration(
-                        labelText: 'API Key（只入安全存储，不落明文）',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                      style: TextStyle(
-                          fontFamily: t.monoFamily, fontSize: 12),
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        FilledButton.tonal(
-                          onPressed: _saveByok,
-                          child: const Text('保存预置'),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _promptCtrl,
-                      enabled: !_running,
-                      minLines: 1,
-                      maxLines: 3,
-                      decoration: const InputDecoration(
-                        labelText: '任务指令（如：列出最近条目，再存一条备忘）',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  FilledButton(
-                    onPressed: _running ? null : _run,
-                    child: const Text('运行'),
-                  ),
-                  // M3-T2 Abort（architecture §10 级联的 UI 侧）：环内边界停下
-                  // + notifications/cancelled 下发 + 在途卡 Cancelled 态。
-                  if (_running) ...[
-                    const SizedBox(width: 8),
-                    FilledButton.tonal(
-                      onPressed: _abort,
-                      style: FilledButton.styleFrom(
-                        foregroundColor: consoleTokens(context).danger,
-                      ),
-                      child: const Text('[ABORT]'),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            const Divider(height: 16),
-            Expanded(
-              child: _running || _track.isNotEmpty
-                  ? ListView.builder(
-                      controller: _scrollCtrl,
-                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                      itemCount: _track.length,
-                      itemBuilder: (context, i) => _render(context, _track[i]),
-                    )
-                  : const Center(
-                      child: Text('运行一次任务以验证 L1/L2 网关与熔断链路'),
-                    ),
-            ),
-          ],
-        ),
+          ),
+          const Divider(height: 16),
+          Expanded(
+            child: _running || _track.isNotEmpty
+                ? ListView.builder(
+                    controller: _scrollCtrl,
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                    itemCount: _track.length,
+                    itemBuilder: (context, i) => _render(context, _track[i]),
+                  )
+                : const Center(child: Text('运行一次任务以验证 L1/L2 网关与熔断链路')),
+          ),
+        ],
       ),
     );
   }
@@ -860,7 +932,10 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
         if (text.isEmpty) return const SizedBox.shrink();
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
-          child: SelectableText(text.toString(), style: const TextStyle(fontSize: 14.5, height: 1.5)),
+          child: SelectableText(
+            text.toString(),
+            style: const TextStyle(fontSize: Fsz.reading, height: 1.5),
+          ),
         );
       case _CallEntry e:
         return CallCard(
@@ -869,7 +944,12 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
           progressNote: e.progressNote,
           preview: e.preview,
         );
-      case _ConfirmEntry(:final pending, :final decision, :final decidedAt, :final completer):
+      case _ConfirmEntry(
+        :final pending,
+        :final decision,
+        :final decidedAt,
+        :final completer,
+      ):
         return ConfirmationCard(
           toolName: pending.toolName,
           argumentsJson: pending.argumentsJson,
@@ -883,7 +963,13 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
           lockedDecision: decision,
           lockedAt: decidedAt,
         );
-      case _BreakerEntry(:final report, :final wall, :final lockedText, :final decidedAt, :final completer):
+      case _BreakerEntry(
+        :final report,
+        :final wall,
+        :final lockedText,
+        :final decidedAt,
+        :final completer,
+      ):
         return BreakerCard(
           report: report,
           wall: wall,
@@ -908,7 +994,12 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
                   completer.complete(relax);
                 },
         );
-      case _FenceEntry(:final info, :final decision, :final decidedAt, :final completer):
+      case _FenceEntry(
+        :final info,
+        :final decision,
+        :final decidedAt,
+        :final completer,
+      ):
         return FenceBlockCard(
           engineName: info.engineName,
           failureMessage: info.failureMessage,
@@ -927,7 +1018,10 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
           padding: const EdgeInsets.symmetric(vertical: 4),
           child: Text(
             text,
-            style: TextStyle(fontSize: 12.5, color: danger ? t.danger : t.terminalMuted),
+            style: TextStyle(
+              fontSize: Fsz.note,
+              color: danger ? t.danger : t.terminalMuted,
+            ),
           ),
         );
     }
@@ -975,9 +1069,11 @@ class _ScriptedEngine implements CloudLlmEngine {
     _turn++;
     if (_turn <= 2) {
       yield CloudToolCallDelta(
-          index: 0, id: 'script-$_turn', name: 'list_items');
-      yield const CloudToolCallDelta(
-          index: 0, argumentsDelta: '{"limit":2}');
+        index: 0,
+        id: 'script-$_turn',
+        name: 'list_items',
+      );
+      yield const CloudToolCallDelta(index: 0, argumentsDelta: '{"limit":2}');
       yield const CloudDone(finishReason: CloudFinishReason.toolCalls);
       return;
     }
@@ -1009,7 +1105,8 @@ class _PageBlock implements BlockDelegate {
   Future<BreakerResolution> onBreakerTripped(BreakerReport report) {
     // logcat 埋点：真机联调「没弹卡」取证用
     debugPrint(
-        '[GatewayDebug] 熔断触发: ${report.toolName} x${report.consecutiveFailures}');
+      '[GatewayDebug] 熔断触发: ${report.toolName} x${report.consecutiveFailures}',
+    );
     _state._setPill('breaker', CapsuleTone.danger);
     final entry = _BreakerEntry.breaker(report);
     _state._add(entry);

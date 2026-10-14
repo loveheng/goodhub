@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 
 import '../llm/device_tier.dart';
 import '../llm/llm.dart';
+import 'tokens/console_tokens.dart';
 
 /// M2-T3 grammar spike 探针页（仅 kDebugMode 可见）：LiteRT-LM `ResponseFormat`
 /// 约束解码实证（architecture §2 首个 UNCERTAIN 的裁决输入）。
@@ -48,14 +49,10 @@ class _ProbeOutcome {
 }
 
 class _GrammarSpikePageState extends State<GrammarSpikePage> {
-  static const _note =
-      '周三下午 3 点和设计师对齐新版图标评审，周五前把 Q3 复盘初稿发到团队邮箱。';
+  static const _note = '周三下午 3 点和设计师对齐新版图标评审，周五前把 Q3 复盘初稿发到团队邮箱。';
 
   static final _probes = <_ProbeSpec>[
-    _ProbeSpec(
-      '① 对照（无约束）',
-      '用一句话输出下面笔记的摘要：\n$_note',
-    ),
+    _ProbeSpec('① 对照（无约束）', '用一句话输出下面笔记的摘要：\n$_note'),
     _ProbeSpec(
       '② regex 约束（严格 YYYY-MM-DD）',
       '输出一个日期，格式严格为 YYYY-MM-DD，取 2026 年 10 月 11 日：',
@@ -112,17 +109,20 @@ class _GrammarSpikePageState extends State<GrammarSpikePage> {
       });
       setState(() => _running = false);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('端侧引擎不可用：${reason ?? '未知原因'}')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('端侧引擎不可用：${reason ?? '未知原因'}')));
       }
       return;
     }
     for (final o in _outcomes) {
       final sw = Stopwatch()..start();
       // generate 契约不抛（失败/空产出= null），失败判定与日志见 ChannelLlmEngine
-      final out = await engine.generate(o.spec.prompt,
-          maxTokens: o.spec.maxTokens, responseFormat: o.spec.format);
+      final out = await engine.generate(
+        o.spec.prompt,
+        maxTokens: o.spec.maxTokens,
+        responseFormat: o.spec.format,
+      );
       sw.stop();
       if (!mounted) return;
       setState(() {
@@ -142,15 +142,11 @@ class _GrammarSpikePageState extends State<GrammarSpikePage> {
     setState(() => _cancelProbeLine = '运行中…');
     final engine = ChannelLlmEngine();
     if (!await engine.isAvailable) {
-      setState(() =>
-          _cancelProbeLine = '✕ 端侧引擎不可用（先跑三探测取真值原因）');
+      setState(() => _cancelProbeLine = '✕ 端侧引擎不可用（先跑三探测取真值原因）');
       return;
     }
     final sw = Stopwatch()..start();
-    final genDone = engine.generate(
-      '写一篇 300 字关于端侧大模型的小短文：\n',
-      maxTokens: 512,
-    );
+    final genDone = engine.generate('写一篇 300 字关于端侧大模型的小短文：\n', maxTokens: 512);
     await Future<void>.delayed(const Duration(milliseconds: 800));
     final cancelSw = Stopwatch()..start();
     final hit = await engine.cancelActive();
@@ -158,10 +154,12 @@ class _GrammarSpikePageState extends State<GrammarSpikePage> {
     final text = await genDone;
     sw.stop();
     if (!mounted) return;
-    setState(() => _cancelProbeLine =
-        'cancelActive 命中=$hit（取消调用耗时 ${cancelMs}ms）｜'
-        'generate ${sw.elapsedMilliseconds}ms 后返回：'
-        '${text == null ? 'null（无产出）' : '部分产出 ${text.length} 字：${text.trim()}'}');
+    setState(
+      () => _cancelProbeLine =
+          'cancelActive 命中=$hit（取消调用耗时 ${cancelMs}ms）｜'
+          'generate ${sw.elapsedMilliseconds}ms 后返回：'
+          '${text == null ? 'null（无产出）' : '部分产出 ${text.length} 字：${text.trim()}'}',
+    );
   }
 
   /// ⑤ 预热实证：强制释放 → 冷预热计时（「离线引擎唤醒中」窗口实测）→ 热后首生成。
@@ -191,9 +189,11 @@ class _GrammarSpikePageState extends State<GrammarSpikePage> {
     final text = await engine.generate('输出两个字：好的', maxTokens: 8);
     sw2.stop();
     if (!mounted) return;
-    setState(() => _warmupProbeLine =
-        '冷预热 ${warmMs}ms → 热后首生成 ${sw2.elapsedMilliseconds}ms'
-        '（产出：${text == null ? 'null' : text.trim()}）');
+    setState(
+      () => _warmupProbeLine =
+          '冷预热 ${warmMs}ms → 热后首生成 ${sw2.elapsedMilliseconds}ms'
+          '（产出：${text == null ? 'null' : text.trim()}）',
+    );
   }
 
   /// ⑥ 设备探针：§16 门禁数据源与裁决展示（T7 调参的实测抓手）。
@@ -206,16 +206,17 @@ class _GrammarSpikePageState extends State<GrammarSpikePage> {
       return;
     }
     final v = DeviceTierGate.check(probe);
-    setState(() => _deviceProbeLine = '$probe → ${v.pass ? '✓ 放行' : '✕ 关闸'}（${v.reason}）');
+    setState(
+      () => _deviceProbeLine =
+          '$probe → ${v.pass ? '✓ 放行' : '✕ 关闸'}（${v.reason}）',
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final t = consoleTokens(context);
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Grammar spike · 约束解码实证'),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-      ),
+      appBar: AppBar(title: const Text('Grammar spike · 约束解码实证')),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -249,27 +250,36 @@ class _GrammarSpikePageState extends State<GrammarSpikePage> {
                 const SizedBox(height: 4),
                 const Text(
                   '输出原样展示；失败 = 原生不支持（见 debugPrint 日志）',
-                  style: TextStyle(fontSize: 12),
+                  style: TextStyle(fontSize: Fsz.telemetry),
                 ),
                 if (_cancelProbeLine != null) ...[
                   const SizedBox(height: 4),
                   Text(
                     '④ 取消实证：$_cancelProbeLine',
-                    style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                    style: TextStyle(
+                      fontFamily: t.monoFamily,
+                      fontSize: Fsz.telemetry,
+                    ),
                   ),
                 ],
                 if (_warmupProbeLine != null) ...[
                   const SizedBox(height: 4),
                   Text(
                     '⑤ 预热实证：$_warmupProbeLine',
-                    style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                    style: TextStyle(
+                      fontFamily: t.monoFamily,
+                      fontSize: Fsz.telemetry,
+                    ),
                   ),
                 ],
                 if (_deviceProbeLine != null) ...[
                   const SizedBox(height: 4),
                   Text(
                     '⑥ 设备探针：$_deviceProbeLine',
-                    style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                    style: TextStyle(
+                      fontFamily: t.monoFamily,
+                      fontSize: Fsz.telemetry,
+                    ),
                   ),
                 ],
               ],
@@ -288,31 +298,39 @@ class _GrammarSpikePageState extends State<GrammarSpikePage> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Row(children: [
-                            Flexible(
-                              child: Text(o.spec.label,
+                          Row(
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  o.spec.label,
                                   overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(fontWeight: FontWeight.bold)),
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              o.elapsedMs == null
-                                  ? (_running ? '' : '待运行')
-                                  : '${o.elapsedMs}ms${o.failed ? ' · 失败(null)' : ''}',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: o.failed ? Theme.of(context).colorScheme.error : null,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
                               ),
-                            ),
-                          ]),
+                              const SizedBox(width: 8),
+                              Text(
+                                o.elapsedMs == null
+                                    ? (_running ? '' : '待运行')
+                                    : '${o.elapsedMs}ms${o.failed ? ' · 失败(null)' : ''}',
+                                style: TextStyle(
+                                  fontSize: Fsz.telemetry,
+                                  color: o.failed
+                                      ? Theme.of(context).colorScheme.error
+                                      : null,
+                                ),
+                              ),
+                            ],
+                          ),
                           const SizedBox(height: 6),
                           Text(
                             o.failed && o.error != null
                                 ? '✕ ${o.error}'
                                 : (o.output ?? (o.failed ? '（无产出）' : '—')),
                             style: TextStyle(
-                              fontFamily: 'monospace',
-                              fontSize: 13,
+                              fontFamily: t.monoFamily,
+                              fontSize: Fsz.body,
                               color: o.failed && o.error != null
                                   ? Theme.of(context).colorScheme.error
                                   : null,

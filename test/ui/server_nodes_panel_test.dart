@@ -59,6 +59,7 @@ void main() {
       home: ServicesHallPage(
         // CoW/BYOK 面板同注入假件：其默认装配走平台通道，测试环境不可达，
         // 失败置 _error 会替换整个 ListView（面板级短路），节点卡无从渲染。
+        autoProbe: false, // 探活断言均走显式「探测全部」点击，自动探活会翻倍计数
         storeOverride: CowOverridesStore(dir: tmp),
         byokStoreOverride: ByokStore(secure: secure),
         endpointStoreOverride: store,

@@ -80,6 +80,7 @@ class ByokStore {
       : _secure = secure ?? FlutterSecureKeyValue();
 
   static const _profilesPref = 'cloud_byok_profiles';
+  static const _preferredPref = 'cloud_byok_preferred_profile_id';
   static String _keyFor(String id) => 'cloud_byok_key.$id';
 
   final SecureKeyValue _secure;
@@ -108,7 +109,8 @@ class ByokStore {
     return out;
   }
 
-  /// 全量保存 profile 列表；被移除 profile 的密钥连带删除（防孤儿密钥滞留安全存储）。
+  /// 全量保存 profile 列表；被移除 profile 的密钥连带删除（防孤儿密钥滞留安全存储），
+  /// 生效位指向已删 profile 时同样清理（下次装配回退首位）。
   Future<void> save(List<ByokProfile> profiles) async {
     final prefs = await SharedPreferences.getInstance();
     final knownIds = profiles.map((p) => p.id).toSet();
@@ -119,6 +121,26 @@ class ByokStore {
     );
     for (final stale in previousIds.difference(knownIds)) {
       await _secure.delete(_keyFor(stale));
+    }
+    final preferred = prefs.getString(_preferredPref);
+    if (preferred != null && !knownIds.contains(preferred)) {
+      await prefs.remove(_preferredPref);
+    }
+  }
+
+  /// 生效 profile id（用户显式选择的云端模型）；null = 未选，装配回退列表首位。
+  Future<String?> preferredProfileId() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_preferredPref);
+  }
+
+  /// 设置生效 profile id；传 null 清除（回退首位语义）。
+  Future<void> setPreferredProfileId(String? id) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (id == null) {
+      await prefs.remove(_preferredPref);
+    } else {
+      await prefs.setString(_preferredPref, id);
     }
   }
 

@@ -21,11 +21,11 @@ class CrossSourceConsentCard extends StatelessWidget {
     this.onDecision,
     this.lockedDecision,
     this.lockedAt,
-  })  : assert(
-          (onDecision == null) == (lockedDecision != null),
-          '锁态必须带 lockedDecision，非锁态必须带 onDecision',
-        ),
-        assert(lockedDecision == null || lockedAt != null, '锁态必须带 lockedAt');
+  }) : assert(
+         (onDecision == null) == (lockedDecision != null),
+         '锁态必须带 lockedDecision，非锁态必须带 onDecision',
+       ),
+       assert(lockedDecision == null || lockedAt != null, '锁态必须带 lockedAt');
 
   final String handle;
   final String fromServer;
@@ -55,25 +55,37 @@ class CrossSourceConsentCard extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(children: [
-            Container(width: 3, height: 16, color: t.l2Warn),
-            const SizedBox(width: 8),
-            Text('跨源引用确认',
+          Row(
+            children: [
+              Container(width: 3, height: 16, color: t.l2Warn),
+              const SizedBox(width: 8),
+              Text(
+                '跨源引用确认',
                 style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: t.l2Warn)),
-          ]),
+                  fontSize: Fsz.listPrimary,
+                  fontWeight: FontWeight.w600,
+                  color: t.l2Warn,
+                ),
+              ),
+            ],
+          ),
           const SizedBox(height: 8),
           _metaRow(t, '句柄', handle),
           _metaRow(t, '来源', '[$fromServer] → 目标 [$toServer]'),
           const SizedBox(height: 8),
-          Text('数据摘要：',
-              style: TextStyle(fontSize: 12, color: Theme.of(context).hintColor)),
+          Text(
+            '数据摘要：',
+            style: TextStyle(
+              fontSize: Fsz.telemetry,
+              color: Theme.of(context).hintColor,
+            ),
+          ),
           if (blindSign) ...[
             const SizedBox(height: 4),
-            Text('（无预览——禁盲签，不可放行）',
-                style: TextStyle(fontSize: 12, color: t.danger)),
+            Text(
+              '（无预览——禁盲签，不可放行）',
+              style: TextStyle(fontSize: Fsz.telemetry, color: t.danger),
+            ),
           ] else ...[
             const SizedBox(height: 4),
             Container(
@@ -83,20 +95,24 @@ class CrossSourceConsentCard extends StatelessWidget {
                 borderRadius: BorderRadius.circular(t.cardRadius),
                 color: Theme.of(context).dividerColor.withValues(alpha: 0.3),
               ),
-              child: Text(preview,
-                  style: TextStyle(fontFamily: t.monoFamily, fontSize: 11.5)),
+              child: Text(
+                preview,
+                style: TextStyle(
+                  fontFamily: t.monoFamily,
+                  fontSize: Fsz.telemetrySm,
+                ),
+              ),
             ),
           ],
           const SizedBox(height: 8),
           if (locked)
             Text(
-              lockedDecision!
-                  ? '✓ 已允许注水${_atSuffix()}'
-                  : '✕ 已拒绝${_atSuffix()}',
+              lockedDecision! ? '✓ 已允许注水${_atSuffix()}' : '✕ 已拒绝${_atSuffix()}',
               style: TextStyle(
-                  fontSize: 12,
-                  fontFamily: t.monoFamily,
-                  color: lockedDecision! ? t.terminalMuted : t.danger),
+                fontSize: Fsz.telemetry,
+                fontFamily: t.monoFamily,
+                color: lockedDecision! ? t.terminalMuted : t.danger,
+              ),
             )
           else
             Row(
@@ -118,23 +134,30 @@ class CrossSourceConsentCard extends StatelessWidget {
     );
   }
 
-  String _atSuffix() =>
-      lockedAt == null ? '' : ' · ${lockedAt!.toIso8601String()}';
+  static String _hhmm(DateTime t) =>
+      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+
+  String _atSuffix() => lockedAt == null ? '' : ' · ${_hhmm(lockedAt!)}';
 
   Widget _metaRow(ConsoleTokens t, String label, String value) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 1),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SizedBox(
-                width: 38,
-                child: Text(label,
-                    style: TextStyle(fontSize: 12, color: t.terminalMuted))),
-            Expanded(
-              child: Text(value,
-                  style: TextStyle(fontFamily: t.monoFamily, fontSize: 12)),
-            ),
-          ],
+    padding: const EdgeInsets.symmetric(vertical: 1),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 38,
+          child: Text(
+            label,
+            style: TextStyle(fontSize: Fsz.telemetry, color: t.terminalMuted),
+          ),
         ),
-      );
+        Expanded(
+          child: Text(
+            value,
+            style: TextStyle(fontFamily: t.monoFamily, fontSize: Fsz.telemetry),
+          ),
+        ),
+      ],
+    ),
+  );
 }

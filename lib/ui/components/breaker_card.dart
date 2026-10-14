@@ -21,10 +21,7 @@ class BreakerCard extends StatefulWidget {
     this.lockedText,
     this.lockedAt,
     super.key,
-  }) : assert(
-          (report == null) != (wall == null),
-          '熔断卡给 report，步数墙卡给 wall',
-        );
+  }) : assert((report == null) != (wall == null), '熔断卡给 report，步数墙卡给 wall');
 
   /// 熔断模式数据（C1 排查卡）。
   final BreakerReport? report;
@@ -73,7 +70,7 @@ class _BreakerCardState extends State<BreakerCard> {
         barColor: t.terminalMuted,
         child: Text(
           '$locked（${_hhmm(at)}）',
-          style: TextStyle(color: t.terminalMuted, fontSize: 13),
+          style: TextStyle(color: t.terminalMuted, fontSize: Fsz.body),
         ),
       );
     }
@@ -96,7 +93,10 @@ class _BreakerCardState extends State<BreakerCard> {
                   isWall
                       ? '连续 ${widget.wall!.turnsUsed} 轮工具调用未收尾（上限 ${widget.wall!.limit}）'
                       : '${widget.report!.toolName} 连续 ${widget.report!.consecutiveFailures} 次报错',
-                  style: TextStyle(fontFamily: t.monoFamily, fontSize: 12),
+                  style: TextStyle(
+                    fontFamily: t.monoFamily,
+                    fontSize: Fsz.telemetry,
+                  ),
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
@@ -111,28 +111,31 @@ class _BreakerCardState extends State<BreakerCard> {
                 color: t.hairline,
                 borderRadius: BorderRadius.circular(6),
               ),
-              child: Text(
+              child: SelectableText(
                 widget.report!.lastError,
-                style: TextStyle(fontFamily: t.monoFamily, fontSize: 11.5),
+                style: TextStyle(
+                  fontFamily: t.monoFamily,
+                  fontSize: Fsz.telemetrySm,
+                ),
                 maxLines: 6,
-                overflow: TextOverflow.ellipsis,
               ),
             ),
           ],
           if (isWall) ...[
             const SizedBox(height: 8),
+            // 语义色纪律：终止 = 危险动作（Rose 主按钮）；放宽续跑 = 常规按钮。
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
                 OutlinedButton(
-                  onPressed: () => widget.onStepWall?.call(false),
-                  child: const Text('终止'),
+                  onPressed: () => widget.onStepWall?.call(true),
+                  child: const Text('放宽 +10 续跑'),
                 ),
                 const SizedBox(width: 8),
                 FilledButton(
                   style: FilledButton.styleFrom(backgroundColor: t.danger),
-                  onPressed: () => widget.onStepWall?.call(true),
-                  child: const Text('放宽 +10 续跑'),
+                  onPressed: () => widget.onStepWall?.call(false),
+                  child: const Text('终止'),
                 ),
               ],
             ),
@@ -147,7 +150,7 @@ class _BreakerCardState extends State<BreakerCard> {
                   border: OutlineInputBorder(),
                   isDense: true,
                 ),
-                style: const TextStyle(fontSize: 13),
+                style: const TextStyle(fontSize: Fsz.body),
               ),
               const SizedBox(height: 6),
               Row(
@@ -183,8 +186,8 @@ class _BreakerCardState extends State<BreakerCard> {
                     child: const Text('跳过'),
                   ),
                   const SizedBox(width: 8),
+                  // 重试 = 常规恢复动作（Rose 留给卡框/标题的熔断语义）。
                   FilledButton(
-                    style: FilledButton.styleFrom(backgroundColor: t.danger),
                     onPressed: () => widget.onBreaker?.call(const RetryOnce()),
                     child: const Text('单步重试'),
                   ),
@@ -199,8 +202,11 @@ class _BreakerCardState extends State<BreakerCard> {
   static String _hhmm(DateTime t) =>
       '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
 
-  Widget _frame(BuildContext context,
-      {required Color barColor, required Widget child}) {
+  Widget _frame(
+    BuildContext context, {
+    required Color barColor,
+    required Widget child,
+  }) {
     final t = consoleTokens(context);
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 4),

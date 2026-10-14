@@ -42,17 +42,43 @@ void main() {
     await settleIo(tester);
   }
 
+  /// 面板重排（节点→模型→覆写→授权）后 cow 面板位于列表第三段：先滚到可见，
+  /// 否则 ListView 懒构建下 finder 匹配不到（点/断言全落空）。
+  Future<void> scrollToCow(WidgetTester tester) async {
+    await tester.dragUntilVisible(
+      find.text('Skill 覆写管理'),
+      find.byType(ListView).first,
+      const Offset(0, -60),
+      maxIteration: 50,
+    );
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> tapVisible(WidgetTester tester, Finder finder) async {
+    await tester.ensureVisible(finder);
+    await tester.pumpAndSettle();
+    await tester.tap(finder);
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> enterVisible(WidgetTester tester, Finder finder, String text) async {
+    await tester.ensureVisible(finder);
+    await tester.pumpAndSettle();
+    await tester.enterText(finder, text);
+  }
+
   testWidgets('空态渲染 + 新建覆写（setOverride 落库 + 列表出现）', (tester) async {
     await pumpHall(tester);
+    await scrollToCow(tester);
     expect(find.text('（暂无覆写——模板按 server 版生效）'), findsOneWidget);
 
-    await tester.tap(find.byKey(const Key('cow-new')));
-    await tester.pumpAndSettle();
-    await tester.enterText(find.byKey(const Key('cow-new-name')), 'weekly_review');
-    await tester.enterText(find.byKey(const Key('cow-new-content')), '新覆写正文');
-    await tester.tap(find.byKey(const Key('cow-create')));
+    await tapVisible(tester, find.byKey(const Key('cow-new')));
+    await enterVisible(tester, find.byKey(const Key('cow-new-name')), 'weekly_review');
+    await enterVisible(tester, find.byKey(const Key('cow-new-content')), '新覆写正文');
+    await tapVisible(tester, find.byKey(const Key('cow-create')));
     // 保存 = setOverride 真实文件写 + _reload 读
     await settleIo(tester);
+    await scrollToCow(tester);
 
     expect(find.byKey(const Key('cow-item-weekly_review')), findsOneWidget);
     String? saved;
@@ -64,14 +90,15 @@ void main() {
   testWidgets('列表渲染 + 编辑保存（setOverride 覆盖旧正文）', (tester) async {
     await tester.runAsync(() => store.setOverride('item_digest', '旧正文'));
     await pumpHall(tester);
+    await scrollToCow(tester);
     expect(find.byKey(const Key('cow-item-item_digest')), findsOneWidget);
 
-    await tester.tap(find.byKey(const Key('cow-edit-item_digest')));
-    await tester.pumpAndSettle();
+    await tapVisible(tester, find.byKey(const Key('cow-edit-item_digest')));
     expect(find.byKey(const Key('cow-edit-field')), findsOneWidget);
-    await tester.enterText(find.byKey(const Key('cow-edit-field')), '改后的正文');
-    await tester.tap(find.byKey(const Key('cow-save')));
+    await enterVisible(tester, find.byKey(const Key('cow-edit-field')), '改后的正文');
+    await tapVisible(tester, find.byKey(const Key('cow-save')));
     await settleIo(tester);
+    await scrollToCow(tester);
 
     String? saved;
     await tester
@@ -84,12 +111,13 @@ void main() {
   testWidgets('一键重置（确认弹卡 → reset 落库 → 列表消失）', (tester) async {
     await tester.runAsync(() => store.setOverride('item_digest', '正文'));
     await pumpHall(tester);
+    await scrollToCow(tester);
 
-    await tester.tap(find.byKey(const Key('cow-reset-item_digest')));
-    await tester.pumpAndSettle();
+    await tapVisible(tester, find.byKey(const Key('cow-reset-item_digest')));
     expect(find.text('重置覆写'), findsOneWidget, reason: '确认弹卡先出');
     await tester.tap(find.widgetWithText(FilledButton, '重置'));
     await settleIo(tester);
+    await scrollToCow(tester);
 
     List<String> names = const [];
     await tester.runAsync(() async => names = await store.overrideNames());
@@ -100,10 +128,10 @@ void main() {
   testWidgets('保存校验：空正文不落库（防呆 SnackBar）', (tester) async {
     await tester.runAsync(() => store.setOverride('item_digest', '旧正文'));
     await pumpHall(tester);
-    await tester.tap(find.byKey(const Key('cow-edit-item_digest')));
-    await tester.pumpAndSettle();
-    await tester.enterText(find.byKey(const Key('cow-edit-field')), '   ');
-    await tester.tap(find.byKey(const Key('cow-save')));
+    await scrollToCow(tester);
+    await tapVisible(tester, find.byKey(const Key('cow-edit-item_digest')));
+    await enterVisible(tester, find.byKey(const Key('cow-edit-field')), '   ');
+    await tapVisible(tester, find.byKey(const Key('cow-save')));
     await tester.pump(); // SnackBar 出现帧（无真实 I/O——校验在写盘前拒绝）
     await tester.pump(const Duration(milliseconds: 300)); // SnackBar 退出动画收口
 

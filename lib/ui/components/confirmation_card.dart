@@ -21,9 +21,9 @@ class ConfirmationCard extends StatefulWidget {
     this.lockedAt,
     super.key,
   }) : assert(
-          (onDecision == null) == (lockedDecision != null),
-          '交互态给 onDecision，终态给 lockedDecision/lockedAt',
-        );
+         (onDecision == null) == (lockedDecision != null),
+         '交互态给 onDecision，终态给 lockedDecision/lockedAt',
+       );
 
   /// 交互态回调（终态时为 null）。
   final void Function(GateDecision decision)? onDecision;
@@ -78,7 +78,7 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
           text,
           style: TextStyle(
             color: t.terminalMuted,
-            fontSize: 13,
+            fontSize: Fsz.body,
             fontFamily: locked.approved ? null : t.monoFamily,
           ),
         ),
@@ -92,14 +92,17 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
         children: [
           Row(
             children: [
-              const Text('写操作确认', style: TextStyle(fontWeight: FontWeight.w600)),
+              const Text(
+                '写操作确认',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
                   widget.toolName,
                   style: TextStyle(
                     fontFamily: t.monoFamily,
-                    fontSize: 12,
+                    fontSize: Fsz.telemetry,
                     color: t.l2Warn,
                   ),
                   overflow: TextOverflow.ellipsis,
@@ -118,7 +121,14 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
               border: OutlineInputBorder(),
               isDense: true,
             ),
-            style: const TextStyle(fontSize: 13),
+            style: const TextStyle(fontSize: Fsz.body),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(top: 2, bottom: 2),
+            child: Text(
+              '理由仅在点「拒绝」时回传模型；点「确认执行」将直接执行并忽略理由。',
+              style: TextStyle(fontSize: Fsz.micro, color: t.terminalMuted),
+            ),
           ),
           const SizedBox(height: 4),
           // 拍板 C7：会话级豁免（内存态，会话结束/Abort 失效，不落盘）
@@ -130,28 +140,29 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
             dense: true,
             title: const Text(
               '本会话记住该工具（会话结束/中止即失效）',
-              style: TextStyle(fontSize: 12.5),
+              style: TextStyle(fontSize: Fsz.note),
             ),
           ),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
               TextButton(
-                onPressed: () => widget.onDecision?.call(GateDecision(
-                  approved: false,
-                  reason: _reasonCtrl.text.trim().isEmpty
-                      ? null
-                      : _reasonCtrl.text.trim(),
-                )),
+                onPressed: () => widget.onDecision?.call(
+                  GateDecision(
+                    approved: false,
+                    reason: _reasonCtrl.text.trim().isEmpty
+                        ? null
+                        : _reasonCtrl.text.trim(),
+                  ),
+                ),
                 child: Text('拒绝', style: TextStyle(color: t.danger)),
               ),
               const SizedBox(width: 8),
               FilledButton(
                 style: FilledButton.styleFrom(backgroundColor: t.l2Warn),
-                onPressed: () => widget.onDecision?.call(GateDecision(
-                  approved: true,
-                  rememberSession: _remember,
-                )),
+                onPressed: () => widget.onDecision?.call(
+                  GateDecision(approved: true, rememberSession: _remember),
+                ),
                 child: const Text('确认执行'),
               ),
             ],
@@ -164,8 +175,10 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
   /// 参数区：折叠键值对（严禁大段无排版 JSON，§3.2）；解析失败退回原文等宽。
   Widget _argsBlock(BuildContext context) {
     final t = consoleTokens(context);
-    final mono = TextStyle(fontFamily: t.monoFamily, fontSize: 11.5);
-    final raw = widget.argumentsJson.trim().isEmpty ? '{}' : widget.argumentsJson;
+    final mono = TextStyle(fontFamily: t.monoFamily, fontSize: Fsz.telemetrySm);
+    final raw = widget.argumentsJson.trim().isEmpty
+        ? '{}'
+        : widget.argumentsJson;
     Object? decoded;
     try {
       decoded = jsonDecode(raw);
@@ -215,8 +228,11 @@ class _ConfirmationCardState extends State<ConfirmationCard> {
     );
   }
 
-  Widget _frame(BuildContext context,
-      {required Color barColor, required Widget child}) {
+  Widget _frame(
+    BuildContext context, {
+    required Color barColor,
+    required Widget child,
+  }) {
     final t = consoleTokens(context);
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 4),

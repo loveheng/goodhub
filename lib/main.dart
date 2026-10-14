@@ -11,6 +11,7 @@ import 'llm/llm.dart';
 import 'sandbox/memory_store.dart';
 import 'ui/chat_page.dart';
 import 'ui/navigator_key.dart';
+import 'ui/tokens/console_tokens.dart';
 
 void main() {
   runApp(const GoodHubApp());
@@ -75,10 +76,26 @@ class _GoodHubAppState extends State<GoodHubApp> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    // page-revamp P0：tokens 唯一在 App 级注入（浅/深双套随系统），页面不再
+    // 自拼 ThemeData（goodhub-ui skill 纪律：consoleTokens 从 Theme 取值）。
+    final scheme = ColorScheme.fromSeed(seedColor: Colors.indigo);
     return MaterialApp(
       title: 'GoodHub',
       navigatorKey: appNavigatorKey, // 网关 L2 远程确认卡等后台弹层入口
-      theme: ThemeData(colorScheme: .fromSeed(seedColor: Colors.indigo)),
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: scheme,
+        extensions: [ConsoleTokens.light],
+      ),
+      darkTheme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.indigo,
+          brightness: Brightness.dark,
+        ),
+        extensions: [ConsoleTokens.dark],
+      ),
+      themeMode: ThemeMode.system,
       home: const ChatPage(),
     );
   }

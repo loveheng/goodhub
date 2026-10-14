@@ -31,8 +31,7 @@ class MemoryBoardPage extends StatefulWidget {
 class _MemoryBoardPageState extends State<MemoryBoardPage>
     with SingleTickerProviderStateMixin {
   MemoryStore? _store;
-  late final TabController _tabs =
-      TabController(length: 3, vsync: this);
+  late final TabController _tabs = TabController(length: 3, vsync: this);
   var _memories = const <MemoryEntry>[];
   var _lessons = const <MemoryEntry>[];
   var _ops = const <OpsLogLine>[];
@@ -52,9 +51,11 @@ class _MemoryBoardPageState extends State<MemoryBoardPage>
 
   Future<void> _init() async {
     try {
-      final store = widget.storeOverride ??
+      final store =
+          widget.storeOverride ??
           MemoryStore.underSupportDir(
-              (await getApplicationSupportDirectory()).path);
+            (await getApplicationSupportDirectory()).path,
+          );
       await _reload(store);
     } catch (e) {
       if (mounted) setState(() => _error = '记忆库初始化失败: $e');
@@ -78,65 +79,65 @@ class _MemoryBoardPageState extends State<MemoryBoardPage>
   void _flash(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(msg), duration: const Duration(seconds: 2)));
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final t = consoleTokens(context);
-    return Theme(
-      data: ThemeData(
-        useMaterial3: true,
-        colorScheme: Theme.of(context).colorScheme,
-        extensions: const [ConsoleTokens.fallback],
-      ),
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('记忆看板'),
-          actions: [
-            IconButton(
-              key: const Key('mb-export'),
-              tooltip: '导出全量（含锚点）',
-              icon: const Icon(Icons.ios_share_outlined),
-              onPressed: _export,
-            ),
-            IconButton(
-              key: const Key('mb-purge'),
-              tooltip: '粉碎 user 级',
-              icon: Icon(Icons.delete_sweep_outlined, color: t.danger),
-              onPressed: _purgeUserScope,
-            ),
-          ],
-          bottom: TabBar(
-            controller: _tabs,
-            tabs: const [
-              Tab(text: '记忆条目'),
-              Tab(text: '踩坑教训'),
-              Tab(text: '操作审计'),
-            ],
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('记忆看板'),
+        actions: [
+          IconButton(
+            key: const Key('mb-export'),
+            tooltip: '导出全量（含锚点）',
+            icon: const Icon(Icons.ios_share_outlined),
+            onPressed: _export,
           ),
+          IconButton(
+            key: const Key('mb-purge'),
+            tooltip: '粉碎用户级记忆',
+            icon: Icon(Icons.delete_sweep_outlined, color: t.danger),
+            onPressed: _purgeUserScope,
+          ),
+        ],
+        bottom: TabBar(
+          controller: _tabs,
+          tabs: const [
+            Tab(text: '记忆条目'),
+            Tab(text: '踩坑教训'),
+            Tab(text: '操作审计'),
+          ],
         ),
-        body: _error != null
-            ? Center(child: Text(_error!, style: TextStyle(color: t.danger)))
-            : _store == null
-                ? const Center(
-                    child: Text('读取记忆库…', style: TextStyle(fontSize: 12)))
-                : TabBarView(
-                    controller: _tabs,
-                    children: [
-                      _entriesTab(t, _memories, lessons: false),
-                      _entriesTab(t, _lessons, lessons: true),
-                      _opsTab(t),
-                    ],
-                  ),
       ),
+      body: _error != null
+          ? Center(
+              child: Text(_error!, style: TextStyle(color: t.danger)),
+            )
+          : _store == null
+          ? const Center(
+              child: Text('读取记忆库…', style: TextStyle(fontSize: Fsz.telemetry)),
+            )
+          : TabBarView(
+              controller: _tabs,
+              children: [
+                _entriesTab(t, _memories, lessons: false),
+                _entriesTab(t, _lessons, lessons: true),
+                _opsTab(t),
+              ],
+            ),
     );
   }
 
   // —— Tab ①②：记忆 / 教训条目面 ——
 
-  Widget _entriesTab(ConsoleTokens t, List<MemoryEntry> entries,
-      {required bool lessons}) {
+  Widget _entriesTab(
+    ConsoleTokens t,
+    List<MemoryEntry> entries, {
+    required bool lessons,
+  }) {
     return ListView(
       padding: const EdgeInsets.all(12),
       children: [
@@ -144,8 +145,9 @@ class _MemoryBoardPageState extends State<MemoryBoardPage>
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 16),
             child: Text(
-                lessons ? '（暂无教训条目）' : '（暂无记忆条目——Agent 写入后将在此出现）',
-                style: const TextStyle(fontSize: 12)),
+              lessons ? '（暂无教训条目）' : '（暂无记忆条目——Agent 写入后将在此出现）',
+              style: const TextStyle(fontSize: Fsz.telemetry),
+            ),
           ),
         for (final e in entries.reversed) // 最新在上（与审计 Tab 同视角）
           _entryCard(t, e, lessons: lessons),
@@ -166,41 +168,51 @@ class _MemoryBoardPageState extends State<MemoryBoardPage>
         borderRadius: BorderRadius.circular(t.cardRadius),
         border: Border.all(color: t.hairline),
       ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(e.content,
-            style: TextStyle(fontFamily: t.monoFamily, fontSize: 12)),
-        const SizedBox(height: 6),
-        Row(children: [
-          Expanded(
-            child: Text(
-              [
-                hasAnchor ? e.id! : '（无锚点·手写）',
-                e.scope == 'user' ? 'user' : e.scope,
-                if (e.tags.isNotEmpty) '[${e.tags.join(',')}]',
-                ?ts,
-              ].join(' · '),
-              style:
-                  TextStyle(fontFamily: t.monoFamily, fontSize: 10.5, color: t.terminalMuted),
-            ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            e.content,
+            style: TextStyle(fontFamily: t.monoFamily, fontSize: Fsz.telemetry),
           ),
-          if (hasAnchor) ...[
-            IconButton(
-              key: Key('mb-edit-${e.id}'),
-              tooltip: '编辑',
-              iconSize: 18,
-              onPressed: () => _editEntry(e, lessons: lessons),
-              icon: const Icon(Icons.edit_outlined),
-            ),
-            IconButton(
-              key: Key('mb-del-${e.id}'),
-              tooltip: '删除该条',
-              iconSize: 18,
-              onPressed: () => _deleteEntry(e, lessons: lessons),
-              icon: const Icon(Icons.delete_outline),
-            ),
-          ],
-        ]),
-      ]),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  [
+                    hasAnchor ? e.id! : '（无锚点·手写）',
+                    e.scope == 'user' ? 'user' : e.scope,
+                    if (e.tags.isNotEmpty) '[${e.tags.join(',')}]',
+                    ?ts,
+                  ].join(' · '),
+                  style: TextStyle(
+                    fontFamily: t.monoFamily,
+                    fontSize: Fsz.microSm,
+                    color: t.terminalMuted,
+                  ),
+                ),
+              ),
+              if (hasAnchor) ...[
+                IconButton(
+                  key: Key('mb-edit-${e.id}'),
+                  tooltip: '编辑',
+                  iconSize: 18,
+                  onPressed: () => _editEntry(e, lessons: lessons),
+                  icon: const Icon(Icons.edit_outlined),
+                ),
+                IconButton(
+                  key: Key('mb-del-${e.id}'),
+                  tooltip: '删除该条',
+                  iconSize: 18,
+                  onPressed: () => _deleteEntry(e, lessons: lessons),
+                  icon: const Icon(Icons.delete_outline),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
     );
   }
 
@@ -233,11 +245,15 @@ class _MemoryBoardPageState extends State<MemoryBoardPage>
         title: Text('删除${lessons ? '教训' : '记忆'} ${e.id}'),
         content: Text('删除该条目？正文：${_preview(e.content)}'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
-              key: const Key('mb-del-confirm'),
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('删除')),
+            key: const Key('mb-del-confirm'),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('删除'),
+          ),
         ],
       ),
     );
@@ -256,7 +272,7 @@ class _MemoryBoardPageState extends State<MemoryBoardPage>
         if (_ops.isEmpty)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 16),
-            child: Text('（暂无审计记录）', style: TextStyle(fontSize: 12)),
+            child: Text('（暂无审计记录）', style: TextStyle(fontSize: Fsz.telemetry)),
           ),
         for (final line in _ops)
           Container(
@@ -266,38 +282,54 @@ class _MemoryBoardPageState extends State<MemoryBoardPage>
               borderRadius: BorderRadius.circular(t.cardRadius),
               border: Border.all(color: t.hairline),
             ),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Row(children: [
-                Text(line.ok ? '✓' : '✗',
-                    style: TextStyle(
-                        fontSize: 12,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      line.ok ? '✓' : '✗',
+                      style: TextStyle(
+                        fontSize: Fsz.telemetry,
                         fontWeight: FontWeight.w600,
-                        color: line.ok ? t.l1Ok : t.danger)),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text('${line.tool} @${line.server}',
-                      style: TextStyle(
-                          fontFamily: t.monoFamily, fontSize: 12),
-                      overflow: TextOverflow.ellipsis),
-                ),
-                if (line.durationMs != null)
-                  Text('${line.durationMs}ms',
-                      style: TextStyle(
+                        color: line.ok ? t.l1Ok : t.danger,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '${line.tool} @${line.server}',
+                        style: TextStyle(
                           fontFamily: t.monoFamily,
-                          fontSize: 10.5,
-                          color: t.terminalMuted)),
-              ]),
-              Text(
-                [
-                  _fmtIso(line.ts),
-                  if (line.error != null) 'error: ${line.error}',
-                ].join(' · '),
-                style: TextStyle(
+                          fontSize: Fsz.telemetry,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (line.durationMs != null)
+                      Text(
+                        '${line.durationMs}ms',
+                        style: TextStyle(
+                          fontFamily: t.monoFamily,
+                          fontSize: Fsz.microSm,
+                          color: t.terminalMuted,
+                        ),
+                      ),
+                  ],
+                ),
+                Text(
+                  [
+                    _fmtIso(line.ts),
+                    if (line.error != null) 'error: ${line.error}',
+                  ].join(' · '),
+                  style: TextStyle(
                     fontFamily: t.monoFamily,
-                    fontSize: 10.5,
-                    color: t.terminalMuted),
-              ),
-            ]),
+                    fontSize: Fsz.microSm,
+                    color: t.terminalMuted,
+                  ),
+                ),
+              ],
+            ),
           ),
       ],
     );
@@ -324,14 +356,20 @@ class _MemoryBoardPageState extends State<MemoryBoardPage>
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('粉碎 user 级记忆'),
-        content: const Text('清空全部 user 全局记忆与教训条目？\n\n'
-            '服务绑定（srv:）条目保留；此操作不可撤销。'),
+        content: const Text(
+          '清空全部 user 全局记忆与教训条目？\n\n'
+          '服务绑定（srv:）条目保留；此操作不可撤销。',
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
             key: const Key('mb-purge-confirm'),
             style: FilledButton.styleFrom(
-                backgroundColor: Theme.of(ctx).colorScheme.error),
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+            ),
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('粉碎'),
           ),
@@ -394,7 +432,10 @@ class _EditEntryDialogState extends State<_EditEntryDialog> {
         controller: _ctrl,
         maxLines: 6,
         autofocus: true,
-        style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+        style: TextStyle(
+          fontFamily: consoleTokens(context).monoFamily,
+          fontSize: Fsz.telemetry,
+        ),
         decoration: const InputDecoration(
           border: OutlineInputBorder(),
           hintText: '正文（锚点 id/scope/tags 由看板保留）',
@@ -402,7 +443,9 @@ class _EditEntryDialogState extends State<_EditEntryDialog> {
       ),
       actions: [
         TextButton(
-            onPressed: () => Navigator.pop(context), child: const Text('取消')),
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
         FilledButton(
           key: const Key('mb-edit-save'),
           onPressed: () => Navigator.pop(context, _ctrl.text),

@@ -15,8 +15,10 @@
 ///    增删改编辑面归聊天页 ⚙ 设置（同一 ServerEndpointStore 文件）。
 library;
 
+import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -26,6 +28,7 @@ import '../llm/cloud/byok_store.dart';
 import '../llm/cloud/cloud_llm.dart';
 import '../mcp/server_endpoints.dart';
 import '../mcp/server_probe.dart';
+import 'components/server_endpoint_forms.dart';
 import 'gateway_loop_debug_page.dart';
 import 'tokens/console_tokens.dart';
 
@@ -34,7 +37,9 @@ const kCowOverrideMaxChars = 10000;
 
 /// 节点卡探活入口（注入位：测试传假探活，生产落 [ServerProber.probe]）。
 typedef NodeProbeFn = Future<NodeProbeResult> Function(
-    String endpoint, {String? apiKey});
+  String endpoint, {
+  String? apiKey,
+});
 
 class ServicesHallPage extends StatefulWidget {
   const ServicesHallPage({
@@ -43,6 +48,7 @@ class ServicesHallPage extends StatefulWidget {
     this.byokStoreOverride,
     this.endpointStoreOverride,
     this.probeOverride,
+    this.autoProbe = true,
   });
 
   /// 测试注入位；null = 生产路径（应用文档目录）。
@@ -57,6 +63,9 @@ class ServicesHallPage extends StatefulWidget {
 
   /// 测试注入位（M4-T5 节点卡）；null = 生产路径（[ServerProber] 真探活）。
   final NodeProbeFn? probeOverride;
+
+  /// 进入页面自动探活一次（P2；测试注入假探活时置 false 关掉，免干扰计数断言）。
+  final bool autoProbe;
 
   @override
   State<ServicesHallPage> createState() => _ServicesHallPageState();
@@ -75,6 +84,7 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
   // —— BYOK 面板状态（M4-T5）——
   ByokStore? _byokStore;
   var _byokProfiles = const <ByokProfile>[];
+  String? _byokPreferredId; // 生效 profile id（用户显式选择；未选=列表首位）
   final _hasByokKey = <String>{}; // 安全存储已有密钥的 profileId（真值不入内存明文）
   String? _editingByokId;
   var _creatingByok = false;
@@ -90,6 +100,10 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
   var _endpoints = const <ServerEndpoint>[];
   final _probeStates = <String, NodeProbeResult?>{}; // id → null = 探测中
   var _probing = false;
+  // —— 节点卡增删改（P1 设置拆分：服务全生命周期收敛本面板）——
+  final _epKeys = <String, String?>{}; // id → 已存令牌（编辑表单预填）
+  var _addingEp = false;
+  String? _editingEpId;
 
   @override
   void initState() {
@@ -112,7 +126,8 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
 
   Future<void> _init() async {
     try {
-      final store = widget.storeOverride ??
+      final store =
+          widget.storeOverride ??
           CowOverridesStore(dir: await getApplicationDocumentsDirectory());
       await _reload(store);
     } catch (e) {
@@ -133,6 +148,10 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
     } catch (e) {
       debugPrint('[DEGRADE] nodes-panel: 端点目录读取失败按空目录: $e');
     }
+    // P2：进入页面自动探活一次——「未探测 · 已存令牌」不再让用户先找按钮。
+    if (widget.autoProbe && mounted) {
+      unawaited(_probeAll());
+    }
   }
 
   /// 生产装配（与 chat_page._epStore 同口径；文件同址，两页面读写互见）。
@@ -140,24 +159,41 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
     final support = await getApplicationSupportDirectory();
     return ServerEndpointStore(
       file: File('${support.path}/mcp_servers.json'),
-      prefs: flutterPrefsLike((key) =>
-          SharedPreferences.getInstance().then((sp) => sp.getString(key))),
+      prefs: flutterPrefsLike(
+        (key) =>
+            SharedPreferences.getInstance().then((sp) => sp.getString(key)),
+      ),
     );
   }
 
   Future<void> _reloadEndpoints(ServerEndpointStore store) async {
     final eps = await store.load();
+    final keys = <String, String?>{};
+    for (final e in eps) {
+      try {
+        keys[e.id] = await store.apiKey(e.id);
+      } on Object catch (err) {
+        debugPrint('[DEGRADE] nodes-panel: 令牌存况读取失败按无令牌: $err');
+      }
+    }
     if (!mounted) return;
     setState(() {
       _epStore = store;
       _endpoints = eps;
+      _epKeys
+        ..clear()
+        ..addAll(keys);
+      _addingEp = false;
+      _editingEpId = null;
       // 探活状态按现目录裁剪（删掉的端点不留残影）。
       _probeStates.removeWhere((id, _) => eps.every((e) => e.id != id));
     });
   }
 
   Future<void> _probeAll() async {
-    final prober = _epStore == null ? null : (widget.probeOverride ?? _prodProbe);
+    final prober = _epStore == null
+        ? null
+        : (widget.probeOverride ?? _prodProbe);
     if (prober == null || _probing || _endpoints.isEmpty) return;
     setState(() {
       _probing = true;
@@ -169,8 +205,7 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
     if (mounted) setState(() => _probing = false);
   }
 
-  Future<void> _probeOne(
-      ServerEndpoint ep, NodeProbeFn prober) async {
+  Future<void> _probeOne(ServerEndpoint ep, NodeProbeFn prober) async {
     String? key;
     try {
       key = await _epStore?.apiKey(ep.id);
@@ -185,8 +220,81 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
     setState(() => _probeStates[ep.id] = r);
   }
 
-  NodeProbeFn get _prodProbe => (endpoint, {String? apiKey}) =>
-      ServerProber().probe(endpoint, apiKey: apiKey);
+  NodeProbeFn get _prodProbe =>
+      (endpoint, {String? apiKey}) =>
+          ServerProber().probe(endpoint, apiKey: apiKey);
+
+  // —— 节点卡增删改（P1 设置拆分：与原 chat_page ⚙ 同一 store 文件同口径）——
+
+  Future<void> _addEndpoint(
+    String id,
+    String name,
+    String endpoint,
+    String token,
+  ) async {
+    final store = _epStore;
+    if (store == null) return;
+    final newEp = ServerEndpoint(
+      id: id,
+      name: name.isEmpty ? id : name,
+      endpoint: endpoint,
+      hasKey: token.isNotEmpty,
+    );
+    await store.save([..._endpoints, newEp]);
+    if (token.isNotEmpty) await store.setApiKey(id, token);
+    await _reloadEndpoints(store);
+    _flash('✓ 已添加服务 $id');
+  }
+
+  Future<void> _saveEndpointEdit(
+    ServerEndpoint ep,
+    String endpoint,
+    String token,
+  ) async {
+    final store = _epStore;
+    if (store == null) return;
+    await store.save([
+      for (final e in _endpoints)
+        if (e.id == ep.id) ep.copyWith(endpoint: endpoint) else e,
+    ]);
+    await store.setApiKey(ep.id, token.isEmpty ? null : token);
+    await _reloadEndpoints(store);
+    _flash('✓ 已更新服务 ${ep.name}');
+  }
+
+  Future<void> _deleteEndpoint(ServerEndpoint ep) async {
+    final store = _epStore;
+    if (store == null) return;
+    // 破坏性防护：删除连带清令牌，先确认（与聊天页删除会话/BYOK 同口径）。
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: Text('删除服务 ${ep.name}'),
+        content: const Text('端点配置及其已存令牌将被一并清除，不可恢复。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: consoleTokens(dialogCtx).danger,
+            ),
+            onPressed: () => Navigator.pop(dialogCtx, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await store.save([
+      for (final e in _endpoints)
+        if (e.id != ep.id) e,
+    ]);
+    await store.setApiKey(ep.id, null);
+    await _reloadEndpoints(store);
+    _flash('✓ 已删除服务 ${ep.name}');
+  }
 
   /// 挂载开关（ui-design §3.3 物理开关质感语义）：卸载只摘出连接池
   /// （_send 跳过 enabled=false），配置与令牌保留，重开即恢复。
@@ -207,6 +315,7 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
     for (final p in profiles) {
       if (await store.apiKey(p.id) != null) withKey.add(p.id);
     }
+    final preferred = await store.preferredProfileId();
     if (mounted) {
       setState(() {
         _byokStore = store;
@@ -214,6 +323,8 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
         _hasByokKey
           ..clear()
           ..addAll(withKey);
+        _byokPreferredId = preferred ??
+            (profiles.isNotEmpty ? profiles.first.id : null);
         _creatingByok = false;
         _editingByokId = null;
       });
@@ -261,8 +372,14 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
         title: const Text('重置覆写'),
         content: Text('弃用「$name」的本地覆写副本？下次模板同步将回 server 版。'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('重置')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('重置'),
+          ),
         ],
       ),
     );
@@ -273,36 +390,33 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
 
   void _flash(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(msg), duration: const Duration(seconds: 2)));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final t = consoleTokens(context);
-    return Theme(
-      data: ThemeData(
-        useMaterial3: true,
-        colorScheme: Theme.of(context).colorScheme,
-        extensions: const [ConsoleTokens.fallback],
-      ),
-      child: Scaffold(
-        appBar: AppBar(title: const Text('服务大厅')),
-        body: _error != null
-            ? Center(child: Text(_error!, style: TextStyle(color: t.danger)))
-            : ListView(
-                padding: const EdgeInsets.all(12),
-                children: [
-                  _cowPanel(context, t),
-                  const SizedBox(height: 12),
-                  _byokPanel(context, t),
-                  const SizedBox(height: 12),
-                  _nodesPanel(context, t),
-                  const SizedBox(height: 12),
-                  _crossSourcePanel(context, t),
-                ],
-              ),
-      ),
+    return Scaffold(
+      appBar: AppBar(title: const Text('服务大厅')),
+      body: _error != null
+          ? Center(
+              child: Text(_error!, style: TextStyle(color: t.danger)),
+            )
+          : ListView(
+              padding: const EdgeInsets.all(12),
+              children: [
+                // 顺序按使用频率：节点接入 → 云端模型 → 模板覆写 → 授权语义。
+                _nodesPanel(context, t),
+                const SizedBox(height: 12),
+                _byokPanel(context, t),
+                const SizedBox(height: 12),
+                _cowPanel(context, t),
+                const SizedBox(height: 12),
+                _crossSourcePanel(context, t),
+              ],
+            ),
     );
   }
 
@@ -317,20 +431,35 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(children: [
-              Text('Skill 覆写管理',
-                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
-              const Spacer(),
-              Text('覆写 ${_entries.length} 项',
+            Row(
+              children: [
+                Text(
+                  'Skill 覆写管理',
+                  style: const TextStyle(
+                    fontSize: Fsz.sectionTitle,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  '覆写 ${_entries.length} 项',
                   style: TextStyle(
-                      fontFamily: t.monoFamily,
-                      fontSize: 11.5,
-                      color: t.terminalMuted)),
-            ]),
+                    fontFamily: t.monoFamily,
+                    fontSize: Fsz.telemetrySm,
+                    color: t.terminalMuted,
+                  ),
+                ),
+              ],
+            ),
             const SizedBox(height: 4),
-            Text('官方模板（goodshare prompts）的本地覆写副本，优先级最高；'
-                '模板大版本跃迁时同步流会弹卡让你选重置/保留。',
-                style: TextStyle(fontSize: 11.5, color: Theme.of(context).hintColor)),
+            Text(
+              '官方模板（goodshare prompts）的本地覆写副本，优先级最高；'
+              '模板大版本跃迁时同步流会弹卡让你选重置/保留。',
+              style: TextStyle(
+                fontSize: Fsz.telemetrySm,
+                color: Theme.of(context).hintColor,
+              ),
+            ),
             const SizedBox(height: 8),
             if (store == null)
               const Padding(
@@ -338,8 +467,10 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
                 // 静态文案不用 spinner：无限动画会让 pumpAndSettle 永不收口，
                 // 且加载是瞬时路径（本地文件读），控制台风格无 spin 语义。
                 child: Center(
-                  child: Text('读取覆写库…',
-                      style: TextStyle(fontSize: 12)),
+                  child: Text(
+                    '读取覆写库…',
+                    style: TextStyle(fontSize: Fsz.telemetry),
+                  ),
                 ),
               )
             else ...[
@@ -347,9 +478,13 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
               if (_entries.isEmpty)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 6),
-                  child: Text('（暂无覆写——模板按 server 版生效）',
-                      style: TextStyle(
-                          fontSize: 12, color: Theme.of(context).hintColor)),
+                  child: Text(
+                    '（暂无覆写——模板按 server 版生效）',
+                    style: TextStyle(
+                      fontSize: Fsz.telemetry,
+                      color: Theme.of(context).hintColor,
+                    ),
+                  ),
                 ),
               if (_creating) _newEditor(context, t),
               if (!_creating)
@@ -384,14 +519,22 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
           ? Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(name,
-                    style: TextStyle(fontFamily: t.monoFamily, fontSize: 12)),
+                Text(
+                  name,
+                  style: TextStyle(
+                    fontFamily: t.monoFamily,
+                    fontSize: Fsz.telemetry,
+                  ),
+                ),
                 const SizedBox(height: 6),
                 TextField(
                   key: const Key('cow-edit-field'),
                   controller: _editCtrl,
                   maxLines: 6,
-                  style: TextStyle(fontFamily: t.monoFamily, fontSize: 12),
+                  style: TextStyle(
+                    fontFamily: t.monoFamily,
+                    fontSize: Fsz.telemetry,
+                  ),
                   decoration: const InputDecoration(
                     border: OutlineInputBorder(),
                     isDense: true,
@@ -399,53 +542,67 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
                   ),
                 ),
                 const SizedBox(height: 6),
-                Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-                  TextButton(
-                    onPressed: () => setState(() => _editingName = null),
-                    child: const Text('取消'),
-                  ),
-                  const SizedBox(width: 8),
-                  FilledButton(
-                    key: const Key('cow-save'),
-                    onPressed: () => _save(name, _editCtrl.text),
-                    child: const Text('保存'),
-                  ),
-                ]),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed: () => setState(() => _editingName = null),
+                      child: const Text('取消'),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton(
+                      key: const Key('cow-save'),
+                      onPressed: () => _save(name, _editCtrl.text),
+                      child: const Text('保存'),
+                    ),
+                  ],
+                ),
               ],
             )
-          : Row(children: [
-              Expanded(
-                child: Column(
+          : Row(
+              children: [
+                Expanded(
+                  child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(name,
-                          style:
-                              TextStyle(fontFamily: t.monoFamily, fontSize: 12)),
+                      Text(
+                        name,
+                        style: TextStyle(
+                          fontFamily: t.monoFamily,
+                          fontSize: Fsz.telemetry,
+                        ),
+                      ),
                       if (at != null)
-                        Text('覆写于 ${at.toIso8601String()}',
-                            style: TextStyle(
-                                fontSize: 11, color: t.terminalMuted)),
-                    ]),
-              ),
-              IconButton(
-                key: Key('cow-edit-$name'),
-                tooltip: '编辑',
-                iconSize: 18,
-                onPressed: () {
-                  _editingName = name;
-                  _editCtrl.text = '';
-                  _loadForEdit(name);
-                },
-                icon: const Icon(Icons.edit_outlined),
-              ),
-              IconButton(
-                key: Key('cow-reset-$name'),
-                tooltip: '一键重置',
-                iconSize: 18,
-                onPressed: () => _reset(name),
-                icon: const Icon(Icons.restart_alt_outlined),
-              ),
-            ]),
+                        Text(
+                          '覆写于 ${at.toIso8601String()}',
+                          style: TextStyle(
+                            fontSize: Fsz.micro,
+                            color: t.terminalMuted,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  key: Key('cow-edit-$name'),
+                  tooltip: '编辑',
+                  iconSize: 18,
+                  onPressed: () {
+                    _editingName = name;
+                    _editCtrl.text = '';
+                    _loadForEdit(name);
+                  },
+                  icon: const Icon(Icons.edit_outlined),
+                ),
+                IconButton(
+                  key: Key('cow-reset-$name'),
+                  tooltip: '一键重置',
+                  iconSize: 18,
+                  onPressed: () => _reset(name),
+                  icon: const Icon(Icons.restart_alt_outlined),
+                ),
+              ],
+            ),
     );
   }
 
@@ -459,38 +616,42 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
   }
 
   Widget _newEditor(BuildContext context, ConsoleTokens t) => Container(
-        key: const Key('cow-new-editor'),
-        margin: const EdgeInsets.symmetric(vertical: 4),
-        padding: const EdgeInsets.all(8),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(t.cardRadius),
-          border: Border.all(color: t.hairline),
+    key: const Key('cow-new-editor'),
+    margin: const EdgeInsets.symmetric(vertical: 4),
+    padding: const EdgeInsets.all(8),
+    decoration: BoxDecoration(
+      borderRadius: BorderRadius.circular(t.cardRadius),
+      border: Border.all(color: t.hairline),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextField(
+          key: const Key('cow-new-name'),
+          controller: _newNameCtrl,
+          style: TextStyle(fontFamily: t.monoFamily, fontSize: Fsz.telemetry),
+          decoration: const InputDecoration(
+            labelText: '模板名（prompts/list 的 name）',
+            border: OutlineInputBorder(),
+            isDense: true,
+          ),
         ),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          TextField(
-            key: const Key('cow-new-name'),
-            controller: _newNameCtrl,
-            style: TextStyle(fontFamily: t.monoFamily, fontSize: 12),
-            decoration: const InputDecoration(
-              labelText: '模板名（prompts/list 的 name）',
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
+        const SizedBox(height: 6),
+        TextField(
+          key: const Key('cow-new-content'),
+          controller: _newContentCtrl,
+          maxLines: 6,
+          style: TextStyle(fontFamily: t.monoFamily, fontSize: Fsz.telemetry),
+          decoration: const InputDecoration(
+            border: OutlineInputBorder(),
+            isDense: true,
+            hintText: '覆写正文（markdown，与模板同构）',
           ),
-          const SizedBox(height: 6),
-          TextField(
-            key: const Key('cow-new-content'),
-            controller: _newContentCtrl,
-            maxLines: 6,
-            style: TextStyle(fontFamily: t.monoFamily, fontSize: 12),
-            decoration: const InputDecoration(
-              border: OutlineInputBorder(),
-              isDense: true,
-              hintText: '覆写正文（markdown，与模板同构）',
-            ),
-          ),
-          const SizedBox(height: 6),
-          Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+        ),
+        const SizedBox(height: 6),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
             TextButton(
               onPressed: () => setState(() => _creating = false),
               child: const Text('取消'),
@@ -508,9 +669,11 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
               },
               child: const Text('创建'),
             ),
-          ]),
-        ]),
-      );
+          ],
+        ),
+      ],
+    ),
+  );
 
   // —— 面板二：BYOK 云端引擎（M4-T5） ——
 
@@ -525,39 +688,59 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(children: [
-              Text('BYOK 云端引擎',
-                  style:
-                      const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
-              const Spacer(),
-              Text('配置 ${_byokProfiles.length} 项',
+            Row(
+              children: [
+                Text(
+                  'BYOK 云端引擎',
+                  style: const TextStyle(
+                    fontSize: Fsz.sectionTitle,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  '配置 ${_byokProfiles.length} 项',
                   style: TextStyle(
-                      fontFamily: t.monoFamily,
-                      fontSize: 11.5,
-                      color: t.terminalMuted)),
-            ]),
+                    fontFamily: t.monoFamily,
+                    fontSize: Fsz.telemetrySm,
+                    color: t.terminalMuted,
+                  ),
+                ),
+              ],
+            ),
             const SizedBox(height: 4),
-            Text('自带 API Key 接入云端模型（OpenAI 兼容 / Anthropic）。'
-                '列表首位为生效配置，可用「置顶」切换。',
-                style: TextStyle(
-                    fontSize: 11.5, color: Theme.of(context).hintColor)),
+            Text(
+              '自带 API Key 接入云端模型（OpenAI 兼容 / Anthropic）。'
+              '标注「生效中」的为当前装配模型，可点「设为生效引擎」或聊天页 ⚙ 切换。',
+              style: TextStyle(
+                fontSize: Fsz.telemetrySm,
+                color: Theme.of(context).hintColor,
+              ),
+            ),
             const SizedBox(height: 8),
             if (store == null)
               const Padding(
                 padding: EdgeInsets.all(8),
                 child: Center(
-                  child: Text('读取模型配置…', style: TextStyle(fontSize: 12)),
+                  child: Text(
+                    '读取模型配置…',
+                    style: TextStyle(fontSize: Fsz.telemetry),
+                  ),
                 ),
               )
             else ...[
-              for (final (i, p) in _byokProfiles.indexed)
-                _byokItem(context, t, i, p),
+              for (final p in _byokProfiles)
+                _byokItem(context, t, p),
               if (_byokProfiles.isEmpty)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 6),
-                  child: Text('（暂无模型配置——云端引擎未装配，仅端侧路径）',
-                      style: TextStyle(
-                          fontSize: 12, color: Theme.of(context).hintColor)),
+                  child: Text(
+                    '（暂无模型配置——云端引擎未装配，仅端侧路径）',
+                    style: TextStyle(
+                      fontSize: Fsz.telemetry,
+                      color: Theme.of(context).hintColor,
+                    ),
+                  ),
                 ),
               if (_creatingByok) _byokEditor(context, t, null),
               if (!_creatingByok)
@@ -577,88 +760,112 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
     );
   }
 
-  Widget _byokItem(BuildContext context, ConsoleTokens t, int index, ByokProfile p) {
+  Widget _byokItem(
+    BuildContext context,
+    ConsoleTokens t,
+    ByokProfile p,
+  ) {
     final editing = _editingByokId == p.id;
     final hasKey = _hasByokKey.contains(p.id);
+    final active = _byokPreferredId == p.id;
     return Container(
       key: Key('byok-item-${p.id}'),
       margin: const EdgeInsets.symmetric(vertical: 4),
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(t.cardRadius),
+        // 生效中 = L1 就绪语义（Amber 是写操作警示，不挪用）。
         border: Border.all(
-            color: index == 0 ? t.l2Warn : t.hairline,
-            width: index == 0 ? 1.2 : 1),
+          color: active ? t.l1Ok : t.hairline,
+          width: active ? 1.2 : 1,
+        ),
       ),
       child: editing
           ? _byokEditor(context, t, p)
-          : Row(children: [
-              Expanded(
-                child: Column(
+          : Row(
+              children: [
+                Expanded(
+                  child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(children: [
-                        Flexible(
-                          child: Text(p.name,
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              p.name,
                               style: TextStyle(
-                                  fontFamily: t.monoFamily, fontSize: 12),
-                              overflow: TextOverflow.ellipsis),
-                        ),
-                        if (index == 0) ...[
-                          const SizedBox(width: 6),
-                          Text('生效中',
+                                fontFamily: t.monoFamily,
+                                fontSize: Fsz.telemetry,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (active) ...[
+                            const SizedBox(width: 6),
+                            Text(
+                              '生效中',
                               style: TextStyle(
-                                  fontSize: 10.5,
-                                  color: t.l2Warn,
-                                  fontWeight: FontWeight.w600)),
+                                fontSize: Fsz.microSm,
+                                color: t.l1Ok,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
                         ],
-                      ]),
+                      ),
                       Text(
                         '${_protoLabel(p.protocol)} · ${p.model}\n'
                         '${p.baseUrl}${hasKey ? ' · 已存密钥' : ' · ⚠ 未存密钥'}',
                         style: TextStyle(
-                            fontFamily: t.monoFamily,
-                            fontSize: 11,
-                            color: t.terminalMuted),
+                          fontFamily: t.monoFamily,
+                          fontSize: Fsz.micro,
+                          color: t.terminalMuted,
+                        ),
                       ),
-                    ]),
-              ),
-              if (index > 0)
-                IconButton(
-                  key: Key('byok-top-${p.id}'),
-                  tooltip: '置顶启用',
-                  iconSize: 18,
-                  onPressed: () => _byokMoveTop(p),
-                  icon: const Icon(Icons.vertical_align_top_outlined),
+                    ],
+                  ),
                 ),
-              IconButton(
-                key: Key('byok-edit-${p.id}'),
-                tooltip: '编辑',
-                iconSize: 18,
-                onPressed: () => setState(() {
-                  _editingByokId = p.id;
-                  _byokNameCtrl.text = p.name;
-                  _byokProto = p.protocol;
-                  _byokUrlCtrl.text = p.baseUrl;
-                  _byokModelCtrl.text = p.model;
-                  _byokTempCtrl.text = p.temperature?.toString() ?? '';
-                  _byokKeyCtrl.clear();
-                }),
-                icon: const Icon(Icons.edit_outlined),
-              ),
-              IconButton(
-                key: Key('byok-del-${p.id}'),
-                tooltip: '删除',
-                iconSize: 18,
-                onPressed: () => _deleteByok(p),
-                icon: const Icon(Icons.delete_outline),
-              ),
-            ]),
+                if (!active)
+                  IconButton(
+                    key: Key('byok-top-${p.id}'),
+                    tooltip: '设为生效引擎',
+                    iconSize: 18,
+                    onPressed: () => _byokMoveTop(p),
+                    icon: const Icon(Icons.vertical_align_top_outlined),
+                  ),
+                IconButton(
+                  key: Key('byok-edit-${p.id}'),
+                  tooltip: '编辑',
+                  iconSize: 18,
+                  onPressed: () => setState(() {
+                    _editingByokId = p.id;
+                    _byokNameCtrl.text = p.name;
+                    _byokProto = p.protocol;
+                    _byokUrlCtrl.text = p.baseUrl;
+                    _byokModelCtrl.text = p.model;
+                    _byokTempCtrl.text = p.temperature?.toString() ?? '';
+                    _byokKeyCtrl.clear();
+                  }),
+                  icon: const Icon(Icons.edit_outlined),
+                ),
+                IconButton(
+                  key: Key('byok-del-${p.id}'),
+                  tooltip: '删除',
+                  iconSize: 18,
+                  onPressed: () => _deleteByok(p),
+                  icon: const Icon(Icons.delete_outline),
+                ),
+              ],
+            ),
     );
   }
 
   /// 新增（profile == null）与编辑共用表单；编辑模式密钥留空 = 保持已存密钥。
-  Widget _byokEditor(BuildContext context, ConsoleTokens t, ByokProfile? profile) {
+  Widget _byokEditor(
+    BuildContext context,
+    ConsoleTokens t,
+    ByokProfile? profile,
+  ) {
     final isEdit = profile != null;
     return Container(
       key: Key(isEdit ? 'byok-edit-form' : 'byok-new-form'),
@@ -668,101 +875,112 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
         borderRadius: BorderRadius.circular(t.cardRadius),
         border: Border.all(color: t.hairline),
       ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        TextField(
-          key: const Key('byok-field-name'),
-          controller: _byokNameCtrl,
-          style: TextStyle(fontFamily: t.monoFamily, fontSize: 12),
-          decoration: const InputDecoration(
-            labelText: '显示名',
-            border: OutlineInputBorder(),
-            isDense: true,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            key: const Key('byok-field-name'),
+            controller: _byokNameCtrl,
+            style: TextStyle(fontFamily: t.monoFamily, fontSize: Fsz.telemetry),
+            decoration: const InputDecoration(
+              labelText: '显示名',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
           ),
-        ),
-        const SizedBox(height: 6),
-        SegmentedButton<CloudProtocol>(
-          segments: const [
-            ButtonSegment(
-                value: CloudProtocol.openaiCompatible, label: Text('OpenAI 兼容')),
-            ButtonSegment(value: CloudProtocol.anthropic, label: Text('Anthropic')),
-          ],
-          selected: {_byokProto},
-          onSelectionChanged: (s) => setState(() => _byokProto = s.first),
-        ),
-        const SizedBox(height: 6),
-        TextField(
-          key: const Key('byok-field-url'),
-          controller: _byokUrlCtrl,
-          style: TextStyle(fontFamily: t.monoFamily, fontSize: 12),
-          decoration: const InputDecoration(
-            labelText: 'Base URL',
-            border: OutlineInputBorder(),
-            isDense: true,
+          const SizedBox(height: 6),
+          SegmentedButton<CloudProtocol>(
+            segments: const [
+              ButtonSegment(
+                value: CloudProtocol.openaiCompatible,
+                label: Text('OpenAI 兼容'),
+              ),
+              ButtonSegment(
+                value: CloudProtocol.anthropic,
+                label: Text('Anthropic'),
+              ),
+            ],
+            selected: {_byokProto},
+            onSelectionChanged: (s) => setState(() => _byokProto = s.first),
           ),
-        ),
-        const SizedBox(height: 6),
-        TextField(
-          key: const Key('byok-field-model'),
-          controller: _byokModelCtrl,
-          style: TextStyle(fontFamily: t.monoFamily, fontSize: 12),
-          decoration: const InputDecoration(
-            labelText: '模型 ID（如 deepseek-chat / claude-sonnet-4-5）',
-            border: OutlineInputBorder(),
-            isDense: true,
+          const SizedBox(height: 6),
+          TextField(
+            key: const Key('byok-field-url'),
+            controller: _byokUrlCtrl,
+            style: TextStyle(fontFamily: t.monoFamily, fontSize: Fsz.telemetry),
+            decoration: const InputDecoration(
+              labelText: 'Base URL',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
           ),
-        ),
-        const SizedBox(height: 6),
-        TextField(
-          key: const Key('byok-field-temp'),
-          controller: _byokTempCtrl,
-          style: TextStyle(fontFamily: t.monoFamily, fontSize: 12),
-          keyboardType:
-              const TextInputType.numberWithOptions(decimal: true),
-          decoration: const InputDecoration(
-            labelText: 'Temperature（可空）',
-            border: OutlineInputBorder(),
-            isDense: true,
+          const SizedBox(height: 6),
+          TextField(
+            key: const Key('byok-field-model'),
+            controller: _byokModelCtrl,
+            style: TextStyle(fontFamily: t.monoFamily, fontSize: Fsz.telemetry),
+            decoration: const InputDecoration(
+              labelText: '模型 ID（如 deepseek-chat / claude-sonnet-4-5）',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
           ),
-        ),
-        const SizedBox(height: 6),
-        TextField(
-          key: const Key('byok-field-key'),
-          controller: _byokKeyCtrl,
-          obscureText: true,
-          style: TextStyle(fontFamily: t.monoFamily, fontSize: 12),
-          decoration: InputDecoration(
-            labelText: isEdit ? 'API Key（留空 = 保持已存密钥）' : 'API Key',
-            border: const OutlineInputBorder(),
-            isDense: true,
+          const SizedBox(height: 6),
+          TextField(
+            key: const Key('byok-field-temp'),
+            controller: _byokTempCtrl,
+            style: TextStyle(fontFamily: t.monoFamily, fontSize: Fsz.telemetry),
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(
+              labelText: 'Temperature（可空）',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
           ),
-        ),
-        const SizedBox(height: 6),
-        Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-          TextButton(
-            onPressed: () => setState(() {
-              if (isEdit) {
-                _editingByokId = null;
-              } else {
-                _creatingByok = false;
-              }
-            }),
-            child: const Text('取消'),
+          const SizedBox(height: 6),
+          TextField(
+            key: const Key('byok-field-key'),
+            controller: _byokKeyCtrl,
+            obscureText: true,
+            style: TextStyle(fontFamily: t.monoFamily, fontSize: Fsz.telemetry),
+            decoration: InputDecoration(
+              labelText: isEdit ? 'API Key（留空 = 保持已存密钥）' : 'API Key',
+              border: const OutlineInputBorder(),
+              isDense: true,
+            ),
           ),
-          const SizedBox(width: 8),
-          FilledButton(
-            key: Key(isEdit ? 'byok-save' : 'byok-create'),
-            onPressed: () => isEdit ? _saveByokEdit(profile) : _createByok(),
-            child: Text(isEdit ? '保存' : '创建'),
+          const SizedBox(height: 6),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                onPressed: () => setState(() {
+                  if (isEdit) {
+                    _editingByokId = null;
+                  } else {
+                    _creatingByok = false;
+                  }
+                }),
+                child: const Text('取消'),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                key: Key(isEdit ? 'byok-save' : 'byok-create'),
+                onPressed: () =>
+                    isEdit ? _saveByokEdit(profile) : _createByok(),
+                child: Text(isEdit ? '保存' : '创建'),
+              ),
+            ],
           ),
-        ]),
-      ]),
+        ],
+      ),
     );
   }
 
   String _protoLabel(CloudProtocol p) => switch (p) {
-        CloudProtocol.openaiCompatible => 'OpenAI 兼容',
-        CloudProtocol.anthropic => 'Anthropic',
-      };
+    CloudProtocol.openaiCompatible => 'OpenAI 兼容',
+    CloudProtocol.anthropic => 'Anthropic',
+  };
 
   /// 表单 → profile 校验（name/baseUrl/model 必填；temperature 容错解析）。
   /// 返回 null = 校验失败（已 flash 提示）。
@@ -820,7 +1038,8 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
     if (profile == null) return;
     final key = _byokKeyCtrl.text.trim();
     await store.save([
-      for (final p in _byokProfiles) if (p.id == old.id) profile else p,
+      for (final p in _byokProfiles)
+        if (p.id == old.id) profile else p,
     ]);
     if (key.isNotEmpty) await store.setApiKey(old.id, key);
     await _reloadByok(store);
@@ -830,7 +1049,9 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
   Future<void> _byokMoveTop(ByokProfile p) async {
     final store = _byokStore;
     if (store == null) return;
+    // 重排（首位展示惯例）+ 写生效位：装配以 preferred 为准（未选才回退首位）。
     await store.save([p, ..._byokProfiles.where((e) => e.id != p.id)]);
+    await store.setPreferredProfileId(p.id);
     await _reloadByok(store);
     _flash('✓ 已切换生效引擎：${p.name}');
   }
@@ -844,8 +1065,17 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
         title: const Text('删除模型配置'),
         content: Text('删除「${p.name}」（${p.model}）？其已存密钥将一并清除。'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('删除')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: consoleTokens(ctx).danger,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('删除'),
+          ),
         ],
       ),
     );
@@ -859,58 +1089,101 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
   // —— 面板三：跨源授权语义（D5） ——
 
   Widget _crossSourcePanel(BuildContext context, ConsoleTokens t) => Card(
-        margin: EdgeInsets.zero,
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('跨源授权（\$ref 联合授权）',
-                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 4),
-            Text('A 应用的工具输出经 \$ref 句柄传给 B 应用工具时，宿主弹卡确认后'
-                '才注水放行——句柄是模型侧行话，真实数据永不出网关。',
-                style: TextStyle(fontSize: 11.5, color: Theme.of(context).hintColor)),
-            const SizedBox(height: 8),
-            _policyRow(context, Icons.gavel_outlined, '恒 L2 弹卡确认',
-                '每次跨源都需确认——会话豁免不适用（豁免按工具粒度防不住数据面风险）'),
-            _policyRow(context, Icons.visibility_off_outlined, '禁盲签',
-                '数据摘要不可读即拒；摘要封顶 300 字符（标题+前 5 行）'),
-            _policyRow(context, Icons.lock_outline, '不记忆不豁免',
-                '与隐私围栏同口径：显式确认不落盘、不旁路 N7 出站围栏'),
-            const SizedBox(height: 8),
+    margin: EdgeInsets.zero,
+    child: Padding(
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '跨源授权（\$ref 联合授权）',
+            style: const TextStyle(
+              fontSize: Fsz.sectionTitle,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'A 应用的工具输出经 \$ref 句柄传给 B 应用工具时，宿主弹卡确认后'
+            '才注水放行——句柄是模型侧行话，真实数据永不出网关。',
+            style: TextStyle(
+              fontSize: Fsz.telemetrySm,
+              color: Theme.of(context).hintColor,
+            ),
+          ),
+          const SizedBox(height: 8),
+          _policyRow(
+            context,
+            Icons.gavel_outlined,
+            '恒 L2 弹卡确认',
+            '每次跨源都需确认——会话豁免不适用（豁免按工具粒度防不住数据面风险）',
+          ),
+          _policyRow(
+            context,
+            Icons.visibility_off_outlined,
+            '禁盲签',
+            '数据摘要不可读即拒；摘要封顶 300 字符（标题+前 5 行）',
+          ),
+          _policyRow(
+            context,
+            Icons.lock_outline,
+            '不记忆不豁免',
+            '与隐私围栏同口径：显式确认不落盘、不旁路 N7 出站围栏',
+          ),
+          const SizedBox(height: 8),
+          // 联调入口仅 debug 构建（正式面不暴露调试工具）。
+          if (kDebugMode)
             Align(
               alignment: Alignment.centerRight,
               child: OutlinedButton.icon(
                 onPressed: () => Navigator.of(context).push(
                   MaterialPageRoute<void>(
-                      builder: (_) => const GatewayLoopDebugPage()),
+                    builder: (_) => const GatewayLoopDebugPage(),
+                  ),
                 ),
                 icon: const Icon(Icons.science_outlined, size: 16),
                 label: const Text('去联调页实测'),
               ),
             ),
-          ]),
-        ),
-      );
+        ],
+      ),
+    ),
+  );
 
-  Widget _policyRow(BuildContext context, IconData icon, String title, String desc) =>
-      Padding(
-        padding: const EdgeInsets.symmetric(vertical: 3),
-        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Icon(icon, size: 15, color: consoleTokens(context).l2Warn),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text.rich(
-              TextSpan(children: [
-                TextSpan(text: '$title：', style: const TextStyle(fontSize: 12)),
+  Widget _policyRow(
+    BuildContext context,
+    IconData icon,
+    String title,
+    String desc,
+  ) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 3),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 15, color: consoleTokens(context).l2Warn),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text.rich(
+            TextSpan(
+              children: [
                 TextSpan(
-                    text: desc,
-                    style: TextStyle(
-                        fontSize: 12, color: Theme.of(context).hintColor)),
-              ]),
+                  text: '$title：',
+                  style: const TextStyle(fontSize: Fsz.telemetry),
+                ),
+                TextSpan(
+                  text: desc,
+                  style: TextStyle(
+                    fontSize: Fsz.telemetry,
+                    color: Theme.of(context).hintColor,
+                  ),
+                ),
+              ],
             ),
           ),
-        ]),
-      );
+        ),
+      ],
+    ),
+  );
 
   // —— 面板四：Server 节点卡（M4-T5，ui-design §3.3） ——
 
@@ -922,29 +1195,43 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(children: [
-              Text('Server 节点',
-                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
-              const Spacer(),
-              if (_endpoints.isNotEmpty)
-                OutlinedButton.icon(
-                  key: const Key('nodes-probe-all'),
-                  onPressed: _probing ? null : _probeAll,
-                  icon: const Icon(Icons.radar_outlined, size: 16),
-                  label: Text(_probing ? '探测中…' : '探测全部'),
+            Row(
+              children: [
+                Text(
+                  'Server 节点',
+                  style: const TextStyle(
+                    fontSize: Fsz.sectionTitle,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
-            ]),
+                const Spacer(),
+                if (_endpoints.isNotEmpty)
+                  OutlinedButton.icon(
+                    key: const Key('nodes-probe-all'),
+                    onPressed: _probing ? null : _probeAll,
+                    icon: const Icon(Icons.radar_outlined, size: 16),
+                    label: Text(_probing ? '探测中…' : '探测全部'),
+                  ),
+              ],
+            ),
             const SizedBox(height: 4),
-            Text('已配置的 MCP 服务节点。卸载开关只把节点摘出会话装配，配置与'
-                '令牌保留；鉴权被拒（403）用红色标注，与离线区分。',
-                style: TextStyle(
-                    fontSize: 11.5, color: Theme.of(context).hintColor)),
+            Text(
+              '已配置的 MCP 服务节点。卸载开关只把节点摘出会话装配，配置与'
+              '令牌保留；鉴权被拒（403）用红色标注，与离线区分。',
+              style: TextStyle(
+                fontSize: Fsz.telemetrySm,
+                color: Theme.of(context).hintColor,
+              ),
+            ),
             const SizedBox(height: 8),
             if (_epStore == null)
               const Padding(
                 padding: EdgeInsets.all(8),
                 child: Center(
-                  child: Text('读取节点目录…', style: TextStyle(fontSize: 12)),
+                  child: Text(
+                    '读取节点目录…',
+                    style: TextStyle(fontSize: Fsz.telemetry),
+                  ),
                 ),
               )
             else ...[
@@ -954,9 +1241,27 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 6),
                   child: Text(
-                      '（暂无节点——聊天页 ⚙ 设置可添加，本地插件自动挂载不在此列）',
-                      style: TextStyle(
-                          fontSize: 12, color: Theme.of(context).hintColor)),
+                    '（暂无节点——点下方「添加服务」接入，本地插件自动挂载不在此列）',
+                    style: TextStyle(
+                      fontSize: Fsz.telemetry,
+                      color: Theme.of(context).hintColor,
+                    ),
+                  ),
+                ),
+              if (_addingEp)
+                ServerEndpointAddForm(
+                  onAdd: _addEndpoint,
+                  onCancel: () => setState(() => _addingEp = false),
+                ),
+              if (!_addingEp)
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
+                    key: const Key('nodes-add'),
+                    onPressed: () => setState(() => _addingEp = true),
+                    icon: const Icon(Icons.add, size: 16),
+                    label: const Text('添加服务'),
+                  ),
                 ),
             ],
           ],
@@ -980,45 +1285,93 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
         borderRadius: BorderRadius.circular(t.cardRadius),
         border: Border.all(color: t.hairline),
       ),
-      child: Row(children: [
-        _statusDot(t, probing, probe),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(children: [
-                  Flexible(
-                    child: Text(ep.name,
-                        style: TextStyle(
-                            fontFamily: t.monoFamily, fontSize: 12),
-                        overflow: TextOverflow.ellipsis),
-                  ),
-                  if (!ep.enabled) ...[
-                    const SizedBox(width: 6),
-                    Text('已卸载',
-                        style: TextStyle(
-                            fontSize: 10.5, color: t.terminalMuted)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              _statusDot(t, probing, probe),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            ep.name,
+                            style: TextStyle(
+                              fontFamily: t.monoFamily,
+                              fontSize: Fsz.telemetry,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (!ep.enabled) ...[
+                          const SizedBox(width: 6),
+                          Text(
+                            '已卸载',
+                            style: TextStyle(
+                              fontSize: Fsz.microSm,
+                              color: t.terminalMuted,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    Text(
+                      '${ep.endpoint}\n'
+                      '端口 ${_portLabel(ep.endpoint)} · ${_metricsLabel(probe)} · '
+                      '${_authLabel(ep, probe)}',
+                      style: TextStyle(
+                        fontFamily: t.monoFamily,
+                        fontSize: Fsz.micro,
+                        color: t.terminalMuted,
+                      ),
+                    ),
                   ],
-                ]),
-                Text(
-                  '${ep.endpoint}\n'
-                  '端口 ${_portLabel(ep.endpoint)} · ${_metricsLabel(probe)} · '
-                  '${_authLabel(ep, probe)}',
-                  style: TextStyle(
-                      fontFamily: t.monoFamily,
-                      fontSize: 11,
-                      color: t.terminalMuted),
                 ),
-              ]),
-        ),
-        // 挂载/卸载开关（微型物理开关语义，Dual-Role 本地总线心智）。
-        Switch(
-          key: Key('node-switch-${ep.id}'),
-          value: ep.enabled,
-          onChanged: (v) => _toggleMounted(ep, v),
-        ),
-      ]),
+              ),
+              // 内联编辑/删除（P1 设置拆分：全生命周期收敛本面板）。
+              IconButton(
+                key: Key('node-edit-${ep.id}'),
+                tooltip: _editingEpId == ep.id ? '收起' : '编辑',
+                iconSize: 18,
+                icon: Icon(
+                  _editingEpId == ep.id ? Icons.close : Icons.edit_outlined,
+                ),
+                onPressed: () => setState(() {
+                  _editingEpId = _editingEpId == ep.id ? null : ep.id;
+                }),
+              ),
+              IconButton(
+                key: Key('node-del-${ep.id}'),
+                tooltip: '删除',
+                iconSize: 18,
+                icon: const Icon(Icons.delete_outline),
+                onPressed: () => unawaited(_deleteEndpoint(ep)),
+              ),
+              // 破坏性操作与高频挂载开关之间留间距，防误触卸载成删除。
+              const SizedBox(width: 6),
+              // 挂载/卸载开关（微型物理开关语义，Dual-Role 本地总线心智）。
+              Switch(
+                key: Key('node-switch-${ep.id}'),
+                value: ep.enabled,
+                onChanged: (v) => _toggleMounted(ep, v),
+              ),
+            ],
+          ),
+          if (_editingEpId == ep.id)
+            ServerEndpointEditForm(
+              ep: ep,
+              storedKey: _epKeys[ep.id],
+              onSave: (updated, token) =>
+                  _saveEndpointEdit(ep, updated.endpoint, token),
+              onCancel: () => setState(() => _editingEpId = null),
+            ),
+        ],
+      ),
     );
   }
 
@@ -1027,10 +1380,10 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
     final color = probing
         ? t.l1Info
         : probe == null
-            ? t.terminalMuted
-            : probe.online && !probe.authDenied
-                ? t.l1Ok
-                : t.danger;
+        ? t.terminalMuted
+        : probe.online && !probe.authDenied
+        ? t.l1Ok
+        : t.danger;
     return Container(
       width: 10,
       height: 10,

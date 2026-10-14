@@ -12,6 +12,7 @@ import '../task/task_loop_service.dart';
 import 'gateway_loop_debug_page.dart';
 import 'grammar_spike_page.dart';
 import 'services_hall_page.dart';
+import 'tokens/console_tokens.dart';
 
 /// M1 最小壳：claim → 推理占位 → touch 心跳 → apply 回写 闭环验证页。
 /// 人类入口（本页按钮）与未来自动循环（AI 入口）共用 [TaskLoopService]——
@@ -38,22 +39,31 @@ class _ClaimLoopPageState extends State<ClaimLoopPage> {
 
   void _logLine(String line) {
     setState(() {
-      _log.insert(0, '${DateTime.now().toIso8601String().substring(11, 19)} $line');
+      _log.insert(
+        0,
+        '${DateTime.now().toIso8601String().substring(11, 19)} $line',
+      );
     });
   }
 
   /// 事件流 → 日志行（人类入口的渲染适配；AI 入口在此换遥测收集器）。
   String _describe(TaskLoopEvent e) => switch (e) {
-        ClaimStarted() => '→ claim_ai_task',
-        QueueIdle() => '✓ idle（队列无任务）',
-        TaskClaimed(:final taskId, :final taskAction, :final textLength, :final version) =>
-          '✓ 认领 $taskId action=$taskAction len=$textLength v=$version',
-        HeartbeatSent() => '✓ touch',
-        Applied(:final taskId, :final snapshotKeys) =>
-          '✓ apply 回写成功 ($taskId keys: $snapshotKeys)',
-        NotFoundClosed(:final taskId, :final note) => '⚠ not_found $taskId: $note（已收尾）',
-        LoopFailed(:final error) => '✕ $error',
-      };
+    ClaimStarted() => '→ claim_ai_task',
+    QueueIdle() => '✓ idle（队列无任务）',
+    TaskClaimed(
+      :final taskId,
+      :final taskAction,
+      :final textLength,
+      :final version,
+    ) =>
+      '✓ 认领 $taskId action=$taskAction len=$textLength v=$version',
+    HeartbeatSent() => '✓ touch',
+    Applied(:final taskId, :final snapshotKeys) =>
+      '✓ apply 回写成功 ($taskId keys: $snapshotKeys)',
+    NotFoundClosed(:final taskId, :final note) =>
+      '⚠ not_found $taskId: $note（已收尾）',
+    LoopFailed(:final error) => '✕ $error',
+  };
 
   /// 事件处理器（build 重挂与 _runOnce 懒构造后直挂共用——service 每次 Run
   /// 重建，build 只发生在重建前，运行中事件若不在构造后直挂会全部丢失）。
@@ -112,10 +122,10 @@ class _ClaimLoopPageState extends State<ClaimLoopPage> {
   Widget build(BuildContext context) {
     // 服务懒构造后挂事件回调（build 重挂兜底；运行中事件由 _runOnce 构造后直挂）
     _service?.onEvent = _onLoopEvent;
+    final t = consoleTokens(context);
     return Scaffold(
       appBar: AppBar(
         title: const Text('GoodHub · M1 壳'),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: [
           // M2-T3 grammar spike 探针入口（仅 debug 构建）：约束解码实证用
           if (kDebugMode)
@@ -123,7 +133,9 @@ class _ClaimLoopPageState extends State<ClaimLoopPage> {
               icon: const Icon(Icons.science_outlined),
               tooltip: 'Grammar spike 探针',
               onPressed: () => Navigator.of(context).push(
-                MaterialPageRoute<void>(builder: (_) => const GrammarSpikePage()),
+                MaterialPageRoute<void>(
+                  builder: (_) => const GrammarSpikePage(),
+                ),
               ),
             ),
           // M3-T4 服务大厅：Skill 覆写管理 + 跨源授权面板（正式面）
@@ -141,7 +153,8 @@ class _ClaimLoopPageState extends State<ClaimLoopPage> {
               tooltip: '网关/熔断联调',
               onPressed: () => Navigator.of(context).push(
                 MaterialPageRoute<void>(
-                    builder: (_) => const GatewayLoopDebugPage()),
+                  builder: (_) => const GatewayLoopDebugPage(),
+                ),
               ),
             ),
         ],
@@ -153,35 +166,38 @@ class _ClaimLoopPageState extends State<ClaimLoopPage> {
           children: [
             TextField(
               controller: _urlCtrl,
-              enabled: !_running && _service == null,
+              // 运行中锁输入；运行结束后允许改地址重跑（_runOnce 按 Run 重建）。
+              enabled: !_running,
               decoration: const InputDecoration(
                 labelText: 'MCP Endpoint',
                 border: OutlineInputBorder(),
                 isDense: true,
               ),
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+              style: TextStyle(fontFamily: t.monoFamily, fontSize: Fsz.body),
             ),
             const SizedBox(height: 8),
             TextField(
               controller: _keyCtrl,
-              enabled: !_running && _service == null,
+              enabled: !_running,
               obscureText: true,
               decoration: const InputDecoration(
                 labelText: 'X-Api-Key（goodshare MCP 服务页，可留空）',
                 border: OutlineInputBorder(),
                 isDense: true,
               ),
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+              style: TextStyle(fontFamily: t.monoFamily, fontSize: Fsz.body),
             ),
             const SizedBox(height: 8),
-            Row(children: [
-              FilledButton(
-                onPressed: _running ? null : _runOnce,
-                child: Text(_running ? 'Running…' : 'Claim & Apply 一次'),
-              ),
-              const SizedBox(width: 12),
-              Text('状态: $_status'),
-            ]),
+            Row(
+              children: [
+                FilledButton(
+                  onPressed: _running ? null : _runOnce,
+                  child: Text(_running ? 'Running…' : 'Claim & Apply 一次'),
+                ),
+                const SizedBox(width: 12),
+                Text('状态: $_status'),
+              ],
+            ),
             const Divider(height: 24),
             const Align(alignment: .centerLeft, child: Text('日志（新→旧）')),
             Expanded(
@@ -194,9 +210,13 @@ class _ClaimLoopPageState extends State<ClaimLoopPage> {
                 ),
                 child: ListView.builder(
                   itemCount: _log.length,
-                  itemBuilder: (_, i) => Text(_log[i],
-                      style: const TextStyle(
-                          fontFamily: 'monospace', fontSize: 12)),
+                  itemBuilder: (_, i) => Text(
+                    _log[i],
+                    style: TextStyle(
+                      fontFamily: t.monoFamily,
+                      fontSize: Fsz.telemetry,
+                    ),
+                  ),
                 ),
               ),
             ),

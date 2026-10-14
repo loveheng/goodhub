@@ -20,9 +20,9 @@ class FenceBlockCard extends StatefulWidget {
     this.lockedAt,
     super.key,
   }) : assert(
-          (onDecision == null) == (lockedSendRaw != null),
-          '交互态给 onDecision，终态给 lockedSendRaw/lockedAt',
-        );
+         (onDecision == null) == (lockedSendRaw != null),
+         '交互态给 onDecision，终态给 lockedSendRaw/lockedAt',
+       );
 
   /// 出事引擎名（围栏装饰的内层引擎，如 openai/gpt-4o）。
   final String engineName;
@@ -67,7 +67,10 @@ class _FenceBlockCardState extends State<FenceBlockCard> {
       return _frame(
         context,
         barColor: t.terminalMuted,
-        child: Text(text, style: TextStyle(color: t.terminalMuted, fontSize: 13)),
+        child: Text(
+          text,
+          style: TextStyle(color: t.terminalMuted, fontSize: Fsz.body),
+        ),
       );
     }
     return _frame(
@@ -78,15 +81,17 @@ class _FenceBlockCardState extends State<FenceBlockCard> {
         children: [
           Row(
             children: [
-              const Text('PII 围栏拦截',
-                  style: TextStyle(fontWeight: FontWeight.w600)),
+              const Text(
+                'PII 围栏拦截',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
                   widget.engineName,
                   style: TextStyle(
                     fontFamily: t.monoFamily,
-                    fontSize: 12,
+                    fontSize: Fsz.telemetry,
                     color: t.l2Warn,
                   ),
                   overflow: TextOverflow.ellipsis,
@@ -104,7 +109,10 @@ class _FenceBlockCardState extends State<FenceBlockCard> {
             ),
             child: Text(
               '遮蔽失败：${widget.failureMessage}',
-              style: TextStyle(fontFamily: t.monoFamily, fontSize: 11.5),
+              style: TextStyle(
+                fontFamily: t.monoFamily,
+                fontSize: Fsz.telemetrySm,
+              ),
             ),
           ),
           const SizedBox(height: 6),
@@ -112,7 +120,11 @@ class _FenceBlockCardState extends State<FenceBlockCard> {
             '本次发送无法完成 PII 遮蔽。取消即中止本次云端请求；'
             '明文发送将把未遮蔽内容（可能含手机号/邮箱/证件号）送出设备，'
             '仅生效一次、不记忆不豁免。',
-            style: TextStyle(fontSize: 12.5, color: t.terminalMuted, height: 1.4),
+            style: TextStyle(
+              fontSize: Fsz.note,
+              color: t.terminalMuted,
+              height: 1.4,
+            ),
           ),
           const SizedBox(height: 4),
           Row(
@@ -135,8 +147,11 @@ class _FenceBlockCardState extends State<FenceBlockCard> {
     );
   }
 
-  Widget _frame(BuildContext context,
-      {required Color barColor, required Widget child}) {
+  Widget _frame(
+    BuildContext context, {
+    required Color barColor,
+    required Widget child,
+  }) {
     final t = consoleTokens(context);
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 4),

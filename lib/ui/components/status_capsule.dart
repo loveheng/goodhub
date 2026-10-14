@@ -10,7 +10,11 @@ import '../tokens/console_tokens.dart';
 enum CapsuleTone { idle, l1, l2, danger }
 
 class StatusCapsule extends StatelessWidget {
-  const StatusCapsule({required this.label, this.tone = CapsuleTone.idle, super.key});
+  const StatusCapsule({
+    required this.label,
+    this.tone = CapsuleTone.idle,
+    super.key,
+  });
 
   /// 等宽阶段名（如 `goodshare::list_items`，§3.1 中列）。
   final String label;
@@ -35,9 +39,11 @@ class StatusCapsule extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
+          // §4.2 紧凑动效：状态点颜色随相位过渡（150~200ms，禁 Spring）。
+          AnimatedContainer(
             width: 7,
             height: 7,
+            duration: t.fastDuration,
             decoration: BoxDecoration(color: color, shape: BoxShape.circle),
           ),
           const SizedBox(width: 6),
@@ -45,7 +51,7 @@ class StatusCapsule extends StatelessWidget {
             label,
             style: TextStyle(
               fontFamily: t.monoFamily,
-              fontSize: 12,
+              fontSize: Fsz.telemetry,
               color: Theme.of(context).textTheme.bodyMedium?.color,
             ),
           ),

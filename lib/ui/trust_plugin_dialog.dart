@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 
 import '../mcp/local_plugin_discovery.dart';
 import '../mcp/trusted_plugins.dart';
+import 'tokens/console_tokens.dart';
 
 /// 信任卡片 UI（纯展示 + 两个回调）。标题/包名/SHA-256/「信任并挂载」均带固定文案
 /// 与 monospace 指纹，便于测试按文本断言。
@@ -25,37 +26,51 @@ class TrustPluginDialog extends StatelessWidget {
   final VoidCallback onDeny;
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-        title: const Text('信任本地插件？'),
-        content: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text('发现未与 GoodHub 同签名的本地 MCP 插件：'),
-              const SizedBox(height: 8),
-              Text('名称：${info.serverTitle}（${info.serverId}）',
-                  style: const TextStyle(fontFamily: 'monospace')),
-              Text('包名：${info.packageName}',
-                  style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
-              const SizedBox(height: 8),
-              const Text('签名 SHA-256：',
-                  style: TextStyle(fontWeight: FontWeight.w600)),
-              Text(info.signatureSha256,
-                  style: const TextStyle(
-                      fontFamily: 'monospace', fontSize: 11)),
-              const SizedBox(height: 8),
-              const Text(
-                  '确认后该包名将被加入信任白名单（可在 ⚙ 设置中撤销）。'
-                  '仅信任你确认真实的插件。'),
-            ],
-          ),
+  Widget build(BuildContext context) {
+    final t = consoleTokens(context);
+    return AlertDialog(
+      title: const Text('信任本地插件？'),
+      content: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('发现未与 GoodHub 同签名的本地 MCP 插件：'),
+            const SizedBox(height: 8),
+            Text(
+              '名称：${info.serverTitle}（${info.serverId}）',
+              style: TextStyle(fontFamily: t.monoFamily),
+            ),
+            Text(
+              '包名：${info.packageName}',
+              style: TextStyle(
+                fontFamily: t.monoFamily,
+                fontSize: Fsz.telemetry,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              '签名 SHA-256：',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+            Text(
+              info.signatureSha256,
+              style: TextStyle(fontFamily: t.monoFamily, fontSize: Fsz.micro),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              '确认后该包名将被加入信任白名单（可在 ⚙ 设置中撤销）。'
+              '仅信任你确认真实的插件。',
+            ),
+          ],
         ),
-        actions: [
-          TextButton(onPressed: onDeny, child: const Text('拒绝')),
-          FilledButton(onPressed: onConfirm, child: const Text('信任并挂载')),
-        ],
-      );
+      ),
+      actions: [
+        TextButton(onPressed: onDeny, child: const Text('拒绝')),
+        FilledButton(onPressed: onConfirm, child: const Text('信任并挂载')),
+      ],
+    );
+  }
 }
 
 /// 弹出信任卡片；用户点「信任并挂载」后持久化入白名单并返回 true，

@@ -9,7 +9,7 @@ void main() {
   testWidgets('首页冒烟（M4-T3/D9）：ChatPage 接管——标题/输入/发送存在', (tester) async {
     await tester.pumpWidget(const GoodHubApp());
     expect(find.text('GoodHub'), findsOneWidget);
-    expect(find.text('发送'), findsOneWidget, reason: '输入栏发送按钮（运行前形态）');
+    expect(find.byTooltip('发送'), findsOneWidget, reason: '输入栏发送按钮（图标形态，tooltip=发送）');
     expect(find.textContaining('配置服务端点'), findsOneWidget,
         reason: '空轨道提示（连接配置引导）');
   });
