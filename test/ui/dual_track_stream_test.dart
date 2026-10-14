@@ -43,11 +43,31 @@ void main() {
     expect(find.byType(CallCard), findsOneWidget);
   });
 
+  testWidgets('表格渲染：列宽按内容自适应（防 FlexColumnWidth 塌缩错乱）',
+      (tester) async {
+    const md = '| 名称 | 端口 | 状态 |\n'
+        '| --- | :---: | ---: |\n'
+        '| goodshare | 8765 | 已挂载 |\n'
+        '| shuguang | 8766 | 已挂载 |';
+    await pump(tester, [TrackText(md)]);
+
+    final table = tester.widget<Table>(find.byType(Table));
+    expect(table.defaultColumnWidth, isA<IntrinsicColumnWidth>(),
+        reason: '横向滚动无限宽约束下列宽须按内容自适应，否则单元格重叠错乱');
+    // 表头 + 两行数据 = 3 行（TableRow 非 Widget，按 children 长度断言）。
+    expect(table.children.length, 3);
+    // 单元格对齐透传：中间列居中、末列右对齐（markdown `:---:` / `---:`）。
+    expect(find.text('端口'), findsOneWidget);
+    expect(find.text('已挂载'), findsNWidgets(2));
+  });
+
   testWidgets('阅读轨经 RichTextView 渲染 Markdown（D12 自写方案）', (tester) async {
     final text = TrackText('');
     text.text.write('# 结论\n\n**要点** 与 `code`');
     await pump(tester, [text]);
-    expect(find.byType(RichTextView), findsOneWidget);
+    // P1（stream-perf §4）：空行切点把标题段稳入稳定前缀，正文为活跃尾块——
+    // 单条目 = 稳定 + 尾块两个 RichTextView（隔离重绘）。
+    expect(find.byType(RichTextView), findsNWidgets(2));
     // 嵌套 TextSpan 用 findRichText 匹配（Text.rich 叶子）。
     expect(find.textContaining('结论', findRichText: true), findsOneWidget);
     expect(find.textContaining('要点', findRichText: true), findsOneWidget);

@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+2002 # 真机已装 2001（旧带 db 的迭代版）；覆盖安装须 ≥2002
+version: 1.0.1+2003 # 真机已装 2002（R2 首发版）；覆盖安装须 ≥2003
 
 environment:
   sdk: ^3.13.4
@@ -44,9 +44,18 @@ dependencies:
   # MCP Client：JSON-RPC over Streamable HTTP（M1 闭环）
   http: ^1.2.0
 
+  # 共享 Markdown 子集解析器（2026-10-14 抽为同级仓 ../rich_text，消除与 goodshare 的双仓副本分叉）
+  rich_text:
+    path: ../rich_text
+
   # 云端 BYOK 密钥安全存储（M2-T1，architecture §1 密钥纪律）：
   # Android 后端 EncryptedSharedPreferences/Keystore
   flutter_secure_storage: ^9.2.2
+
+  # 应用内自更新（self-update epic，goodshare 同款）：流式 sha256 校验 + 读 buildNumber + 拉起系统安装器
+  crypto: ^3.0.7
+  package_info_plus: ^9.0.1
+  open_filex: ^4.7.0
 
 dev_dependencies:
   fake_async: ^1.3.1

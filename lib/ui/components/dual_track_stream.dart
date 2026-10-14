@@ -9,7 +9,8 @@
 ///   FenceBlockCard 直接内嵌（含终态锁定形态），不另造；
 /// - 用户轮次（TrackUser）：Indigo 竖条卡片（数据指针色，ui-design §1），
 ///   与操作卡同族排版——拒绝左右气泡（ui-design §3.2 同轴纪律）；
-/// - 阅读轨文本经 RichTextView 渲染（Markdown 只读，D12 自写方案）。
+/// - 阅读轨文本经 StreamingRichText 渲染（P1 前缀块缓存；RichTextView 为
+///   块渲染器，Markdown 只读，D12 自写方案）。
 library;
 
 import 'dart:async';
@@ -23,7 +24,7 @@ import 'breaker_card.dart';
 import 'call_card.dart';
 import 'confirmation_card.dart';
 import 'fence_block_card.dart';
-import '../rich_text_view.dart';
+import 'streaming_rich_text.dart';
 import '../tokens/console_tokens.dart';
 
 /// 轨道条目（页面编排记录；sealed 供渲染穷举）。
@@ -55,6 +56,9 @@ class TrackCall extends TrackEntry {
   CallCardPhase phase = CallCardPhase.running;
   String? progressNote;
   String preview = '';
+
+  /// 终态结果全文（可展开查看；空 = 仅预览）。
+  String resultText = '';
 }
 
 /// L2 确认卡（GateDelegate 待决挂起；用户操作后锁定终态）。
@@ -115,16 +119,43 @@ class DualTrackStream extends StatelessWidget {
   Widget build(BuildContext context) {
     if (entries.isEmpty && emptyHint.isNotEmpty) {
       return Center(
-        child: Text(emptyHint,
-            style: TextStyle(
-                color: consoleTokens(context).terminalMuted, fontSize: 13)),
+        child: Text(
+          emptyHint,
+          style: TextStyle(
+            color: consoleTokens(context).terminalMuted,
+            fontSize: Fsz.body,
+          ),
+        ),
       );
     }
-    return ListView.builder(
+    // P2 运行概要收敛：连续的灰阶通告行（遥测类 TrackNote）折叠为一条可展开
+    // 概要——阅读轨不被系统通告刷屏；危险通告（Rose）保持独立凸显。
+    final rows = <Widget>[];
+    final pendingNotes = <TrackNote>[];
+    void flushNotes() {
+      if (pendingNotes.isEmpty) return;
+      // 单条不折叠：保持原通告行形态，零阅读成本。
+      if (pendingNotes.length == 1) {
+        rows.add(renderEntry(context, pendingNotes.single));
+      } else {
+        rows.add(_RunSummary(notes: List.of(pendingNotes)));
+      }
+      pendingNotes.clear();
+    }
+
+    for (final e in entries) {
+      if (e is TrackNote && !e.danger) {
+        pendingNotes.add(e);
+      } else {
+        flushNotes();
+        rows.add(renderEntry(context, e));
+      }
+    }
+    flushNotes();
+    return ListView(
       controller: controller,
       padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-      itemCount: entries.length,
-      itemBuilder: (context, i) => renderEntry(context, entries[i]),
+      children: rows,
     );
   }
 
@@ -133,9 +164,11 @@ class DualTrackStream extends StatelessWidget {
     switch (entry) {
       case TrackText(:final text):
         if (text.isEmpty) return const SizedBox.shrink();
+        // P1（stream-perf §4）：流式前缀块缓存 + 隔离重绘——解析与渲染隔离
+        // 收编于 StreamingRichText（RichTextView 仍为块渲染器）。
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
-          child: RichTextView(markdown: text.toString()),
+          child: StreamingRichText(text: text.toString()),
         );
       case TrackUser(:final text):
         final t = consoleTokens(context);
@@ -157,14 +190,22 @@ class DualTrackStream extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Text('你',
-                          style: TextStyle(
-                              fontFamily: t.monoFamily,
-                              fontSize: 10.5,
-                              color: t.dataRef)),
+                      Text(
+                        '你',
+                        style: TextStyle(
+                          fontFamily: t.monoFamily,
+                          fontSize: Fsz.microSm,
+                          color: t.dataRef,
+                        ),
+                      ),
                       const SizedBox(height: 2),
-                      Text(text,
-                          style: const TextStyle(fontSize: 14.5, height: 1.5)),
+                      Text(
+                        text,
+                        style: const TextStyle(
+                          fontSize: Fsz.reading,
+                          height: 1.5,
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -178,8 +219,14 @@ class DualTrackStream extends StatelessWidget {
           phase: e.phase,
           progressNote: e.progressNote,
           preview: e.preview,
+          fullResult: e.resultText.isEmpty ? null : e.resultText,
         );
-      case TrackConfirm(:final pending, :final decision, :final decidedAt, :final completer):
+      case TrackConfirm(
+        :final pending,
+        :final decision,
+        :final decidedAt,
+        :final completer,
+      ):
         return ConfirmationCard(
           toolName: pending.toolName,
           argumentsJson: pending.argumentsJson,
@@ -193,7 +240,13 @@ class DualTrackStream extends StatelessWidget {
           lockedDecision: decision,
           lockedAt: decidedAt,
         );
-      case TrackBreaker(:final report, :final wall, :final lockedText, :final decidedAt, :final completer):
+      case TrackBreaker(
+        :final report,
+        :final wall,
+        :final lockedText,
+        :final decidedAt,
+        :final completer,
+      ):
         return BreakerCard(
           report: report,
           wall: wall,
@@ -218,7 +271,12 @@ class DualTrackStream extends StatelessWidget {
                   completer.complete(relax);
                 },
         );
-      case TrackFence(:final info, :final decision, :final decidedAt, :final completer):
+      case TrackFence(
+        :final info,
+        :final decision,
+        :final decidedAt,
+        :final completer,
+      ):
         return FenceBlockCard(
           engineName: info.engineName,
           failureMessage: info.failureMessage,
@@ -236,11 +294,64 @@ class DualTrackStream extends StatelessWidget {
         final t = consoleTokens(context);
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
-          child: Text(text,
-              style: TextStyle(
-                  fontSize: 12.5, color: danger ? t.danger : t.terminalMuted)),
+          // 排障场景通告（尤其 ✕ 错误行）可长按复制。
+          child: SelectableText(
+            text,
+            style: TextStyle(
+              fontSize: Fsz.note,
+              color: danger ? t.danger : t.terminalMuted,
+            ),
+          ),
         );
     }
+  }
+}
+
+/// Run 概要条（P2）：连续灰阶通告折叠为一条可展开行——标题计等宽遥测轨,
+/// 展开即原通告行列表。危险通告不进此条（Rose 独立凸显由页面分组保证）。
+class _RunSummary extends StatelessWidget {
+  const _RunSummary({required this.notes});
+
+  final List<TrackNote> notes;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = consoleTokens(context);
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(t.cardRadius),
+        border: Border.all(color: t.hairline),
+      ),
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          tilePadding: const EdgeInsets.symmetric(horizontal: 10),
+          childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
+          dense: true,
+          iconColor: t.terminalMuted,
+          collapsedIconColor: t.terminalMuted,
+          title: Text(
+            'Run 概要（${notes.length} 条通告）',
+            style: TextStyle(
+              fontFamily: t.monoFamily,
+              fontSize: Fsz.telemetrySm,
+              color: t.terminalMuted,
+            ),
+          ),
+          children: [
+            for (final n in notes)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Text(
+                  n.text,
+                  style: TextStyle(fontSize: Fsz.note, color: t.terminalMuted),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
   }
 }
 // ---------------------------------------------------------------------------
@@ -250,49 +361,58 @@ class DualTrackStream extends StatelessWidget {
 
 extension TrackEntryCodec on TrackEntry {
   static List<Map<String, Object?>> encode(List<TrackEntry> entries) => [
-        for (final e in entries) _encode(e),
-      ];
+    for (final e in entries) _encode(e),
+  ];
 
   static Map<String, Object?> _encode(TrackEntry e) => switch (e) {
-        TrackUser(:final text) => {'type': 'user', 'text': text},
-        TrackText(:final text) => {'type': 'text', 'text': text.toString()},
-        TrackCall e => {
-            'type': 'call',
-            'tool': e.tool,
-            'phase': e.phase.name,
-            'progressNote': ?e.progressNote,
-            'preview': e.preview,
-          },
-        TrackConfirm(:final pending, :final decision, :final decidedAt) => {
-            'type': 'confirm',
-            'toolName': pending.toolName,
-            'argumentsJson': pending.argumentsJson,
-            'approved': ?decision?.approved,
-            'reason': ?decision?.reason,
-            'decidedAt': ?decidedAt?.millisecondsSinceEpoch,
-          },
-        TrackBreaker(:final report, :final wall, :final lockedText, :final decidedAt) =>
-          {
-            'type': report != null ? 'breaker' : 'wall',
-            'toolName': ?report?.toolName,
-            'consecutiveFailures': ?report?.consecutiveFailures,
-            'lastError': ?report?.lastError,
-            'argumentsJson': ?report?.argumentsJson,
-            'turnsUsed': ?wall?.turnsUsed,
-            'limit': ?wall?.limit,
-            'lockedText': ?lockedText,
-            'decidedAt': ?decidedAt?.millisecondsSinceEpoch,
-          },
-        TrackFence(:final info, :final decision, :final decidedAt) => {
-            'type': 'fence',
-            'engineName': info.engineName,
-            'failureMessage': info.failureMessage,
-            'sendRaw': ?decision,
-            'decidedAt': ?decidedAt?.millisecondsSinceEpoch,
-          },
-        TrackNote(:final text, :final danger) =>
-          {'type': 'note', 'text': text, 'danger': danger},
-      };
+    TrackUser(:final text) => {'type': 'user', 'text': text},
+    TrackText(:final text) => {'type': 'text', 'text': text.toString()},
+    TrackCall e => {
+      'type': 'call',
+      'tool': e.tool,
+      'phase': e.phase.name,
+      'progressNote': ?e.progressNote,
+      'preview': e.preview,
+      'resultText': e.resultText,
+    },
+    TrackConfirm(:final pending, :final decision, :final decidedAt) => {
+      'type': 'confirm',
+      'toolName': pending.toolName,
+      'argumentsJson': pending.argumentsJson,
+      'approved': ?decision?.approved,
+      'reason': ?decision?.reason,
+      'decidedAt': ?decidedAt?.millisecondsSinceEpoch,
+    },
+    TrackBreaker(
+      :final report,
+      :final wall,
+      :final lockedText,
+      :final decidedAt,
+    ) =>
+      {
+        'type': report != null ? 'breaker' : 'wall',
+        'toolName': ?report?.toolName,
+        'consecutiveFailures': ?report?.consecutiveFailures,
+        'lastError': ?report?.lastError,
+        'argumentsJson': ?report?.argumentsJson,
+        'turnsUsed': ?wall?.turnsUsed,
+        'limit': ?wall?.limit,
+        'lockedText': ?lockedText,
+        'decidedAt': ?decidedAt?.millisecondsSinceEpoch,
+      },
+    TrackFence(:final info, :final decision, :final decidedAt) => {
+      'type': 'fence',
+      'engineName': info.engineName,
+      'failureMessage': info.failureMessage,
+      'sendRaw': ?decision,
+      'decidedAt': ?decidedAt?.millisecondsSinceEpoch,
+    },
+    TrackNote(:final text, :final danger) => {
+      'type': 'note',
+      'text': text,
+      'danger': danger,
+    },
+  };
 
   /// 恢复轨道（终态锁定呈现）：
   /// - 进行态卡片（running/stuck）收敛为 cancelled +「会话中断」预览——
@@ -321,61 +441,86 @@ extension TrackEntryCodec on TrackEntry {
             (p) => p.name == m['phase'],
             orElse: () => CallCardPhase.cancelled,
           );
-          final settled = phase == CallCardPhase.running ||
-              phase == CallCardPhase.stuck;
-          out.add(TrackCall(tool: m['tool'] as String? ?? '?')
-            ..phase = settled ? CallCardPhase.cancelled : phase
-            ..preview = settled ? '(会话中断)' : (m['preview'] as String? ?? ''));
+          final settled =
+              phase == CallCardPhase.running || phase == CallCardPhase.stuck;
+          out.add(
+            TrackCall(tool: m['tool'] as String? ?? '?')
+              ..phase = settled ? CallCardPhase.cancelled : phase
+              ..preview = settled ? '(会话中断)' : (m['preview'] as String? ?? '')
+              ..progressNote = m['progressNote'] as String?
+              ..resultText = m['resultText'] as String? ?? '',
+          );
         case 'note':
-          out.add(TrackNote(m['text'] as String? ?? '',
-              danger: m['danger'] as bool? ?? false));
+          out.add(
+            TrackNote(
+              m['text'] as String? ?? '',
+              danger: m['danger'] as bool? ?? false,
+            ),
+          );
         case 'confirm':
           final approved = m['approved'] as bool?;
           if (approved == null) {
             out.add(_interruptedNote(m['toolName'] as String? ?? '确认卡'));
             continue;
           }
-          out.add(TrackConfirm(
-            pending: ToolPendingConfirmation(
-              toolName: m['toolName'] as String? ?? '?',
-              argumentsJson: m['argumentsJson'] as String? ?? '{}',
-            ),
-          )
-            ..decision = GateDecision(approved: approved, reason: m['reason'] as String?)
-            ..decidedAt = decidedAt);
+          out.add(
+            TrackConfirm(
+                pending: ToolPendingConfirmation(
+                  toolName: m['toolName'] as String? ?? '?',
+                  argumentsJson: m['argumentsJson'] as String? ?? '{}',
+                ),
+              )
+              ..decision = GateDecision(
+                approved: approved,
+                reason: m['reason'] as String?,
+              )
+              ..decidedAt = decidedAt,
+          );
         case 'breaker':
           if (m['toolName'] is! String) {
             out.add(const TrackNote('⚠ 会话中断于排查卡', danger: true));
             continue;
           }
-          out.add(TrackBreaker.breaker(BreakerReport(
-            toolName: m['toolName'] as String,
-            consecutiveFailures: m['consecutiveFailures'] as int? ?? 0,
-            lastError: m['lastError'] as String? ?? '',
-            argumentsJson: m['argumentsJson'] as String? ?? '{}',
-          ))
-            ..lockedText = m['lockedText'] as String?
-            ..decidedAt = decidedAt);
+          out.add(
+            TrackBreaker.breaker(
+                BreakerReport(
+                  toolName: m['toolName'] as String,
+                  consecutiveFailures: m['consecutiveFailures'] as int? ?? 0,
+                  lastError: m['lastError'] as String? ?? '',
+                  argumentsJson: m['argumentsJson'] as String? ?? '{}',
+                ),
+              )
+              ..lockedText = m['lockedText'] as String?
+              ..decidedAt = decidedAt,
+          );
         case 'wall':
-          out.add(TrackBreaker.wall(StepWallReport(
-            turnsUsed: m['turnsUsed'] as int? ?? 0,
-            limit: m['limit'] as int? ?? 0,
-          ))
-            ..lockedText = m['lockedText'] as String?
-            ..decidedAt = decidedAt);
+          out.add(
+            TrackBreaker.wall(
+                StepWallReport(
+                  turnsUsed: m['turnsUsed'] as int? ?? 0,
+                  limit: m['limit'] as int? ?? 0,
+                ),
+              )
+              ..lockedText = m['lockedText'] as String?
+              ..decidedAt = decidedAt,
+          );
         case 'fence':
           final sendRaw = m['sendRaw'] as bool?;
           if (sendRaw == null) {
             out.add(const TrackNote('⚠ 会话中断于围栏拦截卡', danger: true));
             continue;
           }
-          out.add(TrackFence(PiiMaskBlockInfo(
-            engineName: m['engineName'] as String? ?? '?',
-            failureMessage: m['failureMessage'] as String? ?? '',
-            cause: '（历史会话：原始异常不可序列化，恢复期以消息文本为准）',
-          ))
-            ..decision = sendRaw
-            ..decidedAt = decidedAt);
+          out.add(
+            TrackFence(
+                PiiMaskBlockInfo(
+                  engineName: m['engineName'] as String? ?? '?',
+                  failureMessage: m['failureMessage'] as String? ?? '',
+                  cause: '（历史会话：原始异常不可序列化，恢复期以消息文本为准）',
+                ),
+              )
+              ..decision = sendRaw
+              ..decidedAt = decidedAt,
+          );
         default:
           out.add(const TrackNote('⚠ 存在无法恢复的轨道条目（类型未知）', danger: true));
       }
@@ -386,4 +531,3 @@ extension TrackEntryCodec on TrackEntry {
   static TrackNote _interruptedNote(String what) =>
       TrackNote('⚠ 会话中断于待决卡片（$what 未裁决）', danger: true);
 }
-

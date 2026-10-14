@@ -16,6 +16,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'trust_plugin_dialog.dart';
+
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -35,6 +36,7 @@ import '../coordinator/tool_breaker.dart';
 import '../coordinator/discovery_executor.dart';
 import '../coordinator/tool_router.dart';
 import '../core/errors/mcp_error.dart';
+import '../llm/cloud/byok_store.dart';
 import '../llm/cloud/cloud_llm.dart';
 import '../mcp/mcp_client.dart';
 import '../mcp/local_plugin_discovery.dart';
@@ -49,11 +51,13 @@ import 'components/call_card.dart';
 import 'components/cross_source_consent_card.dart';
 import 'components/dual_track_stream.dart';
 import 'components/status_capsule.dart';
+import 'components/stream_text_buffer.dart';
 import 'tokens/console_tokens.dart';
 import 'components/stuck_watcher.dart';
 import 'gateway_loop_debug_page.dart';
 import 'services_hall_page.dart';
 import 'claim_loop_page.dart';
+import 'update_page.dart';
 import 'memory_board_page.dart';
 
 /// 连接配置持久化（T6-2）：改走 [ServerEndpointStore]（多端点 JSON + apiKey
@@ -100,14 +104,22 @@ class _ChatPageState extends State<ChatPage> {
   var _running = false;
   var _pillLabel = 'idle';
   var _pillTone = CapsuleTone.idle;
+
+  /// 流式自动跟随（P2）：用户上翻看历史时暂停「拽回底部」，回到底部恢复。
+  var _autoFollow = true;
   AgentLoop? _activeLoop;
   McpToolFace? _activeFace;
   TrackCall? _activeCallEntry;
   StuckWatcher? _watcher;
 
+  // P0 流控层（stream-perf §3）：阅读轨文本 delta 缓冲池（40ms 节拍批量刷盘）。
+  final _streamBuf = StreamTextBuffer();
+
   @override
   void initState() {
     super.initState();
+    _streamBuf.onFlush = _onStreamFlush;
+    _scrollCtrl.addListener(_onUserScroll);
     unawaited(_loadConfig());
     unawaited(_initConversations());
   }
@@ -117,6 +129,7 @@ class _ChatPageState extends State<ChatPage> {
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
     _gatewayTokenCtrl.dispose();
+    _streamBuf.dispose(); // P0：取消节拍定时器（widget 已销毁，残余无处可刷）
     super.dispose();
   }
 
@@ -189,25 +202,28 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Future<void> _newConversation() async {
-    if (_running) return;
+    if (!_guardRunning('新建会话')) return;
     await _persistIfAny();
     if (!mounted) return;
     Navigator.pop(context); // 关抽屉
     _resetSessionState();
+    _autoFollow = true;
   }
 
   Future<void> _loadConversation(ConversationMeta meta) async {
-    if (_running) return;
+    if (!_guardRunning('切换会话')) return;
     final snap = await _convStore?.load(meta.id);
     if (!mounted) return;
     if (snap == null) {
-      _add(TrackNote('⚠ 会话文件损坏无法恢复：${meta.title}', danger: true));
+      // 损坏会话不进任何轨道（避免串台写进当前会话快照），SnackBar 明示。
+      _toast('⚠ 会话「${meta.title}」文件损坏，无法恢复');
       return;
     }
     await _persistIfAny(); // 保当前会话再切换
     if (!mounted) return;
     Navigator.pop(context);
     _resetSessionState();
+    _autoFollow = true;
     setState(() {
       _conversationId = snap.id;
       _conversationTitle = snap.title;
@@ -218,6 +234,7 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Future<void> _deleteConversation(ConversationMeta meta) async {
+    if (!_guardRunning('删除会话')) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogCtx) => AlertDialog(
@@ -225,11 +242,16 @@ class _ChatPageState extends State<ChatPage> {
         content: Text('「${meta.title}」及其对话历史将被移除，不可恢复。'),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(dialogCtx, false),
-              child: const Text('取消')),
+            onPressed: () => Navigator.pop(dialogCtx, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
-              onPressed: () => Navigator.pop(dialogCtx, true),
-              child: const Text('删除')),
+            style: FilledButton.styleFrom(
+              backgroundColor: consoleTokens(dialogCtx).danger,
+            ),
+            onPressed: () => Navigator.pop(dialogCtx, true),
+            child: const Text('删除'),
+          ),
         ],
       ),
     );
@@ -247,15 +269,14 @@ class _ChatPageState extends State<ChatPage> {
         : '${d.month}/${d.day} ${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
   }
 
-
-
   /// T6-2：生产装配入口——[ServerEndpointStore] 指向应用支持目录/mcp_servers.json，
   /// 旧单端点 SharedPreferences 经 [flutterPrefsLike] 注入迁移。
   ServerEndpointStore _epStore(String supportPath) => ServerEndpointStore(
-        file: File('$supportPath/mcp_servers.json'),
-        prefs: flutterPrefsLike((key) =>
-            SharedPreferences.getInstance().then((sp) => sp.getString(key))),
-      );
+    file: File('$supportPath/mcp_servers.json'),
+    prefs: flutterPrefsLike(
+      (key) => SharedPreferences.getInstance().then((sp) => sp.getString(key)),
+    ),
+  );
 
   /// T6：静态首级摘要「## 已挂载服务」（自动生成，标注工具名前缀格式）。
   static String _mountedServicesSection(
@@ -265,9 +286,11 @@ class _ChatPageState extends State<ChatPage> {
     final lines = [
       for (final id in router.serverIds)
         '- $id: ${summaries[id] ?? '(无摘要)'}'
-        '${router.activatedServers.contains(id) ? '' : ' ［未激活，需 activate_server_tools］'}',
+            '${router.activatedServers.contains(id) ? '' : ' ［未激活，需 activate_server_tools］'}',
     ];
-    final first = router.serverIds.isEmpty ? 'server_id' : router.serverIds.first;
+    final first = router.serverIds.isEmpty
+        ? 'server_id'
+        : router.serverIds.first;
     return '\n\n## 已挂载服务（自动生成）\n'
         '工具名带服务前缀，格式 `<server_id>__<tool>`，例如 `${first}__get_item`。\n'
         '服务列表：\n${lines.join('\n')}\n'
@@ -282,23 +305,61 @@ class _ChatPageState extends State<ChatPage> {
 
   void _appendText(String delta) {
     if (!mounted) return;
+    // P0 流控层（stream-perf §3）：delta 入池，40ms 节拍批量刷盘；流结束/中止/
+    // 异常路径由 _send 的 finally 强制 flush，尾帧不丢。
+    _streamBuf.add(delta);
+  }
+
+  /// 流控刷盘回调：与 _appendText 同一节拍落地 setState + _pinToBottom。
+  void _onStreamFlush(String text) {
+    if (!mounted) return;
     setState(() {
       final last = _track.isNotEmpty ? _track.last : null;
       if (last is TrackText) {
-        last.text.write(delta);
+        last.text.write(text);
       } else {
-        _track.add(TrackText(delta));
+        _track.add(TrackText(text));
       }
     });
     _pinToBottom();
   }
 
+  /// 用户滚动监听：离开底部即暂停自动跟随（流式输出不劫持滚动），回到
+  /// 底部恢复。程序性 jumpTo 恒落底部，不会误触该标志。
+  void _onUserScroll() {
+    if (!_scrollCtrl.hasClients) return;
+    final atBottom =
+        _scrollCtrl.position.pixels >=
+        _scrollCtrl.position.maxScrollExtent - 24;
+    if (atBottom != _autoFollow && mounted) {
+      setState(() => _autoFollow = atBottom);
+    }
+  }
+
   void _pinToBottom() {
+    if (!_autoFollow) return; // 用户上翻看历史中：不拽回
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollCtrl.hasClients) {
         _scrollCtrl.jumpTo(_scrollCtrl.position.maxScrollExtent);
       }
     });
+  }
+
+  /// 轻量反馈（SnackBar）：运行中共用守卫——给原因而非静默禁用。
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+    );
+  }
+
+  /// 运行中拦截的共用话术；返回 false = 调用方应中止动作。
+  bool _guardRunning(String action) {
+    if (_running) {
+      _toast('任务运行中，$action需等待当前任务结束');
+      return false;
+    }
+    return true;
   }
 
   void _setPill(String label, CapsuleTone tone) {
@@ -309,29 +370,24 @@ class _ChatPageState extends State<ChatPage> {
     });
   }
 
-  /// T6：通用多端点管理（规范驱动——任意满足接入规范的外界 MCP 服务均可添加，
-  /// 手填 id/endpoint/token，如 shuguang）。支持内联编辑、删除、新增。
+  /// 设置面板（P1 瘦身后）：PC 远程网关 + 本地插件信任；服务端点全生命周期
+  /// 管理已收敛到服务大厅节点卡（同一 ServerEndpointStore 文件），此处只留导航。
   Future<void> _openSettings() async {
-    final support = await getApplicationSupportDirectory();
-    final epStore = _epStore(support.path);
-    final initial = await epStore.load();
-    if (!mounted) return;
-    final eps = List<ServerEndpoint>.from(initial);
-    final keys = <String, String?>{};
-    for (final e in eps) {
-      keys[e.id] = await epStore.apiKey(e.id);
-    }
     final prefs = await SharedPreferences.getInstance();
+    // 云端模型快捷切换（self-update 轮需求）：预载 BYOK 配置与生效位。
+    final byokStore = ByokStore();
+    final byokProfiles = await byokStore.load();
+    var byokPreferred = await byokStore.preferredProfileId() ??
+        (byokProfiles.isNotEmpty ? byokProfiles.first.id : null);
     // §1.2.6 信任管理：预扫本地插件 + 加载信任白名单（设置面板内联管理）。
     final localPlugins = await localPluginDiscovery.scan();
     final trusted = await TrustedPlugins.instance;
     _gatewayRunning = GatewayController.shared.running;
-    _gatewayLanAddrs =
-        _gatewayRunning ? await GatewayController.lanAddresses() : const [];
+    _gatewayLanAddrs = _gatewayRunning
+        ? await GatewayController.lanAddresses()
+        : const [];
     if (!mounted) return;
     _gatewayTokenCtrl.text = prefs.getString('gateway.token') ?? '';
-    var editingId = '';
-    var adding = false;
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -350,6 +406,14 @@ class _ChatPageState extends State<ChatPage> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  Text(
+                    '设置',
+                    style: TextStyle(
+                      fontSize: Fsz.panelTitle,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
                   // —— PC 远程网关（G1）：开关 + 配对 Token ——
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
@@ -357,10 +421,10 @@ class _ChatPageState extends State<ChatPage> {
                     subtitle: Text(
                       _gatewayRunning
                           ? '运行中——PC 配置：'
-                              '${_gatewayLanAddrs.isEmpty ? 'http://<手机IP>' : _gatewayLanAddrs.map((a) => 'http://$a').join(' 或 ')}'
-                              ':8766/mcp（ADB 场景 127.0.0.1:8766）'
+                                '${_gatewayLanAddrs.isEmpty ? 'http://<手机IP>' : _gatewayLanAddrs.map((a) => 'http://$a').join(' 或 ')}'
+                                ':8766/mcp（ADB 场景 127.0.0.1:8766）'
                           : '关闭——开启后 PC 经 Streamable HTTP 调用手机内全部服务',
-                      style: const TextStyle(fontSize: 12),
+                      style: const TextStyle(fontSize: Fsz.telemetry),
                     ),
                     value: _gatewayRunning,
                     onChanged: (v) async {
@@ -369,10 +433,12 @@ class _ChatPageState extends State<ChatPage> {
                         await prefs.setString('gateway.token', token);
                         try {
                           await GatewayController.shared.start(
-                              port: 8766, token: token);
+                            port: 8766,
+                            token: token,
+                          );
                         } on Object catch (e) {
                           if (mounted) {
-                            _add(TrackNote('⚠ 网关起服失败: $e', danger: true));
+                            _toast('⚠ 网关起服失败: $e');
                           }
                         }
                         _gatewayLanAddrs =
@@ -380,8 +446,10 @@ class _ChatPageState extends State<ChatPage> {
                       } else {
                         await GatewayController.shared.stop();
                       }
-                      setSheet(() =>
-                          _gatewayRunning = GatewayController.shared.running);
+                      setSheet(
+                        () =>
+                            _gatewayRunning = GatewayController.shared.running,
+                      );
                     },
                   ),
                   TextField(
@@ -392,12 +460,85 @@ class _ChatPageState extends State<ChatPage> {
                       isDense: true,
                     ),
                   ),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      '⚠ 开启后同一局域网的 PC 可经 :8766 调用本机全部服务；'
+                      'Token 留空即不鉴权，仅建议 ADB 调试场景。',
+                      style: TextStyle(fontSize: Fsz.telemetry, color: t.danger),
+                    ),
+                  ),
                   const SizedBox(height: 16),
-                  const Text('本地插件信任（零配置发现，§1.2.6）',
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                  // —— 云端模型快捷切换（BYOK 生效位；管理/新增在服务大厅） ——
+                  Text(
+                    '云端模型（生效）',
+                    style: const TextStyle(
+                      fontSize: Fsz.panelTitle,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                   const SizedBox(height: 4),
-                  Text('同签名私有插件自动信任；第三方需手动信任（可在下方撤销）。',
-                      style: TextStyle(fontSize: 12, color: t.terminalMuted)),
+                  Text(
+                    byokProfiles.isEmpty
+                        ? '暂无模型配置——到服务大厅「添加模型」接入 BYOK 云端引擎。'
+                        : '本次生效：${byokProfiles.where((p) => p.id == byokPreferred).firstOrNull?.name ?? '首位'}；点选即切换，下个 Run 装配生效。',
+                    style: TextStyle(
+                      fontSize: Fsz.telemetry,
+                      color: t.terminalMuted,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  for (final p in byokProfiles)
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      dense: true,
+                      leading: Icon(
+                        p.id == byokPreferred
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_off,
+                        size: 20,
+                      ),
+                      title: Text(
+                        p.name,
+                        style: TextStyle(
+                          fontFamily: t.monoFamily,
+                          fontSize: Fsz.telemetry,
+                          fontWeight: p.id == byokPreferred
+                              ? FontWeight.w600
+                              : null,
+                        ),
+                      ),
+                      subtitle: Text(
+                        p.model,
+                        style: TextStyle(
+                          fontFamily: t.monoFamily,
+                          fontSize: Fsz.telemetrySm,
+                          color: t.terminalMuted,
+                        ),
+                      ),
+                      onTap: p.id == byokPreferred
+                          ? null
+                          : () async {
+                              await byokStore.setPreferredProfileId(p.id);
+                              setSheet(() => byokPreferred = p.id);
+                            },
+                    ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    '本地插件信任（零配置发现，§1.2.6）',
+                    style: TextStyle(
+                      fontSize: Fsz.panelTitle,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '同签名私有插件自动信任；第三方需手动信任（可在下方撤销）。',
+                    style: TextStyle(
+                      fontSize: Fsz.telemetry,
+                      color: t.terminalMuted,
+                    ),
+                  ),
                   const SizedBox(height: 8),
                   for (final p in localPlugins)
                     SwitchListTile(
@@ -405,17 +546,22 @@ class _ChatPageState extends State<ChatPage> {
                       title: Text('${p.serverTitle}（${p.serverId}）'),
                       subtitle: Text(
                         '${p.packageName}${p.sameSignature ? ' · 同签名' : ' · 第三方'}',
-                        style: const TextStyle(
-                            fontFamily: 'monospace', fontSize: 12),
+                        style: TextStyle(
+                          fontFamily: t.monoFamily,
+                          fontSize: Fsz.telemetry,
+                        ),
                       ),
-                      value: p.sameSignature ||
-                          trusted.isTrusted(p.packageName),
+                      value:
+                          p.sameSignature || trusted.isTrusted(p.packageName),
                       onChanged: p.sameSignature
                           ? null
                           : (v) async {
                               if (v) {
-                                await trusted.add(p.packageName,
-                                    p.signatureSha256, p.serverTitle);
+                                await trusted.add(
+                                  p.packageName,
+                                  p.signatureSha256,
+                                  p.serverTitle,
+                                );
                               } else {
                                 await trusted.remove(p.packageName);
                               }
@@ -426,122 +572,33 @@ class _ChatPageState extends State<ChatPage> {
                     Padding(
                       padding: const EdgeInsets.symmetric(vertical: 8),
                       child: Text(
-                          '未发现本地插件（安装声明 MCP_SERVER 的 App 后将出现）',
-                          style: TextStyle(fontSize: 12, color: t.terminalMuted)),
-                    ),
-                  const Divider(),
-                  const SizedBox(height: 16),
-                  const Text('服务端点（多 MCP 接入）',
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 4),
-                  Text('连接任意满足接入规范的外界 MCP 服务（手填 endpoint + token）',
-                      style: TextStyle(fontSize: 12, color: t.terminalMuted)),
-                  const SizedBox(height: 12),
-                  for (final ep in eps)
-                    Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        ListTile(
-                          contentPadding: EdgeInsets.zero,
-                          title: Text('${ep.name}  (${ep.id})'),
-                          subtitle: Text(
-                              ep.endpoint.isEmpty
-                                  ? '（未配置 endpoint）'
-                                  : ep.endpoint,
-                              style: const TextStyle(
-                                  fontFamily: 'monospace', fontSize: 12)),
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                icon: Icon(editingId == ep.id
-                                    ? Icons.close
-                                    : Icons.edit_outlined),
-                                tooltip: editingId == ep.id ? '收起' : '编辑',
-                                onPressed: () => setSheet(() =>
-                                    editingId = editingId == ep.id ? '' : ep.id),
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.delete_outline),
-                                tooltip: '删除',
-                                onPressed: () async {
-                                  eps.removeWhere((e) => e.id == ep.id);
-                                  await epStore.save(eps);
-                                  await epStore.setApiKey(ep.id, null);
-                                  setSheet(() {});
-                                  if (mounted) {
-                                    _add(TrackNote('✓ 已删除服务 ${ep.name}',
-                                        danger: false));
-                                  }
-                                },
-                              ),
-                            ],
-                          ),
+                        '未发现本地插件（安装声明 MCP_SERVER 的 App 后将出现）',
+                        style: TextStyle(
+                          fontSize: Fsz.telemetry,
+                          color: t.terminalMuted,
                         ),
-                        if (editingId == ep.id)
-                          _EditServiceForm(
-                            ep: ep,
-                            storedKey: keys[ep.id],
-                            onSave: (updated, token) async {
-                              final idx = eps.indexWhere((e) => e.id == ep.id);
-                              if (idx >= 0) eps[idx] = updated;
-                              await epStore.save(eps);
-                              await epStore.setApiKey(
-                                  ep.id, token.isEmpty ? null : token);
-                              keys[ep.id] = token.isEmpty ? null : token;
-                              setSheet(() => editingId = '');
-                              if (mounted) {
-                                _add(TrackNote('✓ 已更新服务 ${updated.name}',
-                                    danger: false));
-                              }
-                            },
-                            onCancel: () => setSheet(() => editingId = ''),
-                          ),
-                      ],
-                    ),
-                  if (eps.isEmpty)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      child: Text(
-                          '暂无服务，点下方「添加服务」接入（如 shuguang）',
-                          style: TextStyle(fontSize: 12, color: t.terminalMuted)),
+                      ),
                     ),
                   const Divider(),
-                  if (!adding)
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: TextButton.icon(
-                        onPressed: () => setSheet(() => adding = true),
-                        icon: const Icon(Icons.add),
-                        label: const Text('添加服务'),
-                      ),
-                    )
-                  else
-                    _AddServiceForm(
-                      onAdd: (id, name, endpoint, token) async {
-                        final newEp = ServerEndpoint(
-                          id: id,
-                          name: name.isEmpty ? id : name,
-                          endpoint: endpoint,
-                          hasKey: token.isNotEmpty,
-                        );
-                        eps.add(newEp);
-                        await epStore.save(eps);
-                        if (token.isNotEmpty) {
-                          await epStore.setApiKey(id, token);
-                        }
-                        keys[id] = token.isEmpty ? null : token;
-                        setSheet(() {
-                          adding = false;
-                          editingId = id;
-                        });
-                        if (mounted) {
-                          _add(TrackNote('✓ 已添加服务 $id', danger: false));
-                        }
-                      },
-                      onCancel: () => setSheet(() => adding = false),
+                  const SizedBox(height: 8),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.hub_outlined),
+                    title: const Text('服务端点管理'),
+                    subtitle: const Text(
+                      '增删改、探活与挂载开关已收敛到服务大厅节点卡',
+                      style: TextStyle(fontSize: Fsz.telemetry),
                     ),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const ServicesHallPage(),
+                        ),
+                      );
+                    },
+                  ),
                   const SizedBox(height: 8),
                   Align(
                     alignment: Alignment.centerRight,
@@ -559,7 +616,8 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
-  /// D9：服务大厅/联调页/M1 任务循环入口收编（联调与任务循环仅 debug 构建）。
+  /// D9：服务大厅/联调页/M1 任务循环入口收编（服务大厅为正式功能全构建可达；
+  /// 联调与任务循环仅 debug 构建，kDebugMode 门禁；检查更新为正式功能全构建保留）。
   void _openDebugMenu() {
     showModalBottomSheet<void>(
       context: context,
@@ -567,31 +625,55 @@ class _ChatPageState extends State<ChatPage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            // 服务大厅：正式功能，全构建可达（release 不再只藏设置弹层小字）。
             ListTile(
               leading: const Icon(Icons.hub_outlined),
               title: const Text('服务大厅'),
               onTap: () {
                 Navigator.pop(ctx);
-                Navigator.of(context).push(MaterialPageRoute<void>(
-                    builder: (_) => const ServicesHallPage()));
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const ServicesHallPage(),
+                  ),
+                );
               },
             ),
+            if (kDebugMode)
+              ListTile(
+                leading: const Icon(Icons.admin_panel_settings_outlined),
+                title: const Text('网关/熔断联调'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const GatewayLoopDebugPage(),
+                    ),
+                  );
+                },
+              ),
+            if (kDebugMode)
+              ListTile(
+                leading: const Icon(Icons.repeat_outlined),
+                title: const Text('M1 任务循环（claim/apply）'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const ClaimLoopPage(),
+                    ),
+                  );
+                },
+              ),
             ListTile(
-              leading: const Icon(Icons.admin_panel_settings_outlined),
-              title: const Text('网关/熔断联调'),
-              onTap: () {
-                Navigator.pop(ctx);
-                Navigator.of(context).push(MaterialPageRoute<void>(
-                    builder: (_) => const GatewayLoopDebugPage()));
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.repeat_outlined),
-              title: const Text('M1 任务循环（claim/apply）'),
+              leading: const Icon(Icons.system_update_alt),
+              title: const Text('检查更新'),
               onTap: () {
                 Navigator.pop(ctx);
                 Navigator.of(context).push(
-                    MaterialPageRoute<void>(builder: (_) => const ClaimLoopPage()));
+                  MaterialPageRoute<void>(
+                    builder: (_) => const UpdatePage(),
+                  ),
+                );
               },
             ),
           ],
@@ -614,8 +696,7 @@ class _ChatPageState extends State<ChatPage> {
     final endpoints = allEndpoints.where((e) => e.enabled).toList();
     final unmounted = allEndpoints.length - endpoints.length;
     if (unmounted > 0) {
-      _add(TrackNote('⊘ 已卸载 $unmounted 项服务（服务大厅节点卡可重新挂载）',
-          danger: false));
+      _add(TrackNote('⊘ 有 $unmounted 项服务已卸载，未参与本次任务（服务大厅可重新挂载）', danger: false));
     }
     // T-trans-4：本地插件零配置发现（系统托管，不进手填配置）；与 HTTP 端点合并判定。
     final locals = <LocalPluginInfo>[];
@@ -625,9 +706,7 @@ class _ChatPageState extends State<ChatPage> {
       // 发现通道不可用（宿主未就绪）→ 视为无本地插件，不阻断 HTTP 端点装配。
     }
     if (endpoints.isEmpty && locals.isEmpty) {
-      _add(TrackNote(
-          '⚠ 尚未配置任何 MCP 服务（右上角 ⚙ 设置），且未发现本地插件',
-          danger: true));
+      _add(TrackNote('⚠ 尚未配置任何 MCP 服务，且未发现本地插件', danger: true));
       unawaited(_openSettings());
       return;
     }
@@ -636,6 +715,7 @@ class _ChatPageState extends State<ChatPage> {
       _running = true;
       _pillLabel = 'connecting';
       _pillTone = CapsuleTone.l1;
+      _autoFollow = true; // 新任务：回到底部并恢复自动跟随
     });
     _add(TrackUser(prompt));
     // T3b：会话懒建（首个任务起落盘；标题取首行截断）。
@@ -657,10 +737,13 @@ class _ChatPageState extends State<ChatPage> {
         final client = McpClient.http(baseUrl: ep.endpoint, apiKey: key);
         final caps = await client.negotiate();
         serverCaps[ep.id] = caps;
-        _add(TrackNote(
-            '✓ ${ep.name} ${caps.serverName ?? '?'} v${caps.serverVersion ?? '?'} ｜ '
-            '${caps.isTier1 ? 'Tier 1' : 'Tier 2（vanilla，Polyfill 接管）'}',
-            danger: false));
+        _add(
+          TrackNote(
+            '✓ 已连接 ${ep.name}'
+            '${caps.serverVersion != null ? ' v${caps.serverVersion}' : ''}',
+            danger: false,
+          ),
+        );
         final face = McpToolFace(
           client: client,
           serverId: ep.id,
@@ -668,8 +751,9 @@ class _ChatPageState extends State<ChatPage> {
           onProgress: (tool, progress, total, message) {
             loopBox?.emitToolProgress(tool, progress, total, message);
             _setPill(
-                total != null ? '$tool $progress/$total' : '$tool $progress',
-                CapsuleTone.l1);
+              total != null ? '$tool $progress/$total' : '$tool $progress',
+              CapsuleTone.l1,
+            );
           },
         );
         await face.listTools();
@@ -691,9 +775,9 @@ class _ChatPageState extends State<ChatPage> {
             if (!mounted) continue;
             final ok = await showTrustCard(context, info);
             if (!ok) {
-              _add(TrackNote(
-                  '⚠ 未信任本地插件 ${info.serverTitle}，已跳过挂载',
-                  danger: true));
+              _add(
+                TrackNote('⚠ 未信任本地插件 ${info.serverTitle}，已跳过挂载', danger: true),
+              );
               continue;
             }
           }
@@ -709,8 +793,9 @@ class _ChatPageState extends State<ChatPage> {
             onProgress: (tool, progress, total, message) {
               loopBox?.emitToolProgress(tool, progress, total, message);
               _setPill(
-                  total != null ? '$tool $progress/$total' : '$tool $progress',
-                  CapsuleTone.l1);
+                total != null ? '$tool $progress/$total' : '$tool $progress',
+                CapsuleTone.l1,
+              );
             },
           );
           await face.listTools();
@@ -718,12 +803,14 @@ class _ChatPageState extends State<ChatPage> {
           clients[info.serverId] = client;
           summaries[info.serverId] =
               '${caps.serverName ?? info.serverTitle} (本地) ${caps.isTier1 ? 'Tier 1' : 'Tier 2'}';
-          _add(TrackNote(
+          _add(
+            TrackNote(
               '✓ 本地插件 ${info.serverTitle} ${caps.serverName ?? '?'} ｜ 自动挂载',
-              danger: false));
+              danger: false,
+            ),
+          );
         } catch (e) {
-          _add(TrackNote(
-              '⚠ 本地插件 ${info.serverTitle} 挂载失败: $e', danger: true));
+          _add(TrackNote('⚠ 本地插件 ${info.serverTitle} 挂载失败: $e', danger: true));
         }
       }
       // T6：路由注册表（实例随会话建）+ 默认激活全部已挂载（保单服务回归）。
@@ -753,9 +840,11 @@ class _ChatPageState extends State<ChatPage> {
         refStore: refStore,
         targetResolver: router.serverFor,
         crossSourceDelegate: (handle, from, to, preview) async {
-          // D5：恒 L2 弹卡、无豁免勾选；禁盲签由卡内兜底。
+          // D5：恒 L2 弹卡、无豁免勾选；禁盲签由卡内兜底。点外部不关 =
+          // 显式裁决（误触外部不等于默拒）。
           final r = await showDialog<bool>(
             context: context,
+            barrierDismissible: false,
             builder: (dialogCtx) => AlertDialog(
               contentPadding: EdgeInsets.zero,
               content: CrossSourceConsentCard(
@@ -774,7 +863,7 @@ class _ChatPageState extends State<ChatPage> {
         controller: _degradation ??= DegradationController(),
         piiFenceDelegate: _ChatFence(this), // D4 有人值守拦截卡
       );
-      _add(TrackNote('引擎: ${engine.name}', danger: false));
+      _add(TrackNote('✓ 引擎就绪：${engine.name}', danger: false));
       _watcher = StuckWatcher(onStuck: _markActiveCallStuck);
       // T6：每个 client 接管自身采样反向请求（serverKey = serverId）。
       for (final entry in clients.entries) {
@@ -785,8 +874,10 @@ class _ChatPageState extends State<ChatPage> {
         );
         entry.value.onServerRequest = (method, params) {
           _watcher?.samplingBegin();
-          return sampling(method, params)
-              .whenComplete(() => _watcher?.samplingEnd());
+          return sampling(
+            method,
+            params,
+          ).whenComplete(() => _watcher?.samplingEnd());
         };
       }
       // 会话粒度 SkillRegistry（§15）：激活集跨 Run 保留（同页多轮共享）。
@@ -799,21 +890,25 @@ class _ChatPageState extends State<ChatPage> {
         try {
           final cow = CowSyncService(
             store: CowOverridesStore(
-                dir: await getApplicationDocumentsDirectory()),
+              dir: await getApplicationDocumentsDirectory(),
+            ),
             onMajorJump: (name, from, to) async {
               final r = await showDialog<bool>(
                 context: context,
                 builder: (dialogCtx) => AlertDialog(
                   title: Text('模板大版本更新：$name'),
-                  content:
-                      Text('服务端模板 $from → $to（大版本跃迁）。\n重置回服务端最新版，还是保留本地覆写？'),
+                  content: Text(
+                    '服务端模板 $from → $to（大版本跃迁）。\n重置回服务端最新版，还是保留本地覆写？',
+                  ),
                   actions: [
                     TextButton(
-                        onPressed: () => Navigator.pop(dialogCtx, false),
-                        child: const Text('保留本地')),
+                      onPressed: () => Navigator.pop(dialogCtx, false),
+                      child: const Text('保留本地'),
+                    ),
                     FilledButton(
-                        onPressed: () => Navigator.pop(dialogCtx, true),
-                        child: const Text('重置为服务端版')),
+                      onPressed: () => Navigator.pop(dialogCtx, true),
+                      child: const Text('重置为服务端版'),
+                    ),
                   ],
                 ),
               );
@@ -823,12 +918,28 @@ class _ChatPageState extends State<ChatPage> {
           for (final i in await cow.sync(entry.value, serverId: entry.key)) {
             if (i.content == null) continue;
             final skill = CowSyncService.toSkill(i, entry.key);
-            if (skills.byName(skill.name) != null) continue;
+            final existing = skills.byName(skill.name);
+            if (existing != null) {
+              // 撞名（cow/<promptName> 全局唯一）：先到先得，跳过后者并通告用户
+              // （design「撞名跳过 + 通告」——原为静默 continue，缺用户面通告）。
+              _add(
+                TrackNote(
+                  '⚠ CoW 模板「${i.promptName}」重名：已采用 '
+                  '${existing.serverId ?? '内置'} 版本，跳过 ${entry.key} 的同名模板',
+                  danger: false,
+                ),
+              );
+              continue;
+            }
             try {
               skills.register(skill);
             } on ArgumentError catch (e) {
-              _add(TrackNote('⚠ CoW Skill 注册跳过: ${i.promptName} — $e',
-                  danger: true));
+              _add(
+                TrackNote(
+                  '⚠ CoW Skill 注册跳过: ${i.promptName} — $e',
+                  danger: true,
+                ),
+              );
             }
           }
         } on McpException catch (e) {
@@ -836,24 +947,27 @@ class _ChatPageState extends State<ChatPage> {
         }
       }
       final skillExecutor = SkillActivationExecutor(
-          inner: hydration, registry: skills, opsLog: memoryStore);
+        inner: hydration,
+        registry: skills,
+        opsLog: memoryStore,
+      );
       // T6-3 JIT 两级发现：DiscoveryExecutor 挂最外层（SkillActivation 之前），
       // 拦截 get_connected_apps / activate_server_tools（L1 本地，不走确认卡）。
       final discovery = DiscoveryExecutor(
         router: router,
         inner: skillExecutor,
         serverSummaries: summaries,
-        onActivation: (id) => _add(TrackNote(
-            '✓ 已激活服务 $id（后续轮次其工具可用）',
-            danger: false)),
+        onActivation: (id) =>
+            _add(TrackNote('✓ 已激活 $id 的工具', danger: false)),
       );
       final loop = AgentLoop(
         engine: engine,
         executor: discovery,
         blockDelegate: _ChatBlock(this),
         refStore: refStore,
-        refServerId:
-            router.serverIds.isNotEmpty ? router.serverIds.first : 'goodshare',
+        refServerId: router.serverIds.isNotEmpty
+            ? router.serverIds.first
+            : 'goodshare',
         serverResolver: router.serverFor,
         toolsProvider: () => [
           ...router.focusedSchemas(),
@@ -866,20 +980,29 @@ class _ChatPageState extends State<ChatPage> {
       _activeLoop = loop;
       _activeFace = faces[router.serverIds.first]; // 主服务面（Abort 取消目标）
       // M4-T2 记忆注入（D8 三层作用域）+ 超限可观测：作用域 = 全部已连服务。
-      final memView =
-          await memoryStore.memoryView(serverScopes: router.serverIds);
+      final memView = await memoryStore.memoryView(
+        serverScopes: router.serverIds,
+      );
       final memSection = await memoryPromptSection(
-          memoryStore, serverScopes: router.serverIds);
+        memoryStore,
+        serverScopes: router.serverIds,
+      );
       // T6：静态首级摘要「## 已挂载服务」（自动生成，标注工具名前缀格式）。
       final mountedSection = _mountedServicesSection(router, summaries);
-      _add(TrackNote(
-          '记忆注入：${memView.entries.length} 条'
-          '${memView.truncated ? '（预算外丢弃 ${memView.droppedCount} 条）' : ''}',
-          danger: false));
+      _add(
+        TrackNote(
+          '✓ 已载入宿主记忆 ${memView.entries.length} 条'
+          '${memView.truncated ? '（超预算丢弃 ${memView.droppedCount} 条）' : ''}',
+          danger: false,
+        ),
+      );
       _setPill('thinking', CapsuleTone.l1);
       await for (final e in loop.run(
-        systemPrompt: skills.composeSystemPrompt(
-                _systemPrompt, connectedServerIds: router.serverIds) +
+        systemPrompt:
+            skills.composeSystemPrompt(
+              _systemPrompt,
+              connectedServerIds: router.serverIds,
+            ) +
             mountedSection +
             memSection,
         userPrompt: prompt,
@@ -895,48 +1018,61 @@ class _ChatPageState extends State<ChatPage> {
             _activeCallEntry = entry;
             _add(entry);
             _watcher?.start();
-          case LoopToolProgress(:final call, :final progress, :final total, :final message):
+          case LoopToolProgress(
+            :final call,
+            :final progress,
+            :final total,
+            :final message,
+          ):
             final entry = _activeCallEntry;
             if (entry != null && entry.tool == call.name) {
               setState(() {
                 final tail = message == null ? '' : ' · $message';
-                entry.progressNote =
-                    total != null ? '$progress/$total$tail' : '$progress$tail';
+                entry.progressNote = total != null
+                    ? '$progress/$total$tail'
+                    : '$progress$tail';
               });
             }
             _watcher?.onProgressFrame();
           case LoopToolCallFinished(:final call, :final result):
             final rejected = result.content.contains('"user_rejected"');
             final entry = _activeCallEntry;
-            final phase =
-                result.isError ? CallCardPhase.failed : CallCardPhase.success;
+            final phase = result.isError
+                ? CallCardPhase.failed
+                : CallCardPhase.success;
             if (entry != null && entry.tool == call.name) {
               // 真实结果优先于 Abort 的 cancelled 标记（在途调用完成后照常回填）
               setState(() {
                 entry
                   ..phase = phase
                   ..preview = _preview(result.content)
+                  ..resultText = result.content
                   ..progressNote = null;
               });
             } else {
-              _add(TrackCall(tool: call.name)
-                ..phase = phase
-                ..preview = _preview(result.content));
+              _add(
+                TrackCall(tool: call.name)
+                  ..phase = phase
+                  ..preview = _preview(result.content)
+                  ..resultText = result.content,
+              );
             }
             _activeCallEntry = null;
             _watcher?.stop();
             _setPill(rejected ? 'rejected' : 'idle', CapsuleTone.l1);
-          case LoopFinished(:final text, :final turns, :final transcript):
+          case LoopFinished(:final text, :final transcript):
             _history
               ..clear()
               ..addAll(transcript); // D11：下轮续接（未配对尾巴已截断）
             _appendText(text.isEmpty ? '' : '\n');
-            _add(TrackNote('✓ 收尾（$turns 轮）', danger: false));
+            _add(TrackNote('✓ 任务完成', danger: false));
             _setPill('done', CapsuleTone.idle);
+            // §4.1：L1 药丸完成 → 极轻微 tick
+            unawaited(HapticFeedback.selectionClick());
         }
       }
     } on Object catch (e) {
-      _add(TrackNote('✕ $e', danger: true));
+      _add(TrackNote('✕ 任务中断：$e', danger: true));
       _setPill('failed', CapsuleTone.danger);
     } finally {
       _watcher?.stop();
@@ -944,6 +1080,9 @@ class _ChatPageState extends State<ChatPage> {
       _activeLoop = null;
       _activeFace = null;
       _activeCallEntry = null;
+      // P0 尾帧铁律（stream-perf §3）：快照与终态渲染前强制清空流控缓冲——
+      // 覆盖正常收尾 / Abort / 异常三条路径，缓冲期内到达的尾帧不得丢失。
+      _streamBuf.flush();
       await refStore?.expireAll(); // §9：Session 结束直清临时文件
       refStore?.dispose();
       await _persistConversation(); // T3b：Run 收尾快照（含 Cancelled 终态）
@@ -962,6 +1101,8 @@ class _ChatPageState extends State<ChatPage> {
   /// 在途卡 Cancelled 态（区别 Failed）。
   void _abort() {
     if (!_running) return;
+    // §4.1：Abort → 重度确认震动
+    unawaited(HapticFeedback.heavyImpact());
     _watcher?.stop();
     _activeFace?.cancelActiveRequest(reason: 'user abort');
     _activeLoop?.abort();
@@ -987,14 +1128,20 @@ class _ChatPageState extends State<ChatPage> {
               child: Row(
                 children: [
                   Expanded(
-                    child: Text('会话',
-                        style: TextStyle(
-                            fontFamily: t.monoFamily,
-                            fontSize: 13,
-                            color: t.terminalMuted)),
+                    child: Text(
+                      '会话',
+                      style: TextStyle(
+                        fontFamily: t.monoFamily,
+                        fontSize: Fsz.body,
+                        color: t.terminalMuted,
+                      ),
+                    ),
                   ),
                   TextButton.icon(
-                    onPressed: _running ? null : _newConversation,
+                    onPressed: () {
+                      if (!_guardRunning('新建会话')) return;
+                      _newConversation();
+                    },
                     icon: const Icon(Icons.add, size: 18),
                     label: const Text('新会话'),
                   ),
@@ -1005,29 +1152,40 @@ class _ChatPageState extends State<ChatPage> {
             Expanded(
               child: _conversations.isEmpty
                   ? Center(
-                      child: Text('暂无历史会话\n（首次发送任务后自动保存）',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                              fontSize: 12.5, color: t.terminalMuted)))
+                      child: Text(
+                        '暂无历史会话\n（首次发送任务后自动保存）',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: Fsz.note,
+                          color: t.terminalMuted,
+                        ),
+                      ),
+                    )
                   : ListView.builder(
                       itemCount: _conversations.length,
                       itemBuilder: (context, i) {
                         final meta = _conversations[i];
                         return ListTile(
-                          leading: Icon(Icons.chat_bubble_outline,
-                              size: 18, color: t.terminalMuted),
-                          title: Text(meta.title,
-                              maxLines: 1, overflow: TextOverflow.ellipsis),
-                          subtitle: Text(_fmtTime(meta.updatedAt),
-                              style: const TextStyle(fontSize: 11)),
+                          leading: Icon(
+                            Icons.chat_bubble_outline,
+                            size: 18,
+                            color: t.terminalMuted,
+                          ),
+                          title: Text(
+                            meta.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: Text(
+                            _fmtTime(meta.updatedAt),
+                            style: const TextStyle(fontSize: Fsz.micro),
+                          ),
                           selected: meta.id == _conversationId,
-                          onTap: _running ? null : () => _loadConversation(meta),
+                          onTap: () => _loadConversation(meta),
                           trailing: IconButton(
                             icon: const Icon(Icons.delete_outline, size: 18),
                             tooltip: '删除会话',
-                            onPressed: _running
-                                ? null
-                                : () => unawaited(_deleteConversation(meta)),
+                            onPressed: () => unawaited(_deleteConversation(meta)),
                           ),
                         );
                       },
@@ -1039,8 +1197,11 @@ class _ChatPageState extends State<ChatPage> {
               title: const Text('服务大厅'),
               onTap: () {
                 Navigator.pop(context);
-                Navigator.of(context).push(MaterialPageRoute<void>(
-                    builder: (_) => const ServicesHallPage()));
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const ServicesHallPage(),
+                  ),
+                );
               },
             ),
             ListTile(
@@ -1048,8 +1209,11 @@ class _ChatPageState extends State<ChatPage> {
               title: const Text('记忆看板'),
               onTap: () {
                 Navigator.pop(context);
-                Navigator.of(context).push(MaterialPageRoute<void>(
-                    builder: (_) => const MemoryBoardPage()));
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const MemoryBoardPage(),
+                  ),
+                );
               },
             ),
           ],
@@ -1060,89 +1224,263 @@ class _ChatPageState extends State<ChatPage> {
 
   static String _preview(String content) {
     final lines = content.trim().split('\n');
-    final head = lines.take(2).join(' ⏎ ');
+    final head = lines.take(2).join(' · ');
     return head.length > 120 ? '${head.substring(0, 120)}…' : head;
+  }
+
+  /// 胶囊标签人话化：内部英文相位 → 用户可读中文；工具名等宽原名保持透传。
+  static String _pillText(String label) => switch (label) {
+    'idle' => '空闲',
+    'connecting' => '连接中',
+    'thinking' => '思考中',
+    'done' => '已完成',
+    'failed' => '失败',
+    'rejected' => '已拒绝',
+    'breaker' => '熔断排查',
+    'fence' => '围栏拦截',
+    _ => label,
+  };
+
+  /// 输入条内嵌状态（§3.1 左位：呼吸点 + 等宽相位；收敛自顶部胶囊行）。
+  /// 无边框裸点+文字——容器即输入条本身，不再套药丸描边。
+  Widget _inlineStatus(ConsoleTokens t) {
+    final color = switch (_pillTone) {
+      CapsuleTone.idle => t.terminalMuted,
+      CapsuleTone.l1 => t.l1Info,
+      CapsuleTone.l2 => t.l2Warn,
+      CapsuleTone.danger => t.danger,
+    };
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 132),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // §4.2 紧凑动效：状态点颜色随相位过渡（150~200ms，禁 Spring）。
+          AnimatedContainer(
+            width: 7,
+            height: 7,
+            duration: t.fastDuration,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 5),
+          Flexible(
+            child: Text(
+              _pillText(_pillLabel),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontFamily: t.monoFamily,
+                fontSize: Fsz.micro,
+                color: color,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Run 进行中离开拦截(破坏性防护 P0):系统返回/手势先弹确认——确认则
+  /// abort 后退出,否则留在页内。非运行态不拦截(零摩擦)。
+  Future<bool> _confirmLeaveWhileRunning() async {
+    if (!_running) return true;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: const Text('任务运行中'),
+        content: const Text('离开将中止当前任务,在途调用已发出的结果仍会回填。确定离开?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx, false),
+            child: const Text('留下'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogCtx, true),
+            child: const Text('中止并离开'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return false;
+    _abort();
+    return true;
   }
 
   @override
   Widget build(BuildContext context) {
     final t = consoleTokens(context);
-    return Theme(
-      data: ThemeData(
-        useMaterial3: true,
-        colorScheme: Theme.of(context).colorScheme,
-        extensions: const [ConsoleTokens.fallback],
-      ),
+    return PopScope(
+      canPop: !_running,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        final leave = await _confirmLeaveWhileRunning();
+        if (!leave) return;
+        if (!mounted) return;
+        Navigator.of(this.context).pop();
+      },
       child: Scaffold(
         drawer: _buildDrawer(),
         appBar: AppBar(
-          title: const Text('GoodHub'),
+          // 会话标题进 AppBar（D13 多会话：切会话后知道自己所在会话）。
+          title: Text(
+            _conversationTitle.isEmpty ? 'GoodHub' : _conversationTitle,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
           actions: [
             IconButton(
               icon: const Icon(Icons.settings_outlined),
-              tooltip: '连接配置',
-              onPressed: _running ? null : _openSettings,
+              tooltip: '设置',
+              onPressed: () {
+                if (!_guardRunning('打开设置')) return;
+                _openSettings();
+              },
             ),
-            if (kDebugMode)
-              IconButton(
-                icon: const Icon(Icons.bug_report_outlined),
-                tooltip: '调试入口',
-                onPressed: _running ? null : _openDebugMenu,
-              ),
+            IconButton(
+              icon: Icon(kDebugMode ? Icons.bug_report_outlined : Icons.system_update_alt),
+              tooltip: kDebugMode ? '调试入口' : '检查更新',
+              onPressed: () {
+                if (!_guardRunning('打开菜单')) return;
+                _openDebugMenu();
+              },
+            ),
           ],
         ),
         body: Column(
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-              child: Row(
-                children: [
-                  const Spacer(),
-                  StatusCapsule(label: _pillLabel, tone: _pillTone),
-                ],
-              ),
-            ),
             Expanded(
-              child: DualTrackStream(
-                entries: _track,
-                controller: _scrollCtrl,
-                emptyHint: '下达自然语言任务，宿主调度已挂载服务完成\n（先在 ⚙ 配置服务端点）',
+              // 上翻看历史时不劫持滚动；离底时给「回到最新」浮钮。
+              child: Stack(
+                children: [
+                  DualTrackStream(
+                    entries: _track,
+                    controller: _scrollCtrl,
+                    emptyHint: '下达自然语言任务，宿主调度已挂载服务完成\n'
+                        '（首次使用请先在 ⚙ 设置里配置服务端点）',
+                  ),
+                  if (!_autoFollow && _track.isNotEmpty)
+                    Positioned(
+                      right: 16,
+                      bottom: 8,
+                      child: FloatingActionButton.small(
+                        heroTag: 'chat-scroll-bottom',
+                        tooltip: '回到最新',
+                        onPressed: () {
+                          _scrollCtrl
+                              .animateTo(
+                                _scrollCtrl.position.maxScrollExtent,
+                                duration: t.fastDuration,
+                                curve: Curves.easeOut,
+                              )
+                              .then((_) {
+                                if (mounted) setState(() => _autoFollow = true);
+                              });
+                        },
+                        child: const Icon(Icons.arrow_downward),
+                      ),
+                    ),
+                ],
               ),
             ),
             SafeArea(
               top: false,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _inputCtrl,
-                        enabled: !_running,
-                        minLines: 1,
-                        maxLines: 4,
-                        decoration: const InputDecoration(
-                          hintText: '描述任务…（如：把这篇笔记的行动项写进 todo）',
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                        ),
-                        onSubmitted: (_) => _send(),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    _running
-                        ? FilledButton.tonal(
-                            onPressed: _abort,
-                            style: FilledButton.styleFrom(
-                              foregroundColor: t.dangerDeep,
+              child: Center(
+                // 桌面宽屏下输入区居中限宽，避免全宽拉伸
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 720),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
+                    // 底部控制集群：药丸输入条（状态点 + 相位 + 输入 + 发送）+
+                    // 运行态右侧 [ABORT]（§3.1 布局：左状态 / 中阶段 / 右中止，
+                    // 由顶部胶囊行收敛进输入条，省一条常驻空行）。
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Expanded(
+                          child: Container(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(24),
+                              border: Border.all(color: t.hairline),
+                              color: Theme.of(context).cardColor,
                             ),
-                            child: const Text('[ABORT]'),
-                          )
-                        : FilledButton(
-                            onPressed: _send,
-                            child: const Text('发送'),
+                            padding: const EdgeInsets.only(
+                              left: 12,
+                              right: 6,
+                              top: 2,
+                              bottom: 2,
+                            ),
+                            child: Row(
+                              children: [
+                                _inlineStatus(t),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: TextField(
+                                    controller: _inputCtrl,
+                                    // 运行中保持可预输入（发送由按钮/_guard 挡 running）。
+                                    minLines: 1,
+                                    maxLines: 4,
+                                    textInputAction: TextInputAction.send,
+                                    decoration: InputDecoration(
+                                      hintText: '描述任务…（Enter 发送；如：列出今天的待办）',
+                                      border: InputBorder.none,
+                                      contentPadding: const EdgeInsets.symmetric(
+                                        horizontal: 0,
+                                        vertical: 12,
+                                      ),
+                                    ),
+                                    onSubmitted: (_) {
+                                      if (_running) {
+                                        _toast('任务运行中，可先输入，结束后再发送');
+                                        return;
+                                      }
+                                      _send();
+                                    },
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                // 内嵌发送钮；运行中可点——给原因反馈而非静默置灰。
+                                IconButton.filledTonal(
+                                  style: IconButton.styleFrom(
+                                    minimumSize: const Size(36, 36),
+                                    padding: EdgeInsets.zero,
+                                  ),
+                                  onPressed: () {
+                                    if (_running) {
+                                      _toast('任务运行中，可先输入，结束后再发送');
+                                      return;
+                                    }
+                                    _send();
+                                  },
+                                  tooltip: '发送',
+                                  icon: const Icon(Icons.arrow_upward, size: 20),
+                                ),
+                              ],
+                            ),
                           ),
-                  ],
+                        ),
+                        // §3.1 右位：高反差低误触的红色 ABORT（仅运行态出现）。
+                        if (_running) ...[
+                          const SizedBox(width: 8),
+                          TextButton(
+                            key: const Key('capsule-abort'),
+                            style: TextButton.styleFrom(
+                              foregroundColor: t.dangerDeep,
+                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                              minimumSize: const Size(0, 36),
+                            ),
+                            onPressed: _abort,
+                            child: Text(
+                              '[ABORT]',
+                              style: TextStyle(
+                                fontFamily: t.monoFamily,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -1201,210 +1539,5 @@ class _ChatFence implements PiiFenceDelegate {
     final entry = TrackFence(info);
     _state._add(entry);
     return entry.completer.future;
-  }
-}
-
-/// T6：端点内联编辑表单（持有 controller，避免 StatefulBuilder 重建丢输入）。
-class _EditServiceForm extends StatefulWidget {
-  const _EditServiceForm({
-    required this.ep,
-    required this.storedKey,
-    required this.onSave,
-    required this.onCancel,
-  });
-
-  final ServerEndpoint ep;
-  final String? storedKey;
-  final void Function(ServerEndpoint updated, String token) onSave;
-  final VoidCallback onCancel;
-
-  @override
-  State<_EditServiceForm> createState() => _EditServiceFormState();
-}
-
-class _EditServiceFormState extends State<_EditServiceForm> {
-  late final _epCtrl = TextEditingController(text: widget.ep.endpoint);
-  late final _keyCtrl = TextEditingController(text: widget.storedKey ?? '');
-
-  @override
-  void dispose() {
-    _epCtrl.dispose();
-    _keyCtrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final t = consoleTokens(context);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12, left: 4, right: 4),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          TextField(
-            controller: _epCtrl,
-            decoration: const InputDecoration(
-              labelText: 'MCP Endpoint（须含 /mcp）',
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
-            style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-          ),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _keyCtrl,
-            obscureText: true,
-            decoration: InputDecoration(
-              labelText: 'X-Api-Key（可留空）',
-              border: const OutlineInputBorder(),
-              isDense: true,
-              hintText: widget.storedKey?.isNotEmpty == true
-                  ? '已存令牌（留空不改）'
-                  : null,
-            ),
-            style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-          ),
-          const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              TextButton(onPressed: widget.onCancel, child: const Text('取消')),
-              const SizedBox(width: 8),
-              FilledButton(
-                onPressed: () => widget.onSave(
-                  widget.ep.copyWith(endpoint: _epCtrl.text.trim()),
-                  _keyCtrl.text.trim(),
-                ),
-                child: const Text('保存'),
-              ),
-            ],
-          ),
-          if (widget.storedKey?.isNotEmpty == true)
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Text(
-                  '该服务已存令牌（安全存储）。留空密钥框 = 不改；填新值 = 覆盖。',
-                  style: TextStyle(fontSize: 11, color: t.terminalMuted)),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-/// T6：新增端点表单（id/name/endpoint/token；id 校验不含 `__`）。
-class _AddServiceForm extends StatefulWidget {
-  const _AddServiceForm({
-    required this.onAdd,
-    required this.onCancel,
-  });
-
-  final void Function(String id, String name, String endpoint, String token)
-      onAdd;
-  final VoidCallback onCancel;
-
-  @override
-  State<_AddServiceForm> createState() => _AddServiceFormState();
-}
-
-class _AddServiceFormState extends State<_AddServiceForm> {
-  final _idCtrl = TextEditingController();
-  final _nameCtrl = TextEditingController();
-  final _epCtrl = TextEditingController();
-  final _keyCtrl = TextEditingController();
-  var _err = '';
-
-  @override
-  void dispose() {
-    _idCtrl.dispose();
-    _nameCtrl.dispose();
-    _epCtrl.dispose();
-    _keyCtrl.dispose();
-    super.dispose();
-  }
-
-  void _submit() {
-    final id = _idCtrl.text.trim();
-    if (id.isEmpty) {
-      setState(() => _err = '服务标识不能为空');
-      return;
-    }
-    if (id.contains('__')) {
-      setState(() => _err = '服务标识不能含 "__"（工具名前缀分隔符）');
-      return;
-    }
-    widget.onAdd(
-      id,
-      _nameCtrl.text.trim(),
-      _epCtrl.text.trim(),
-      _keyCtrl.text.trim(),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final t = consoleTokens(context);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8, left: 4, right: 4),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          TextField(
-            controller: _idCtrl,
-            decoration: const InputDecoration(
-              labelText: '服务标识（如 shuguang，不含 __）',
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
-            style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-          ),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _nameCtrl,
-            decoration: const InputDecoration(
-              labelText: '展示名（可空，默认同标识）',
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
-          ),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _epCtrl,
-            decoration: const InputDecoration(
-              labelText: 'MCP Endpoint（须含 /mcp）',
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
-            style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-          ),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _keyCtrl,
-            obscureText: true,
-            decoration: const InputDecoration(
-              labelText: 'X-Api-Key（可留空）',
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
-            style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-          ),
-          if (_err.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child:
-                  Text(_err, style: TextStyle(fontSize: 12, color: t.dangerDeep)),
-            ),
-          const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              TextButton(onPressed: widget.onCancel, child: const Text('取消')),
-              const SizedBox(width: 8),
-              FilledButton(onPressed: _submit, child: const Text('添加')),
-            ],
-          ),
-        ],
-      ),
-    );
   }
 }

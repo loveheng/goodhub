@@ -1,6 +1,7 @@
-/// 阅读轨 Markdown 只读渲染（M4-T3 / D12）。
+/// 阅读轨富文本只读渲染（M4-T3 / D12）。
 ///
-/// 组成 = goodshare 自写解析器（`lib/doc/rich_text.dart` 随迁，零依赖）+
+/// 输入 = 已解析块树 `List<RichBlock>`（DIP：parse 由调用点经 `rich_text` 实现库
+/// `markdown_subset.dart` 完成，本组件只依赖抽象库 `rich_text.dart` 的 AST）+
 /// 本渲染器（宿主自写只读版）——不复用 goodshare 的 `ui/rich_text_view.dart`：
 /// 其样式绑 goodshare tokens 与勾选/媒体交互面，与 goodhub ui-design 控制台
 /// 风格不同源（ui-design §2 阅读轨排版：无衬线、行高 1.5~1.6、代码块微深底）。
@@ -14,18 +15,31 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:rich_text/rich_text.dart';
 
-import '../doc/rich_text.dart';
 import 'tokens/console_tokens.dart';
 
 class RichTextView extends StatelessWidget {
-  const RichTextView({super.key, required this.markdown});
+  const RichTextView({super.key, required this.blocks});
 
-  final String markdown;
+  final List<RichBlock> blocks;
+
+  /// 长按复制 URL + Toast 反馈（P2 低优拍板：链接不可点，复制替代跳转）。
+  static void _copyUrl(BuildContext context, String url) {
+    Clipboard.setData(ClipboardData(text: url));
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        const SnackBar(
+          content: Text('✓ 已复制链接'),
+          duration: Duration(milliseconds: 1500),
+        ),
+      );
+  }
 
   @override
   Widget build(BuildContext context) {
-    final blocks = const MarkdownSubsetParser().parse(markdown);
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -46,17 +60,19 @@ class RichTextView extends StatelessWidget {
           padding: const EdgeInsets.only(top: 6, bottom: 2),
           child: Text.rich(
             TextSpan(children: [for (final n in inline) _inline(context, n)]),
-            style: TextStyle(fontSize: size, fontWeight: FontWeight.w600, height: 1.4),
+            style: TextStyle(
+              fontSize: size,
+              fontWeight: FontWeight.w600,
+              height: 1.4,
+            ),
           ),
         );
       case ParagraphBlock(:final inline):
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 3),
           child: Text.rich(
-            TextSpan(children: [
-              for (final n in inline) _inline(context, n),
-            ]),
-            style: const TextStyle(fontSize: 14.5, height: 1.55),
+            TextSpan(children: [for (final n in inline) _inline(context, n)]),
+            style: const TextStyle(fontSize: Fsz.reading, height: 1.55),
           ),
         );
       case QuoteBlock(:final children):
@@ -72,9 +88,7 @@ class RichTextView extends StatelessWidget {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      for (final c in children) _block(context, c),
-                    ],
+                    children: [for (final c in children) _block(context, c)],
                   ),
                 ),
               ],
@@ -114,52 +128,114 @@ class RichTextView extends StatelessWidget {
                   if (language != null && language.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 4),
-                      child: Text(language,
-                          style: TextStyle(
-                              fontFamily: t.monoFamily,
-                              fontSize: 10.5,
-                              color: t.terminalMuted)),
+                      child: Text(
+                        language,
+                        style: TextStyle(
+                          fontFamily: t.monoFamily,
+                          fontSize: Fsz.microSm,
+                          color: t.terminalMuted,
+                        ),
+                      ),
                     ),
-                  Text(code,
-                      style: TextStyle(
-                          fontFamily: t.monoFamily, fontSize: 12.5, height: 1.45)),
+                  Text(
+                    code,
+                    style: TextStyle(
+                      fontFamily: t.monoFamily,
+                      fontSize: Fsz.note,
+                      height: 1.45,
+                    ),
+                  ),
                 ],
               ),
             ),
           ),
         );
-      case TableBlock(:final header, :final rows):
+      case MathBlock(:final source):
+        // 数学块降级（M 阶段不引 KaTeX）：LaTeX 源码等宽呈现，`$$` 定界符
+        // 保留可读——样式平但不吞内容（降级铁律）。
+        final t = consoleTokens(context);
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: t.codeBg,
+              borderRadius: BorderRadius.circular(t.cardRadius),
+              border: Border.all(color: t.hairline),
+            ),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Text(
+                '\$\$$source\$\$',
+                style: TextStyle(
+                  fontFamily: t.monoFamily,
+                  fontSize: Fsz.note,
+                  height: 1.45,
+                ),
+              ),
+            ),
+          ),
+        );
+      case TableBlock(:final header, :final rows, :final align):
+        final t = consoleTokens(context);
+        // 列对齐（parser 透传的 GFM 对齐标记；缺省左对齐）。
+        TextAlign alignOf(int c) => switch (align == null || c >= align.length
+            ? TableAlign.left
+            : align[c]) {
+          TableAlign.left => TextAlign.left,
+          TableAlign.center => TextAlign.center,
+          TableAlign.right => TextAlign.right,
+        };
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
           child: SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Table(
-              border: TableBorder.all(color: consoleTokens(context).hairline, width: 0.6),
+              // 关键：列宽按内容自适应（IntrinsicColumnWidth）。否则 Table 默认
+              // FlexColumnWidth(1) 在横向滚动的无限宽约束下塌成 0 宽，单元格重叠
+              // 错乱；超宽内容交给外层横向滚动兜底（宁可横向滚不挤变形）。
+              defaultColumnWidth: const IntrinsicColumnWidth(),
+              border: TableBorder.all(
+                color: t.hairline,
+                width: 0.6,
+              ),
               defaultVerticalAlignment: TableCellVerticalAlignment.middle,
               children: [
                 TableRow(
-                  decoration: BoxDecoration(
-                    color: consoleTokens(context).codeBg,
-                  ),
+                  decoration: BoxDecoration(color: t.codeBg),
                   children: [
-                    for (final h in header)
+                    for (var c = 0; c < header.length; c++)
                       Padding(
                         padding: const EdgeInsets.all(6),
-                        child: Text(h,
-                            style: const TextStyle(
-                                fontSize: 12.5, fontWeight: FontWeight.w600)),
+                        child: Text(
+                          header[c],
+                          textAlign: alignOf(c),
+                          style: const TextStyle(
+                            fontSize: Fsz.note,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
                       ),
                   ],
                 ),
                 for (final row in rows)
-                  TableRow(children: [
-                    for (final cell in row)
-                      Padding(
-                        padding: const EdgeInsets.all(6),
-                        child: Text(cell,
-                            style: const TextStyle(fontSize: 12.5, height: 1.4)),
-                      ),
-                  ]),
+                  TableRow(
+                    children: [
+                      for (var c = 0; c < row.length; c++)
+                        Padding(
+                          padding: const EdgeInsets.all(6),
+                          child: Text(
+                            row[c],
+                            textAlign: alignOf(c),
+                            style: const TextStyle(
+                              fontSize: Fsz.note,
+                              height: 1.4,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
               ],
             ),
           ),
@@ -179,29 +255,46 @@ class RichTextView extends StatelessWidget {
   }
 
   /// 媒体块降级呈现（M 阶段不内嵌播放器/图片——链接文本行不丢信息）。
-  Widget _mediaLine(BuildContext context, String kind, String label, String url) {
+  /// 长按复制 URL（P2 拍板：链接不可点、零新依赖，复制替代跳转）。
+  Widget _mediaLine(
+    BuildContext context,
+    String kind,
+    String label,
+    String url,
+  ) {
     final t = consoleTokens(context);
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Text.rich(
-        TextSpan(children: [
-          TextSpan(text: '$kind ', style: TextStyle(fontSize: 13, color: t.terminalMuted)),
+    return GestureDetector(
+      onLongPress: () => _copyUrl(context, url),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: Text.rich(
           TextSpan(
-            text: label.isEmpty ? url : label,
-            style: TextStyle(
-                fontSize: 13.5,
-                color: t.dataRef,
-                decoration: TextDecoration.underline,
-                decorationColor: t.dataRef),
+            children: [
+              TextSpan(
+                text: '$kind ',
+                style: TextStyle(fontSize: Fsz.body, color: t.terminalMuted),
+              ),
+              TextSpan(
+                text: label.isEmpty ? url : label,
+                style: TextStyle(
+                  fontSize: Fsz.mediaLabel,
+                  color: t.dataRef,
+                  decoration: TextDecoration.underline,
+                  decorationColor: t.dataRef,
+                ),
+              ),
+            ],
           ),
-        ]),
+        ),
       ),
     );
   }
 
   Widget _listItem(BuildContext context, ListItem item, String marker) {
     final lines = item.lines;
-    final first = lines.isEmpty ? const <InlineNode>[InlineText('')] : lines.first;
+    final first = lines.isEmpty
+        ? const <InlineNode>[InlineText('')]
+        : lines.first;
     Widget row = Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -209,14 +302,14 @@ class RichTextView extends StatelessWidget {
           width: item.done != null ? 22 : 18,
           child: Text(
             item.done == null ? marker : (item.done! ? '☑' : '☐'),
-            style: const TextStyle(fontSize: 14, height: 1.55),
+            style: const TextStyle(fontSize: Fsz.listPrimary, height: 1.55),
           ),
         ),
         Expanded(
           child: Text.rich(
             TextSpan(children: [for (final n in first) _inline(context, n)]),
             style: TextStyle(
-              fontSize: 14.5,
+              fontSize: Fsz.reading,
               height: 1.55,
               decoration: item.done == true ? TextDecoration.lineThrough : null,
             ),
@@ -230,7 +323,7 @@ class RichTextView extends StatelessWidget {
         padding: EdgeInsets.only(left: item.done != null ? 22 : 18),
         child: Text.rich(
           TextSpan(children: [for (final n in cont) _inline(context, n)]),
-          style: const TextStyle(fontSize: 14.5, height: 1.55),
+          style: const TextStyle(fontSize: Fsz.reading, height: 1.55),
         ),
       );
       row = Column(
@@ -255,43 +348,67 @@ class RichTextView extends StatelessWidget {
         return TextSpan(text: text);
       case InlineStrong(:final children):
         return TextSpan(
-            children: _inlineSpans(context, children),
-            style: const TextStyle(fontWeight: FontWeight.w700));
+          children: _inlineSpans(context, children),
+          style: const TextStyle(fontWeight: FontWeight.w700),
+        );
       case InlineEm(:final children):
         return TextSpan(
-            children: _inlineSpans(context, children),
-            style: const TextStyle(fontStyle: FontStyle.italic));
+          children: _inlineSpans(context, children),
+          style: const TextStyle(fontStyle: FontStyle.italic),
+        );
       case InlineUnderline(:final children):
         return TextSpan(
-            children: _inlineSpans(context, children),
-            style: const TextStyle(decoration: TextDecoration.underline));
+          children: _inlineSpans(context, children),
+          style: const TextStyle(decoration: TextDecoration.underline),
+        );
       case InlineStrikethrough(:final children):
         return TextSpan(
-            children: _inlineSpans(context, children),
-            style: const TextStyle(decoration: TextDecoration.lineThrough));
+          children: _inlineSpans(context, children),
+          style: const TextStyle(decoration: TextDecoration.lineThrough),
+        );
       case InlineHighlight(:final children):
         return TextSpan(
-            children: _inlineSpans(context, children),
-            style: TextStyle(backgroundColor: t.codeBg));
+          children: _inlineSpans(context, children),
+          style: TextStyle(backgroundColor: t.codeBg),
+        );
       case InlineCode(:final code):
         return TextSpan(
           text: code,
           style: TextStyle(
             fontFamily: t.monoFamily,
-            fontSize: 13,
+            fontSize: Fsz.body,
+            backgroundColor: t.codeBg,
+          ),
+        );
+      case InlineMath(:final source):
+        // 行内数学降级：`$` 定界符 + 等宽，不引 KaTeX（样式平不吞内容）。
+        return TextSpan(
+          text: '\$$source\$',
+          style: TextStyle(
+            fontFamily: t.monoFamily,
+            fontSize: Fsz.body,
             backgroundColor: t.codeBg,
           ),
         );
       case InlineLink(:final label, :final url):
-        return TextSpan(
-          text: label,
-          style: TextStyle(
-            color: t.dataRef,
-            decoration: TextDecoration.underline,
-            decorationColor: t.dataRef,
+        // 不可点击（goodshare 同口径，不引 url_launcher）；长按复制 URL
+        // 替代跳转（P2 拍板），url 留审计可读（semanticsLabel）。
+        return WidgetSpan(
+          alignment: PlaceholderAlignment.middle,
+          child: GestureDetector(
+            onLongPress: () => _copyUrl(context, url),
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: Fsz.reading,
+                height: 1.55,
+                color: t.dataRef,
+                decoration: TextDecoration.underline,
+                decorationColor: t.dataRef,
+              ),
+              semanticsLabel: url,
+            ),
           ),
-          // 不可点击（goodshare 同口径，不引 url_launcher）；url 留审计可读。
-          semanticsLabel: url,
         );
     }
   }
