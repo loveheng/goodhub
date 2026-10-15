@@ -56,6 +56,26 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  /// 目标可能落在 ListView 懒构建视口外：已构建 → ensureVisible；未构建 →
+  /// 先回列表顶部再向下逐屏找（finder 只匹配已构建 widget）。
+  Future<void> scrollTo(WidgetTester tester, Finder finder) async {
+    if (finder.evaluate().isNotEmpty) {
+      await tester.ensureVisible(finder);
+      await tester.pumpAndSettle();
+      return;
+    }
+    await tester.drag(find.byType(ListView).first, const Offset(0, 600));
+    await tester.pumpAndSettle();
+    if (finder.evaluate().isNotEmpty) return;
+    await tester.dragUntilVisible(
+      finder,
+      find.byType(ListView).first,
+      const Offset(0, -60),
+      maxIteration: 50,
+    );
+    await tester.pumpAndSettle();
+  }
+
   Future<void> tapVisible(WidgetTester tester, Finder finder) async {
     await tester.ensureVisible(finder);
     await tester.pumpAndSettle();
@@ -168,5 +188,24 @@ void main() {
       findsOneWidget,
       reason: '局域网暴露风险文案必须常驻',
     );
+  });
+
+  testWidgets('关于面板：版本占位 + 检查更新常驻 + 长按标题唤出 debug 联调入口',
+      (tester) async {
+    await pumpSettings(tester);
+    await scrollTo(tester, find.byKey(const Key('about-title')));
+
+    expect(find.text('关于'), findsOneWidget);
+    // 检查更新是正式功能（release 也要能用），不藏进长按。
+    expect(find.byKey(const Key('about-check-update')), findsOneWidget);
+    expect(find.text('检查更新'), findsOneWidget);
+    // 测试环境无 PackageInfo 通道：版本按占位（宁空勿炸，不阻断面板）。
+    expect(find.textContaining('GoodHub'), findsOneWidget);
+
+    // 长按「关于」→ debug 联调菜单（flutter test 下 kDebugMode = true）。
+    await tester.longPress(find.byKey(const Key('about-title')));
+    await tester.pumpAndSettle();
+    expect(find.text('网关/熔断联调'), findsOneWidget);
+    expect(find.text('M1 任务循环（claim/apply）'), findsOneWidget);
   });
 }

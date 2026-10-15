@@ -25,13 +25,18 @@
 ///    覆写优先级最高，major 跃迁告警弹卡（CowMajorJumpDelegate）在联调流组件化
 ///    复用，此处不重复建同步入口（同步需 Server 连接，属节点卡面板范围）；
 /// ⑥ **跨源授权语义**——D5 恒 L2 弹卡不豁免的口径展示 + 联调入口。
+/// ⑦ **关于**——版本号 + **检查更新**入口（正式功能，全构建可见，2026-10-16 自
+///    聊天页 AppBar 迁入：聊天页 AppBar 已清空，不再持有设置/调试按钮）；
+///    **长按「关于」标题**唤出 debug 联调菜单（仅 `kDebugMode`：网关/熔断联调 +
+///    M1 任务循环），避免联调入口污染正式面。
 library;
 
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -42,7 +47,9 @@ import '../llm/cloud/cloud_llm.dart';
 import '../mcp/server_endpoints.dart';
 import '../mcp/server_probe.dart';
 import 'components/server_endpoint_forms.dart';
+import 'claim_loop_page.dart';
 import 'gateway_loop_debug_page.dart';
+import 'update_page.dart';
 import '../mcp/local_plugin_discovery.dart';
 import '../mcp/trusted_plugins.dart';
 import 'trust_plugin_dialog.dart';
@@ -136,6 +143,9 @@ class _SettingsPageState extends State<SettingsPage> {
   var _trustedPackages = const <String>{}; // 已信任包名（同签名免确认仍显式标）
   StreamSubscription<void>? _localChangesSub;
 
+  // —— 关于面板（2026-10-16 自聊天页 AppBar 迁入）——
+  String _appVersion = '—'; // PackageInfo 不可用时占位（宁空勿炸）
+
   // —— PC 远程网关面板（2026-10-16 自聊天页 ⚙ 迁入）——
   var _gwRunning = false;
   var _gwLanAddrs = const <String>[]; // 运行中展示 PC 可配 URL
@@ -212,6 +222,13 @@ class _SettingsPageState extends State<SettingsPage> {
       await _reloadGateway();
     } on Object catch (e) {
       debugPrint('[DEGRADE] gateway-panel: 状态读取失败按未运行: $e');
+    }
+    // 关于面板独立初始化：版本号只作展示，读不到按占位（不影响任何功能面）。
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (mounted) setState(() => _appVersion = '${info.version}+${info.buildNumber}');
+    } on Object catch (e) {
+      debugPrint('[DEGRADE] about-panel: 版本读取失败按占位: $e');
     }
   }
 
@@ -512,6 +529,8 @@ class _SettingsPageState extends State<SettingsPage> {
                 _cowPanel(context, t),
                 const SizedBox(height: 12),
                 _crossSourcePanel(context, t),
+                const SizedBox(height: 12),
+                _aboutPanel(context, t),
               ],
             ),
     );
@@ -1514,6 +1533,103 @@ class _SettingsPageState extends State<SettingsPage> {
     if (probe != null && probe.online) return '已授权';
     if (probe != null) return '离线';
     return ep.hasKey ? '未探测 · 已存令牌' : '未探测 · 无令牌';
+  }
+
+  // —— 面板七：关于（版本 + 检查更新；长按标题进 debug 联调入口） ——
+
+  /// debug 联调入口（2026-10-16 自聊天页 AppBar 迁入）：仅 debug 构建经长按
+  /// 「关于」唤出，避免联调入口占据正式面。检查更新是正式功能，常驻可见不藏。
+  Future<void> _openDebugMenu() async {
+    if (!kDebugMode) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.admin_panel_settings_outlined),
+              title: const Text('网关/熔断联调'),
+              onTap: () {
+                Navigator.pop(ctx);
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const GatewayLoopDebugPage(),
+                  ),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.repeat_outlined),
+              title: const Text('M1 任务循环（claim/apply）'),
+              onTap: () {
+                Navigator.pop(ctx);
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const ClaimLoopPage(),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _aboutPanel(BuildContext context, ConsoleTokens t) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 长按标题 = debug 联调入口（kDebugMode 内自闸；release 长按无响应）。
+            GestureDetector(
+              key: const Key('about-title'),
+              onLongPress: _openDebugMenu,
+              child: Text(
+                '关于',
+                style: const TextStyle(
+                  fontSize: Fsz.sectionTitle,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'GoodHub $_appVersion',
+              style: TextStyle(
+                fontFamily: t.monoFamily,
+                fontSize: Fsz.telemetrySm,
+                color: t.terminalMuted,
+              ),
+            ),
+            if (kDebugMode)
+              Text(
+                '（debug 构建：长按「关于」进入联调入口）',
+                style: TextStyle(
+                  fontSize: Fsz.microSm,
+                  color: t.terminalMuted,
+                ),
+              ),
+            ListTile(
+              key: const Key('about-check-update'),
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.system_update_alt),
+              title: const Text('检查更新'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(builder: (_) => const UpdatePage()),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   // —— 面板四·a：PC 远程网关（:8766；2026-10-16 自聊天页 ⚙ 迁入） ——

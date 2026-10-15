@@ -19,3 +19,5 @@ last-merge: 2026-10-14
 - [变更] 唯一净新增 = **PC 远程网关面板**（:8766 起停 + 配对 Token + 局域网暴露 ⚠ 文案，自 ⚙ 迁入）；真缺口补齐 = **本地插件撤销信任**（原设置弹层有 `trusted.remove`、大厅只有 `_trustPlugin`）。撤销语义=仅移出白名单（信任闸门是装配期校验：本机下轮重弹卡、网关侧跳过），不动连接池。文件头加 scope 声明：设置 = 服务与引擎配置，记忆看板/更新/会话历史不并入。
 - [验证] `flutter analyze` No issues；`flutter test` 587 全绿（新增撤销信任 + 网关面板 2 例）。
 - [SSOT 修正] 历史文档（m4/m3/m2-5/chat-interaction）保留「服务大厅」原文 + 加名词映射注；现行文档（architecture/requirements/coding-standards/index）直接改新名。`chat_page` 1980 → 1734 行（-246）；`settings_page` 1653 → 1789 行。
+- [变更] 2026-10-16 聊天页 AppBar 清空：⚙ 设置按钮移除（设置入口只在侧边栏），debug 入口收进设置页新增「关于」段。**检查更新**是 release 正式功能故**常驻可见**（不藏），网关联调 / M1 任务循环改**长按「关于」标题**唤出（`kDebugMode` 内自闸，debug 构建给出提示文案）。ChatPage 同步删 `_openDebugMenu` + 3 个失效 import；空态/菜单文案「⚙ 设置页」→「侧边栏 → 设置页」。
+- [验证] `flutter analyze` No issues；`flutter test` 588 全绿（+1 关于面板/长按联调用例）。

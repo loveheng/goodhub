@@ -11,7 +11,6 @@ library;
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -55,10 +54,7 @@ import 'components/status_capsule.dart';
 import 'components/stream_text_buffer.dart';
 import 'tokens/console_tokens.dart';
 import 'components/stuck_watcher.dart';
-import 'gateway_loop_debug_page.dart';
 import 'settings_page.dart';
-import 'claim_loop_page.dart';
-import 'update_page.dart';
 import 'memory_board_page.dart';
 
 /// 连接配置持久化（T6-2）：改走 [ServerEndpointStore]（多端点 JSON + apiKey
@@ -531,7 +527,7 @@ class _ChatPageState extends State<ChatPage> {
                   ),
                   const Divider(height: 16),
                   if (priv.isEmpty && _localPlugins.isEmpty)
-                    Text('无可用私有服务（私有端点请在 ⚙ 设置页添加）',
+                    Text('无可用私有服务（私有端点请在侧边栏 → 设置页添加）',
                         style: TextStyle(
                             fontSize: Fsz.note, color: t.terminalMuted)),
                   for (final e in priv)
@@ -604,59 +600,6 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
-  /// D9：联调页/M1 任务循环入口收编（联调与任务循环仅 debug 构建，
-  /// kDebugMode 门禁；检查更新为正式功能全构建保留）。
-  /// 注：设置页入口已于 2026-10-16 收敛到 AppBar ⚙ 与侧边栏，本菜单不再重复。
-  void _openDebugMenu() {
-    showModalBottomSheet<void>(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (kDebugMode)
-              ListTile(
-                leading: const Icon(Icons.admin_panel_settings_outlined),
-                title: const Text('网关/熔断联调'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => const GatewayLoopDebugPage(),
-                    ),
-                  );
-                },
-              ),
-            if (kDebugMode)
-              ListTile(
-                leading: const Icon(Icons.repeat_outlined),
-                title: const Text('M1 任务循环（claim/apply）'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => const ClaimLoopPage(),
-                    ),
-                  );
-                },
-              ),
-            ListTile(
-              leading: const Icon(Icons.system_update_alt),
-              title: const Text('检查更新'),
-              onTap: () {
-                Navigator.pop(ctx);
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => const UpdatePage(),
-                  ),
-                );
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 
   /// M4-T3 发送（D11 多轮）：上轮 transcript 作 history 续接；一次一个 Run。
   Future<void> _send() async {
@@ -684,7 +627,7 @@ class _ChatPageState extends State<ChatPage> {
     }
     if (endpoints.isEmpty && locals.isEmpty) {
       _add(TrackNote('⚠ 尚未配置任何 MCP 服务，且未发现本地插件', danger: true));
-      // 未配置任何服务：直接进设置页（2026-10-16：⚙ 弹层已合并进设置页，
+      // 未配置任何服务：直接进设置页（2026-10-16：设置页入口收敛到侧边栏，
       // 此处同步改为整页 push；输入内容不丢，返回即可继续）。
       if (!mounted) return;
       unawaited(
@@ -1504,30 +1447,6 @@ class _ChatPageState extends State<ChatPage> {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
-          actions: [
-            IconButton(
-              icon: const Icon(Icons.settings_outlined),
-              tooltip: '设置',
-              onPressed: () {
-                if (!_guardRunning('打开设置')) return;
-                unawaited(
-                  Navigator.of(context).push<void>(
-                    MaterialPageRoute<void>(
-                      builder: (_) => const SettingsPage(),
-                    ),
-                  ),
-                );
-              },
-            ),
-            IconButton(
-              icon: Icon(kDebugMode ? Icons.bug_report_outlined : Icons.system_update_alt),
-              tooltip: kDebugMode ? '调试入口' : '检查更新',
-              onPressed: () {
-                if (!_guardRunning('打开菜单')) return;
-                _openDebugMenu();
-              },
-            ),
-          ],
         ),
         body: Column(
           children: [
@@ -1539,7 +1458,7 @@ class _ChatPageState extends State<ChatPage> {
                     entries: _track,
                     controller: _scrollCtrl,
                     emptyHint: '下达自然语言任务，宿主调度已挂载服务完成\n'
-                        '（首次使用请先在 ⚙ 设置页里配置服务端点）',
+                        '（首次使用请先在侧边栏 → 设置页里配置服务端点）',
                   ),
                   if (!_autoFollow && _track.isNotEmpty)
                     Positioned(
