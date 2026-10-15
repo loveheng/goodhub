@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/coordinator/cow_sync.dart';
-import 'package:goodhub/ui/services_hall_page.dart';
+import 'package:goodhub/ui/settings_page.dart';
 
 void main() {
   late Directory tempDir;
@@ -14,7 +14,7 @@ void main() {
   });
   testWidgets('debug empty', (tester) async {
     await tester
-        .pumpWidget(MaterialApp(home: ServicesHallPage(storeOverride: store)));
+        .pumpWidget(MaterialApp(home: SettingsPage(storeOverride: store)));
     for (var i = 0; i < 40; i++) {
       await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 50)));

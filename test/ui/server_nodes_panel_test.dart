@@ -1,4 +1,4 @@
-/// M4-T5 Server 节点卡面板 widget 测试（services_hall_page 节点卡段）：
+/// M4-T5 Server 节点卡面板 widget 测试（settings_page 节点卡段）：
 /// 节点渲染（端口/延迟/工具计数/鉴权态等宽遥测轨）+ 探测全联动 + 挂载开关
 /// 落盘（enabled=false → _send 装配过滤，见 chat_page 侧约定）。
 /// 纪律：同 byok_panel_test——store 读写走真实异步，全部经
@@ -14,7 +14,7 @@ import 'package:goodhub/core/security/secure_key_value.dart';
 import 'package:goodhub/llm/cloud/byok_store.dart';
 import 'package:goodhub/mcp/server_endpoints.dart';
 import 'package:goodhub/mcp/server_probe.dart';
-import 'package:goodhub/ui/services_hall_page.dart';
+import 'package:goodhub/ui/settings_page.dart';
 
 void main() {
   late Directory tmp;
@@ -56,7 +56,7 @@ void main() {
 
   Future<void> pumpPanel(WidgetTester tester, {NodeProbeFn? probe}) async {
     await tester.pumpWidget(MaterialApp(
-      home: ServicesHallPage(
+      home: SettingsPage(
         // CoW/BYOK 面板同注入假件：其默认装配走平台通道，测试环境不可达，
         // 失败置 _error 会替换整个 ListView（面板级短路），节点卡无从渲染。
         autoProbe: false, // 探活断言均走显式「探测全部」点击，自动探活会翻倍计数

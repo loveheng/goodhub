@@ -30,7 +30,7 @@ class ByokProfile {
   /// 稳定标识（UUID 等，由调用方生成）；密钥存储按此寻址。
   final String id;
 
-  /// 显示名（服务大厅模型配置面板用）。
+  /// 显示名（设置页模型配置面板用）。
   final String name;
   final CloudProtocol protocol;
   final String baseUrl;

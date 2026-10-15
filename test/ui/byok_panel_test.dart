@@ -1,7 +1,7 @@
-/// M4-T5 服务大厅 BYOK 云端引擎面板单测（ByokStore 注入假件）：
+/// M4-T5 设置页（原服务大厅）BYOK 云端引擎面板单测（ByokStore 注入假件）：
 /// 空态/新增落库（密钥走安全存储）/ 列表渲染与生效中标注 / 编辑（密钥留空
 /// 保持已存）/ 置顶切换生效 / 删除（确认弹卡 + 密钥连带清理）。
-/// 纪律：同 services_hall_page_test——store 读写走真实异步，全部经
+/// 纪律：同 settings_page_test——store 读写走真实异步，全部经
 /// [WidgetTester.runAsync] 让路（settleIo 轮询），断言值先捕获再断言。
 library;
 
@@ -13,7 +13,7 @@ import 'package:goodhub/coordinator/cow_sync.dart';
 import 'package:goodhub/core/security/secure_key_value.dart';
 import 'package:goodhub/llm/cloud/byok_store.dart';
 import 'package:goodhub/llm/cloud/cloud_llm.dart';
-import 'package:goodhub/ui/services_hall_page.dart';
+import 'package:goodhub/ui/settings_page.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -44,7 +44,7 @@ void main() {
 
   Future<void> pumpHall(WidgetTester tester) async {
     await tester.pumpWidget(MaterialApp(
-      home: ServicesHallPage(
+      home: SettingsPage(
         storeOverride: cowStore,
         byokStoreOverride: byokStore,
       ),
@@ -53,6 +53,27 @@ void main() {
   }
 
   /// 表单较长，目标可能在视口外——先滚动到可见再点（否则 tap 落空仅告警）。
+  /// 面板重排（2026-10-16 六段）后目标常落在 ListView 懒构建视口外：
+  /// 已构建 → ensureVisible；未构建 → 先回列表顶部（内容下移）再向下逐屏找。
+  /// （finder 只匹配已构建 widget，单向 dragUntilVisible 在目标位于上方时会超时。）
+  Future<void> scrollTo(WidgetTester tester, Finder finder) async {
+    if (finder.evaluate().isNotEmpty) {
+      await tester.ensureVisible(finder);
+      await tester.pumpAndSettle();
+      return;
+    }
+    await tester.drag(find.byType(ListView).first, const Offset(0, 600));
+    await tester.pumpAndSettle();
+    if (finder.evaluate().isNotEmpty) return;
+    await tester.dragUntilVisible(
+      finder,
+      find.byType(ListView).first,
+      const Offset(0, -60),
+      maxIteration: 50,
+    );
+    await tester.pumpAndSettle();
+  }
+
   Future<void> tapVisible(WidgetTester tester, Finder finder) async {
     await tester.ensureVisible(finder);
     await tester.pumpAndSettle();
@@ -83,6 +104,7 @@ void main() {
     await tapVisible(tester, find.byKey(const Key('byok-create')));
     await settleIo(tester);
 
+    await scrollTo(tester, find.text('DeepSeek 主力'));
     expect(find.byKey(const Key('byok-item-byok-')), findsNothing,
         reason: 'id 动态生成，用文案断言');
     expect(find.text('DeepSeek 主力'), findsOneWidget,

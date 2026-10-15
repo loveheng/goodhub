@@ -1,18 +1,30 @@
-/// 服务大厅（M3-T4，architecture §5「服务与配置大厅」的 M3 交付面；形态 =
-/// ui-design §3.3 控制台式卡片阵列）。本期两面板：
-/// ① **Skill 覆写管理（CoW 编辑面）**——覆写列表/编辑/保存（setOverride）/
-///    一键重置；覆写优先级最高，major 跃迁告警弹卡（CowMajorJumpDelegate）
-///    在联调流组件化复用，此处不重复建同步入口（同步需 Server 连接，属
-///    Server 节点管理面板范围）；
-/// ② **BYOK 云端引擎面板（M4-T5）**——模型配置列表增删改（多 profile）+ 密钥
-///    走 SecureKeyValue（编辑留空 = 保持已存密钥）；装配语义 = 列表首位为生效
-///    云端引擎（hybrid_assembly 取首个 profile），支持置顶切换生效配置；
-/// ③ **跨源授权语义面板**——D5 恒 L2 弹卡不豁免的口径展示 + 联调入口。
-/// ④ **Server 节点卡面板（M4-T5）**——每个配置端点一张节点卡（ui-design
-///    §3.3：端口 / 延迟毫秒 / 在线点 / 已暴露工具计数，等宽遥测轨）+ 鉴权态
-///    （401/403 待授权 Rose，禁与离线灰阶混淆）+ 挂载/卸载开关（卸载只摘出
-///    连接池，配置与令牌保留）。数据面 = lib/mcp/server_probe.dart 探活器；
-///    增删改编辑面归聊天页 ⚙ 设置（同一 ServerEndpointStore 文件）。
+/// 设置页（2026-10-16 合并改名词：原「服务大厅」，名词映射见
+/// docs/design/page-revamp.md）。M3-T4 建页（architecture §5「服务与配置大厅」
+/// 的 M3 交付面；形态 = ui-design §3.3 控制台式卡片阵列），M4-T5 增 BYOK /
+/// 节点卡面板，2026-10-16 合并聊天页 ⚙ 设置弹层后定稿六段。
+///
+/// **本页 scope（边界声明——防无边界膨胀）**：设置 = **服务与引擎配置**，仅收纳
+/// 下列六段。记忆看板（`MemoryBoardPage`）、应用更新（`UpdatePage`）、会话历史
+/// 均为独立页，入口在聊天页侧边栏 / AppBar，**不并入本页**——名字变宽不等于
+/// 职责变宽。
+///
+/// ① **云端模型（BYOK）**——模型配置列表增删改（多 profile）+ 密钥走
+///    SecureKeyValue（编辑留空 = 保持已存密钥）；装配语义 = 生效位 profile
+///    （hybrid_assembly 取 preferred ?? 列表首个），支持置顶 / 点选切换生效；
+/// ② **MCP 服务端点（节点卡）**——每个配置端点一张节点卡（ui-design §3.3：端口 /
+///    延迟毫秒 / 在线点 / 已暴露工具计数，等宽遥测轨）+ 鉴权态（401/403 待授权
+///    Rose，禁与离线灰阶混淆）+ 挂载/卸载开关（卸载只摘出连接池，配置与令牌
+///    保留）+ 增删改表单（同一 ServerEndpointStore 文件——服务全生命周期已收敛
+///    本页，聊天页 ⚙ 不再持有）；数据面 = lib/mcp/server_probe.dart 探活器；
+/// ③ **本地插件**——Binder 同机发现项渲染 + 信任态 pill + **信任 / 撤销信任**
+///    （撤销 = 移出白名单；因信任闸门是装配期校验而非长连接状态，下一轮装配
+///    本机重新弹卡确认、PC 网关侧直接跳过不再暴露，故撤销无需动连接池）；
+/// ④ **PC 远程网关**——:8766 起停 + 配对 Token + 局域网暴露风险文案（2026-10-16
+///    自聊天页 ⚙ 迁入；是本次合并的唯一净新增能力）；
+/// ⑤ **Skill 覆写（CoW 编辑面）**——覆写列表/编辑/保存（setOverride）/ 一键重置；
+///    覆写优先级最高，major 跃迁告警弹卡（CowMajorJumpDelegate）在联调流组件化
+///    复用，此处不重复建同步入口（同步需 Server 连接，属节点卡面板范围）；
+/// ⑥ **跨源授权语义**——D5 恒 L2 弹卡不豁免的口径展示 + 联调入口。
 library;
 
 import 'dart:async';
@@ -24,6 +36,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../coordinator/cow_sync.dart';
+import '../gateway/gateway_controller.dart';
 import '../llm/cloud/byok_store.dart';
 import '../llm/cloud/cloud_llm.dart';
 import '../mcp/server_endpoints.dart';
@@ -44,8 +57,8 @@ typedef NodeProbeFn = Future<NodeProbeResult> Function(
   String? apiKey,
 });
 
-class ServicesHallPage extends StatefulWidget {
-  const ServicesHallPage({
+class SettingsPage extends StatefulWidget {
+  const SettingsPage({
     super.key,
     this.storeOverride,
     this.byokStoreOverride,
@@ -80,10 +93,10 @@ class ServicesHallPage extends StatefulWidget {
   final Stream<void>? localChangesOverride;
 
   @override
-  State<ServicesHallPage> createState() => _ServicesHallPageState();
+  State<SettingsPage> createState() => _SettingsPageState();
 }
 
-class _ServicesHallPageState extends State<ServicesHallPage> {
+class _SettingsPageState extends State<SettingsPage> {
   CowOverridesStore? _store;
   Map<String, DateTime?> _entries = const {};
   String? _editingName;
@@ -123,6 +136,12 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
   var _trustedPackages = const <String>{}; // 已信任包名（同签名免确认仍显式标）
   StreamSubscription<void>? _localChangesSub;
 
+  // —— PC 远程网关面板（2026-10-16 自聊天页 ⚙ 迁入）——
+  var _gwRunning = false;
+  var _gwLanAddrs = const <String>[]; // 运行中展示 PC 可配 URL
+  final _gwTokenCtrl = TextEditingController();
+  var _gwBusy = false; // 起停中：禁重复触发（起服含端口绑定，非瞬时）
+
   @override
   void initState() {
     super.initState();
@@ -140,6 +159,7 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
     _byokModelCtrl.dispose();
     _byokTempCtrl.dispose();
     _byokKeyCtrl.dispose();
+    _gwTokenCtrl.dispose();
     super.dispose();
   }
 
@@ -184,6 +204,47 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
     } catch (e) {
       debugPrint('[DEGRADE] local-plugins-panel: 初始化失败按空目录: $e');
     }
+    // 网关面板独立初始化：只读当前起停态与持久化 Token——网关是全局单例，
+    // 页面 dispose **不停服**（起停是用户显式动作，页面进出不该带副作用）。
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _gwTokenCtrl.text = prefs.getString('gateway.token') ?? '';
+      await _reloadGateway();
+    } on Object catch (e) {
+      debugPrint('[DEGRADE] gateway-panel: 状态读取失败按未运行: $e');
+    }
+  }
+
+  Future<void> _reloadGateway() async {
+    final running = GatewayController.shared.running;
+    final addrs = running
+        ? await GatewayController.lanAddresses()
+        : const <String>[];
+    if (!mounted) return;
+    setState(() {
+      _gwRunning = running;
+      _gwLanAddrs = addrs;
+      _gwBusy = false;
+    });
+  }
+
+  /// 起停 PC 远程网关（:8766）。Token 在起服时落盘——改 Token 须关再开才生效
+  /// （闸门校验发生在 start 时读入的那份）。
+  Future<void> _toggleGateway(bool value) async {
+    setState(() => _gwBusy = true);
+    final token = _gwTokenCtrl.text.trim();
+    try {
+      if (value) {
+        await SharedPreferences.getInstance()
+            .then((sp) => sp.setString('gateway.token', token));
+        await GatewayController.shared.start(port: 8766, token: token);
+      } else {
+        await GatewayController.shared.stop();
+      }
+    } on Object catch (e) {
+      if (mounted) _flash('⚠ 网关${value ? '起服' : '停服'}失败: $e');
+    }
+    await _reloadGateway();
   }
 
   /// 生产装配（与 chat_page._epStore 同口径；文件同址，两页面读写互见）。
@@ -431,7 +492,7 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
   Widget build(BuildContext context) {
     final t = consoleTokens(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('服务大厅')),
+      appBar: AppBar(title: const Text('设置')),
       body: _error != null
           ? Center(
               child: Text(_error!, style: TextStyle(color: t.danger)),
@@ -439,12 +500,14 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
           : ListView(
               padding: const EdgeInsets.all(12),
               children: [
-                // 顺序按使用频率：节点接入 → 云端模型 → 模板覆写 → 授权语义。
+                // 顺序按使用频率：先选引擎，再接服务，后管放行与覆写。
+                _byokPanel(context, t),
+                const SizedBox(height: 12),
                 _nodesPanel(context, t),
                 const SizedBox(height: 12),
                 _localPluginsPanel(context, t),
                 const SizedBox(height: 12),
-                _byokPanel(context, t),
+                _gatewayPanel(context, t),
                 const SizedBox(height: 12),
                 _cowPanel(context, t),
                 const SizedBox(height: 12),
@@ -1453,6 +1516,61 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
     return ep.hasKey ? '未探测 · 已存令牌' : '未探测 · 无令牌';
   }
 
+  // —— 面板四·a：PC 远程网关（:8766；2026-10-16 自聊天页 ⚙ 迁入） ——
+
+  Widget _gatewayPanel(BuildContext context, ConsoleTokens t) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'PC 远程网关',
+              style: const TextStyle(
+                fontSize: Fsz.sectionTitle,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 4),
+            SwitchListTile(
+              key: const Key('gateway-toggle'),
+              contentPadding: EdgeInsets.zero,
+              title: const Text('暴露 :8766（Streamable HTTP）'),
+              subtitle: Text(
+                _gwRunning
+                    ? '运行中——PC 配置：'
+                        '${_gwLanAddrs.isEmpty ? 'http://<手机IP>' : _gwLanAddrs.map((a) => 'http://$a').join(' 或 ')}'
+                        ':8766/mcp（ADB 场景 127.0.0.1:8766）'
+                    : '关闭——开启后 PC 经 Streamable HTTP 调用手机内全部服务',
+                style: const TextStyle(fontSize: Fsz.telemetrySm),
+              ),
+              value: _gwRunning,
+              // 起服含端口绑定（非瞬时），期间禁重复触发。
+              onChanged: _gwBusy ? null : _toggleGateway,
+            ),
+            TextField(
+              key: const Key('gateway-token'),
+              controller: _gwTokenCtrl,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: '配对 Token（可空；留空 = 不鉴权，仅建议 ADB 调试）',
+                isDense: true,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '⚠ 开启后同一局域网的 PC 可经 :8766 调用本机全部服务；Token 留空即'
+              '不鉴权，仅建议 ADB 调试场景。改 Token 需关闭后再开启才生效。',
+              style: TextStyle(fontSize: Fsz.telemetrySm, color: t.danger),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   // —— 面板四·b：本地插件（同机 Binder 发现，零配置自动挂载） ——
 
   Future<void> _reloadLocalPlugins() async {
@@ -1478,6 +1596,44 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
     if (ok && mounted) {
       await _reloadLocalPlugins();
       _flash('✓ 已信任 ${info.serverTitle}');
+    }
+  }
+
+  /// 撤销信任（2026-10-16 自聊天页 ⚙ 迁入——原设置弹层的真缺口，大厅只有信任）。
+  ///
+  /// 语义 = **仅移出白名单，不动连接池**：信任闸门是装配期校验而非长连接状态
+  /// ——本机下一轮装配重新弹信任卡（`chat_page` 装配循环），PC 网关侧下一轮
+  /// `_assemble` 直接跳过不再暴露（`gateway_controller`）。故撤销无需断开现有
+  /// 连接，也不必触碰 ConnectionManager。
+  Future<void> _untrustPlugin(LocalPluginInfo info) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('撤销信任'),
+        content: Text(
+          '撤销后「${info.serverTitle}」：本机下次使用需重新确认信任；'
+          'PC 远程网关将不再暴露它。当前会话已建立的连接不受影响。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('撤销信任'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      final tp = await TrustedPlugins.instance;
+      await tp.remove(info.packageName);
+      await _reloadLocalPlugins();
+      _flash('✓ 已撤销对 ${info.serverTitle} 的信任');
+    } on Object catch (e) {
+      _flash('⚠ 撤销信任失败: $e');
     }
   }
 
@@ -1616,7 +1772,7 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
                           fontWeight: FontWeight.w600,
                         ),
                       )
-                    else if (trusted)
+                    else if (trusted) ...[
                       Text(
                         '已信任',
                         style: TextStyle(
@@ -1624,7 +1780,17 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
                           color: t.l1Ok,
                           fontWeight: FontWeight.w600,
                         ),
-                      )
+                      ),
+                      // 同签名私有生态免确认（不入白名单，无撤销对象）。
+                      if (!p.sameSignature) ...[
+                        const SizedBox(width: 6),
+                        TextButton(
+                          key: Key('local-untrust-${p.transportId}'),
+                          onPressed: () => _untrustPlugin(p),
+                          child: const Text('撤销'),
+                        ),
+                      ],
+                    ]
                     else ...[
                       Text(
                         '待信任',

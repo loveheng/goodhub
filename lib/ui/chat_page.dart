@@ -38,7 +38,6 @@ import '../coordinator/discovery_executor.dart';
 import '../coordinator/tool_router.dart';
 import '../mcp/connection_manager.dart';
 import '../core/errors/mcp_error.dart';
-import '../llm/cloud/byok_store.dart';
 import '../llm/cloud/cloud_llm.dart';
 import '../mcp/mcp_client.dart';
 import '../mcp/local_plugin_discovery.dart';
@@ -49,7 +48,6 @@ import '../mcp/server_endpoints.dart';
 import '../sandbox/conversation_store.dart';
 import '../sandbox/memory_store.dart';
 import '../sandbox/workspace_state_store.dart';
-import '../gateway/gateway_controller.dart';
 import 'components/call_card.dart';
 import 'components/cross_source_consent_card.dart';
 import 'components/dual_track_stream.dart';
@@ -58,7 +56,7 @@ import 'components/stream_text_buffer.dart';
 import 'tokens/console_tokens.dart';
 import 'components/stuck_watcher.dart';
 import 'gateway_loop_debug_page.dart';
-import 'services_hall_page.dart';
+import 'settings_page.dart';
 import 'claim_loop_page.dart';
 import 'update_page.dart';
 import 'memory_board_page.dart';
@@ -102,18 +100,14 @@ class _ChatPageState extends State<ChatPage> {
   final _track = <TrackEntry>[];
 
   // 连接配置：多端点持久化走 [ServerEndpointStore]（无单值内存镜像）；
-  // [_send] 每次 Run 启动从 store 全量加载，[_openSettings] 内联管理加/删/编辑。
+  // [_send] 每次 Run 启动从 store 全量加载；增删改与探活/挂载全归设置页
+  // （2026-10-16 合并：聊天页不再持有任何非会话 UI）。
 
   // 会话状态（页面 = 一个会话，§15）
   final List<CloudChatMessage> _history = [];
   SkillRegistry? _skills;
   DegradationController? _degradation;
   final SamplingQuota _samplingQuota = SamplingQuota(); // D3：重启清零
-
-  // PC 远程网关（G1）：设置面板开关 + 配对 Token（SharedPreferences 持久化）。
-  var _gatewayRunning = false;
-  var _gatewayLanAddrs = const <String>[]; // G5：运行中展示 PC 可配 URL
-  final _gatewayTokenCtrl = TextEditingController();
 
   // 会话持久化（M4-T3b，D10/D13）：当前会话 id + 标题 + 侧边栏列表
   ConversationStore? _convStore;
@@ -166,13 +160,12 @@ class _ChatPageState extends State<ChatPage> {
     _elapsedTimer?.cancel();
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
-    _gatewayTokenCtrl.dispose();
     _streamBuf.dispose(); // P0：取消节拍定时器（widget 已销毁，残余无处可刷）
     super.dispose();
   }
 
   /// T6：从 [ServerEndpointStore] 加载（首次 load 自动迁移旧 SharedPreferences
-  /// 单端点配置）；多端点管理在 [_openSettings] 内联编辑，本页不持单值镜像。
+  /// 单端点配置）；多端点管理在设置页（[SettingsPage]）编辑，本页不持单值镜像。
   Future<void> _loadConfig() async {
     final support = await getApplicationSupportDirectory();
     await _epStore(support.path).load(); // 触发旧配置迁移
@@ -538,7 +531,7 @@ class _ChatPageState extends State<ChatPage> {
                   ),
                   const Divider(height: 16),
                   if (priv.isEmpty && _localPlugins.isEmpty)
-                    Text('无可用私有服务（私有端点请在 ⚙ 设置/服务大厅添加）',
+                    Text('无可用私有服务（私有端点请在 ⚙ 设置页添加）',
                         style: TextStyle(
                             fontSize: Fsz.note, color: t.terminalMuted)),
                   for (final e in priv)
@@ -611,254 +604,9 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
-  /// 设置面板（P1 瘦身后）：PC 远程网关 + 本地插件信任；服务端点全生命周期
-  /// 管理已收敛到服务大厅节点卡（同一 ServerEndpointStore 文件），此处只留导航。
-  Future<void> _openSettings() async {
-    final prefs = await SharedPreferences.getInstance();
-    // 云端模型快捷切换（self-update 轮需求）：预载 BYOK 配置与生效位。
-    final byokStore = ByokStore();
-    final byokProfiles = await byokStore.load();
-    var byokPreferred = await byokStore.preferredProfileId() ??
-        (byokProfiles.isNotEmpty ? byokProfiles.first.id : null);
-    // §1.2.6 信任管理：预扫本地插件 + 加载信任白名单（设置面板内联管理）。
-    final localPlugins = await localPluginDiscovery.scan();
-    final trusted = await TrustedPlugins.instance;
-    _gatewayRunning = GatewayController.shared.running;
-    _gatewayLanAddrs = _gatewayRunning
-        ? await GatewayController.lanAddresses()
-        : const [];
-    if (!mounted) return;
-    _gatewayTokenCtrl.text = prefs.getString('gateway.token') ?? '';
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setSheet) {
-          final t = consoleTokens(ctx);
-          return Padding(
-            padding: EdgeInsets.only(
-              left: 16,
-              right: 16,
-              top: 16,
-              bottom: 16 + MediaQuery.of(ctx).viewInsets.bottom,
-            ),
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '设置',
-                    style: TextStyle(
-                      fontSize: Fsz.panelTitle,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  // —— PC 远程网关（G1）：开关 + 配对 Token ——
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('PC 远程网关（:8766）'),
-                    subtitle: Text(
-                      _gatewayRunning
-                          ? '运行中——PC 配置：'
-                                '${_gatewayLanAddrs.isEmpty ? 'http://<手机IP>' : _gatewayLanAddrs.map((a) => 'http://$a').join(' 或 ')}'
-                                ':8766/mcp（ADB 场景 127.0.0.1:8766）'
-                          : '关闭——开启后 PC 经 Streamable HTTP 调用手机内全部服务',
-                      style: const TextStyle(fontSize: Fsz.telemetry),
-                    ),
-                    value: _gatewayRunning,
-                    onChanged: (v) async {
-                      final token = _gatewayTokenCtrl.text.trim();
-                      if (v) {
-                        await prefs.setString('gateway.token', token);
-                        try {
-                          await GatewayController.shared.start(
-                            port: 8766,
-                            token: token,
-                          );
-                        } on Object catch (e) {
-                          if (mounted) {
-                            _toast('⚠ 网关起服失败: $e');
-                          }
-                        }
-                        _gatewayLanAddrs =
-                            await GatewayController.lanAddresses();
-                      } else {
-                        await GatewayController.shared.stop();
-                      }
-                      setSheet(
-                        () =>
-                            _gatewayRunning = GatewayController.shared.running,
-                      );
-                    },
-                  ),
-                  TextField(
-                    controller: _gatewayTokenCtrl,
-                    obscureText: true,
-                    decoration: const InputDecoration(
-                      labelText: '配对 Token（可空；留空 = 不鉴权，仅建议 ADB 调试）',
-                      isDense: true,
-                    ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.only(top: 6),
-                    child: Text(
-                      '⚠ 开启后同一局域网的 PC 可经 :8766 调用本机全部服务；'
-                      'Token 留空即不鉴权，仅建议 ADB 调试场景。',
-                      style: TextStyle(fontSize: Fsz.telemetry, color: t.danger),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  // —— 云端模型快捷切换（BYOK 生效位；管理/新增在服务大厅） ——
-                  Text(
-                    '云端模型（生效）',
-                    style: const TextStyle(
-                      fontSize: Fsz.panelTitle,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    byokProfiles.isEmpty
-                        ? '暂无模型配置——到服务大厅「添加模型」接入 BYOK 云端引擎。'
-                        : '本次生效：${byokProfiles.where((p) => p.id == byokPreferred).firstOrNull?.name ?? '首位'}；点选即切换，下个 Run 装配生效。',
-                    style: TextStyle(
-                      fontSize: Fsz.telemetry,
-                      color: t.terminalMuted,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  for (final p in byokProfiles)
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      dense: true,
-                      leading: Icon(
-                        p.id == byokPreferred
-                            ? Icons.radio_button_checked
-                            : Icons.radio_button_off,
-                        size: 20,
-                      ),
-                      title: Text(
-                        p.name,
-                        style: TextStyle(
-                          fontFamily: t.monoFamily,
-                          fontSize: Fsz.telemetry,
-                          fontWeight: p.id == byokPreferred
-                              ? FontWeight.w600
-                              : null,
-                        ),
-                      ),
-                      subtitle: Text(
-                        p.model,
-                        style: TextStyle(
-                          fontFamily: t.monoFamily,
-                          fontSize: Fsz.telemetrySm,
-                          color: t.terminalMuted,
-                        ),
-                      ),
-                      onTap: p.id == byokPreferred
-                          ? null
-                          : () async {
-                              await byokStore.setPreferredProfileId(p.id);
-                              setSheet(() => byokPreferred = p.id);
-                            },
-                    ),
-                  const SizedBox(height: 16),
-                  const Text(
-                    '本地插件信任（零配置发现，§1.2.6）',
-                    style: TextStyle(
-                      fontSize: Fsz.panelTitle,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '同签名私有插件自动信任；第三方需手动信任（可在下方撤销）。',
-                    style: TextStyle(
-                      fontSize: Fsz.telemetry,
-                      color: t.terminalMuted,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  for (final p in localPlugins)
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: Text('${p.serverTitle}（${p.serverId}）'),
-                      subtitle: Text(
-                        '${p.packageName}${p.sameSignature ? ' · 同签名' : ' · 第三方'}',
-                        style: TextStyle(
-                          fontFamily: t.monoFamily,
-                          fontSize: Fsz.telemetry,
-                        ),
-                      ),
-                      value:
-                          p.sameSignature || trusted.isTrusted(p.packageName),
-                      onChanged: p.sameSignature
-                          ? null
-                          : (v) async {
-                              if (v) {
-                                await trusted.add(
-                                  p.packageName,
-                                  p.signatureSha256,
-                                  p.serverTitle,
-                                );
-                              } else {
-                                await trusted.remove(p.packageName);
-                              }
-                              setSheet(() {});
-                            },
-                    ),
-                  if (localPlugins.isEmpty)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      child: Text(
-                        '未发现本地插件（安装声明 MCP_SERVER 的 App 后将出现）',
-                        style: TextStyle(
-                          fontSize: Fsz.telemetry,
-                          color: t.terminalMuted,
-                        ),
-                      ),
-                    ),
-                  const Divider(),
-                  const SizedBox(height: 8),
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.hub_outlined),
-                    title: const Text('服务端点管理'),
-                    subtitle: const Text(
-                      '增删改、探活与挂载开关已收敛到服务大厅节点卡',
-                      style: TextStyle(fontSize: Fsz.telemetry),
-                    ),
-                    trailing: const Icon(Icons.chevron_right),
-                    onTap: () {
-                      Navigator.pop(ctx);
-                      Navigator.of(context).push(
-                        MaterialPageRoute<void>(
-                          builder: (_) => const ServicesHallPage(),
-                        ),
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 8),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: FilledButton(
-                      onPressed: () => Navigator.pop(ctx),
-                      child: const Text('完成'),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  /// D9：服务大厅/联调页/M1 任务循环入口收编（服务大厅为正式功能全构建可达；
-  /// 联调与任务循环仅 debug 构建，kDebugMode 门禁；检查更新为正式功能全构建保留）。
+  /// D9：联调页/M1 任务循环入口收编（联调与任务循环仅 debug 构建，
+  /// kDebugMode 门禁；检查更新为正式功能全构建保留）。
+  /// 注：设置页入口已于 2026-10-16 收敛到 AppBar ⚙ 与侧边栏，本菜单不再重复。
   void _openDebugMenu() {
     showModalBottomSheet<void>(
       context: context,
@@ -866,19 +614,6 @@ class _ChatPageState extends State<ChatPage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // 服务大厅：正式功能，全构建可达（release 不再只藏设置弹层小字）。
-            ListTile(
-              leading: const Icon(Icons.hub_outlined),
-              title: const Text('服务大厅'),
-              onTap: () {
-                Navigator.pop(ctx);
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => const ServicesHallPage(),
-                  ),
-                );
-              },
-            ),
             if (kDebugMode)
               ListTile(
                 leading: const Icon(Icons.admin_panel_settings_outlined),
@@ -938,7 +673,7 @@ class _ChatPageState extends State<ChatPage> {
     _endpoints = allEndpoints;
     final unmounted = allEndpoints.length - endpoints.length;
     if (unmounted > 0) {
-      _add(TrackNote('⊘ 有 $unmounted 项服务已卸载，未参与本次任务（服务大厅可重新挂载）', danger: false));
+      _add(TrackNote('⊘ 有 $unmounted 项服务已卸载，未参与本次任务（设置页可重新挂载）', danger: false));
     }
     // T-trans-4：本地插件零配置发现（系统托管，不进手填配置）；与 HTTP 端点合并判定。
     final locals = <LocalPluginInfo>[];
@@ -949,7 +684,14 @@ class _ChatPageState extends State<ChatPage> {
     }
     if (endpoints.isEmpty && locals.isEmpty) {
       _add(TrackNote('⚠ 尚未配置任何 MCP 服务，且未发现本地插件', danger: true));
-      unawaited(_openSettings());
+      // 未配置任何服务：直接进设置页（2026-10-16：⚙ 弹层已合并进设置页，
+      // 此处同步改为整页 push；输入内容不丢，返回即可继续）。
+      if (!mounted) return;
+      unawaited(
+        Navigator.of(context).push<void>(
+          MaterialPageRoute<void>(builder: (_) => const SettingsPage()),
+        ),
+      );
       return;
     }
     _inputCtrl.clear();
@@ -1478,7 +1220,7 @@ class _ChatPageState extends State<ChatPage> {
     _setPill('idle', CapsuleTone.idle);
   }
 
-  /// D13 侧边栏（会话维度）：会话历史列表 + 服务大厅/记忆看板入口（服务区随 T6 预留）。
+  /// D13 侧边栏（会话维度）：会话历史列表 + 设置/记忆看板入口（服务区随 T6 预留）。
   Widget _buildDrawer() {
     final t = consoleTokens(context);
     return Drawer(
@@ -1555,13 +1297,13 @@ class _ChatPageState extends State<ChatPage> {
             ),
             const Divider(height: 1),
             ListTile(
-              leading: const Icon(Icons.hub_outlined),
-              title: const Text('服务大厅'),
+              leading: const Icon(Icons.settings_outlined),
+              title: const Text('设置'),
               onTap: () {
                 Navigator.pop(context);
                 Navigator.of(context).push(
                   MaterialPageRoute<void>(
-                    builder: (_) => const ServicesHallPage(),
+                    builder: (_) => const SettingsPage(),
                   ),
                 );
               },
@@ -1768,7 +1510,13 @@ class _ChatPageState extends State<ChatPage> {
               tooltip: '设置',
               onPressed: () {
                 if (!_guardRunning('打开设置')) return;
-                _openSettings();
+                unawaited(
+                  Navigator.of(context).push<void>(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const SettingsPage(),
+                    ),
+                  ),
+                );
               },
             ),
             IconButton(
@@ -1791,7 +1539,7 @@ class _ChatPageState extends State<ChatPage> {
                     entries: _track,
                     controller: _scrollCtrl,
                     emptyHint: '下达自然语言任务，宿主调度已挂载服务完成\n'
-                        '（首次使用请先在 ⚙ 设置里配置服务端点）',
+                        '（首次使用请先在 ⚙ 设置页里配置服务端点）',
                   ),
                   if (!_autoFollow && _track.isNotEmpty)
                     Positioned(

@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-15
+updated: 2026-10-16
 ---
 
 # 页面整改(page-revamp)· 底子文档
@@ -20,12 +20,15 @@ updated: 2026-10-15
 | --- | --- | --- | --- |
 | P0 | 主题注入落地:App 级注入 ConsoleTokens(浅/深双套),删除各页自拼 ThemeData | 各 page 的 `Theme(data: ThemeData(...))`、main.dart | ✓ 已完成 |
 | P0 | 端点删除加二次确认;Run 进行中离开拦截 | chat_page `_openSettings` / `_buildDrawer` | ✓ 已完成 |
-| P1 | 设置拆分:服务全生命周期(增删改+探活+挂载)收敛到服务大厅;⚙ 只留导航 | chat_page `_openSettings`、services_hall `_nodesPanel` | ✓ 已完成 |
+| P1 | 设置拆分:服务全生命周期(增删改+探活+挂载)收敛到服务大厅;⚙ 只留导航 | chat_page `_openSettings`、services_hall `_nodesPanel` | ✓ 已完成（2026-10-16 升级为终态，见下表） |
+| P1-终态 | **服务大厅 → 设置页合并**（2026-10-16）：聊天页 ⚙ 弹层(`_openSettings`)整体并入服务大厅并改名「设置」(`settings_page.dart`)；聊天页 ⚙ 与侧边栏直接 push；debug 菜单/侧边栏/⚙/M1 页四入口收敛；**PC 远程网关面板**与**本地插件撤销信任**迁入（唯一净新增 / 真缺口）；六段 scope 声明防膨胀 | `chat_page`（删 243 行 + 网关字段）、`settings_page`（六段重排 + 两面板）、4 测试改名 + 2 新用例 | ✓ 已完成 2026-10-16 |
 | P1 | ABORT 移胶囊右位(§3.1 右侧);输入框运行中可预输入(排队) | chat_page build、status_capsule | ✓ 已完成 |
 | P1 | Token 纪律清扫:硬编码 fontSize / `'monospace'` / `inversePrimary` / 魔法边框宽 | claim_loop、chat_page 表单、services_hall | ✓ 已完成 |
 | P2 | 动效落地:L1 完成 tick、卡片/胶囊过渡(消费 `fastDuration`) | components/*、chat_page `_setPill` | ✓ 已完成 |
 | P2 | TrackNote 收敛为可折叠 Run 概要条 | dual_track_stream | ✓ 已完成 |
 | P2 | 错误文本可复制、Markdown 链接可点(url_launcher)、探活自动刷新 | rich_text_view、breaker_card、services_hall | ✓ 已完成（不引 url_launcher，链接改 WidgetSpan 长按复制） |
+
+> **名词映射（2026-10-16）**：本文件与历史决策中的「服务大厅」= 现**设置页**（`lib/ui/settings_page.dart`）。改名只扩名字不扩职责——**设置 = 服务与引擎配置**，记忆看板 / 应用更新 / 会话历史仍是独立页，入口留在聊天页侧边栏与 AppBar。
 
 > **实施状态（2026-10-15 对账补标）**：九轮改动 P0/P1/P2 + 低优（console_tokens `Fsz` 字号 token 全仓 ~140 处替换、rich_text_view 长按复制 Toast）**全部清零**；flutter analyze 0 新增、test/ui + widget_test 55 例全绿；设备端 UI 冒烟交用户。细节见 `context/epics/page-revamp/memory.md`。
 

@@ -1,4 +1,4 @@
-/// MCP 服务端点表单组件(P1 设置拆分自 chat_page 迁移,服务大厅节点卡复用)。
+/// MCP 服务端点表单组件(P1 设置拆分自 chat_page 迁移,设置页节点卡复用)。
 ///
 /// - [ServerEndpointEditForm]:内联编辑(endpoint + 令牌;令牌留空 = 不改);
 /// - [ServerEndpointAddForm]:新增(id/name/endpoint/token;id 校验不含 `__`)。

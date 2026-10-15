@@ -1,4 +1,5 @@
-/// M3-T4 服务大厅 Skill 覆写管理面板单测（CowOverridesStore 注入 temp dir）：
+/// M3-T4 设置页（2026-10-16 由「服务大厅」改名）Skill 覆写管理面板单测
+/// （CowOverridesStore 注入 temp dir）：
 /// 列表渲染 / 编辑保存（setOverride 落库）/ 一键重置 / 新建覆写 / 空态。
 /// 纪律：页面 _init 与 store 读写走**真实文件 I/O**——widget 测试 fake async
 /// 不驱动真实事件，所有 store 操作与页内 I/O 等待一律经 [WidgetTester.runAsync]
@@ -10,7 +11,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/coordinator/cow_sync.dart';
-import 'package:goodhub/ui/services_hall_page.dart';
+import 'package:goodhub/ui/settings_page.dart';
 
 void main() {
   late Directory tempDir;
@@ -36,13 +37,14 @@ void main() {
     }
   }
 
-  Future<void> pumpHall(WidgetTester tester) async {
+  Future<void> pumpSettings(WidgetTester tester) async {
     await tester
-        .pumpWidget(MaterialApp(home: ServicesHallPage(storeOverride: store)));
+        .pumpWidget(MaterialApp(home: SettingsPage(storeOverride: store)));
     await settleIo(tester);
   }
 
-  /// 面板重排（节点→模型→覆写→授权）后 cow 面板位于列表第三段：先滚到可见，
+  /// 面板重排（模型→节点→本地插件→网关→覆写→授权）后 cow 面板位于第五段：
+  /// 先滚到可见，
   /// 否则 ListView 懒构建下 finder 匹配不到（点/断言全落空）。
   Future<void> scrollToCow(WidgetTester tester) async {
     await tester.dragUntilVisible(
@@ -68,7 +70,7 @@ void main() {
   }
 
   testWidgets('空态渲染 + 新建覆写（setOverride 落库 + 列表出现）', (tester) async {
-    await pumpHall(tester);
+    await pumpSettings(tester);
     await scrollToCow(tester);
     expect(find.text('（暂无覆写——模板按 server 版生效）'), findsOneWidget);
 
@@ -89,7 +91,7 @@ void main() {
 
   testWidgets('列表渲染 + 编辑保存（setOverride 覆盖旧正文）', (tester) async {
     await tester.runAsync(() => store.setOverride('item_digest', '旧正文'));
-    await pumpHall(tester);
+    await pumpSettings(tester);
     await scrollToCow(tester);
     expect(find.byKey(const Key('cow-item-item_digest')), findsOneWidget);
 
@@ -110,7 +112,7 @@ void main() {
 
   testWidgets('一键重置（确认弹卡 → reset 落库 → 列表消失）', (tester) async {
     await tester.runAsync(() => store.setOverride('item_digest', '正文'));
-    await pumpHall(tester);
+    await pumpSettings(tester);
     await scrollToCow(tester);
 
     await tapVisible(tester, find.byKey(const Key('cow-reset-item_digest')));
@@ -127,7 +129,7 @@ void main() {
 
   testWidgets('保存校验：空正文不落库（防呆 SnackBar）', (tester) async {
     await tester.runAsync(() => store.setOverride('item_digest', '旧正文'));
-    await pumpHall(tester);
+    await pumpSettings(tester);
     await scrollToCow(tester);
     await tapVisible(tester, find.byKey(const Key('cow-edit-item_digest')));
     await enterVisible(tester, find.byKey(const Key('cow-edit-field')), '   ');
@@ -141,5 +143,30 @@ void main() {
     expect(saved, '旧正文', reason: '空正文被拒，旧覆写保持');
     expect(find.textContaining('覆写正文不能为空'), findsOneWidget,
         reason: 'SnackBar 提示');
+  });
+
+  testWidgets('PC 远程网关面板：默认关闭态 + Token 输入 + 风险文案', (tester) async {
+    await pumpSettings(tester);
+    await tester.dragUntilVisible(
+      find.text('PC 远程网关'),
+      find.byType(ListView).first,
+      const Offset(0, -60),
+      maxIteration: 50,
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('PC 远程网关'), findsOneWidget);
+    expect(find.byKey(const Key('gateway-toggle')), findsOneWidget);
+    expect(find.byKey(const Key('gateway-token')), findsOneWidget);
+    // 未起服：running=false，展示「关闭」态与开启后效果说明。
+    expect(
+      find.textContaining('关闭——开启后 PC 经 Streamable HTTP'),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('⚠ 开启后同一局域网的 PC 可经 :8766'),
+      findsOneWidget,
+      reason: '局域网暴露风险文案必须常驻',
+    );
   });
 }

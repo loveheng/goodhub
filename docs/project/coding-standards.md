@@ -1,7 +1,9 @@
 ---
 status: active
-updated: 2026-10-15
+updated: 2026-10-16
 ---
+
+> **名词映射（2026-10-16）**：本文件中的「服务大厅」= 现**设置页**（`lib/ui/settings_page.dart`）——聊天页 ⚙ 设置弹层已并入服务大厅并统一改名「设置」。历史决策/施工原文**保留不替换**，代码与现行文档以新名为准（合并记录见 [page-revamp.md](page-revamp.md)）。
 
 # GoodHub 编码规范 · 工程落地基准
 
@@ -37,7 +39,7 @@ lib/
     ├── theme/                  # 工业控制台主题 (Tokens, Monospace 规范)
     ├── capsule/                # 顶部状态胶囊与 Abort 控制器
     ├── dual_track/             # 双轨消息流 (Markdown 轨 + 操作卡片状态机)
-    └── console/                # 服务大厅与 Integration Hub 面板
+    └── console/                # 设置页与 Integration Hub 面板
 ```
 
 > **现状对照（2026-10-15 对账注记）**：上图是**目标拓扑**；仓库现状是**扁平域目录**——`lib/mcp/`、`lib/coordinator/`、`lib/llm/`、`lib/sandbox/`、`lib/gateway/`、`lib/ui/`、`lib/core/`、`lib/task/`、`lib/update/` + `main.dart`。映射关系：`features/mcp_bus` → `lib/mcp/`（客户端 / 本地插件发现 / 传输 / 探活 / 端点存储）+ `lib/coordinator/tool_router.dart`（ToolRouter 前缀路由，M4-T6）；`features/coordinator` → `lib/coordinator/`（含 Skill 注册表与 `$ref` 暂存池 `ref_store.dart`）；`features/sandbox` → `lib/sandbox/`（记忆 / 会话）；`features/session` → **无独立落点**（会话态散在 `ui/chat_page` + `gateway_server` + `skill_registry`，SessionManager 仲裁已显式关闭，见 architecture.md §15）；`lib/gateway/`（2026-10-12 网关解冻后新增）与 `lib/update/`（自更新）为拓扑图外的新增域。
@@ -53,7 +55,7 @@ lib/
 - **禁止平台污染**：`lib/features/` 与 `lib/ui/` 下**绝对禁止** `import 'dart:io'`（文件系统统一走 `core/storage` 或抽象接口），**绝对禁止**导入含 Android/iOS 专有概念的代码。
 - **接口驱动**：所有系统特权能力（剪贴板、通知、端侧推理引擎）必须定义纯 Dart 抽象类（`abstract interface class`），平台实现在 `lib/app/` 初始化阶段经依赖注入装配。
 - **机械验收**：CI 断言 `flutter analyze` 全绿 + `lib/ui/` 目录 grep 无 `dart:io`。
-- **2026-10-15 对账：现存三处违规（临时豁免，非免检）**：`lib/ui/chat_page.dart:12`、`lib/ui/services_hall_page.dart:19`、`lib/ui/update_page.dart:1` 直接 `import 'dart:io'`。**豁免理由**：三处消费的都是平台专属能力（支持目录 / 临时目录 / 安装与文件路径），而 `lib/platform/` 抽象层（目标拓扑）尚未建立——在无抽象层时硬套会造出第三处旁路。**整改触发条件**：`lib/platform/interfaces`（或等价抽象）建立时，三处必须改为经抽象接口注入。**在此之前禁止新增第四处违规**。
+- **2026-10-15 对账：现存三处违规（临时豁免，非免检）**：`lib/ui/chat_page.dart:12`、`lib/ui/settings_page.dart:19`、`lib/ui/update_page.dart:1` 直接 `import 'dart:io'`。**豁免理由**：三处消费的都是平台专属能力（支持目录 / 临时目录 / 安装与文件路径），而 `lib/platform/` 抽象层（目标拓扑）尚未建立——在无抽象层时硬套会造出第三处旁路。**整改触发条件**：`lib/platform/interfaces`（或等价抽象）建立时，三处必须改为经抽象接口注入。**在此之前禁止新增第四处违规**。
 
 ### 规则 2：单 OS 进程与并发调度防死锁
 

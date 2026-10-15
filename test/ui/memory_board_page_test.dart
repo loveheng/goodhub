@@ -1,6 +1,6 @@
 /// M4-T5 记忆看板单测（MemoryStore 注入 temp dir）：三 Tab 渲染（记忆/教训/
 /// 审计）+ 条目编辑（锚点保留）/ 单条删除 / user 级粉碎 / 导出。
-/// 纪律：同 services_hall_page_test——真实文件 I/O 经 [WidgetTester.runAsync]
+/// 纪律：同 settings_page_test——真实文件 I/O 经 [WidgetTester.runAsync]
 /// 让路（settleIo 轮询），断言值先捕获再断言。
 library;
 

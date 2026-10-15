@@ -16,7 +16,7 @@ last-merge: 2026-10-14
 - [结论] 首发 v1.0.0+2002 推 R2 成功：release-r2.sh 被 analyze 存量 info 阻断问题修复（降为 WARN 不阻断）；产物 goodhub-update.json + app-release.apk（42.7MB）公网可达
 - [结论] 调试入口按构建形态拆分：AppBar 按钮全构建保留（debug=虫子图标/调试入口，release=更新图标/检查更新）；菜单内服务大厅/网关联调/M1 任务循环三项加 kDebugMode 门禁；检查更新为正式功能全构建保留
 - [结论] 聊天输入区桌面端美化：Center+ConstrainedBox maxWidth 720 限宽居中；输入框圆角(24)填充无边框 + contentPadding 16/10；发送按钮改圆形 IconButton.filledTonal（arrow_upward）；textInputAction newline 桌面 Enter 语义修正
-- [结论] 云端模型多配置生效位：ByokStore 增 preferredProfileId 持久化（save 清理孤儿生效位）；hybrid_assembly 优先取生效 profile（未选回退首位）；服务大厅置顶同步写生效位；聊天页 ⚙ 设置加「云端模型(生效)」单选区（点选即切换，下个 Run 装配生效）
+- [结论] 云端模型多配置生效位：ByokStore 增 preferredProfileId 持久化（save 清理孤儿生效位）；hybrid_assembly 优先取生效 profile（未选回退首位）；服务大厅置顶同步写生效位；聊天页 ⚙ 设置加「云端模型(生效)」单选区（点选即切换，下个 Run 装配生效）——**2026-10-16 修正**：该单选区随 ⚙ 弹层并入设置页并删除（BYOK 面板已能切生效位，属重复入口）；生效位机制本身（preferredProfileId / hybrid_assembly 取生效）不变
 - [结论] 2026-10-14 串包防御对齐 shiguang（commit cbd0ecb 同款思路，本仓落地）：UpdateManifest 增 applicationId 可空字段（旧清单宽容跳过）；update_service.check() 拉清单后比对本机包名（package_info_plus），不一致抛 UpdateException 拒更；update_page._install() 安装前二次比对（纵深防御）；release-r2.sh 从 build.gradle.kts 提取 applicationId 写入清单；.env REMOTE_PREFIX 收敛 updates/goodhub（与 shiguang 的 updates/shiguang 各占子目录）；新增 test/update/update_manifest_test.dart 2 例；release-r2.sh --commit 因 updates/ 被 gitignore 改用 git add -f
 
 ## 近期验证状态

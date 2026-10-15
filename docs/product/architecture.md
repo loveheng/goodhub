@@ -1,7 +1,9 @@
 ---
 status: active
-updated: 2026-10-15
+updated: 2026-10-16
 ---
+
+> **名词映射（2026-10-16）**：本文件中的「服务大厅」= 现**设置页**（`lib/ui/settings_page.dart`）——聊天页 ⚙ 设置弹层已并入服务大厅并统一改名「设置」。历史决策/施工原文**保留不替换**，代码与现行文档以新名为准（合并记录见 [page-revamp.md](page-revamp.md)）。
 
 # GoodHub 产品架构 · 双角色 MCP 智能中枢
 
@@ -96,7 +98,7 @@ flowchart TB
 
 - 顶部状态胶囊（应用内 OverlayEntry → 未来系统通知/灵动岛）：阶段展示 + 常驻 Abort
 - 双轨消息流：阅读轨（流式 Markdown 原生排版）；操作轨（参数确认卡片 / 执行状态卡片状态机 / 熔断排查卡片：单步重试/跳过/人工接管）
-- 服务大厅：已连 App 管理面板 + 模型配置面板
+- 设置页：已连 App 管理面板 + 模型配置面板
 - 视觉与交互语言 SSOT：[ui-design.md](ui-design.md)（工业实用主义 × 现代控制台风格）
 
 ### 6. 聚合网关（Inter-MCP Aggregator）
@@ -220,8 +222,8 @@ flowchart TB
 - **鉴权升级**：Bearer Token **回环模式同样强制**（原文「默认绑回环、可切局域网+Token」的免密回环选项删除）——回环与局域网同一套凭证握手，配置差异仅在外网可达性。
 - **对端身份核验（六轮评审：双轨鉴权模型）**：Binder 是本机机制，跨设备够不着——分两轨：
   - **本机访问（127.0.0.1）**：ContentProvider + Binder `getCallingUid()` → 包名 + 签名证书 SHA-256 白名单 → 下发带 TTL 的本地 Session Token，自动握手免人工介入；未授权一律 403。与端口发现同通道：一次握手完成发现+准入+发 Token。
-  - **局域网访问（LAN IP）**：用户在服务大厅生成/重置长期 Bearer Token（可扫码配对），首连弹窗确认放行。
-  - **泄露半径控制（宿主补）**：局域网 Token 权限绑定已授权 Server 目录白名单；服务大厅展示活跃连接列表、支持一键吊销。
+  - **局域网访问（LAN IP）**：用户在设置页生成/重置长期 Bearer Token（可扫码配对），首连弹窗确认放行。
+  - **泄露半径控制（宿主补）**：局域网 Token 权限绑定已授权 Server 目录白名单；设置页展示活跃连接列表、支持一键吊销。
 - **特权工具三重防线**：UID 白名单准入（网络层）→ L1/L2 网关（语义层）→ 隐私围栏 N7（出站层）。
 
 ### 14. 极简兼容与能力协商（2026-10-10 五轮评审：采纳）
@@ -230,7 +232,7 @@ flowchart TB
 - **Tier 1（全量生态契约）**：goodshare 类深度集成 App——Resources/Progress/Prompts/Sampling + 私有扩展（x-mcp-export-to-shared/端口发现/Intent 唤醒）。
 - **Tier 2（Vanilla MCP）**：仅 `tools/list` + `tools/call`——宿主自动提供降级垫片（Polyfill）：无 resources → 只读工具照常暴露；无 progress → 纯 Loading 态；无 prompts → 无 Skill 注入；无订阅 → 不做失效感知。**降级是默认行为，不抛异常**。
 - **能力协商走 MCP 标准 `initialize` 握手 capabilities 字段**（规范现成，不自造协议）；7 项依赖重分类：标准 MCP 能力（prompts/resources/sampling/progress，按 capabilities 声明有无）vs 生态私有扩展（Tier 1 专属，缺失即降级）。
-- **静态摘要生成策略（六轮评审：补 Tier 2 数据源）**：Tier 1 在契约注解声明 `x-mcp-app-summary`；Tier 2 首次挂载时读取 `tools/list` 前 3 个工具 name+description 自动拼接摘要回填配置表，用户可在服务大厅手动编辑——自动生成摘要**须标注「自动生成」**（防模型把拼凑摘要当服务端权威声明）。
+- **静态摘要生成策略（六轮评审：补 Tier 2 数据源）**：Tier 1 在契约注解声明 `x-mcp-app-summary`；Tier 2 首次挂载时读取 `tools/list` 前 3 个工具 name+description 自动拼接摘要回填配置表，用户可在设置页手动编辑——自动生成摘要**须标注「自动生成」**（防模型把拼凑摘要当服务端权威声明）。
 
 ### 15. 会话与并发模型（SessionManager，2026-10-10 五轮评审：采纳）
 

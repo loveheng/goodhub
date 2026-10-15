@@ -33,7 +33,7 @@ lib/
                #   HTTP/SSE）、mcp_gateway_handler（聚合分发）、gateway_controller（装配）、
                #   gateway_security（入站安全闭环）、gateway_backpressure、
                #   gateway_loop_guard（环路防护）、gateway_service_channel（原生桥）
-  ui/          # UI 域：chat_page（首页）、services_hall_page、memory_board_page、
+  ui/          # UI 域：chat_page（首页）、settings_page、memory_board_page、
                #   update_page、components/（双轨流/卡片/流式渲染）、tokens/
   core/        # 基础设施：storage/sequential_file_writer、security/（SecureKeyValue）、
                #   tokens、errors

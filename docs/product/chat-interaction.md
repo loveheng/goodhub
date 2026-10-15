@@ -3,6 +3,8 @@ status: active
 updated: 2026-10-11
 ---
 
+> **名词映射（2026-10-16）**：本文件中的「服务大厅」= 现**设置页**（`lib/ui/settings_page.dart`）——聊天页 ⚙ 设置弹层已并入服务大厅并统一改名「设置」。历史决策/施工原文**保留不替换**，代码与现行文档以新名为准（合并记录见 [page-revamp.md](page-revamp.md)）。
+
 # GoodHub 交互设计 · 双轨消息流（聊天主页）
 
 > 本文是宿主聊天交互的 **SSOT**（信息架构 / 交互流 / 轨道语义）；视觉语言 SSOT = [ui-design.md](ui-design.md)（tokens 落点 `.agents/skills/goodhub-ui`），本文不重复视觉规格。来源：F5.1 / U1（requirements.md）+ architecture §5/§10/§15 + M4-T3（[../design/m4.md](../design/m4.md)）。工程实现 = `lib/ui/chat_page.dart`（M4-T3）。

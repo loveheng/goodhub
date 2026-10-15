@@ -174,7 +174,7 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
   var _pillLabel = 'idle';
   var _pillTone = CapsuleTone.idle;
 
-  // —— 云端引擎预置（BYOK，T2 遗留项的联调版；M3 服务大厅出正式 UI）——
+  // —— 云端引擎预置（BYOK，T2 遗留项的联调版；M3 设置页出正式 UI）——
   var _protocol = CloudProtocol.openaiCompatible;
   var _byokStatus = '读取中…';
 

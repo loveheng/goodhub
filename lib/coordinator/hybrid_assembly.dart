@@ -1,6 +1,6 @@
 /// 混合引擎默认装配（M2-T2）：首个 BYOK profile + 密钥 → 云端引擎；端侧桥兜底。
 ///
-/// BYOK 配置 UI 属 M3 服务大厅——T2 阶段 profile 经 ByokStore 预置（无 UI 路径），
+/// BYOK 配置 UI 属 M3 设置页（原服务大厅）——T2 阶段 profile 经 ByokStore 预置（无 UI 路径），
 /// 无 profile / 安全存储不可用时云端缺位，任务循环仍可走端侧或可观测报错。
 ///
 /// N7 围栏（M2-T5b）：云端引擎恒包 [FencedCloudEngine] 装饰（D1 单咽喉——
@@ -36,7 +36,7 @@ Future<HybridCloudEngine> assembleDefaultHybridEngine({
     final store = ByokStore();
     final profiles = await store.load();
     if (profiles.isNotEmpty) {
-      // 生效位优先（用户显式选择，⚙ 设置/服务大厅置顶写入）；未选回退列表首位。
+      // 生效位优先（用户显式选择，设置页置顶写入）；未选回退列表首位。
       final preferred = await store.preferredProfileId();
       final active = profiles.where((p) => p.id == preferred).firstOrNull ??
           profiles.first;

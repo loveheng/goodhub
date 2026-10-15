@@ -11,7 +11,7 @@ import '../coordinator/hybrid_inference.dart';
 import '../task/task_loop_service.dart';
 import 'gateway_loop_debug_page.dart';
 import 'grammar_spike_page.dart';
-import 'services_hall_page.dart';
+import 'settings_page.dart';
 import 'tokens/console_tokens.dart';
 
 /// M1 最小壳：claim → 推理占位 → touch 心跳 → apply 回写 闭环验证页。
@@ -138,12 +138,13 @@ class _ClaimLoopPageState extends State<ClaimLoopPage> {
                 ),
               ),
             ),
-          // M3-T4 服务大厅：Skill 覆写管理 + 跨源授权面板（正式面）
+          // M3-T4 设置页（2026-10-16 由「服务大厅」改名）：Skill 覆写管理 +
+          // 跨源授权面板等六段（正式面）
           IconButton(
-            icon: const Icon(Icons.hub_outlined),
-            tooltip: '服务大厅',
+            icon: const Icon(Icons.settings_outlined),
+            tooltip: '设置',
             onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(builder: (_) => const ServicesHallPage()),
+              MaterialPageRoute<void>(builder: (_) => const SettingsPage()),
             ),
           ),
           // M2-T4c 网关/熔断联调入口（仅 debug 构建）：L1/L2 网关 + 熔断排查卡验证
