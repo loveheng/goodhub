@@ -32,7 +32,6 @@
 library;
 
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
 import 'package:flutter/material.dart';
@@ -40,6 +39,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../app/service_directory.dart';
 import '../coordinator/cow_sync.dart';
 import '../gateway/gateway_controller.dart';
 import '../llm/cloud/byok_store.dart';
@@ -264,17 +264,9 @@ class _SettingsPageState extends State<SettingsPage> {
     await _reloadGateway();
   }
 
-  /// 生产装配（与 chat_page._epStore 同口径；文件同址，两页面读写互见）。
-  Future<ServerEndpointStore> _epStoreProd() async {
-    final support = await getApplicationSupportDirectory();
-    return ServerEndpointStore(
-      file: File('${support.path}/mcp_servers.json'),
-      prefs: flutterPrefsLike(
-        (key) =>
-            SharedPreferences.getInstance().then((sp) => sp.getString(key)),
-      ),
-    );
-  }
+  /// 生产装配（经 ServiceDirectory 单一入口 `lib/app/service_directory.dart`，
+  /// 步 0-T7 收敛；文件同址，多页面读写互见）。
+  Future<ServerEndpointStore> _epStoreProd() => serverEndpointStore();
 
   Future<void> _reloadEndpoints(ServerEndpointStore store) async {
     final eps = await store.load();

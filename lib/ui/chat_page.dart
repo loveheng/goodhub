@@ -9,16 +9,14 @@
 library;
 
 import 'dart:async';
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'trust_plugin_dialog.dart';
 
 import 'package:path_provider/path_provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
+import '../app/service_directory.dart';
 import '../coordinator/agent_loop.dart';
 import '../coordinator/cow_sync.dart';
 import '../coordinator/degradation_controller.dart';
@@ -163,8 +161,7 @@ class _ChatPageState extends State<ChatPage> {
   /// T6：从 [ServerEndpointStore] 加载（首次 load 自动迁移旧 SharedPreferences
   /// 单端点配置）；多端点管理在设置页（[SettingsPage]）编辑，本页不持单值镜像。
   Future<void> _loadConfig() async {
-    final support = await getApplicationSupportDirectory();
-    await _epStore(support.path).load(); // 触发旧配置迁移
+    await (await serverEndpointStore()).load(); // 触发旧配置迁移
   }
 
   // ---------------------------------------------------------------------------
@@ -298,15 +295,6 @@ class _ChatPageState extends State<ChatPage> {
         : '${d.month}/${d.day} ${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
   }
 
-  /// T6-2：生产装配入口——[ServerEndpointStore] 指向应用支持目录/mcp_servers.json，
-  /// 旧单端点 SharedPreferences 经 [flutterPrefsLike] 注入迁移。
-  ServerEndpointStore _epStore(String supportPath) => ServerEndpointStore(
-    file: File('$supportPath/mcp_servers.json'),
-    prefs: flutterPrefsLike(
-      (key) => SharedPreferences.getInstance().then((sp) => sp.getString(key)),
-    ),
-  );
-
   /// T6：静态首级摘要「## 已挂载服务」（自动生成，标注工具名前缀格式）。
   static String _mountedServicesSection(
     ToolRouter router,
@@ -403,8 +391,7 @@ class _ChatPageState extends State<ChatPage> {
   /// 同时完成「新会话默认锁定」（①）：未显式绑定时按默认回退锁定首个启用的
   /// private（已显式绑定/纯公共 '' 则沿用），确保状态带与菜单开屏即正确。
   Future<void> _loadEndpoints() async {
-    final support = await getApplicationSupportDirectory();
-    final all = await _epStore(support.path).load();
+    final all = await (await serverEndpointStore()).load();
     // 本地插件零配置自动发现（系统托管、始终挂载；与 _send 装配同口径）。
     // 通道不可用（宿主未就绪）按空目录，不阻断 HTTP 端点装配。
     final locals = <LocalPluginInfo>[];
@@ -448,8 +435,7 @@ class _ChatPageState extends State<ChatPage> {
 
   /// 全局默认钉选写回（单选）：更新 mcp_servers.json 并刷新缓存。
   Future<void> _setGlobalDefault(String serverId, bool on) async {
-    final support = await getApplicationSupportDirectory();
-    final epStore = _epStore(support.path);
+    final epStore = await serverEndpointStore();
     final all = await epStore.load();
     var changed = false;
     final updated = <ServerEndpoint>[];
@@ -607,8 +593,9 @@ class _ChatPageState extends State<ChatPage> {
     if (prompt.isEmpty || _running) return;
     // —— T6-2 多服务装配：ServerEndpointStore 读多端点（含旧 SharedPreferences
     // 迁移）→ 每端点一个 McpClient + McpToolFace → ToolRouter（实例随会话建）——
+    // （support 目录另供 WorkspaceStateStore / MemoryStore 落点。）
     final support = await getApplicationSupportDirectory();
-    final epStore = _epStore(support.path);
+    final epStore = await serverEndpointStore(supportPath: support.path);
     final allEndpoints = await epStore.load();
     // T5 节点卡挂载位（ui-design §3.3）：enabled=false 的卸载节点不进连接池
     // （配置与令牌保留，大厅节点卡可重开）。

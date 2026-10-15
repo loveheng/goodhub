@@ -17,13 +17,13 @@ import 'dart:io';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:path_provider/path_provider.dart';
 
+import '../app/service_directory.dart';
 import '../coordinator/hybrid_assembly.dart';
 import '../coordinator/mcp_tool_face.dart';
 import '../mcp/local_plugin_discovery.dart';
 import '../mcp/mcp_client.dart';
 import '../mcp/trusted_plugins.dart';
 import '../mcp/sampling.dart';
-import '../mcp/server_endpoints.dart';
 import '../sandbox/memory_store.dart';
 import 'gateway_security.dart';
 import 'gateway_server.dart';
@@ -144,8 +144,9 @@ class GatewayController {
       }
     }
 
-    // —— 手填 HTTP 端点（用户托管，Streamable HTTP）——
-    final epStore = ServerEndpointStore(file: File('$support/mcp_servers.json'));
+    // —— 手填 HTTP 端点（用户托管，Streamable HTTP；经单一入口装配，
+    // 步 0-T7：含旧 SharedPreferences 迁移——此前此处漏带 prefs，旧配置读不到）——
+    final epStore = await serverEndpointStore(supportPath: support);
     for (final ep in await epStore.load()) {
       if (ep.endpoint.isEmpty || handler.faces.containsKey(ep.id)) continue;
       final client = McpClient.http(
