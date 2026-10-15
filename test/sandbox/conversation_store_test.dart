@@ -83,6 +83,33 @@ void main() {
       expect(snap2?.activePrivateServerId, '');
     });
 
+    test('私有域三态往返（B3）：null / \'\' / serverId 落盘反序列化原样无损', () async {
+      // 防回归断言（window-kernel-split B3）：'' 被归并进 null 会让重启后
+      // 「显式回公共」回跳成自动绑定私有（conversation_store.dart:61-63 注释 SSOT）。
+      final dir = await tmpDir();
+      final store = ConversationStore(dir: dir);
+      final id = await store.create(title: '三态');
+
+      // ① null（未设定，走回退链）——create 缺省即 null
+      var snap = await ConversationStore(dir: dir).load(id);
+      expect(snap?.activePrivateServerId, isNull);
+
+      // ② ''（显式公共）
+      await store.save(id: id, title: '三态', track: const [], messages: const [], activePrivateServerId: '');
+      snap = await ConversationStore(dir: dir).load(id);
+      expect(snap?.activePrivateServerId, '');
+
+      // ③ serverId（锁定）
+      await store.save(id: id, title: '三态', track: const [], messages: const [], activePrivateServerId: 'srv_x');
+      snap = await ConversationStore(dir: dir).load(id);
+      expect(snap?.activePrivateServerId, 'srv_x');
+
+      // ④ 回 null（全量覆写路径同样无损）
+      await store.save(id: id, title: '三态', track: const [], messages: const [], activePrivateServerId: null);
+      snap = await ConversationStore(dir: dir).load(id);
+      expect(snap?.activePrivateServerId, isNull);
+    });
+
     test('updatedAt 倒序列表；delete 幂等；load 缺失返 null', () async {
       final dir = await tmpDir();
       final store = ConversationStore(dir: dir);
