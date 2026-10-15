@@ -10,9 +10,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/services.dart';
 
 import 'dart:isolate';
-import 'llm.dart';
+// 归档件（2026-10-15，SA-Q3）：路径已改为跨目录引用 lib/，复活时改回同级
+// `import 'llm.dart';` / `import 'llm_model.dart';` 即可（其余两件为同级）。
+import '../../lib/llm/llm.dart';
 import 'llm_download_isolate.dart';
-import 'llm_model.dart';
+import '../../lib/llm/llm_model.dart';
 import 'remote_config_store.dart';
 
 /// 端侧 LLM 模型包下载管理（M2 自 goodshare 随迁，2026-10-10）：与原 ASR

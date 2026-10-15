@@ -24,6 +24,11 @@ class GatewayServiceChannel {
       debugPrint('[DEGRADE] gateway-service: native bridge unavailable: $e');
     } on PlatformException catch (e) {
       debugPrint('[DEGRADE] gateway-service: $method failed: $e');
+    } on Object catch (e) {
+      // 兜底（2026-10-15 补）：绑定未初始化 / 非 Flutter 环境调用抛的不是
+      // MissingPluginException，原二分支捕获会把异常穿透到 controller.stop()，
+      // 与「绝不阻断网关起停」的注释不符。保活缺失只影响息屏场景——一律留痕。
+      debugPrint('[DEGRADE] gateway-service: $method unexpected: $e');
     }
   }
 }

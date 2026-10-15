@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-14
+updated: 2026-10-15
 ---
 
 # 页面整改(page-revamp)· 底子文档
@@ -16,16 +16,18 @@ updated: 2026-10-14
 
 ## 2. 整改分解(P0 → P2)
 
-| 级别 | 事项 | 主要落点 |
-| --- | --- | --- |
-| P0 | 主题注入落地:App 级注入 ConsoleTokens(浅/深双套),删除各页自拼 ThemeData | 各 page 的 `Theme(data: ThemeData(...))`、main.dart |
-| P0 | 端点删除加二次确认;Run 进行中离开拦截 | chat_page `_openSettings` / `_buildDrawer` |
-| P1 | 设置拆分:服务全生命周期(增删改+探活+挂载)收敛到服务大厅;⚙ 只留导航 | chat_page `_openSettings`、services_hall `_nodesPanel` |
-| P1 | ABORT 移胶囊右位(§3.1 右侧);输入框运行中可预输入(排队) | chat_page build、status_capsule |
-| P1 | Token 纪律清扫:硬编码 fontSize / `'monospace'` / `inversePrimary` / 魔法边框宽 | claim_loop、chat_page 表单、services_hall |
-| P2 | 动效落地:L1 完成 tick、卡片/胶囊过渡(消费 `fastDuration`) | components/*、chat_page `_setPill` |
-| P2 | TrackNote 收敛为可折叠 Run 概要条 | dual_track_stream |
-| P2 | 错误文本可复制、Markdown 链接可点(url_launcher)、探活自动刷新 | rich_text_view、breaker_card、services_hall |
+| 级别 | 事项 | 主要落点 | 状态 |
+| --- | --- | --- | --- |
+| P0 | 主题注入落地:App 级注入 ConsoleTokens(浅/深双套),删除各页自拼 ThemeData | 各 page 的 `Theme(data: ThemeData(...))`、main.dart | ✓ 已完成 |
+| P0 | 端点删除加二次确认;Run 进行中离开拦截 | chat_page `_openSettings` / `_buildDrawer` | ✓ 已完成 |
+| P1 | 设置拆分:服务全生命周期(增删改+探活+挂载)收敛到服务大厅;⚙ 只留导航 | chat_page `_openSettings`、services_hall `_nodesPanel` | ✓ 已完成 |
+| P1 | ABORT 移胶囊右位(§3.1 右侧);输入框运行中可预输入(排队) | chat_page build、status_capsule | ✓ 已完成 |
+| P1 | Token 纪律清扫:硬编码 fontSize / `'monospace'` / `inversePrimary` / 魔法边框宽 | claim_loop、chat_page 表单、services_hall | ✓ 已完成 |
+| P2 | 动效落地:L1 完成 tick、卡片/胶囊过渡(消费 `fastDuration`) | components/*、chat_page `_setPill` | ✓ 已完成 |
+| P2 | TrackNote 收敛为可折叠 Run 概要条 | dual_track_stream | ✓ 已完成 |
+| P2 | 错误文本可复制、Markdown 链接可点(url_launcher)、探活自动刷新 | rich_text_view、breaker_card、services_hall | ✓ 已完成（不引 url_launcher，链接改 WidgetSpan 长按复制） |
+
+> **实施状态（2026-10-15 对账补标）**：九轮改动 P0/P1/P2 + 低优（console_tokens `Fsz` 字号 token 全仓 ~140 处替换、rich_text_view 长按复制 Toast）**全部清零**；flutter analyze 0 新增、test/ui + widget_test 55 例全绿；设备端 UI 冒烟交用户。细节见 `context/epics/page-revamp/memory.md`。
 
 ## 3. 关键拍板记录
 

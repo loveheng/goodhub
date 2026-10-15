@@ -20,5 +20,12 @@ last-merge: 2026-10-14
 - [结论] **T6-3 扩展 + 真机第三批 ✓（2026-10-14 归并）**：JIT 聚焦元工具 `use_server(server_id)`（独占单服务 + 聚焦幂等 + all 恢复 + 独占守卫，测试 +8 → 全量 413 绿）；T6-4 e2e integration test 6 断言全绿（前缀路由/JIT 元工具/未激活幻觉防线）；BYOK 云端全通（StepFun step-3.7-flash，chat+tool_calls 双探针）；节点卡探活数据面双态过（带 key 38 工具 / 无 key 401）；CoW 多 server 撞名跳过坐证（**发现：撞名静默跳过无用户面通告，与 m4.md「通告」有差，待拍板**）。文档：新增 `docs/design/local-plugin-access-trust.md`（§1~§9 完整）+ thirdconnect §1.2.6 反向指针 + m4.md T5/T6 回填
 - [待办指针] T6 剩余：服务管理 UI（增删改列表）/ loadCatalog 聚焦切换刷新面 / 已激活 Schema 精简模式（待拍板）；真机批剩 reverseDemo（暂缓）+ 三处设备端 UI 冒烟（交用户）；Markdown parser 已抽同级共享包 `/home/zzh/app/rich_text/` 并 DIP 拆两 library（`rich_text.dart` 抽象：AST+RichTextParser+纯运算；`markdown_subset.dart` 实现：parser+helper，export 抽象）；goodhub 渲染器改吃 `List<RichBlock>`、parse 移调用点 → 只依赖抽象（全量 409 绿）。goodshare adopt（同拆 + 渲染器吃 AST + parse 移调用点）+ 上 git 宿主待协同
 
+## T4 连接韧性（2026-10-15 重启，SA-Q2 文档收口后）
+
+- [结论] 施工分解：**T4-1 退避底座（✓ 已落）** → T4-2 心跳探活 → T4-3 指数退避重连 → T4-4 积压丢弃回告 → T4-5 `resources/subscribe` 全链与失效感知。切分依据：T4-2~4 是纯客户端能力（不依赖 goodshare 新能力），T4-5 依赖对方真发 `notifications/resources/updated`（未核实前先做易成空中楼阁）
+- [结论] T4-1 落点与纪律：`lib/core/network/backoff.dart` 只放**纯算法**（指数退避 + jitter + 重试额度 + 最坏累计），按 coding-standards §1 边界纪律——「什么时候重连、重连后怎么重建」的总线策略必须住 `lib/mcp/`（T4-2/3），不得下沉 core
+- [结论] 现状取证（2026-10-15）：`mcp_client` 已有 `listResources`/`readResource`（只读数据面），但**无 `resources/subscribe` 方法、无 `notifications/resources/updated` 收侧**；`server_capabilities.hasSubscriptions` 仅 gate；`server_probe` 是用户触发的一次性探活，非周期心跳
+- [待办] D15~D20 拍板（见 `context/pending-confirm.md`）：顺序切分 / 心跳参数（推荐 15s-5s-2 次）/ 重连后保留激活集 / 断连终态 `Cancelled` 且 TrackNote 回告 / 失效感知不自动重读 / goodshare 契约回写归跨仓由用户执行
+
 ## 断点
 - [断点] CoW 撞名 ✓（2026-10-14，仅 goodshare）：goodshare 双 serverId（goodshare + goodshare-lan）自撞名坐证——Tier1 prompts [item_digest/weekly_review/suggest_tags]，server1 注册 3 cow/，server2 同名 3 跳过。发现撞名静默跳过无用户面通告（设计含「通告」）→ **通告侧已于 2026-10-14 补上**（chat_page 撞名发 TrackNote「已采用 <serverId> 版本，跳过 <serverId>」，danger:false）。**联调第三批 P1~P3 全部验证通过**，仅剩 reverseDemo（暂缓）+ 三处设备端 UI 冒烟（交用户）

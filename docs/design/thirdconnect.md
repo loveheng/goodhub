@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-12
+updated: 2026-10-15
 ---
 
 # 外部 MCP 服务接入规范（GoodHub 宿主契约）
@@ -232,6 +232,8 @@ Binder 侧经 `Binder.getCallingUid()` 验真——同签名私有生态（`<per
 
 ### 9.3 `SERVER_ID` 命名碰撞与主权仲裁
 
+> **状态（2026-10-15 对账）**：**未落地**（系统对账待办 #11）；以 `PackageName` 为物理主键的设计已定稿，但「同签名优先级仲裁 + 冲突强制后缀降级 + 严禁静默覆盖留痕」的运行时代码未实现，当前重名直接走发现层静默跳过（m4 联调第三批发现撞名静默跳过无用户面通告）。
+
 - 插件自声明 `SERVER_ID`（§1.2.1）存在第三方伪造/重名风险（恶意声明 `goodshare` 劫持，或同机两 App 都叫 `todo`）。
 - **唯一键原则**：底层索引物理主键为 `PackageName`，**绝不**以 `SERVER_ID` 作主键；`SERVER_ID` 仅作展示/路由前缀。
 - **冲突回退**：扫描到重复 `SERVER_ID` 时，同签名官方 App 优先级最高；若仍冲突或均第三方，次级 App 前缀强制降级为包名后缀（如 `todo__pkg_com_other_todo__xxx`）。
@@ -275,6 +277,8 @@ Binder 侧经 `Binder.getCallingUid()` 验真——同签名私有生态（`<per
 
 ### 10.1 控制面 / 数据面分离（根治 Binder 1MB 崩溃，细化 §1.2.3）
 
+> **状态（2026-10-15 对账）**：部分实现——`$ref` 句柄 / 30min TTL GC 已落地（M2.5-T3，见 §9）；但 **≥128KB 的 `mcp-blob://` 数据面分离（PFD/SharedMemory 跨进程只读）未实现**（系统对账待办 #11），大负载暂仍走常规 Binder `String` 路径，未走句柄降级。
+
 **信令走 Binder，大负载走句柄**——AIDL `String call(...)` 仅承载常规 JSON-RPC 控制信令，大报文本质上不进 Binder 事务缓冲。
 
 - **阈值拦截（128KB 警戒线）**：
@@ -287,6 +291,8 @@ Binder 侧经 `Binder.getCallingUid()` 验真——同签名私有生态（`<per
   GoodHub 经 Android 标准 `FileProvider` / `ContentResolver.openFileDescriptor()` 以只读内核管道跨进程读原始流，**彻底绕开 Binder 1MB 限制**（事务上限与 `_async` 原约束见 §1.2.3，本条为其数据面落地细化）。
 
 ### 10.2 双栈插件引擎（Dual-Stack Engine，打破生态排他）
+
+> **状态（2026-10-15 对账）**：**未落地**（T-stdio 子项目待排期）；Tier A 原生 Binder 插件已随 T-trans-2/4 落地，Tier B stdio 容器插件（`Dart Process.start` 接管子进程）尚未实现。
 
 插件加载器分层，既保留 Android 深度集成，又能直接吃下 GitHub 开源 MCP 生态：
 
@@ -301,6 +307,8 @@ Binder 侧经 `Binder.getCallingUid()` 验真——同签名私有生态（`<per
 
 ### 10.3 原生层批量节流（Batch & Throttle，克服 JNI 穿透掉帧）
 
+> **状态（2026-10-15 对账）**：**未落地**；原生层 `ProgressThrottler` 200ms 滑动窗口聚合未实现，高频 progress 仍逐帧穿透 JNI/`MethodChannel`。
+
 高频进度帧（如 50ms 一次微步）禁止逐帧穿透 JNI/`MethodChannel`：
 
 - **原生滑动窗口聚合**：GoodHub Kotlin 原生层维持 `ProgressThrottler`，无论插件经 `IMcpCallback` 以多高频推进度，原生层强制按 **200ms 时间窗口**聚合、丢弃中间冗余帧，仅将最新状态 + 累计百分比推入 Flutter `EventChannel`。
@@ -308,10 +316,14 @@ Binder 侧经 `Binder.getCallingUid()` 验真——同签名私有生态（`<per
 
 ### 10.4 PC 60s 超时与息屏死锁对策
 
+> **状态（2026-10-15 对账）**：**已实现**（G1~G5 + TC12 FULL_SCREEN_INTENT 醒目呼叫收口 2026-10-13）；15s Keep-Alive 进度帧 + L2 45s 主动熔断 + 息屏 FSI 拉起全链路真机通过。
+
 - **Keep-Alive 进度帧（Progress Ping）**：PC 端（Cursor/Claude）超时规则为「连续 60s 收不到任何 HTTP 数据包即超时」。网关在等待手机冷启动或长任务期间，**每 15s 主动向 PC 推一条轻量 `notifications/progress`**（如 `Warming up local plugin...`）；管道有合法 MCP 帧流动即无限重置 PC 计时器，根除 60s 掉线。
 - **L2 权限卡片醒目呼叫 + 主动熔断**：PC 请求触发手机 L2 确认时，GoodHub 发 `FULL_SCREEN_INTENT` + 短时 `WakeLock` 震动点亮屏，弹原生全屏授权卡；**显式 45s 确认时限**——超时未点即主动向 PC 回 JSON-RPC 拒绝响应，PC 立即停转，避免无序挂死（与 §7 入站安全 L1/L2 卡片联动）。
 
 ### 10.5 双进程物理隔离（消除 SPOF 单点故障）
+
+> **状态（2026-10-15 对账）**：**未落地**（G6 未排期）；当前单进程（architecture §11 单进程硬约束仍生效），`:gateway` 未拆独立守护进程。
 
 拆 UI 与网关为独立进程，防 Flutter 卡顿或端侧模型 OOM 拖垮 PC 远程网关：
 

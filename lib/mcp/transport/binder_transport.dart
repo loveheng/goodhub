@@ -68,6 +68,12 @@ class BinderTransport implements McpTransport {
   /// [answerReverse] 回程。由 [McpClient.binder] 工厂转发到 client 的处理器。
   Future<Map<String, Object?>?> Function(String method, Object? params)? onServerRequest;
 
+  /// server→client 主动通知分发（无 id，如 `notifications/resources/updated`）：
+  /// [McpClient.binder] 工厂转发到 [McpClient.handleServerNotification]（含
+  /// [McpClient.onResourceUpdated]）。GET SSE 通道不适用 Binder（通知走 EventChannel），
+  /// 故此处是 Binder 路径订阅失效感知（`notifications/resources/updated`）的唯一下行入口。
+  void Function(String method, Object? params)? onServerNotification;
+
   /// 异步终帧等待表：key = JSON-RPC 请求 id；value = 同 id 经 onEvent 送达的真实结果 raw。
   final Map<Object, Completer<String>> _pendingTerminal = <Object, Completer<String>>{};
 
@@ -136,8 +142,10 @@ class BinderTransport implements McpTransport {
         _handleReverseRequest(method, id, msg['params']);
         return;
       }
-      // 其他 server 主动通知帧（非 progress / 非反向请求）：丢弃（订阅通知走 GET 通道）。
-      return;
+      // 其他 server 主动通知帧（非 progress / 非反向请求、且无 id）：经
+      // [onServerNotification] 分发（如 notifications/resources/updated → onResourceUpdated）。
+      // Binder 无 GET SSE 通道，此即订阅失效感知的唯一下行入口（原实现误丢弃）。
+      onServerNotification?.call(method, msg['params']);
     }
 
     // 终帧（result/error，无 method）：唤醒等待中的 send / sendStream。
@@ -259,6 +267,13 @@ class BinderTransport implements McpTransport {
       body: raw,
     );
   }
+
+  // ---- 订阅通知下行通道（GET SSE）：Binder 同机传输不适用 ----
+  // 本地插件通知经 EventChannel 回推（_onNativeEvent），无独立 GET 长连接；
+  // 协议层订阅监听对此类 server 退化为不监听（subscribeResource 仍受 caps 门控）。
+  @override
+  Future<StreamedTransportResponse> getStream() =>
+      throw UnsupportedError('Binder 传输不支持 GET SSE 订阅通道（通知走 EventChannel）');
 
   // ---- 流式（callWithProgress 用）：progress / _async 终帧经事件流回传 ----
   @override

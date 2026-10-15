@@ -51,8 +51,13 @@ class McpToolFace implements ToolExecutor {
   /// 审计错误文本截断上限（ops.log 防膨胀；原文在调用方上下文里不丢）。
   static const _auditClip = 200;
 
-  /// 在途流式请求 id（M3-T2）：[cancelActiveRequest] 的取消目标。
-  int? _inFlightRequestId;
+  /// 在途执行计数（T4-3 D18）：[execute] 进入即 +1、结束 -1——含非流式 POST 在途，
+  /// 是断连时「在途 N 个已取消」的 N 来源（cancelActiveRequest 取消其中可取消的流式项）。
+  int _activeCalls = 0;
+  int get inFlightCount => _activeCalls;
+
+  /// 在途流式请求 id 集合（M3-T2）：[cancelActiveRequest] 的取消目标。
+  final Set<int> _streamingIds = {};
 
   /// tools/list → 引擎工具声明。description/inputSchema 可缺省（防御解析），
   /// name 缺失 = 契约违规立即抛。结果缓存于 [cachedSchemas]（T6 ToolRouter
@@ -122,19 +127,23 @@ class McpToolFace implements ToolExecutor {
       text.length <= _auditClip ? text : '${text.substring(0, _auditClip)}…';
 
   Future<ToolExecutionResult> _executeInner(AssembledToolCall call) async {
-    final Object? args;
+    _activeCalls++;
+    int? streamId;
+    Object? args;
     try {
       args = call.argumentsJson.trim().isEmpty
           ? const <String, Object?>{}
           : jsonDecode(call.argumentsJson);
     } on FormatException catch (e) {
       // 入参 JSON 损坏回填 isError 让模型自纠（不抛——抛错由执行环统一兜）
+      _activeCalls--;
       return ToolExecutionResult(
         content: '工具入参 JSON 损坏: ${e.message}（请修正 JSON 后重试）',
         isError: true,
       );
     }
     if (args is! Map) {
+      _activeCalls--;
       return const ToolExecutionResult(
         content: '工具入参必须是 JSON object',
         isError: true,
@@ -172,31 +181,37 @@ class McpToolFace implements ToolExecutor {
                   );
                 }
               },
-              onRequestId: (id) => _inFlightRequestId = id,
+              onRequestId: (id) {
+                streamId = id;
+                _streamingIds.add(id);
+              },
             )
           : await client.call('tools/call', params: params);
       return _parseToolResult(result);
     } on McpException catch (e) {
       return ToolExecutionResult(content: '工具执行失败: ${e.message}', isError: true);
     } finally {
-      _inFlightRequestId = null;
+      if (streamId != null) _streamingIds.remove(streamId);
+      _activeCalls--;
     }
   }
 
   /// Abort 级联 ③（architecture §10）：对在途流式 tools/call 下发 MCP 标准
   /// `notifications/cancelled` 通知（不只断 SSE）；无在途请求为 no-op。
+  /// 取消目标 = 全部在途流式请求 id（T4-3 支持多并发在途取消）。
   /// 下发失败 [DEGRADE] 留痕禁静默（server 侧按 90s 超时兜底，不悬挂）。
   void cancelActiveRequest({String? reason}) {
-    final id = _inFlightRequestId;
-    if (id == null) return;
-    unawaited(client
-        .notify('notifications/cancelled', params: {
-          'requestId': id,
-          'reason': ?reason,
-        })
-        .then((_) {}, onError: (Object e) {
-          debugPrint('[DEGRADE] mcp-tool-face: cancel notify failed: $e');
-        }));
+    if (_streamingIds.isEmpty) return;
+    for (final id in List.of(_streamingIds)) {
+      unawaited(client
+          .notify('notifications/cancelled', params: {
+            'requestId': id,
+            'reason': ?reason,
+          })
+          .then((_) {}, onError: (Object e) {
+            debugPrint('[DEGRADE] mcp-tool-face: cancel notify failed: $e');
+          }));
+    }
   }
 
   /// MCP tool result（{content:[{type:'text',text}...], isError}）→ 扁平结果。

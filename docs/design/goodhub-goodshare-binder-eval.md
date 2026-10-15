@@ -128,7 +128,7 @@ updated: 2026-10-13
 - **挂载 ToolRouter**：`gateway_controller.dart:117-130` 已 `createClient(info)` 并迭代，需真机确认 goodshare 工具真正进 `ToolRouter` 且可经聊天任务调用（不止连通性）。
 - **签名权限**：goodhub `AndroidManifest.xml` 加 `<uses-permission android:name="com.zzh.goodhub.permission.MCP_SERVER"/>`（配合 goodshare Bug2）。
 - **节点卡 UI 缺口**：T5「Server 节点」面板只列手填远端端点，**不覆盖本地插件**（前文断点 §4.3）。goodshare 自动挂载后无对应节点卡可视——功能已通但 UI 不可见，需评估是否补本地插件节点卡（在线点/延迟/工具计数/鉴权态）。
-- **结果回写**：联调结果（通过/卡点）回 goodshare 侧 `goodshare-goodhub-local-plugin-eval.md` 与 `context/epics/goodhub-local-plugin/devlog.md`（追加 `[验证]` 行）。
+- **结果回写**：联调结果（通过/卡点）回 goodshare 侧 `goodshare-goodhub-local-plugin-eval.md` 与 `context/epics/thirdconnect/devlog.md`（追加 `[验证]` 行；原引用路径 `context/epics/goodhub-local-plugin/` 本仓不存在，2026-10-15 对账修正）。
 
 ## 6. 阶段一裁决
 

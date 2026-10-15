@@ -1,6 +1,6 @@
 ---
-status: draft
-updated: 2026-10-11
+status: active
+updated: 2026-10-15
 ---
 
 # M3 施工设计：UI 全量 · Subscriptions · Sampling

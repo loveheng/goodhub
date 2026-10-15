@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-10
+updated: 2026-10-15
 ---
 
 # GoodHub 编码规范 · 工程落地基准
@@ -40,6 +40,10 @@ lib/
     └── console/                # 服务大厅与 Integration Hub 面板
 ```
 
+> **现状对照（2026-10-15 对账注记）**：上图是**目标拓扑**；仓库现状是**扁平域目录**——`lib/mcp/`、`lib/coordinator/`、`lib/llm/`、`lib/sandbox/`、`lib/gateway/`、`lib/ui/`、`lib/core/`、`lib/task/`、`lib/update/` + `main.dart`。映射关系：`features/mcp_bus` → `lib/mcp/`（客户端 / 本地插件发现 / 传输 / 探活 / 端点存储）+ `lib/coordinator/tool_router.dart`（ToolRouter 前缀路由，M4-T6）；`features/coordinator` → `lib/coordinator/`（含 Skill 注册表与 `$ref` 暂存池 `ref_store.dart`）；`features/sandbox` → `lib/sandbox/`（记忆 / 会话）；`features/session` → **无独立落点**（会话态散在 `ui/chat_page` + `gateway_server` + `skill_registry`，SessionManager 仲裁已显式关闭，见 architecture.md §15）；`lib/gateway/`（2026-10-12 网关解冻后新增）与 `lib/update/`（自更新）为拓扑图外的新增域。
+>
+> **收敛纪律（M4-D4 拍板）**：新增文件**沿用现状扁平域目录**；在统一收敛拍板之前，禁止单独引入 `features/` 前缀造成双拓扑并存。
+
 **core/network 与 mcp_bus 的边界纪律**：`core/network` 只放**纯传输底座**（HTTP client、指数退避算法等通用件）；**JSON-RPC/SSE 协议语义必须住在 `features/mcp_bus`**——重连期间「积压队列整体丢弃并回告模型、不静默重放」（F1.12）是总线策略，漏到 core 即围栏旁路。
 
 ## 2. 核心编码纪律与硬性规则（Hard Rules）
@@ -48,7 +52,8 @@ lib/
 
 - **禁止平台污染**：`lib/features/` 与 `lib/ui/` 下**绝对禁止** `import 'dart:io'`（文件系统统一走 `core/storage` 或抽象接口），**绝对禁止**导入含 Android/iOS 专有概念的代码。
 - **接口驱动**：所有系统特权能力（剪贴板、通知、端侧推理引擎）必须定义纯 Dart 抽象类（`abstract interface class`），平台实现在 `lib/app/` 初始化阶段经依赖注入装配。
-- **机械验收**：CI 断言 `flutter analyze` 全绿 + features/ui 目录 grep 无 `dart:io`。
+- **机械验收**：CI 断言 `flutter analyze` 全绿 + `lib/ui/` 目录 grep 无 `dart:io`。
+- **2026-10-15 对账：现存三处违规（临时豁免，非免检）**：`lib/ui/chat_page.dart:12`、`lib/ui/services_hall_page.dart:19`、`lib/ui/update_page.dart:1` 直接 `import 'dart:io'`。**豁免理由**：三处消费的都是平台专属能力（支持目录 / 临时目录 / 安装与文件路径），而 `lib/platform/` 抽象层（目标拓扑）尚未建立——在无抽象层时硬套会造出第三处旁路。**整改触发条件**：`lib/platform/interfaces`（或等价抽象）建立时，三处必须改为经抽象接口注入。**在此之前禁止新增第四处违规**。
 
 ### 规则 2：单 OS 进程与并发调度防死锁
 
@@ -80,8 +85,9 @@ class ActionCardCancelled extends ActionCardState { /* ... */ }
 class ActionCardFailed extends ActionCardState { final String error; /* ... */ }
 ```
 
-- **Cancelled ≠ Failed（§10 纪律）**：用户 Abort / `$/cancelRequest` 级联终态必须落 `Cancelled`；仅真实错误落 `Failed`。**禁止混用**——审计语义不可逆。
-- **Abort 级联固定顺序（§10）**：UI Abort → ① 终止本地 LLM Generator → ② 终结本地执行队列 → ③ 对外部 Server 下发 `$/cancelRequest`（不只断 SSE）→ ④ 卡片终结为 `Cancelled`。实现必须按此顺序，不得乱序/跳步。
+- **Cancelled ≠ Failed（§10 纪律）**：用户 Abort / `notifications/cancelled` 级联终态必须落 `Cancelled`；仅真实错误落 `Failed`。**禁止混用**——审计语义不可逆。
+- **Abort 级联固定顺序（§10）**：UI Abort → ① 终止本地 LLM Generator → ② 终结本地执行队列 → ③ 对外部 Server 下发 `notifications/cancelled`（不只断 SSE）→ ④ 卡片终结为 `Cancelled`。实现必须按此顺序，不得乱序/跳步。
+- **命名口径（2026-10-15 修正）**：取消通知的 MCP 2025-06-18 规范名是 **`notifications/cancelled`**；`$/cancelRequest` 为早期草案方法名，**代码已于 M3-T2 全量改为前者**，本文残留旧名的两处同步修正——新增注释/文档一律用规范名。
 
 ## 4. 命名约定与代码风格
 
@@ -152,18 +158,22 @@ abstract interface class PiiRedactionPipeline {
 
 ### 6.2 死锁防护集成测试
 
-- **Trace-ID 递归重入**：模拟 App A 回调 GoodHub（同 Trace-ID、hop ≤2），验证内联穿透、不因单 Isolate 队列永久挂起。
-- **Abort 级联顺序**：验证 §10 四步顺序依次发生且终态为 `Cancelled`（非 `Failed`）。
-- **重连不重放**：SSE 断连后积压队列整体丢弃并回告模型，无写操作重放。
+> **2026-10-15 对账：四项门禁的落地状态**（缺位项已标注归属，未做≠不做，挂 pending-confirm / 各 epic todos 跟踪）：
+
+- [x] **Trace-ID 递归重入**（部分落地）：环检测已落 `lib/gateway/gateway_loop_guard.dart` + 单测 9 例（`test/gateway/gateway_loop_guard_test.dart`）——但形态是**网关入站环路阻断**（`-32000`），规则 2 设想的「同 Trace-ID 且 hop ≤2 的内联穿透、不进阻塞队列」尚未实现（SessionManager 仲裁已显式关闭，见 architecture §15）。**剩余缺口**：真机/集成级的「App A 回调 → 内联执行不挂起」验证，随 SessionManager 解冻同批做。
+- [ ] **Abort 级联顺序**：`notifications/cancelled` 下发与 `Cancelled` 终态**代码已落**（M3-T2 + M4-T3），但缺**四步顺序的集成断言**——现仅单测覆盖终态，顺序无机械验证。归属 M4 收官批。
+- [ ] **重连不重放**：依赖 M4-T4 连接韧性（心跳/指数退避/积压丢弃回告），**整体未落地**（`lib/` 对 `backoff|reconnect` 零命中），2026-10-15 裁定暂缓至文档收口后启动。
+- [x] **`$ref` 物理清理断言**（见 §6.3）：单测已覆盖 Session 即焚 + 启动幂等清池；启动清池已于 2026-10-15 挂进 `main.dart`（此前 API 与单测在但未接启动）。
 
 ### 6.3 内存与泄露审查
 
 - SSE 长连接 `dispose` 时主动关闭。
-- `$ref` 临时缓存（含 >1MB 落 cacheDir 文件）在 Session Terminated 时显式物理清理，**须有断言验证**（F4.5 Session 即焚 + TTL 30min + 启动幂等清池）。
+- `$ref` 临时缓存（含 >1MB 落 cacheDir 文件）在 Session Terminated 时显式物理清理，**须有断言验证**（F4.5 Session 即焚 + TTL 30min + 启动幂等清池）——**已闭环（2026-10-15）**：`RefStore.expireAll` 会话即焚 + `sweepStartupOrphans` 挂 `main.dart` 冷启动，单测 `test/coordinator/ref_store_test.dart` 11 例钉住。
+- **网关侧新增（2026-10-15）**：SSE 订阅通道与心跳 Timer 在 `stop()` 中显式释放（`gateway_server.dart`）；环路防护的在途 traceId 集合走 `try/finally` 必释 + TTL 300s 惰性驱逐，防长连接强断导致记录泄漏。
 
 ## 7. MCP 对 AI 接口契约（Server 角色立法）
 
-> **前提（2026-10-10 用户裁决）**：Server 角色（:8766 对外暴露）暂缓不做，本节约定仅在反向能力重启时生效（形态见 future-considerations.md FC6：服务对象为桌面 AI 平台 / MCP 客户端，桌面平台先记录待完成 → 宿主批量处理，非实时直调）。Client 侧代码当前不受本节约束。
+> **前提（2026-10-12 解冻，取代 2026-10-10「暂缓不做」裁决）**：Server/Gateway 角色已落地——`:8766/mcp` 对外暴露，形态为**实时聚合网关**（非 FC6 的「桌面平台先记录待完成 → 宿主批量处理」，该形态已被取代，见 future-considerations.md FC6 注记）。**本节自即日起全面生效**，约束对象 = 网关对外可达的工具面（`lib/gateway/` + 经网关聚合的本地 Binder 插件与远端 HTTP server 工具）；不经网关的纯 Client 侧内部工具链不受强制约束，但建议同口径（未来可能随聚合范围扩大而纳入）。
 >
 > 立法来源：goodshare 仓 `docs/engineering/ai-dev-spec.md` §4「AI 操作者专章」（跨仓只读指针，不复制正文）。
 

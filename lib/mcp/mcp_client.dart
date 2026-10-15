@@ -5,12 +5,14 @@
 /// 同机 Binder 实现规划于 thirdconnect T-trans-2/3）。本文件不含任何传输细节。
 library;
 
+import 'dart:async';
 import 'dart:convert' as json;
 
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 
 import '../core/errors/mcp_error.dart';
+import '../core/network/backoff.dart';
 import 'json_rpc.dart';
 import 'server_capabilities.dart';
 import 'transport/binder_transport.dart';
@@ -52,6 +54,8 @@ class McpClient {
       if (handler == null) return null;
       return handler(method, params);
     };
+    // Binder 路径 server 主动通知（无 id）分发到统一通知分发器（含 onResourceUpdated）。
+    t.onServerNotification = (method, params) => client.handleServerNotification(method, params);
     return client;
   }
 
@@ -62,6 +66,9 @@ class McpClient {
   /// 握手一次全程复用（SessionManager 共享连接池语义，architecture §15）。
   Future<ServerCapabilities>? _negotiating;
 
+  /// 最近一次协商出的能力（订阅 gate / 重连重放判定用）；未协商时为 null。
+  ServerCapabilities? _caps;
+
   /// server→client 反向请求处理器（M3，ai-app-split.md §3.11）：流式调用期间
   /// server 发来的 JSON-RPC request（如 sampling/createMessage）经此分派，
   /// 响应按 id POST 回端点（Streamable HTTP 回程序径）。null = 未启用反向
@@ -69,10 +76,21 @@ class McpClient {
   /// 转 error 帧（配额超限等结构化拒绝），其他异常转 -32603。
   Future<Map<String, Object?>?> Function(String method, Object? params)? onServerRequest;
 
+  /// server→client 主动通知分发（T4-5，§3.10）：当前仅消费
+  /// [notifications/resources/updated] → [onResourceUpdated]（D19 失效感知：
+  /// 不自动重读，仅回告）；其余通知忽略。POST SSE 流（[callWithProgress]）与
+  /// （收官将建的）GET SSE 订阅通道共用本分发器。
+  void Function(String uri)? onResourceUpdated;
+
   /// 能力协商（M2.5-T2）：initialize 握手 + notifications/initialized 通知，
   /// 结果按 client 实例缓存（幂等——重复调用不重发请求）；握手失败后允许重试
   /// （缓存置空，下次调用重新握手——协商失败是「连不上/协议坏」，与 Polyfill
   /// 的「server 缺能力」降级语义不同层，后者由 [ServerCapabilities] 字段表达）。
+  /// 清除握手缓存，强制下次 [negotiate] 重新握手（T4-3 重连语义：server 重启后
+  /// 旧 session 失效，必须重 initialize 而非复用缓存——[negotiate] 的缓存是为
+  /// 「连得上但重复调用」省握手，与「连不上要重连」语义不同层）。
+  void resetNegotiation() => _negotiating = null;
+
   Future<ServerCapabilities> negotiate() {
     final existing = _negotiating;
     if (existing != null) return existing;
@@ -91,6 +109,7 @@ class McpClient {
       'clientInfo': {'name': 'goodhub', 'version': '0.1.0'},
     });
     final caps = ServerCapabilities.parse(result);
+    _caps = caps;
     // 规范握手第二步（MCP 2025-06-18：client 必须回 initialized 通知）。
     // DEGRADE: 个别 server 对通知返回 4xx 时不阻断连接（capabilities 已到手，
     // 通知失败仅留痕）——降级为无通知连接，不得让握手整段失败。
@@ -186,7 +205,13 @@ class McpClient {
           await _answerServerRequest(method, msg['id']!, msg['params']);
           continue;
         }
-        if (method != null) continue; // 其他 server 主动通知帧：不消费（订阅通知走 GET 通道）
+        if (method != null) {
+          // server 主动通知帧（订阅失效 notifications/resources/updated 等）：
+          // 经统一分发器路由（GET SSE 订阅通道亦复用本分发器，T4-5 收官建 GET
+          // 监听后，推送帧同路分发，无需改写此处）。
+          handleServerNotification(method, msg['params']);
+          continue;
+        }
       }
       final response = JsonRpcResponse.parse(msg);
       final err = response.error;
@@ -265,6 +290,10 @@ class McpClient {
     return null;
   }
 
+  /// 心跳探活（T4-2，F1.4）：MCP `ping`（2025-06-18，server 回 `{}`，最轻量）。
+  /// 失败（网络/4xx/旧 server 不支持 -32601）由连接健康层按口径处理，不在此抛。
+  Future<void> ping() => call('ping');
+
   /// resources/list（ai-app-split.md §3.8）：只读数据面清单。Tier 2 Server
   /// 无此能力——调用方按 capabilities（hasPrompts/hasResources）先判再调。
   Future<List<Map<String, Object?>>> listResources() async {
@@ -283,6 +312,9 @@ class McpClient {
   }
 
   /// resources/read：返回首个 text 内容块的文本（同 claim text 基线的只读注入）。
+  /// T4-5 收官（读后自动订阅）：读取成功后 best-effort 订阅该 uri（D8/D19 数据
+  /// 快照实时读 + 失效感知闭环），并启动下行监听。订阅能力缺失/离线时静默忽略，
+  /// 不阻断读取。
   Future<String> readResource(String uri) async {
     final result = await call('resources/read', params: {'uri': uri});
     if (result is! Map) {
@@ -294,9 +326,23 @@ class McpClient {
     }
     final first = contents.first;
     if (first is Map && first['text'] is String) {
+      await _autoSubscribeAfterRead(uri); // best-effort，不阻断读取
       return first['text'] as String;
     }
     throw const McpProtocolException('resources/read content missing text');
+  }
+
+  /// 读后自动订阅（best-effort）：capabilities 声明订阅能力时订阅该 uri（幂等）并
+  /// 启动下行监听；失败（无能力/离线/网络错）静默忽略。
+  Future<void> _autoSubscribeAfterRead(String uri) async {
+    try {
+      if (_caps?.hasSubscriptions ?? false) {
+        await subscribeResource(uri); // 幂等：已订阅不重发
+        unawaited(startNotificationListener()); // 启动 GET SSE 监听
+      }
+    } catch (_) {
+      // 订阅失败不影响读取结果
+    }
   }
 
   /// prompts/list（ai-app-split.md §3.7）：CoW 模板源清单（含版本元数据）。
@@ -332,6 +378,142 @@ class McpClient {
       if (content['text'] is String) return content['text'] as String;
     }
     throw const McpProtocolException('prompts/get message missing text');
+  }
+
+  // ---- T4-5 订阅消费（§3.10 resources/subscribe + notifications/resources/updated）----
+
+  /// 已订阅的 resource URI 集合（server 重启后订阅失效，由 [McpConnection] 重连时重放）。
+  final Set<String> _subscribedUris = {};
+
+  /// 当前已订阅的 resource URI 只读视图。
+  Set<String> get subscribedUris => Set.unmodifiable(_subscribedUris);
+
+  /// server 是否声明 `resources.subscribe` 能力（订阅门控；T4-5）。
+  bool get canSubscribe => _caps?.hasSubscriptions ?? false;
+
+  /// 订阅资源（MCP §3.10 `resources/subscribe`）：server 声明 `resources.subscribe`
+  /// 时方可订阅，否则抛协议违规（Tier 2 / 未声明订阅能力的 server 不提供失效感知）。
+  /// 返回 server 下发的 subscriptionId（部分 server 返回空结果，此时为空串）。
+  /// [force]=true 跳过幂等去重（重连重放场景：server 重启已清空订阅，本地仍记
+  /// 已订阅，须重发）；默认幂等（同 uri 重复订阅不重发）。
+  Future<String> subscribeResource(String uri, {bool force = false}) async {
+    if (!(_caps?.hasSubscriptions ?? false)) {
+      throw const McpProtocolException('server 未声明 resources.subscribe 能力');
+    }
+    if (!force && _subscribedUris.contains(uri)) return '';
+    final result = await call('resources/subscribe', params: {'uri': uri});
+    _subscribedUris.add(uri);
+    return _asSubscriptionId(result);
+  }
+
+  /// 取消订阅（§3.10 `resources/unsubscribe`）。
+  Future<void> unsubscribeResource(String uri) async {
+    if (!(_caps?.hasSubscriptions ?? false)) {
+      throw const McpProtocolException('server 未声明 resources.subscribe 能力');
+    }
+    await call('resources/unsubscribe', params: {'uri': uri});
+    _subscribedUris.remove(uri);
+  }
+
+  String _asSubscriptionId(Object? result) {
+    if (result is Map && result['subscriptionId'] != null) {
+      return result['subscriptionId'].toString();
+    }
+    return '';
+  }
+
+  /// server→client 主动通知统一分发（见 [onResourceUpdated] 字段注释）。当前仅
+  /// 消费 `notifications/resources/updated`；其余通知忽略（结构化不抛）。
+  void handleServerNotification(Object? method, Object? params) {
+    if (method == 'notifications/resources/updated') {
+      final uri = params is Map ? params['uri'] : null;
+      if (uri is String) onResourceUpdated?.call(uri);
+    }
+  }
+
+  // ---- GET SSE 订阅通知下行监听（T4-5 收官，Streamable HTTP §3.10）----
+
+  /// 订阅通知监听循环（GET /mcp SSE 长连接）。[startNotificationListener] 启动，
+  /// [stopNotificationListener] 取消；断流/崩溃自动指数退避重连（不惊群）。
+  StreamSubscription<void>? _notifySub;
+  var _notifyListening = false;
+  final ExponentialBackoff _notifyBackoff = const ExponentialBackoff();
+
+  /// 启动订阅通知下行监听（幂等；仅 [ServerCapabilities.hasSubscriptions] 时有效）。
+  /// 监听在独立 GET 长连接上解析 server 主动帧，经 [handleServerNotification] 分发。
+  Future<void> startNotificationListener() async {
+    if (_notifyListening || !(_caps?.hasSubscriptions ?? false)) return;
+    _notifyListening = true;
+    var attempt = 0;
+    while (_notifyListening) {
+      StreamedTransportResponse resp;
+      try {
+        resp = await transport.getStream();
+        debugPrint('[mcp] GET SSE 订阅通知监听已开启');
+      } on UnsupportedError {
+        // 传输不支持（如 Binder）：安静退出，不监听（订阅能力不应出现于该类 server）。
+        _notifyListening = false;
+        return;
+      } catch (e) {
+        if (!_notifyListening) return;
+        final wait = _notifyBackoff.delayFor(attempt);
+        attempt++;
+        if (wait > Duration.zero) await Future.delayed(wait);
+        continue;
+      }
+      if (!_notifyListening) {
+        resp.lines.drain<void>();
+        return;
+      }
+      final sub = resp.lines.listen(
+        (line) {
+          if (_notifyListening) _ingestSseLine(line);
+        },
+        onError: (_) {},
+      );
+      _notifySub = sub;
+      await sub.asFuture().catchError((_) {});
+      _notifySub = null;
+      debugPrint('[mcp] GET SSE 订阅通知监听结束（将退避重连）');
+      if (!_notifyListening) return;
+      // 流正常结束（server 关闭）：退避后重连（attempt 不清零，避免风暴）。
+      final wait = _notifyBackoff.delayFor(attempt);
+      attempt++;
+      if (wait > Duration.zero) await Future.delayed(wait);
+    }
+  }
+
+  /// 停止订阅通知监听（断连时由 [McpConnection] 调用，避免无谓重连）。
+  void stopNotificationListener() {
+    _notifyListening = false;
+    _notifySub?.cancel();
+    _notifySub = null;
+  }
+
+  /// SSE 帧累积缓冲（与 [callWithProgress] 同构，独立实例避免并发串帧）。
+  final StringBuffer _notifyFrame = StringBuffer();
+
+  /// 解析 GET SSE 单行：`:` 心跳忽略；`data:` 累积；空行断帧 → 分发。
+  void _ingestSseLine(String line) {
+    if (line.startsWith(':')) return;
+    if (line.startsWith('data:')) {
+      _notifyFrame
+        ..write(line.substring(5).trim())
+        ..write('\n');
+      return;
+    }
+    if (line.isNotEmpty || _notifyFrame.isEmpty) return;
+    final payload = _notifyFrame.toString().trim();
+    _notifyFrame.clear();
+    if (payload.isEmpty) return;
+    try {
+      final msg = json.jsonDecode(payload);
+      if (msg is Map<String, Object?>) {
+        handleServerNotification(msg['method'], msg['params']);
+      }
+    } catch (_) {
+      // 畸形帧忽略
+    }
   }
 
   void close() => transport.close();

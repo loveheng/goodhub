@@ -30,6 +30,9 @@ import '../mcp/server_endpoints.dart';
 import '../mcp/server_probe.dart';
 import 'components/server_endpoint_forms.dart';
 import 'gateway_loop_debug_page.dart';
+import '../mcp/local_plugin_discovery.dart';
+import '../mcp/trusted_plugins.dart';
+import 'trust_plugin_dialog.dart';
 import 'tokens/console_tokens.dart';
 
 /// appScoped 覆写正文的防呆上限（无硬预算闸，防呆防手滑）。
@@ -49,6 +52,8 @@ class ServicesHallPage extends StatefulWidget {
     this.endpointStoreOverride,
     this.probeOverride,
     this.autoProbe = true,
+    this.localScanOverride,
+    this.localChangesOverride,
   });
 
   /// 测试注入位；null = 生产路径（应用文档目录）。
@@ -66,6 +71,13 @@ class ServicesHallPage extends StatefulWidget {
 
   /// 进入页面自动探活一次（P2；测试注入假探活时置 false 关掉，免干扰计数断言）。
   final bool autoProbe;
+
+  /// 测试注入位（本地插件面板）：null = 生产路径（[localPluginDiscovery] 经
+  /// Binder 通道拉扫同机插件）；测试传假 scan 免去真机通道依赖。
+  final Future<List<LocalPluginInfo>> Function()? localScanOverride;
+
+  /// 测试注入位（本地插件面板）；null = 生产路径（[localPluginDiscovery.changes]）。
+  final Stream<void>? localChangesOverride;
 
   @override
   State<ServicesHallPage> createState() => _ServicesHallPageState();
@@ -105,6 +117,12 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
   var _addingEp = false;
   String? _editingEpId;
 
+  // —— 本地插件面板（Binder 发现，零配置自动挂载）——
+  Future<List<LocalPluginInfo>> Function()? _localScan;
+  var _localPlugins = const <LocalPluginInfo>[];
+  var _trustedPackages = const <String>{}; // 已信任包名（同签名免确认仍显式标）
+  StreamSubscription<void>? _localChangesSub;
+
   @override
   void initState() {
     super.initState();
@@ -113,6 +131,7 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
 
   @override
   void dispose() {
+    _localChangesSub?.cancel();
     _editCtrl.dispose();
     _newNameCtrl.dispose();
     _newContentCtrl.dispose();
@@ -151,6 +170,19 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
     // P2：进入页面自动探活一次——「未探测 · 已存令牌」不再让用户先找按钮。
     if (widget.autoProbe && mounted) {
       unawaited(_probeAll());
+    }
+    // 本地插件面板独立初始化：Binder 通道拉扫同机插件（零配置自动挂载），
+    // 订阅包变更流做热刷新；失败（通道不可用）按空目录，不拖垮页面。
+    try {
+      _localScan = widget.localScanOverride ?? localPluginDiscovery.scan;
+      final changes =
+          widget.localChangesOverride ?? localPluginDiscovery.changes;
+      _localChangesSub = changes.listen((_) {
+        if (mounted) unawaited(_reloadLocalPlugins());
+      });
+      await _reloadLocalPlugins();
+    } catch (e) {
+      debugPrint('[DEGRADE] local-plugins-panel: 初始化失败按空目录: $e');
     }
   }
 
@@ -409,6 +441,8 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
               children: [
                 // 顺序按使用频率：节点接入 → 云端模型 → 模板覆写 → 授权语义。
                 _nodesPanel(context, t),
+                const SizedBox(height: 12),
+                _localPluginsPanel(context, t),
                 const SizedBox(height: 12),
                 _byokPanel(context, t),
                 const SizedBox(height: 12),
@@ -1241,7 +1275,7 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 6),
                   child: Text(
-                    '（暂无节点——点下方「添加服务」接入，本地插件自动挂载不在此列）',
+                    '（暂无节点——点下方「添加服务」接入远程 MCP；本地插件见下方「本地插件」面板）',
                     style: TextStyle(
                       fontSize: Fsz.telemetry,
                       color: Theme.of(context).hintColor,
@@ -1417,5 +1451,203 @@ class _ServicesHallPageState extends State<ServicesHallPage> {
     if (probe != null && probe.online) return '已授权';
     if (probe != null) return '离线';
     return ep.hasKey ? '未探测 · 已存令牌' : '未探测 · 无令牌';
+  }
+
+  // —— 面板四·b：本地插件（同机 Binder 发现，零配置自动挂载） ——
+
+  Future<void> _reloadLocalPlugins() async {
+    final scan = _localScan;
+    if (scan == null) return;
+    final found = await scan();
+    var trusted = const <String>{};
+    try {
+      final tp = await TrustedPlugins.instance;
+      trusted = tp.all().keys.toSet();
+    } on Object catch (e) {
+      debugPrint('[DEGRADE] local-plugins-panel: 信任白名单读取失败按空: $e');
+    }
+    if (!mounted) return;
+    setState(() {
+      _localPlugins = found;
+      _trustedPackages = trusted;
+    });
+  }
+
+  Future<void> _trustPlugin(LocalPluginInfo info) async {
+    final ok = await showTrustCard(context, info);
+    if (ok && mounted) {
+      await _reloadLocalPlugins();
+      _flash('✓ 已信任 ${info.serverTitle}');
+    }
+  }
+
+  Widget _localPluginsPanel(BuildContext context, ConsoleTokens t) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text(
+                  '本地插件（同机发现）',
+                  style: const TextStyle(
+                    fontSize: Fsz.sectionTitle,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  '发现 ${_localPlugins.length} 项',
+                  style: TextStyle(
+                    fontFamily: t.monoFamily,
+                    fontSize: Fsz.telemetrySm,
+                    color: t.terminalMuted,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '已安装且声明 MCP_SERVER 的同机插件，零配置自动挂载；同签名私有生态免确认，'
+              '第三方首次需信任确认。不进手填配置（与远端节点不同源）。',
+              style: TextStyle(
+                fontSize: Fsz.telemetrySm,
+                color: Theme.of(context).hintColor,
+              ),
+            ),
+            const SizedBox(height: 8),
+            if (_localScan == null)
+              const Padding(
+                padding: EdgeInsets.all(8),
+                child: Center(
+                  child: Text(
+                    '读取本地插件…',
+                    style: TextStyle(fontSize: Fsz.telemetry),
+                  ),
+                ),
+              )
+            else ...[
+              for (final p in _localPlugins) _localPluginItem(context, t, p),
+              if (_localPlugins.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  child: Text(
+                    '（暂无本地插件——安装声明 MCP_SERVER 的同机应用后自动出现）',
+                    style: TextStyle(
+                      fontSize: Fsz.telemetry,
+                      color: Theme.of(context).hintColor,
+                    ),
+                  ),
+                ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _localPluginItem(
+    BuildContext context,
+    ConsoleTokens t,
+    LocalPluginInfo p,
+  ) {
+    final trusted =
+        p.sameSignature || _trustedPackages.contains(p.packageName);
+    return Container(
+      key: Key('local-plugin-${p.transportId}'),
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(t.cardRadius),
+        border: Border.all(color: t.hairline),
+      ),
+      child: Row(
+        children: [
+          // 已发现即可用（Binder 通道存在 = 自动挂载），绿色点表「已发现」。
+          Container(
+            width: 10,
+            height: 10,
+            decoration: BoxDecoration(
+              color: t.l1Ok,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  p.serverTitle.isNotEmpty ? p.serverTitle : p.serverId,
+                  style: TextStyle(
+                    fontFamily: t.monoFamily,
+                    fontSize: Fsz.telemetry,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                Text(
+                  '${p.packageName}\n${p.transportId}',
+                  style: TextStyle(
+                    fontFamily: t.monoFamily,
+                    fontSize: Fsz.micro,
+                    color: t.terminalMuted,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    Text(
+                      '已挂载（自动）',
+                      style: TextStyle(
+                        fontSize: Fsz.microSm,
+                        color: t.terminalMuted,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    if (p.sameSignature)
+                      Text(
+                        '私有生态 · 自动信任',
+                        style: TextStyle(
+                          fontSize: Fsz.microSm,
+                          color: t.l1Ok,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      )
+                    else if (trusted)
+                      Text(
+                        '已信任',
+                        style: TextStyle(
+                          fontSize: Fsz.microSm,
+                          color: t.l1Ok,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      )
+                    else ...[
+                      Text(
+                        '待信任',
+                        style: TextStyle(
+                          fontSize: Fsz.microSm,
+                          color: t.l2Warn,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      TextButton(
+                        key: Key('local-trust-${p.transportId}'),
+                        onPressed: () => _trustPlugin(p),
+                        child: const Text('信任'),
+                      ),
+                    ],
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }

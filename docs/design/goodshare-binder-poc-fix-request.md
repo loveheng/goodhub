@@ -106,7 +106,7 @@ updated: 2026-10-13
 | R3 | 长工具 `_async` 改造范围 | | | | #4/#5 |
 | R4 | PC 网关聚合迁移影响 | | | | 后续 |
 
-> 评估/修改完成后，请回 goodhub 侧，并同步更新 goodshare 仓 `docs/design/goodshare-goodhub-local-plugin-eval.md` 与 goodhub 仓 `context/epics/goodhub-local-plugin/devlog.md`（追加 `[验证]` 行）。双方对齐后再排真机联调。
+> 评估/修改完成后，请回 goodhub 侧，并同步更新 goodshare 仓 `docs/design/goodshare-goodhub-local-plugin-eval.md` 与 goodhub 仓 `context/epics/thirdconnect/devlog.md`（追加 `[验证]` 行；原引用路径 `context/epics/goodhub-local-plugin/` 本仓不存在，2026-10-15 对账修正）。双方对齐后再排真机联调。
 
 ---
 

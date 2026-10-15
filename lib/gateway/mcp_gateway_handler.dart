@@ -15,20 +15,27 @@ library;
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
 import '../coordinator/mcp_tool_face.dart';
 import '../coordinator/pii_fence.dart' show redactSync;
 import '../coordinator/tool_router.dart';
 import 'gateway_backpressure.dart' show PerServerBackpressure;
+import 'gateway_loop_guard.dart';
 import 'gateway_security.dart';
 
 class GatewayHandler {
-  GatewayHandler({required this.faces, this.security});
+  GatewayHandler({required this.faces, this.security, GatewayLoopGuard? loopGuard})
+      : _loopGuard = loopGuard ?? GatewayLoopGuard();
 
   /// 已挂载 face 集（serverId → face；GatewayController 装配/重扫时原地刷新）。
   final Map<String, McpToolFace> faces;
 
   /// 入站安全闭环（G3，null = 直通——仅限测试；生产由 controller 注入）。
   final GatewaySecurity? security;
+
+  /// 入站环路防护（A2 止血：Trace-ID 在途集合 + hop_count 深度熔断）。
+  final GatewayLoopGuard _loopGuard;
 
   /// 入站背压（§9.6）：单 server 并发硬上限 4，超限排队（只包真实执行段，
   /// L2 确认等待不占并发槽）。
@@ -71,6 +78,8 @@ class GatewayHandler {
     required String name,
     required Map<String, Object?> arguments,
     required void Function(Map<String, Object?> progressParams) onProgress,
+    String? traceId,
+    int hopCount = 0,
   }) async {
     final parsed = parsePrefixedToolName(name);
     if (parsed == null) {
@@ -79,6 +88,19 @@ class GatewayHandler {
         isError: true,
       );
     }
+    // 环路防护（A2 止血）：**先于路由**——① 协议级错误优先于业务路由；
+    // ② 级联风暴下被阻断的流量连注册表都不查（不为无效请求付查询成本）。
+    final trace = traceId ?? _loopGuard.newTraceId();
+    final blocked = _loopGuard.checkInbound(traceId: trace, hopCount: hopCount);
+    if (blocked != null) {
+      debugPrint('[gateway] loop-blocked: $blocked');
+      return GatewayToolResult(
+        content: '环路防护拒绝：$blocked',
+        isError: true,
+        errorCode: kGatewayLoopBlockedCode,
+      );
+    }
+
     final face = faces[parsed.serverId];
     if (face == null) {
       return GatewayToolResult(
@@ -94,7 +116,17 @@ class GatewayHandler {
         final result = await _backpressure.run(parsed.serverId, () {
           return face.client.callWithProgress(
             'tools/call',
-            params: {'name': parsed.toolName, 'arguments': arguments},
+            params: {
+              'name': parsed.toolName,
+              'arguments': arguments,
+              // 出站透传（SA-Q5 兜底线）：`_meta` 与 name/arguments **平级**，
+              // 严禁塞进 arguments（强校验插件会报 unknown parameter）。下游
+              // 若为另一台 goodhub 网关则据此递增深度；标准第三方 server 忽略
+              // `_meta` 亦无副作用（它不具备反向回调本网关的能力，本就不成环）。
+              // 恒注入（含入站无 Trace-ID 的自派场景）——否则回环请求会丢失
+              // 深度信息，兜底线在第一跳即失效。
+              '_meta': <String, Object?>{'traceId': trace, 'hopCount': hopCount + 1},
+            },
             // progress 帧 message 同步遮蔽（redactSync 纯函数直用：瞬态帧不并
             // 会话映射，占位符编号不跨帧稳定；终局结果由 security 层会话级遮蔽
             // 兜一致性）。遮蔽失败帧原样透传（进度非数据面，不因瞬态文本断流）。
@@ -120,14 +152,22 @@ class GatewayHandler {
       }
     }
 
-    final sec = security;
-    if (sec == null) return run();
-    return sec.guard(
-      tool: name,
-      annotations: _annotationsFor(parsed, face),
-      argumentsJson: jsonEncode(arguments),
-      run: run,
-    );
+    // 在途登记必须在 try 之前，释放必须在 finally：覆盖成功 / 失败 / 超时 /
+    // 客户端强断四条路径（只在正常返回位释放会让长连接中断的 traceId 泄漏，
+    // 退化成 TTL 到期才恢复）。
+    _loopGuard.acquire(trace);
+    try {
+      final sec = security;
+      if (sec == null) return await run();
+      return await sec.guard(
+        tool: name,
+        annotations: _annotationsFor(parsed, face),
+        argumentsJson: jsonEncode(arguments),
+        run: run,
+      );
+    } finally {
+      _loopGuard.release(trace);
+    }
   }
 
   /// 前缀化工具的 annotations（L1/L2 裁决的 readOnlyHint 源；未命中 → null）。
@@ -168,7 +208,15 @@ class GatewayHandler {
 
 /// tools/call 网关侧扁平结果（MCP result 形状由服务器层重组）。
 class GatewayToolResult {
-  const GatewayToolResult({required this.content, required this.isError});
+  const GatewayToolResult({
+    required this.content,
+    required this.isError,
+    this.errorCode,
+  });
   final String content;
   final bool isError;
+
+  /// 非 null = 协议级错误（server 层按此码回 JSON-RPC error 帧而非 result）。
+  /// 目前仅环路阻断用（[kGatewayLoopBlockedCode]）——业务失败一律走 isError。
+  final int? errorCode;
 }

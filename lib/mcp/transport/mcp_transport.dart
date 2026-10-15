@@ -47,6 +47,12 @@ abstract class McpTransport {
   /// 流式请求（callWithProgress 用）：返回逐行解码流。
   Future<StreamedTransportResponse> sendStream(String requestBody);
 
+  /// 订阅通知下行通道（Streamable HTTP GET SSE）：server 主动帧（如
+  /// `notifications/resources/updated`）经独立 GET 长连接推送，与请求-响应通道
+  /// 分离（MCP §3.10 / ai-app-split.md §3.10）。Binder 等同机传输无此独立通道
+  /// （通知走回程），实现应抛 [UnsupportedError]，由协议层退化为不监听。
+  Future<StreamedTransportResponse> getStream();
+
   void close();
 }
 
@@ -84,7 +90,27 @@ class HttpTransport implements McpTransport {
 
   @override
   Future<StreamedTransportResponse> sendStream(String requestBody) async {
-    final resp = await _sendStream(requestBody);
+    final resp = await _sendRaw(http.Request('POST', Uri.parse(baseUrl))
+      ..headers.addAll(_requestHeaders)
+      ..body = requestBody);
+    return StreamedTransportResponse(
+      statusCode: resp.statusCode,
+      contentType: resp.headers['content-type'] ?? '',
+      lines: resp.stream
+          .transform(utf8.decoder)
+          .transform(const LineSplitter()),
+    );
+  }
+
+  @override
+  Future<StreamedTransportResponse> getStream() async {
+    final resp = await _sendRaw(http.Request('GET', Uri.parse(baseUrl))
+      ..headers.addAll({..._requestHeaders, 'Accept': 'text/event-stream'}));
+    if (resp.statusCode < 200 || resp.statusCode >= 300) {
+      await resp.stream.drain<void>();
+      throw McpNetworkException('HTTP ${resp.statusCode}',
+          statusCode: resp.statusCode);
+    }
     return StreamedTransportResponse(
       statusCode: resp.statusCode,
       contentType: resp.headers['content-type'] ?? '',
@@ -96,8 +122,9 @@ class HttpTransport implements McpTransport {
 
   Future<http.Response> _post(String body) async {
     try {
-      return await _http.post(Uri.parse(baseUrl),
+      final resp = await _http.post(Uri.parse(baseUrl),
           headers: _requestHeaders, body: body);
+      return resp;
     } on http.ClientException catch (e) {
       throw McpNetworkException('transport failed: ${e.message}');
     } on TimeoutException catch (e) {
@@ -105,13 +132,15 @@ class HttpTransport implements McpTransport {
     }
   }
 
-  Future<http.StreamedResponse> _sendStream(String body) async {
+  /// 统一发送入口（POST 请求 / GET SSE 共用）：处理 ClientException/Timeout →
+  /// [McpNetworkException]，状态码语义交给调用方裁决。
+  Future<http.StreamedResponse> _sendRaw(http.Request req) async {
     try {
-      return await _http.send(http.Request('POST', Uri.parse(baseUrl))
-        ..headers.addAll(_requestHeaders)
-        ..body = body);
+      return await _http.send(req);
     } on http.ClientException catch (e) {
       throw McpNetworkException('transport failed: ${e.message}');
+    } on TimeoutException catch (e) {
+      throw McpNetworkException('transport timeout: $e');
     }
   }
 

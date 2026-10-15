@@ -1,11 +1,12 @@
 ---
 status: active
-updated: 2026-10-10
+updated: 2026-10-15
 ---
 
-# GoodHub 客户端需求清单
+# GoodHub 需求清单（Host + Gateway 双角色）
 
-> 2026-10-10 定稿（与 architecture.md 同步七轮评审收敛）。需求编号供拆任务引用；P0 集合待开工确认（§5）。
+> 2026-10-10 定稿（与 architecture.md 同步七轮评审收敛）。需求编号供拆任务引用；P0 集合已确认（§5）。
+> **2026-10-15 对账回填**：Server 角色已于 2026-10-12 解冻（TC5~TC8），F1 Server 侧项由「挂起」改为按实际实现状态标注（已落地 / 部分落地 / 未落地 + 延后理由）；未落地项均写明触发条件，避免下次对账复现「文档说有、代码没接」。
 
 ## 1. 用户故事（核心场景）
 
@@ -19,7 +20,9 @@ updated: 2026-10-10
 
 ### F1 MCP 双工总线
 
-> **2026-10-10 裁决（用户）**：Server 角色相关需求（F1.5/F1.6/F1.8/F1.11/F1.12/F1.16/F1.17/F1.19 中 Server 侧项）**暂缓挂起**——无真实接入场景、依赖与结构边界不清晰；Server 端服务对象为**桌面 AI 平台（MCP 客户端）**，非其他 MCP server app；未来反向交互走「桌面平台先记录待完成 → 宿主批量处理」（future-considerations.md FC6）。Client 侧需求（F1.1~F1.4/F1.7/F1.9/F1.10/F1.13~F1.15/F1.18）维持原优先级。
+> ~~**2026-10-10 裁决（用户）**：Server 角色相关需求（F1.5/F1.6/F1.8/F1.11/F1.12/F1.16/F1.17/F1.19 中 Server 侧项）**暂缓挂起**——无真实接入场景、依赖与结构边界不清晰；未来反向交互走「桌面平台先记录待完成 → 宿主批量处理」（FC6）。~~ **该裁决已于 2026-10-12 翻转（TC5~TC8），仅作历史留痕。**
+>
+> **2026-10-12 解冻（现行口径）**：Server/Gateway 角色已立项并落地（`:8766/mcp` 聚合网关，服务对象 = 桌面 AI 平台 MCP 客户端）。下表 Server 侧项按**实际实现状态**重标为「已落地 / 部分落地 / 未落地」，未落地项均标注延后理由（2026-10-15 对账轮回填，逐条取证见 `context/epics/system-assessment/memory.md`）。
 
 | 编号 | 需求 | 优先级 |
 |---|---|---|
@@ -27,19 +30,19 @@ updated: 2026-10-10
 | F1.2 | ToolRouter 命名空间前缀隔离（`goodshare__tool`） | P0 |
 | F1.3 | JIT 两级工具发现 + 静态首级摘要（每 Server 一行常驻系统提示词，Turn 1 直达激活）：元工具常驻 + `activate_server_tools` 按需注入 | P0 |
 | F1.4 | 心跳探活、在线/离线状态展示、断线重连 | P1 |
-| F1.5 | MCP Server 角色：`:8766` 监听 + 特权工具（memory/clipboard/notification/abort） | P1（挂起，见节首裁决注记） |
-| F1.6 | 进程内零拷贝直调（handler 与 HTTP 路径共用） | P1（挂起） |
+| F1.5 | MCP Server 角色：`:8766/mcp` 监听 + 聚合工具面（特权工具按 L1/L2 裁决逐步开放） | P1（**已落地** 2026-10-13，G1~G5；见 architecture.md 分期表 M1.5 行） |
+| F1.6 | 进程内零拷贝直调（handler 与 HTTP 路径共用） | P1（**未落地**：网关经 `face.client` 复用同一 McpClient 链路，未做进程内直调短路；延后至本地插件高频调用出现实测瓶颈） |
 | F1.7 | 聚合网关 `$ref` 暂存池（形态 A） | P2 |
-| F1.8 | Integration Hub 接线看板 + 跨 App 审计标记 | P2（挂起） |
-| F1.9 | 声明式能力导出：海关过滤只收 `x-mcp-export-to-shared: true` 工具（x- 前缀 + 标准 `readOnlyHint`）；对外 Server 目录 = 过滤后清单；服务端注解仅作建议、客户端 L1/L2 网关终裁；共享池随 tools/list 变更全量刷新（见 architecture.md §8） | P0 |
-| F1.10 | 环路防护：全链路 Trace-ID + hop_count（请求头，硬限 ≤2）+ 总线层环检测 | P0 |
-| F1.11 | 移动端保活：Server 活跃期前台服务；Client 心跳双向覆盖；唤醒 Intent 约定随接缝契约回写 | P1（Server 侧挂起，Client 心跳归 F1.4） |
-| F1.12 | 传输层生命周期：`:8766` 固定端口（被占报错拒绝启动，禁止静默漂移）；ContentProvider 跨 App 端口发现（契约扩展）；网络切换重连（积压队列丢弃回告，不重放）；密钥 Keystore 加密存储 | P0（Server 侧挂起：:8766/ContentProvider；网络切换重连与 Keystore 归 Client 侧） |
+| F1.8 | Integration Hub 接线看板 + 跨 App 审计标记 | P2（**未落地**：ops.log 已有 `server=gateway` 入站审计，看板 UI 未做；延后至多插件接入） |
+| F1.9 | 声明式能力导出：海关过滤只收 `x-mcp-export-to-shared: true` 工具（x- 前缀 + 标准 `readOnlyHint`）；对外 Server 目录 = 过滤后清单；服务端注解仅作建议、客户端 L1/L2 网关终裁；共享池随 tools/list 变更全量刷新（见 architecture.md §8） | P0（**口径已定、实现未接线**：唯一实现在 `lib/mcp/tool_router.dart`，生产路由走 `lib/coordinator/tool_router.dart`（**无海关过滤**）。**未接线原因**：现网服务端普遍不下发 annotations，启用即把未打标工具全量过滤、生产功能归零。**启用前置条件**：服务端普遍打标 + 未打标降级口径通告 + 装配层与网关对外目录两处同时过过滤。处置见 pending-confirm SA-Q6） |
+| F1.10 | 环路防护：全链路 Trace-ID + hop_count（请求头，硬限 ≤2）+ 总线层环检测 | P0（**已落地** 2026-10-15，SA-Q5 双保险：`lib/gateway/gateway_loop_guard.dart`——入站 Trace-ID 在途集合（引用计数）+ `hop_count` 上限 2 熔断 + TTL 300s 惰性驱逐，阻断回 JSON-RPC `-32000`；「总线层环检测」= SessionManager 仲裁部分经 SA-Q1 裁决**显式关闭**，触发条件见 architecture.md §15） |
+| F1.11 | 移动端保活：Server 活跃期前台服务；Client 心跳双向覆盖；唤醒 Intent 约定随接缝契约回写 | P1（**部分落地**：网关前台服务 + WifiLock/WakeLock 已落（G4）；Client 心跳双向覆盖与唤醒 Intent 未落——归 F1.4 / M4-T4，2026-10-15 裁定暂缓至文档收口后） |
+| F1.12 | 传输层生命周期：`:8766` 固定端口（被占报错拒绝启动，禁止静默漂移）；ContentProvider 跨 App 端口发现（契约扩展）；网络切换重连（积压队列丢弃回告，不重放）；密钥 Keystore 加密存储 | P0（**部分落地**：`:8766` 固定端口已落；密钥安全存储已落（`SecureKeyValue`）；**ContentProvider 跨 App 端口发现未落**（改由网关面板展示 Wi-Fi IP 供 PC 配置）；**网络切换重连未落**——归 M4-T4，2026-10-15 裁定暂缓至文档收口后） |
 | F1.13 | Abort 级联：`$/cancelRequest` 下发 + 卡片 `Cancelled` 终态 + 写操作半程明示；L2 拦截即结算当前流（`finish_reason: tool_calls`），确认后新 Turn 续推——用户交互不占用连接生命周期 | P0 |
 | F1.14 | MCP Resources + Subscriptions：只读数据走 Resource URI（`resources/list`、`read`）上下文注入；`resources/subscribe` 感知服务端数据变更（**依赖 goodshare 契约扩展**） | P1 |
 | F1.15 | `$/progress` 进度通告：progressToken 下发 + 卡片 `Running(progress/total)` 态 + 无更新超阈值提示疑似卡死 | P1 |
-| F1.16 | Sampling 反向推理：`sampling/createMessage` + Server 级配额上限（M2+，依赖端侧引擎稳定） | P2（挂起） |
-| F1.17 | 同机接入准入：回环与局域网**均强制** Bearer Token；Binder UID + 签名 SHA-256 白名单 → TTL Session Token，未授权 403（五轮评审，P0） | P0（挂起） |
+| F1.16 | Sampling 反向推理：`sampling/createMessage` + Server 级配额上限（M2+，依赖端侧引擎稳定） | P2（**部分落地**：Client 侧 sampling 反向闭环已落（M3-T1）并接入网关反向在途表；**Server 级配额上限未落**——延后至外部客户端高频调用场景出现） |
+| F1.17 | 同机接入准入：回环与局域网**均强制** Bearer Token；Binder UID + 签名 SHA-256 白名单 → TTL Session Token，未授权 403（五轮评审，P0） | P0（**部分落地**：Bearer Token 强制校验已落（G3，未授权 401）；Binder UID + 签名 SHA-256 白名单已落（§1.2.6 信任卡片 + 同签名零弹窗）；**TTL Session Token 未落**——现为长期配对 Token，延后至多 PC 共用 / 需要会话级吊销的场景） |
 | F1.18 | 能力协商与降级垫片：initialize capabilities 协商；Tier 2（Vanilla MCP）自动 Polyfill——无 resources/progress/prompts/订阅各自默认降级，不抛异常 | P0 |
 | F1.19 | SessionManager：会话粒度隔离（缓存区/激活工具表/滑动窗口/暂存池归属）；前台优先 + 后台有界队列（深度 4 可配）超限 429 | P0（后台队列仲裁挂起，随 Server 角色；会话隔离在 Client 侧生效） |
 
@@ -110,4 +113,4 @@ updated: 2026-10-10
 - [x] 平台策略：Android 首发 + 双端纪律 N1（2026-10-10 评审收敛，Linux 无 macOS 为硬约束）
 - [x] JIT 激活动作按 L1（静默 + 药丸）；已激活 Schema 预算默认 1200 Tokens 可配，超限精简模式
 - [x] 端侧降级判据定量初值（见 F2.4）
-- [ ] P0 集合确认（2026-10-10 裁决后更新：F1.12/F1.17 随 Server 角色挂起移出）：F1.1-F1.3 + F1.9/F1.10/F1.13/F1.18/F1.19（Client 侧） + F2.1/F2.2 + F2.5/F2.6 + F4.1/F4.4/F4.7 + F5.1
+- [x] P0 集合确认（2026-10-15 对账更新：Server 侧已随 TC5~TC8 解冻，F1.12/F1.17 部分落地，F1.5/F1.10 已落地）：F1.1~F1.3 + F1.9/F1.10/F1.13/F1.18/F1.19（Client 侧）+ F1.5/F1.12/F1.17（Server 侧）+ F2.1/F2.2 + F2.5/F2.6 + F4.1/F4.4/F4.7 + F5.1

@@ -100,6 +100,11 @@ class _FakeTransport implements McpTransport {
   }
 
   @override
+  @override
+  Future<StreamedTransportResponse> getStream() =>
+      throw UnsupportedError('test transport 不支持 GET SSE 订阅通道');
+
+  @override
   void close() {}
 }
 

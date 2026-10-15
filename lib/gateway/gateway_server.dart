@@ -137,7 +137,17 @@ class McpGatewayServer {
       final args = (params is Map && params['arguments'] is Map)
           ? Map<String, Object?>.from(params['arguments'] as Map)
           : <String, Object?>{};
-      return _toolsCall(req, id, sessionId, name, args, sse);
+      // 环路防护入站上下文（A2 止血）：Header 优先于 `params._meta`（Header 是
+      // 传输层事实源，`_meta` 供经其他 goodhub 网关转发而来的请求回带深度）。
+      final meta = (params is Map && params['_meta'] is Map)
+          ? Map<String, Object?>.from(params['_meta'] as Map)
+          : const <String, Object?>{};
+      final traceId = req.headers.value('x-mcp-trace-id') ??
+          (meta['traceId'] is String ? meta['traceId']! as String : null);
+      final hopCount =
+          meta['hopCount'] is num ? (meta['hopCount']! as num).toInt() : 0;
+      return _toolsCall(req, id, sessionId, name, args, sse,
+          traceId: traceId, hopCount: hopCount);
     }
     return _jsonRpcError(req, id, -32601, 'method not found: $method',
         sessionId: sessionId);
@@ -146,7 +156,8 @@ class McpGatewayServer {
   /// tools/call：SSE 模式流式回（progress 通知帧 + 终帧 result）；JSON 模式
   /// 等待完成后单 JSON 返回。两路共用同一 [GatewayHandler.toolsCall]。
   Future<void> _toolsCall(HttpRequest req, Object id, String sessionId,
-      String name, Map<String, Object?> args, bool sse) async {
+      String name, Map<String, Object?> args, bool sse,
+      {String? traceId, int hopCount = 0}) async {
     final resp = req.response;
     if (sse) {
       resp.headers.contentType =
@@ -166,8 +177,29 @@ class McpGatewayServer {
       });
     }
 
-    final r =
-        await handler.toolsCall(name: name, arguments: args, onProgress: onProgress);
+    final r = await handler.toolsCall(
+      name: name,
+      arguments: args,
+      onProgress: onProgress,
+      traceId: traceId,
+      hopCount: hopCount,
+    );
+    final code = r.errorCode;
+    if (code != null) {
+      // 环路阻断走协议级 error 帧（PC 客户端按错误处理，不会当工具失败重试
+      // 而二次入环）。SSE 模式此时流头已写，仍以标准 error 帧收尾并关闭。
+      if (sse) {
+        _sseFrame(resp, {
+          'jsonrpc': '2.0',
+          'id': id,
+          'error': {'code': code, 'message': r.content},
+        });
+        await resp.close();
+      } else {
+        _jsonRpcError(req, id, code, r.content, sessionId: sessionId);
+      }
+      return;
+    }
     final result = {
       'content': [
         {'type': 'text', 'text': r.content},

@@ -14,6 +14,9 @@ analyzer:
     - build/**
     - android/**
     - ios/**
+    # 待复活资产（SA-Q3 归档）：端侧模型管理链，端侧推迟拍板未翻转前不进
+    # analyze/覆盖率口径；复活时删本行并移回 lib/llm/。
+    - archive/**
 
 linter:
   # The lint rules applied to this project can be customized in the

@@ -35,6 +35,7 @@ import '../coordinator/skill_registry.dart';
 import '../coordinator/tool_breaker.dart';
 import '../coordinator/discovery_executor.dart';
 import '../coordinator/tool_router.dart';
+import '../mcp/connection_manager.dart';
 import '../core/errors/mcp_error.dart';
 import '../llm/cloud/byok_store.dart';
 import '../llm/cloud/cloud_llm.dart';
@@ -62,6 +63,24 @@ import 'memory_board_page.dart';
 
 /// 连接配置持久化（T6-2）：改走 [ServerEndpointStore]（多端点 JSON + apiKey
 /// 走安全存储）；旧单端点 SharedPreferences 由该 store 在首次 load 时迁移。
+
+/// T4-5 收官：工具执行按 server 路由到对应 [McpConnection.guardExecute]（离线
+/// 窗口内整体丢弃、不重放）；无 server 前缀的工具（JIT 元工具/本地工具）透传。
+class _GuardedExecutor implements ToolExecutor {
+  _GuardedExecutor(this.connections, this.router, this.inner);
+
+  final Map<String, McpConnection> connections;
+  final ToolRouter router;
+  final ToolExecutor inner;
+
+  @override
+  Future<ToolExecutionResult> execute(AssembledToolCall call) {
+    final sid = router.serverFor(call.name);
+    final conn = sid != null ? connections[sid] : null;
+    if (conn != null) return conn.guardExecute(() => inner.execute(call));
+    return inner.execute(call);
+  }
+}
 
 class ChatPage extends StatefulWidget {
   const ChatPage({super.key});
@@ -724,6 +743,7 @@ class _ChatPageState extends State<ChatPage> {
         ? _titleFrom(prompt)
         : _conversationTitle;
     RefStore? refStore;
+    final connections = <String, McpConnection>{}; // T4-5 收官：每 server 一条韧性连接（函数作用域，finally 可见）
     try {
       final memoryStore = MemoryStore.underSupportDir(support.path);
       // T6-2 多连接池：每个端点一个 client + face（协商 + 能力目录）。
@@ -759,6 +779,7 @@ class _ChatPageState extends State<ChatPage> {
         await face.listTools();
         faces[ep.id] = face;
         clients[ep.id] = client;
+        connections[ep.id] = _startConnection(ep.id, client, face);
         summaries[ep.id] =
             '${caps.serverName ?? ep.name} ${caps.isTier1 ? 'Tier 1' : 'Tier 2'}';
       }
@@ -801,6 +822,7 @@ class _ChatPageState extends State<ChatPage> {
           await face.listTools();
           faces[info.serverId] = face;
           clients[info.serverId] = client;
+          connections[info.serverId] = _startConnection(info.serverId, client, face);
           summaries[info.serverId] =
               '${caps.serverName ?? info.serverTitle} (本地) ${caps.isTier1 ? 'Tier 1' : 'Tier 2'}';
           _add(
@@ -960,9 +982,12 @@ class _ChatPageState extends State<ChatPage> {
         onActivation: (id) =>
             _add(TrackNote('✓ 已激活 $id 的工具', danger: false)),
       );
+      // T4-5 收官：执行链经 _GuardedExecutor 路由——server 工具调用先过对应
+      // McpConnection.guardExecute（离线窗口整体丢弃、不重放），JIT/本地工具透传。
+      final guarded = _GuardedExecutor(connections, router, discovery);
       final loop = AgentLoop(
         engine: engine,
-        executor: discovery,
+        executor: guarded,
         blockDelegate: _ChatBlock(this),
         refStore: refStore,
         refServerId: router.serverIds.isNotEmpty
@@ -1083,11 +1108,43 @@ class _ChatPageState extends State<ChatPage> {
       // P0 尾帧铁律（stream-perf §3）：快照与终态渲染前强制清空流控缓冲——
       // 覆盖正常收尾 / Abort / 异常三条路径，缓冲期内到达的尾帧不得丢失。
       _streamBuf.flush();
+      for (final c in connections.values) {
+        c.stop(); // T4-5 收官：停心跳/监听，无泄漏
+      }
       await refStore?.expireAll(); // §9：Session 结束直清临时文件
       refStore?.dispose();
       await _persistConversation(); // T3b：Run 收尾快照（含 Cancelled 终态）
       if (mounted) setState(() => _running = false);
     }
+  }
+
+  /// T4-5 收官：为某 server 建韧性连接并接线断连/积压/资源变更三类回调 → 操作轨
+  /// TrackNote；心跳/重连由 [McpConnection.start] 接管。返回已 start 的连接。
+  McpConnection _startConnection(String serverId, McpClient client, McpToolFace face) {
+    final conn = McpConnection(client: client, face: face, serverId: serverId)
+      ..onDisconnectReport = (r) {
+        if (!mounted) return;
+        _add(TrackNote(
+          '⚠ 连接中断，在途 ${r.inFlightCancelled} 个请求已取消，不重放',
+          danger: true,
+        ));
+      }
+      ..onBacklogReport = (r) {
+        if (!mounted) return;
+        _add(TrackNote(
+          '⚠ 连接中断，积压 ${r.droppedCount} 个请求已丢弃，不重放',
+          danger: true,
+        ));
+      }
+      ..onResourceUpdated = (uri) {
+        if (!mounted) return;
+        _add(TrackNote(
+          '${McpConnection.resourceStaleMessage}（$uri）',
+          danger: false,
+        ));
+      };
+    conn.start();
+    return conn;
   }
 
   /// D4 判定触发：在途卡转 stuck（Amber 提示），不自动中止（§10）。

@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-11
+updated: 2026-10-15
 ---
 
 # GoodHub 产品架构 · 双角色 MCP 智能中枢
@@ -14,7 +14,11 @@ GoodHub = **随身双工 MCP 智能中枢（Dual-Role MCP Host & Peer Node）**�
 - 对下挂载各业务 App、对上编排混合模型（端侧 + 云端）——**调度客户端（Host / Client）**
 - 向外部与本地暴露系统特权能力与记忆事实——**标准服务端（MCP Server）**
 
-> **2026-10-10 裁决（用户）**：Server 角色（`:8766` 对外暴露 + 特权工具）**暂缓不做**——当前无真实接入场景，依赖与结构边界不清晰。**服务对象澄清**：Server 端对接的是**桌面 AI 平台（MCP 客户端，如 Claude Desktop / Cursor / ZCode）**，非其他 MCP server app。未来若真正需要，交互形态走「**桌面平台先记录待完成 → 宿主批量处理**」（见 [future-considerations.md](future-considerations.md) FC6），**而非实时直调宿主功能**。Client 角色为 M1+ 主线；本文 Server 相关章节（§1 Server 能力 / §11 / §13 / §15 调度仲裁 / §16 中 Server 侧项）降级为**预案设计**，仅在 FC6 锚点触发时生效。N7 PII 围栏仍生效（对象是客户端出站云端路径，与 Server 角色无关）。
+> ~~**2026-10-10 裁决（用户）**：Server 角色（`:8766` 对外暴露 + 特权工具）**暂缓不做**——当前无真实接入场景，依赖与结构边界不清晰；交互形态走「桌面平台先记录待完成 → 宿主批量处理」（FC6），而非实时直调宿主功能。~~ **该裁决已于 2026-10-12 翻转，仅作历史留痕。**
+>
+> **2026-10-12 解冻（TC5~TC8，用户拍板；现行口径）**：GoodHub 升为 **Host + Gateway 双角色**——对内经 Binder（AIDL）调度本地 App 插件，对外起 **Streamable HTTP 网关 `:8766/mcp`**（协议 2025-06-18，路径统一 `/mcp`）聚合暴露给**桌面 AI 平台（MCP 客户端，如 Claude Desktop / Cursor / ZCode）**，PC 侧单入口；聚合范围 = 本地 Binder 插件 + 远端 HTTP server 全量。本文 Server 相关章节（§1 Server 能力 / §11 / §13 / §15 调度仲裁 / §16 中 Server 侧项）**由「预案设计」转为已生效**。实现见 [design/thirdconnect.md](../design/thirdconnect.md) §7 与 `lib/gateway/`（G1~G5 于 2026-10-13 设备 e2e 与 PC 真机连调通过：AtomCode LAN 直连完成 initialize / tools/list 聚合 / tools/call 实调）。
+>
+> **配套状态（2026-10-15 对账回填）**：① FC6「待完成队列」形态**已被实时网关取代**（见 [future-considerations.md](future-considerations.md) FC6 注记）；② 环路防护（环检测）**已落地**（F1.10 + §13 注记）；③ SessionManager 仲裁与有界队列 429 **显式关闭**（见 §15 与待拍板清单，含触发条件）；④ TC13 双进程 `:gateway` **未落地**，现状单进程（见 §11 注记）。N7 PII 围栏仍生效，且已扩展至网关出站路径（PII 出站 fail-closed 遮蔽）。
 
 ## 六层功能架构（草案）
 
@@ -110,7 +114,7 @@ flowchart TB
 | 期 | 内容 | 依赖 |
 |---|---|---|
 | M1（当前） | MCP Client + 任务闭环（claim/touch/apply——goodshare 接缝契约 §3 定义的任务原语） | 契约已定（goodshare ai-app-split.md） |
-| M1.5 | **暂缓（2026-10-10 裁决）**：原 MCP Server 角色（`:8766` + 特权工具 + UID 鉴权 + 目录 Facade）不做——服务对象为桌面 AI 平台（MCP 客户端），交互形态改「桌面平台先记录待完成 → 宿主批量处理」（FC6）；N7 PII 围栏改随 M2 coordinator 云端出站链路落地 | M1 |
+| M1.5 | **已落地（2026-10-12 解冻，TC5~TC8 → G1~G5）**：MCP Server/Gateway 角色——`:8766/mcp` Streamable HTTP 单入口 + 本地 Binder 插件与远端 HTTP server 全量聚合 + Bearer Token 鉴权 + L1/L2 确认卡（含 FSI 醒目呼叫与 45s 熔断）+ PII 出站遮蔽 + ops.log 入站审计 + per-server 背压（上限 4 排队）+ `tools/list_changed` 下行热同步；N7 PII 围栏随 M2 coordinator 云端出站链路已落地 | M1 |
 | M2 | 混合引擎 + L1/L2 网关 + 熔断 + **拒绝反馈分支** + N7 PII 围栏（云端出站）+ 降级判据实测调参 + 端侧约束解码实证 + **设备分级探针 + 环境门禁** + 上下文治理（滑动窗口/摘要化） | M1（原 M1.5 工具面依赖随 Server 角色暂缓解除） |
 | M2.5 | 三级 Skill + `$ref` 暂存池（形态 A）+ CoW 版本告警 + **Resources URI 合流 + Progress 通告 + Tier 2 降级垫片** | prompts/resources 接缝扩展 |
 | M3 | UI 全量（~~形态 B 已废除~~）+ **Subscriptions + Sampling（配额制）** | Skill 上线后的真实需求验证 |
@@ -173,6 +177,7 @@ flowchart TB
 ### 11. 进程模型与系统权限（Process & Sandbox Constraints，2026-10-10 二轮评审补齐）
 
 - **单进程架构（硬约束，六轮修正并发措辞）**：GoodHub 全组件（UI/前台服务/Server 监听）严格**单 OS 进程**，禁用 `:remote` 独立进程——跨进程并发使串行写队列失效。**进程内并发分层（六轮评审纠偏）**：主 Isolate 串行约束仅施于「文件写操作 + SessionManager 状态机」；PII 正则密集运算、50MB 临时文件解析、JSONSchema 校验等无状态 CPU 密集任务**必须走 Worker Isolate / `compute()`**——全塞主 Isolate 会卡死 UI（ANR 风险）。
+- **2026-10-15 对账注记（双进程）**：thirdconnect TC13 规划的 `:gateway` 独立进程物理隔离**尚未落地**——`AndroidManifest.xml` 中 `GatewayForegroundService` 未声明 `android:process`，现状仍是单进程，与本硬约束一致（非冲突）。**延后理由**：UI 进程 OOM / 闪退牵连 PC 连接的真实问题尚未出现；**触发条件**：真机复现「UI 崩溃导致 PC 连接断」后按 TC13 拆分（届时本硬约束须同步修订）。
 - **跨 App 沙盒不共享**：goodshare 与 goodhub 不共享文件系统沙盒（Android 沙盒隔离本就不允许），数据流转只走 MCP 协议——任何「共享目录直读」的想法直接砍掉，写入接缝契约精神。
 - **日志轮转**：`ops.log` 单文件上限 10MB，滚动备份 `ops.log.1`（保留 1 代），启动时清理超限旧档。
 
@@ -230,6 +235,7 @@ flowchart TB
 ### 15. 会话与并发模型（SessionManager，2026-10-10 五轮评审：采纳）
 
 - **会话为隔离粒度**：每会话独立持有——前缀缓存区、JIT 已激活工具表、滑动窗口历史、暂存池归属（§9 TTL 挂会话）；**共享**的只有 Server 连接池与总线。
+- **2026-10-15 显式关闭（SA-Q1 裁决 b）**：具名 `SessionManager` 仲裁器**本轮不做**——现状会话态分散在 `chat_page` / `gateway_server`（会话表与豁免集）/ `skill_registry`（激活集），单机自用 + 单 PC 会话场景下无并发隔离的实测需求，提前建属早产。**触发条件**：多客户端并发接入（≥2 个 PC 会话同时经 `:8766` 调用，或同一会话并发工具流出现态串扰）→ 解冻并按本节口径收编为具名仲裁器。在此之前，网关侧并发隔离由 per-server 背压（`gateway_backpressure`，上限 4 排队）与环路防护（`gateway_loop_guard`）承担。
 - **调度仲裁（六轮评审：补重入穿透）**：前台 UI 会话优先；后台外部 RPC 请求进入有界队列（默认深度 4，可配），超限返回 `429 Too Many Requests`——**否决并发执行**（单进程单 Isolate 约束 + LLM 客户端并发上限，且上下文按会话隔离后无并发必要）。**例外**：与前台会话同 Trace-ID 且 hop ≤2 的重入请求内联执行不排队（见 §1 环路防护——否则级联死锁）。
 - **Sampling 隔离（六轮评审：补 Ephemeral Session）**：`sampling/createMessage` 请求强制作为**独立临时会话**运行——无记忆沙盒注入、无 UI 轨迹渲染、独立 Token 配额扣减；严禁与用户前台对话上下文混淆（否则构成外部 App 的上下文注入面）。
 
@@ -246,7 +252,7 @@ flowchart TB
 - [x] ~~形态 B 存废~~ → **已定（评审终裁）**：正式废除，编排全量走 Skill + 形态 A
 - [x] ~~双端策略确认~~ → **建议拍板采纳**：Android 首发 + 双端纪律 N1，iOS 壳工程后接入（Linux 无 macOS 为硬约束）
 - [x] ~~端侧降级触发判据~~ → **已定初值**：断网即切（模型就绪）/ 连接 >5s / 首 Token >8s / 连续 2 次 5xx/429；M2 实测调参
-- [x] ~~JIT 激活权限级与预算~~ → **已定**：L1 静默 + 药丸；已激活 Schema 预算默认 1200 Tokens（用户可配），超限精简模式（name + description 首句）
+- [ ] ~~JIT 激活权限级~~ → **已定并实现**：L1 静默 + 药丸（T6 元工具经 `discovery_executor` 落地）。**预算部分仅定口径、代码未实现**：已激活 Schema 预算默认 1200 Tokens（用户可配）与「超限精简模式（name + description 首句）」——`lib/` 无对应实现（M4-T6 剩余自注，见 `docs/design/m4.md` §T6 剩余）。**缺口影响**：多 Server 全量激活时 Schema 可能挤占上下文预算，现靠 JIT 聚焦（`use_server`）人工规避
 - [x] ~~`export_to_shared` 字段规范~~ → **已定**：`x-mcp-export-to-shared`（x- 前缀）+ `readOnlyHint`；缓存失效语义随契约回写
 - [ ] Server 端口策略（:8766 固定 + 被占报错 + ContentProvider 端口发现）与局域网鉴权 + Doze 唤醒机制 → 回写 goodshare 仓 `ai-app-split.md`（接缝扩展）
 - [ ] goodshare prompts 能力是否实现（Skill 继承前置依赖）
@@ -260,5 +266,10 @@ flowchart TB
 - [x] ~~上下文治理参数初值（滑动窗口 N=6 / 摘要阈值 1000T / max_turns=10）M2 实测调参~~ → **初值维持（2026-10-11 T7）**：云端真模型 Agent Loop 真机通过（step-3.7-flash，2 轮工具环+L2 确认+真写回——短环未触发窗口裁剪，语义由单测钉住）；N=6/1000T 的**调参**需长环/大结果数据，随 M3 双轨消息流真实使用观测，无初值变更证据。另：max_tokens=512 note 内核对推理型云模型偏紧（思维链烧尽输出预算→空产出，已加端侧兜底+可观测上抛），云端预算放宽随 M3
 - [x] ~~端侧硬件门槛实测（RAM ≥6GB 且可用 ≥2.5GB 初值 / CPU+Vulkan 推速 / NPU 加速矩阵）M2 实测项~~ → **已实测（2026-10-11 T7）**：CPH2767/SM8750 全门禁过（11.4GB/3.65GB/90% 充电/温控 0），端侧推理真机闭环；**门槛校准遗留**＝§16 拍板项（Q8 包实测 2.65GB → 可用门槛须 ≥3.5GB 或换 INT4 包）；NPU 加速矩阵随双端策略 M2.5+
 - [ ] Tier 1/Tier 2 能力协商细节与 goodshare 对齐（initialize capabilities 分类清单）→ **核心传输方案已定（2026-10-11 M2.5-D2 拍板，ADR-007）**：progress 走 POST 响应 SSE 帧流（通知夹带帧间、终帧含 result）；分类清单回写随 M2.5-T1 落 goodshare 仓 `ai-app-split.md`（施工设计见 [design/m2-5-skill-refstore.md](../design/m2-5-skill-refstore.md)，goodshare prompts/resources 实现同程，D1 拍板）
+- [x] ~~Server 角色存废~~ → **已解冻并落地（2026-10-12 TC5~TC8；2026-10-15 回填，历史裁决见定位节）**：`:8766/mcp` 聚合网关已生产可用（PC 单入口 + 本地 Binder / 远端 HTTP 全量聚合 + Bearer 鉴权 + L1/L2 卡片 + PII 出站遮蔽 + 入站审计），见 [design/thirdconnect.md](../design/thirdconnect.md) §7；FC6「待完成队列」形态已被实时网关取代
+- [x] ~~环路防护（F1.10）~~ → **已落地（2026-10-15，SA-Q5 双保险）**：入站 `X-Mcp-Trace-Id`（缺失则网关自派）+ 在途 traceId 引用计数集合（`hop_count>0` 且同 traceId 在途 → 判为嵌套回环）+ `hop_count` 上限 2 熔断 + TTL 300s 惰性驱逐 + `try/finally` 必释；落点 `lib/gateway/gateway_loop_guard.dart`，阻断回 JSON-RPC `-32000`
+- [ ] **有界队列与 429 仲裁（显式关闭，SA-Q1 b）**：现网仅 `gateway_backpressure` per-server 并发上限 4 + FIFO 排队，**无 429 拒绝语义**。不做理由：单机自用、ADB/局域网调用并发压力极小。**触发条件**：网关对外正式分发或多 PC 并发接入导致排队可见时延 → 解冻补 429 语义
+- [ ] **SessionManager 会话隔离（显式关闭，SA-Q1 b）**：详见 §15 注记，触发条件 = 多客户端并发接入
+- [ ] **TC13 双进程 `:gateway`（延后，非冲突）**：现状单进程，详见 §11 注记
 
 > 需求清单见 [product/requirements.md](product/requirements.md)（草案，与本文件配套）。

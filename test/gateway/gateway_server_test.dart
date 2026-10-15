@@ -86,6 +86,11 @@ class _FakeTransport implements McpTransport {
       ((req['params'] as Map?)?['name'] as String?) ?? '?';
 
   @override
+  @override
+  Future<StreamedTransportResponse> getStream() =>
+      throw UnsupportedError('test transport 不支持 GET SSE 订阅通道');
+
+  @override
   void close() {}
 }
 

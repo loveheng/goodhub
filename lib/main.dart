@@ -1,5 +1,6 @@
 /// goodhub 应用入口与全局装配（平台实现仅在此装配，coding-standards §1）：
-/// 端侧引擎生命周期策略 + 记忆沙盒启动清扫 + 首页挂载（M4-T3/D9：ChatPage）。
+/// 端侧引擎生命周期策略 + 记忆沙盒启动清扫 + `$ref` 暂存池启动清池（§9）
+/// + 首页挂载（M4-T3/D9：ChatPage）。
 library;
 
 import 'dart:async';
@@ -7,6 +8,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'coordinator/ref_store.dart';
 import 'llm/llm.dart';
 import 'sandbox/memory_store.dart';
 import 'ui/chat_page.dart';
@@ -34,6 +36,7 @@ class _GoodHubAppState extends State<GoodHubApp> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _warmEngine();
     _sweepMemoryStartup();
+    _sweepRefStoreStartup();
   }
 
   @override
@@ -71,6 +74,18 @@ class _GoodHubAppState extends State<GoodHubApp> with WidgetsBindingObserver {
       await MemoryStore.underSupportDir(support.path).sweepStartup();
     } catch (e) {
       debugPrint('[DEGRADE] memory-sweep: $e');
+    }
+  }
+
+  /// §9 启动幂等清池（C-3 定案 + 对账轮 #10 闭环）：`sweepStartupOrphans`
+  /// API 与单测早就在位但从未挂启动——进程被杀（OOM/系统清理）后 TTL GC 停摆，
+  /// 残留 `ref_*.tmp` 孤儿由冷启动兜底全清。维护性动作，失败 DEGRADE 留痕。
+  Future<void> _sweepRefStoreStartup() async {
+    try {
+      final cache = await getTemporaryDirectory();
+      await RefStore(cacheDir: cache, gcInterval: null).sweepStartupOrphans();
+    } catch (e) {
+      debugPrint('[DEGRADE] refstore-sweep: $e');
     }
   }
 
