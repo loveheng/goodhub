@@ -19,6 +19,9 @@ format: v1
 - [x] [2026-10-12] TC4 第三方生态开放度：signature 私有生态（零弹窗）/ 开放第三方信任卡片 / 两者兼容？→ 已确认：两者兼容（signature 私有默认 + 开发者模式开放第三方信任卡片）
 （thirdconnect TC1~TC4 已全确认，决策已落 context/epics/thirdconnect/memory.md，2026-10-12）
 
+## chatmessage（In-band 记忆提取）
+- [x] [2026-10-15] CM1 workspace_states（G3）物理实现偏离 SSOT §9.5：SQLite DDL → 文件型 KV（每会话一 JSON + SequentialFileWriter 原子重写，upsert/remove 同语义，零新依赖；全仓无 sqlite 依赖、MemoryStore 同栈）→ **已按默认建议确认接受（2026-10-15）：SSOT §9.5 已回填实现修正附注；键序范围查询诉求出现时再评估迁 sqlite3（API 不变）**
+
 ## thirdconnect（网关角色，新增）
 - [x] [2026-10-12] TC5 GoodHub 是否新增「MCP 网关 Server」角色（对 PC 暴露聚合 HTTP/SSE :8766，内部经 Binder 调度本地 App）？→ 已确认：是（GoodHub 升为 Host+Gateway 双角色，复用 json_rpc/tool_router，新增 inbound 传输）
 - [x] [2026-10-12] TC6 本地 App 是否一律 Binder-only 插件（不再各自暴露 HTTP MCP 服务，仅 GoodHub 对外暴露）？→ 已确认：A（一律 Binder-only；release 绝对零端口监听，开发期走 ADB 转发/单测，不留运行时网络旁路）

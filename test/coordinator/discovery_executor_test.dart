@@ -152,7 +152,7 @@ void main() {
     });
   });
 
-  group('use_server 聚焦（独占）', () {
+  group('use_server 私有槽位（P1-4 / §1.6：public 常驻 + 单一 private 槽位）', () {
     late ToolRouter router;
     late _FakeExecutor inner;
     late DiscoveryExecutor disc;
@@ -166,64 +166,117 @@ void main() {
             client: McpClient.http(baseUrl: 'http://x/s2/mcp'),
             serverId: 's2',
             schemas: [_schema('search')]),
-      });
+        'p1': _SchemaFace(
+            client: McpClient.http(baseUrl: 'http://x/p1/mcp'),
+            serverId: 'p1',
+            schemas: [_schema('private_a')]),
+        'p2': _SchemaFace(
+            client: McpClient.http(baseUrl: 'http://x/p2/mcp'),
+            serverId: 'p2',
+            schemas: [_schema('private_b')]),
+      }, privateServerIds: const {'p1', 'p2'});
       inner = _FakeExecutor();
       disc = DiscoveryExecutor(
         router: router,
         inner: inner,
-        serverSummaries: const {'s1': 'A', 's2': 'B'},
+        serverSummaries: const {'s1': 'A', 's2': 'B', 'p1': 'P1', 'p2': 'P2'},
       );
     });
 
-    test('聚焦后 focusedSchemas 仅含该服务，并顺带激活', () async {
+    test('public use_server：常驻不聚焦（不踢其他 public），幂等激活', () async {
       router.activatedServers.addAll(['s1', 's2']);
       final res = await disc.execute(AssembledToolCall(
           id: '1', name: DiscoveryExecutor.useServer,
           argumentsJson: jsonEncode({'server_id': 's1'})));
       expect(res.isError, isFalse);
-      expect(router.focusedServer, 's1');
-      final names =
-          router.focusedSchemas().map((s) => s.name).toList();
-      expect(names, ['s1__list_items', 's1__get_item']);
+      expect(router.activePrivateServerId, isNull);
+      // 公共面常驻：全部 public schema 都在（按 (serverId, toolName) 排序）。
+      expect(router.focusedSchemas().map((s) => s.name).toList(), [
+        's1__get_item',
+        's1__list_items',
+        's2__search',
+      ]);
       expect(router.activatedServers, containsAll(['s1', 's2']));
     });
 
-    test('聚焦未激活服务顺带激活（聚焦前后激活集持久）', () async {
-      await disc.execute(AssembledToolCall(
+    test('private use_server：抢占单一槽位，公共前缀不动、只动尾部块', () async {
+      router.activatedServers.addAll(['s1', 's2']);
+      final r1 = await disc.execute(AssembledToolCall(
           id: '1', name: DiscoveryExecutor.useServer,
-          argumentsJson: jsonEncode({'server_id': 's2'})));
-      expect(router.activatedServers, contains('s2'));
-      expect(router.focusedServer, 's2');
+          argumentsJson: jsonEncode({'server_id': 'p1'})));
+      expect(r1.isError, isFalse);
+      expect(router.activePrivateServerId, 'p1');
+      final names1 = router.focusedSchemas().map((s) => s.name).toList();
+      expect(names1,
+          ['s1__get_item', 's1__list_items', 's2__search', 'p1__private_a']);
+
+      // 抢占替换：p2 抢槽后尾部块换成 p2，公共前缀字节不动（缓存命中的关键）。
+      final r2 = await disc.execute(AssembledToolCall(
+          id: '2', name: DiscoveryExecutor.useServer,
+          argumentsJson: jsonEncode({'server_id': 'p2'})));
+      expect(r2.isError, isFalse);
+      expect(router.activePrivateServerId, 'p2');
+      final names2 = router.focusedSchemas().map((s) => s.name).toList();
+      expect(names2.sublist(0, 3),
+          ['s1__get_item', 's1__list_items', 's2__search']);
+      expect(names2.last, 'p2__private_b');
     });
 
-    test('"all" 解除聚焦恢复全量，激活集不变', () async {
+    test('activate_server_tools 私有服务：占槽不进公共激活集', () async {
+      final res = await disc.execute(AssembledToolCall(
+          id: '1', name: DiscoveryExecutor.activateServerTools,
+          argumentsJson: jsonEncode({'server_id': 'p1'})));
+      expect(res.isError, isFalse);
+      expect(router.activePrivateServerId, 'p1');
+      expect(router.activatedServers, isNot(contains('p1')));
+    });
+
+    test('"all" 清空私有槽位，公共面不变', () async {
       router.activatedServers.addAll(['s1', 's2']);
-      router.focusedServer = 's1';
+      router.activePrivateServerId = 'p1';
       final res = await disc.execute(AssembledToolCall(
           id: '1', name: DiscoveryExecutor.useServer,
           argumentsJson: jsonEncode({'server_id': 'all'})));
       expect(res.isError, isFalse);
-      expect(router.focusedServer, isNull);
-      expect(router.focusedSchemas().length,
-          router.activatedSchemas().length);
+      expect(router.activePrivateServerId, isNull);
+      expect(router.focusedSchemas().map((s) => s.name),
+          everyElement(isNot(contains('p1'))));
       expect(router.activatedServers, containsAll(['s1', 's2']));
     });
 
-    test('未聚焦时 focusedSchemas == activatedSchemas', () {
+    test('无槽位时 focusedSchemas == 全部 public（排序）', () {
       router.activatedServers.addAll(['s1', 's2']);
-      expect(router.focusedServer, isNull);
-      expect(router.focusedSchemas().length,
-          router.activatedSchemas().length);
+      expect(router.activePrivateServerId, isNull);
+      expect(router.focusedSchemas().map((s) => s.name).toList(), [
+        's1__get_item',
+        's1__list_items',
+        's2__search',
+      ]);
     });
 
-    test('聚焦 server 独占守卫：其他 server 调用 → isError 引导 use_server("all")',
-        () async {
+    test('私有槽位守卫：未占槽/被抢占 → isError 引导 use_server', () async {
       router.activatedServers.addAll(['s1', 's2']);
-      router.focusedServer = 's1';
       final res = await router.execute(
-          AssembledToolCall(id: '1', name: 's2__search', argumentsJson: '{}'));
+          AssembledToolCall(id: '1', name: 'p2__private_b', argumentsJson: '{}'));
       expect(res.isError, isTrue);
       expect(res.content, contains('use_server'));
+
+      // p1 占槽后，p2 调用仍被守卫（单一私有域独占）。
+      router.activePrivateServerId = 'p1';
+      final res2 = await router.execute(
+          AssembledToolCall(id: '2', name: 'p2__private_b', argumentsJson: '{}'));
+      expect(res2.isError, isTrue);
+      expect(res2.content, contains('抢占'));
+    });
+
+    test('private 槽位占守卫放行本域：不再命中槽位守卫文案', () async {
+      router.activePrivateServerId = 'p1';
+      final res = await router.execute(
+          AssembledToolCall(id: '1', name: 'p1__private_a', argumentsJson: '{}'));
+      // _SchemaFace 未覆写 execute，放行后走真实 face 传输（结果形态不定）；
+      // 断言关键：不再是槽位守卫的引导文案（未被拦截）。
+      expect(res.content, isNot(contains('私有槽位')));
+      expect(res.content, isNot(contains('use_server')));
     });
 
     test('未知 server_id → isError 不抛', () async {
@@ -242,14 +295,14 @@ void main() {
       expect(r2.isError, isTrue);
     });
 
-    test('use_server 本身不被独占守卫拦截（聚焦态可切换/恢复）', () async {
-      router.activatedServers.add('s1');
-      router.focusedServer = 's1';
+    test('use_server 在槽位占用态可切换/清空（元工具本身不被守卫拦截）',
+        () async {
+      router.activePrivateServerId = 'p1';
       final res = await disc.execute(AssembledToolCall(
           id: '1', name: DiscoveryExecutor.useServer,
           argumentsJson: jsonEncode({'server_id': 'all'})));
       expect(res.isError, isFalse);
-      expect(router.focusedServer, isNull);
+      expect(router.activePrivateServerId, isNull);
     });
   });
 }

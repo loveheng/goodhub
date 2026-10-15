@@ -81,6 +81,58 @@ void main() {
         throwsA(isA<CloudProtocolException>()),
       );
     });
+
+    test('cacheControl：System 带断点 → system 升级块数组挂 ephemeral（P1-3）', () {
+      final body = buildAnthropicBody(
+        const CloudChatRequest(
+          messages: [
+            SystemMessage('静态角色+skills', cacheControl: CacheControl.ephemeral),
+            SystemMessage('记忆段'),
+            UserMessage('u'),
+          ],
+        ),
+        model: 'm',
+      );
+      final system = body['system']! as List<Object?>;
+      expect(system, hasLength(2));
+      final flagged = system.first! as Map;
+      expect(flagged['text'], '静态角色+skills');
+      expect(flagged['cache_control'], {'type': 'ephemeral'});
+      expect((system.last! as Map).containsKey('cache_control'), isFalse);
+    });
+
+    test('cacheControl：UserMessage 带断点 → content 升级文本块挂 ephemeral', () {
+      final body = buildAnthropicBody(
+        const CloudChatRequest(
+          messages: [UserMessage('u', cacheControl: CacheControl.ephemeral)],
+        ),
+        model: 'm',
+      );
+      final content = (body['messages']! as List).single! as Map;
+      final block = (content['content']! as List).single! as Map;
+      expect(block, {
+        'type': 'text',
+        'text': 'u',
+        'cache_control': {'type': 'ephemeral'},
+      });
+    });
+
+    test('cacheControl 护栏：断点 >3 开发期 assert 报错（§8.1 改动点 5）', () {
+      expect(
+        () => buildAnthropicBody(
+          const CloudChatRequest(
+            messages: [
+              UserMessage('1', cacheControl: CacheControl.ephemeral),
+              UserMessage('2', cacheControl: CacheControl.ephemeral),
+              UserMessage('3', cacheControl: CacheControl.ephemeral),
+              UserMessage('4', cacheControl: CacheControl.ephemeral),
+            ],
+          ),
+          model: 'm',
+        ),
+        throwsA(isA<AssertionError>()),
+      );
+    });
   });
 
   group('mapAnthropicSse', () {

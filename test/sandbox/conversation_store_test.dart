@@ -37,6 +37,7 @@ void main() {
           },
           {'type': 'toolResult', 'toolCallId': 'c1', 'content': 'r1', 'isError': false},
         ],
+        activePrivateServerId: null,
       );
 
       // 写 → 新实例 → 读回（lessons 装载坑对照形态）
@@ -54,6 +55,32 @@ void main() {
       // 配对完整（恢复前提，§12）：assistant(toolCalls) 后随 toolResult。
       expect(snap.messages[1]['type'], 'assistant');
       expect(snap.messages[2]['type'], 'toolResult');
+    });
+
+    test('activePrivateServerId 随快照保真（绑定 / 显式公共）', () async {
+      final dir = await tmpDir();
+      final store = ConversationStore(dir: dir);
+      final id = await store.create(title: '绑定', activePrivateServerId: 'srv_a');
+      await store.save(
+        id: id,
+        title: '绑定',
+        track: const [],
+        messages: const [],
+        activePrivateServerId: 'srv_a',
+      );
+      final snap = await ConversationStore(dir: dir).load(id);
+      expect(snap?.activePrivateServerId, 'srv_a');
+
+      // 显式公共（空串）也保真
+      await store.save(
+        id: id,
+        title: '绑定',
+        track: const [],
+        messages: const [],
+        activePrivateServerId: '',
+      );
+      final snap2 = await ConversationStore(dir: dir).load(id);
+      expect(snap2?.activePrivateServerId, '');
     });
 
     test('updatedAt 倒序列表；delete 幂等；load 缺失返 null', () async {
@@ -88,7 +115,7 @@ void main() {
     test('save 空 id 拒绝（fail-fast）', () async {
       final store = ConversationStore(dir: await tmpDir());
       expect(
-        () => store.save(id: '', title: 'x', track: const [], messages: const []),
+        () => store.save(id: '', title: 'x', track: const [], messages: const [], activePrivateServerId: null),
         throwsArgumentError,
       );
     });

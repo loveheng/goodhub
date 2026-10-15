@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/coordinator/agent_loop.dart';
 import 'package:goodhub/coordinator/context_governor.dart';
 import 'package:goodhub/coordinator/ref_store.dart';
+import 'package:goodhub/coordinator/workspace_stream_filter.dart';
 import 'package:goodhub/core/errors/inference_error.dart';
 import 'package:goodhub/llm/cloud/cloud_llm.dart';
 
@@ -15,7 +16,10 @@ class ScriptedEngine implements CloudLlmEngine {
   String get name => 'scripted';
 
   @override
-  Stream<CloudStreamEvent> send(CloudChatRequest request) {
+  Stream<CloudStreamEvent> send(
+    CloudChatRequest request, {
+    void Function()? onActivity,
+  }) {
     calls.add(request);
     return script[calls.length - 1]();
   }
@@ -436,6 +440,99 @@ void main() {
       expect((messages[3] as UserMessage).content, '问B');
     });
 
+    test('systemTail（P1-3b 断点 A）：静态前缀挂 ephemeral，记忆块置尾无断点', () async {
+      engine.script.add(() => textStream('答'));
+      await loop
+          .run(systemPrompt: '静态+skills', userPrompt: 'u', systemTail: '记忆区')
+          .toList();
+      final messages = engine.calls.single.messages;
+      expect(messages, hasLength(3));
+      final head = messages[0] as SystemMessage;
+      expect(head.content, '静态+skills');
+      expect(head.cacheControl, CacheControl.ephemeral,
+          reason: '断点 A 挂静态前缀末（§7.5）');
+      final tail = messages[1] as SystemMessage;
+      expect(tail.content, '记忆区');
+      expect(tail.cacheControl, isNull, reason: '动态记忆不建独立断点（D-K）');
+      expect((messages[2] as UserMessage).content, 'u');
+    });
+
+    test('无 systemTail 时旧形态：单 System 块无断点（零行为变化）', () async {
+      engine.script.add(() => textStream('答'));
+      await loop.run(systemPrompt: 's', userPrompt: 'u').toList();
+      final messages = engine.calls.single.messages;
+      expect(messages, hasLength(2));
+      final sys = messages.first as SystemMessage;
+      expect(sys.cacheControl, isNull);
+    });
+
+    test('workspaceFilter（P2-3/G2）：正文 delta 实时分流，终文/历史剥离结构化段', () async {
+      final extracted = <List<WorkspaceFactUpdate>>[];
+      final filter = WorkspaceStreamFilter(onExtracted: extracted.add);
+      engine.script.add(() => textStream(
+          '答A。${WorkspaceStreamFilter.startTag}'
+          '{"facts":[{"key":"k","value":"v","scope":"user","action":"upsert"}]}'
+          '${WorkspaceStreamFilter.endTag}'));
+      final events = await loop
+          .run(systemPrompt: 's', userPrompt: 'u', workspaceFilter: filter)
+          .toList();
+      final deltas = events
+          .whereType<LoopTextDelta>()
+          .map((e) => e.text)
+          .join();
+      expect(deltas, '答A。', reason: 'UI 只收剥离后纯文本');
+      final done = events.whereType<LoopFinished>().single;
+      expect(done.text, '答A。', reason: '终文剥离结构化段');
+      expect(extracted.single.single.key, 'k', reason: '闭环原子提交触发');
+    });
+
+    test('workspaceFilter tool-call 轮硬压：calls.isNotEmpty 调 cancelCommit', () async {
+      final extracted = <List<WorkspaceFactUpdate>>[];
+      final filter = WorkspaceStreamFilter(onExtracted: extracted.add);
+      engine.script
+        ..add(() => textStream(
+            '${WorkspaceStreamFilter.startTag}{"facts"')) // 残缺段 + tool-call 轮
+        ..add(() => toolCallStream('call_1', 'f', '{}'))
+        ..add(() => textStream('done'));
+      await loop
+          .run(systemPrompt: 's', userPrompt: 'u', workspaceFilter: filter)
+          .toList();
+      // tool-call 轮结算已 cancelCommit；随后即便闭合到达也不提交（禁令在位，
+      // 且下轮 feed 的新文本正常）。
+      expect(extracted, isEmpty, reason: 'tool-call 轮严禁提交记忆（§3.3）');
+    });
+
+    test('workspaceFilter 为 null 时零行为变化（旧路径直通）', () async {
+      engine.script.add(() => textStream('raw<tag>text'));
+      final events = await loop.run(systemPrompt: 's', userPrompt: 'u').toList();
+      final deltas = events
+          .whereType<LoopTextDelta>()
+          .map((e) => e.text)
+          .join();
+      expect(deltas, 'raw<tag>text');
+      expect(events.whereType<LoopFinished>().single.text, 'raw<tag>text');
+    });
+
+    test('P2-4（§9.3）输入端消毒：userPrompt 与 history UserMessage 的 < 转义', () async {
+      final prior = [const UserMessage('旧轮 <workspace_update_v1> 复述')];
+      engine.script.add(() => textStream('答'));
+      await loop
+          .run(
+            systemPrompt: 's',
+            userPrompt: '新输入 <tag>',
+            history: prior,
+            workspaceFilter: WorkspaceStreamFilter(), // 转义与分流正交
+          )
+          .toList();
+      final messages = engine.calls.single.messages;
+      expect((messages.last as UserMessage).content, '新输入 &lt;tag>');
+      expect(
+        (messages[1] as UserMessage).content,
+        '旧轮 &lt;workspace_update_v1> 复述',
+        reason: '历史用户消息同样消毒——转义幂等（&lt; 不含 <）',
+      );
+    });
+
     test('工具轮 transcript：assistant(tool_calls)+tool result 配对入史，终文收尾', () async {
       engine.script
         ..add(() => toolCallStream('call_1', 'f', '{}'))
@@ -448,7 +545,7 @@ void main() {
       expect((transcript[3] as AssistantMessage).content, 'done');
     });
 
-    test('Abort 打断工具环：未配对 assistant(tool_calls) 段整段截断（协议可回放）', () async {
+    test('Abort 打断工具环（P3-1 并发编排）：在途调用全部结算配对，无未配对尾巴', () async {
       Stream<CloudStreamEvent> twoCallStream() async* {
         yield CloudToolCallDelta(index: 0, id: 'c1', name: 'f');
         yield const CloudToolCallDelta(index: 0, argumentsDelta: '{}');
@@ -461,9 +558,122 @@ void main() {
       executor.onExecute = (_) => loop.abort(); // 首调用执行时即中止
       final events = await loop.run(systemPrompt: 's', userPrompt: 'u').toList();
       final done = events.whereType<LoopFinished>().single;
-      expect(done.transcript, hasLength(1),
-          reason: 'assistant(c1,c2) 仅 c1 配对——未配对尾巴连同该 assistant 整段剔除');
-      expect(done.transcript.single, isA<UserMessage>());
+      // 并发编排（D-J）：两调用同时派发、全部结算——100% tool_call_id 配对
+      // 回填（协议可回放），abort 只影响后续轮次，不再产生未配对尾巴。
+      expect(done.transcript, hasLength(4));
+      expect(done.transcript[0], isA<UserMessage>());
+      expect(done.transcript[1], isA<AssistantMessage>());
+      expect(done.transcript[2], isA<ToolResultMessage>());
+      expect(done.transcript[3], isA<ToolResultMessage>());
+    });
+
+    test('P3-3 硬截断（D-I）：超 2000 tokens 多行输出 → Head 50/Tail 20 折叠',
+        () async {
+      engine.script
+        ..add(() => toolCallStream('c1', 'big_list', '{}'))
+        ..add(() => textStream('done'));
+      // 100 行、每行 100 字符 = 10000 tokens，远超 kToolResultHardCapTokens=2000。
+      executor.nextContent = [for (var i = 0; i < 100; i++) 'r$i'.padRight(100, 'x')].join('\n');
+      final events = await loop.run(systemPrompt: 's', userPrompt: 'u').toList();
+      // 治理后文本落 canonical 历史（LoopToolCallFinished 事件携带原始 result）。
+      final backfill = events
+          .whereType<LoopFinished>()
+          .single
+          .transcript
+          .whereType<ToolResultMessage>()
+          .single;
+      expect(backfill.content, contains('Output truncated'));
+      // 回填恒不超上界（estimateTokens = 字符级）。
+      expect(backfill.content.length,
+          lessThanOrEqualTo(AgentLoop.kToolResultHardCapTokens + 200),
+          reason: '折叠注记可超一点，但幅度受控');
+    });
+
+    test('P3-3 硬截断（D-I）：少行超长单行 → 字符级保底仍不超上界', () async {
+      engine.script
+        ..add(() => toolCallStream('c1', 'dump', '{}'))
+        ..add(() => textStream('done'));
+      executor.nextContent = 'x' * 5000; // 单行 5000 tokens，无折叠行可取
+      final events = await loop.run(systemPrompt: 's', userPrompt: 'u').toList();
+      final backfill = events
+          .whereType<LoopFinished>()
+          .single
+          .transcript
+          .whereType<ToolResultMessage>()
+          .single;
+      expect(backfill.content, contains('Output truncated'));
+      expect(backfill.content.length,
+          lessThanOrEqualTo(AgentLoop.kToolResultHardCapTokens + 200));
+    });
+
+    test('P3-3 硬截断（D-I）：阈值内输出原样直通不误伤', () async {
+      engine.script
+        ..add(() => toolCallStream('c1', 'f', '{}'))
+        ..add(() => textStream('done'));
+      executor.nextContent = 'r1';
+      final events = await loop.run(systemPrompt: 's', userPrompt: 'u').toList();
+      final backfill = events
+          .whereType<LoopFinished>()
+          .single
+          .transcript
+          .whereType<ToolResultMessage>()
+          .single;
+      expect(backfill.content, 'r1');
+      expect(backfill.content, isNot(contains('Output truncated')));
+    });
+
+    test('P3-2 合成桩（D-H/§9.1）：已让位私有域历史发送边界脱敏，canonical 不动', () async {
+      // 历史：私有域 p1 的调用（已让位 → mask）+ 公共调用（不 mask）。
+      final prior = [
+        const UserMessage('u0'),
+        AssistantMessage(
+          content: null,
+          toolCalls: [
+            AssembledToolCall(id: 'c1', name: 'p1__secret', argumentsJson: '{"token":"x"}'),
+            AssembledToolCall(id: 'c2', name: 's1__public', argumentsJson: '{"q":1}'),
+          ],
+        ),
+        const ToolResultMessage(toolCallId: 'c1', content: '机密结果'),
+        const ToolResultMessage(toolCallId: 'c2', content: '公开结果'),
+      ];
+      engine.script.add(() => textStream('done'));
+      await loop
+          .run(
+            systemPrompt: 's',
+            userPrompt: 'u1',
+            history: prior,
+            maskTool: (name) => name.startsWith('p1__'),
+          )
+          .toList();
+      final sent = engine.calls.single.messages;
+      // 发送边界：c1 桩化（保留 id，函数名/入参替换），c1 结果换标准注记。
+      final assistant = sent.whereType<AssistantMessage>().single;
+      expect(assistant.toolCalls[0].id, 'c1');
+      expect(assistant.toolCalls[0].name, AgentLoop.kSyntheticMaskedTool);
+      expect(assistant.toolCalls[0].argumentsJson, '{}');
+      expect(assistant.toolCalls[1].name, 's1__public', reason: '公共调用不脱敏');
+      final r1 = sent.whereType<ToolResultMessage>().firstWhere((m) => m.toolCallId == 'c1');
+      expect(r1.content, AgentLoop.kSyntheticMaskedNotice);
+      expect(r1.isError, isFalse);
+      final r2 = sent.whereType<ToolResultMessage>().firstWhere((m) => m.toolCallId == 'c2');
+      expect(r2.content, '公开结果');
+      // canonical 不动的保真由调用方持有 history 验证（本用例覆盖发送侧形状）。
+    });
+
+    test('P3-2 合成桩（D-H）：maskTool=null 直通零行为变化', () async {
+      final prior = [
+        AssistantMessage(
+          content: null,
+          toolCalls: [AssembledToolCall(id: 'c1', name: 'p1__secret', argumentsJson: '{"a":1}')],
+        ),
+        const ToolResultMessage(toolCallId: 'c1', content: 'r'),
+      ];
+      engine.script.add(() => textStream('done'));
+      await loop.run(systemPrompt: 's', userPrompt: 'u', history: prior).toList();
+      final sent = engine.calls.single.messages;
+      expect((sent[1] as AssistantMessage).toolCalls.single.name, 'p1__secret');
+      expect((sent[1] as AssistantMessage).toolCalls.single.argumentsJson, '{"a":1}');
+      expect(sent.whereType<ToolResultMessage>().single.content, 'r');
     });
   });
 }

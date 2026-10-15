@@ -12,7 +12,10 @@ class ScriptedEngine implements CloudLlmEngine {
   String get name => 'scripted';
 
   @override
-  Stream<CloudStreamEvent> send(CloudChatRequest request) {
+  Stream<CloudStreamEvent> send(
+    CloudChatRequest request, {
+    void Function()? onActivity,
+  }) {
     calls.add(request);
     return script[calls.length - 1]();
   }

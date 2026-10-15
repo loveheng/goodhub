@@ -23,6 +23,7 @@ Stream<SseEvent> sendSseRequest({
   required Map<String, String> headers,
   required Map<String, Object?> body,
   Duration connectTimeout = const Duration(seconds: 10),
+  void Function()? onActivity,
 }) async* {
   final req = http.Request('POST', Uri.parse(url))
     ..headers.addAll(headers)
@@ -47,7 +48,7 @@ Stream<SseEvent> sendSseRequest({
       statusCode: resp.statusCode,
     );
   }
-  yield* parseSse(resp.stream.transform(utf8.decoder));
+  yield* parseSse(resp.stream.transform(utf8.decoder), onActivity: onActivity);
 }
 
 /// SSE data / 工具入参等 JSON 文本 → object；形状违规抛

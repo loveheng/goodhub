@@ -19,7 +19,10 @@ class _CapturingEngine implements CloudLlmEngine {
   String get name => 'capturing';
 
   @override
-  Stream<CloudStreamEvent> send(CloudChatRequest request) async* {
+  Stream<CloudStreamEvent> send(
+    CloudChatRequest request, {
+    void Function()? onActivity,
+  }) async* {
     requests.add(request);
     for (final e in script) {
       yield e;

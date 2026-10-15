@@ -667,7 +667,7 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
               children: [
                 Expanded(
                   child: DropdownButtonFormField<LocalPluginInfo?>(
-                    value: _selectedLocal,
+                    initialValue: _selectedLocal,
                     isExpanded: true,
                     decoration: const InputDecoration(
                       labelText: '本地插件（选中则走 Binder，否则走上方 HTTP）',
@@ -1065,7 +1065,10 @@ class _ScriptedEngine implements CloudLlmEngine {
   String get name => 'scripted（联调脚本引擎）';
 
   @override
-  Stream<CloudStreamEvent> send(CloudChatRequest request) async* {
+  Stream<CloudStreamEvent> send(
+    CloudChatRequest request, {
+    void Function()? onActivity,
+  }) async* {
     _turn++;
     if (_turn <= 2) {
       yield CloudToolCallDelta(

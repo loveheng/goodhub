@@ -18,7 +18,10 @@ class _FakeEngine implements CloudLlmEngine {
   String get name => 'fake-engine';
 
   @override
-  Stream<CloudStreamEvent> send(CloudChatRequest request) async* {
+  Stream<CloudStreamEvent> send(
+    CloudChatRequest request, {
+    void Function()? onActivity,
+  }) async* {
     lastRequest = request;
     yield CloudTextDelta(reply);
     yield const CloudDone(finishReason: CloudFinishReason.stop);

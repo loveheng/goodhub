@@ -71,26 +71,35 @@ class CloudUsage {
   final int completionTokens;
 }
 
+/// Prompt Caching 断点标记（P1-3 / SSOT §8.1）：Anthropic 显式
+/// `cache_control:{"type":"ephemeral"}`；OpenAI / DeepSeek 等自动前缀命中
+/// 的 provider 忽略该字段（发字段会 400，客户端不得序列化）。
+enum CacheControl { ephemeral }
+
 /// 会话消息（协议无关形状，各客户端自行映射到 OpenAI/Anthropic 线格式）。
 sealed class CloudChatMessage {
-  const CloudChatMessage();
+  const CloudChatMessage({this.cacheControl});
+
+  /// 缓存断点标记（null = 无断点）。Anthropic：挂到该消息对应内容块；
+  /// 单请求断点总数硬性 ≤3（护栏见 anthropic_chat_client）。
+  final CacheControl? cacheControl;
 }
 
 class SystemMessage extends CloudChatMessage {
-  const SystemMessage(this.content);
+  const SystemMessage(this.content, {super.cacheControl});
 
   final String content;
 }
 
 class UserMessage extends CloudChatMessage {
-  const UserMessage(this.content);
+  const UserMessage(this.content, {super.cacheControl});
 
   final String content;
 }
 
 /// 助手消息：纯文本，或（Agent Loop 多轮态）带成品 tool_calls 的结算消息。
 class AssistantMessage extends CloudChatMessage {
-  const AssistantMessage({this.content, this.toolCalls = const []});
+  const AssistantMessage({this.content, this.toolCalls = const [], super.cacheControl});
 
   final String? content;
   final List<AssembledToolCall> toolCalls;
@@ -129,6 +138,32 @@ class CloudToolSchema {
   /// MCP annotations 原文（如 readOnlyHint）——客户端权限网关的建议值源，
   /// 不进云端请求序列化（客户端本地裁决用，见 coordinator/permission_gateway）。
   final Map<String, Object?>? annotations;
+
+  /// 规范云端序列化（G5 / SSOT §8.2，前缀缓存命中的隐藏前提）：
+  /// ① 一级键插入序固定 `name → description → input_schema`（Dart jsonEncode
+  ///    保 Map 插入序，装配序固定即字节稳定）；
+  /// ② `parametersSchema` 经 [canonicalParameters] 递归字典序归一——上游 MCP
+  ///    返回的 Map 键序不可控，不归一则单条 schema 字节流不恒定、工具缓存即碎；
+  /// ③ [annotations] 不进云端序列化（仅本地裁决用）。
+  Map<String, Object?> toJson() => <String, Object?>{
+        'name': name,
+        'description': description,
+        'input_schema': canonicalParameters(parametersSchema),
+      };
+
+  /// 递归按 key 字典序归一 JSON Schema（Map 键全排序；List 保序——
+  /// `required` / `enum` 等数组语义有序，不可乱序）。
+  static Map<String, Object?> canonicalParameters(Map<String, Object?> schema) =>
+      _sortDeep(schema) as Map<String, Object?>;
+
+  static Object? _sortDeep(Object? v) => switch (v) {
+        final Map m => <String, Object?>{
+            for (final k in m.keys.map((k) => k as String).toList()..sort())
+              k: _sortDeep(m[k]),
+          },
+        final List l => [for (final e in l) _sortDeep(e)],
+        _ => v,
+      };
 }
 
 /// 一次对话推理请求。
@@ -190,5 +225,12 @@ abstract interface class CloudLlmEngine {
   String get name;
 
   /// 流式对话推理。懒执行：监听时才发起请求。
-  Stream<CloudStreamEvent> send(CloudChatRequest request);
+  ///
+  /// [onActivity]：可选的传输层活体回调——底层每收到一帧字节（含 SSE 心跳
+  /// 注释帧）即触发，用于流健康判定（连接是否还活着），不参与工作推进语义
+  /// （D2 正交：心跳 ≠ 进度证据）。
+  Stream<CloudStreamEvent> send(
+    CloudChatRequest request, {
+    void Function()? onActivity,
+  });
 }

@@ -28,7 +28,23 @@ void main() {
     expect(call.preview, 'r1');
     final note = decoded[3] as TrackNote;
     expect(note.text, '✓ 收尾');
-    expect(note.danger, isFalse);
+  });
+
+  test('记忆胶囊（P2-6）往返：字段保真 + 恢复态不接撤销回调（锁定呈现）', () {
+    final capsule = TrackMemoryCapsule(key: 'page_size', value: '20');
+    final entries = <TrackEntry>[
+      capsule,
+      TrackMemoryCapsule(key: 'k2', value: 'v2')..undone = true,
+    ];
+
+    final decoded = TrackEntryCodec.decode(TrackEntryCodec.encode(entries));
+    final c1 = decoded[0] as TrackMemoryCapsule;
+    expect(c1.key, 'page_size');
+    expect(c1.value, '20');
+    expect(c1.undone, isFalse);
+    expect(c1.onUndo, isNull, reason: '恢复历史胶囊不可撤销（锁定同 completer 口径）');
+    final c2 = decoded[1] as TrackMemoryCapsule;
+    expect(c2.undone, isTrue);
   });
 
   test('恢复降级：进行态 call → cancelled +「(会话中断)」（恢复历史无在途工具）', () {

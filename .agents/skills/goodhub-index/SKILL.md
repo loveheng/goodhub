@@ -67,6 +67,7 @@ description: goodhub（AI 宿主 App）的「功能 → 代码落点 + 文档落
 | 自更新（整包/清单/串包防御） | 本仓 `docs/design/self-update.md` | active |
 | Binder 联调评估与修复请求 | 本仓 `docs/design/goodhub-goodshare-binder-eval.md` + `goodshare-binder-poc-fix-request.md` | active（注意：文中引用的 `context/epics/goodhub-local-plugin/` **不存在**，结果回写改投 thirdconnect 域） |
 | 端侧 LLM 设计（LiteRT-LM / FoundationModels） | **本仓不存在**——goodshare 仓 `docs/design/on-device-llm.md`（跨仓只读） | 勿在本仓按此路径引用 |
+| Host 网关架构 · 访问性模型 · 记忆捎带提取（Provider×Tier 解耦 / 聚合反向代理 / In-band `<workspace_update>`） | 本仓 `docs/design/host-gateway-accessibility-memory.md` | active；绑定 epic = `chatmessage`（§3 记忆提取主战场，§1/§2 依赖项） |
 
 ## 命令速查
 

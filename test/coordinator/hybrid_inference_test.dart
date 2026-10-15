@@ -12,7 +12,10 @@ class CapturingEngine implements CloudLlmEngine {
   String get name => 'capture';
 
   @override
-  Stream<CloudStreamEvent> send(CloudChatRequest request) async* {
+  Stream<CloudStreamEvent> send(
+    CloudChatRequest request, {
+    void Function()? onActivity,
+  }) async* {
     lastRequest = request;
     if (next != null) {
       yield CloudTextDelta(next!);

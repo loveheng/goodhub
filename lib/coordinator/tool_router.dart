@@ -34,17 +34,24 @@ const String kToolNamespaceSep = '__';
 }
 
 class ToolRouter implements ToolExecutor {
-  ToolRouter({required Map<String, McpToolFace> faces})
-      : _faces = Map.of(faces);
+  ToolRouter({required Map<String, McpToolFace> faces,
+      Set<String> privateServerIds = const {}})
+      : _faces = Map.of(faces),
+        privateServerIds = Set.of(privateServerIds);
 
   final Map<String, McpToolFace> _faces;
 
+  /// 私有服务 id 集（Provider×Tier 两维，P1-4 / SSOT §1.6）：由装配层按
+  /// `ServerEndpoint.tier` 注入；不在集内 = public（缺省公共，沉默即公共面）。
+  final Set<String> privateServerIds;
+
   /// 已激活 server 集（会话粒度——实例随会话建；JIT 元工具写，T6-3 接线）。
+  /// 新模型下只收 public 挂载；private 走 [activePrivateServerId] 槽位。
   final Set<String> activatedServers = {};
 
-  /// 聚焦 server（JIT 元工具 `use_server` 写；null = 未聚焦全量）。
-  /// 独占语义：聚焦后下发面仅含该 server，execute 拦截其他 server 引导恢复。
-  String? focusedServer;
+  /// 单一私有槽位（D-C）：私有+私有互斥由本槽位构造保证——抢占即替换，无需
+  /// 额外闸门；null = 当前无激活私有域。public 不进槽位（常驻）。
+  String? activePrivateServerId;
 
   int get serverCount => _faces.length;
   List<String> get serverIds => _faces.keys.toList(growable: false);
@@ -78,12 +85,28 @@ class ToolRouter implements ToolExecutor {
         for (final id in activatedServers) ...schemasFor(id),
       ];
 
-  /// 聚焦生效面（T6-3 `use_server`）：聚焦已挂载 server 时仅其 schema，
-  /// 否则等同 [activatedSchemas]（聚焦 server 掉线 → 自动回退全量，不空面）。
+  /// 工具面三段式确定序（P1-4 / SSOT §7.4 / §8.2）：
+  /// `[全部 public 按 (serverId, toolName) 排序] → [单一 active private 尾部]`
+  /// ——公共前缀恒定命中缓存，切换私有域只重排尾部块（meta/skill/memory
+  /// 固定尾由装配层在 router 之外追加）。
   List<CloudToolSchema> focusedSchemas() {
-    final f = focusedServer;
-    if (f == null || !_faces.containsKey(f)) return activatedSchemas();
-    return schemasFor(f);
+    final publics = [
+      for (final id in _faces.keys
+          .where((id) => !privateServerIds.contains(id))
+          .toList()
+            ..sort())
+        ..._sortedSchemasFor(id),
+    ];
+    final priv = activePrivateServerId;
+    if (priv == null || !_faces.containsKey(priv)) return publics;
+    return [...publics, ..._sortedSchemasFor(priv)];
+  }
+
+  /// 单服务 schema 按 toolName 字典序固定（上游 tools/list 返回序不可控）。
+  List<CloudToolSchema> _sortedSchemasFor(String serverId) {
+    final list = schemasFor(serverId).toList()
+      ..sort((a, b) => a.name.compareTo(b.name));
+    return list;
   }
 
   @override
@@ -104,20 +127,27 @@ class ToolRouter implements ToolExecutor {
         isError: true,
       );
     }
-    if (!activatedServers.contains(parsed.serverId)) {
+    if (!privateServerIds.contains(parsed.serverId)) {
+      // public 常驻（§1.6）：仅保留激活集守门（挂载即默认全激活）。
+      if (!activatedServers.contains(parsed.serverId)) {
+        return ToolExecutionResult(
+          content: '服务 ${parsed.serverId} 未激活——'
+              '先调用 activate_server_tools(server_id: "${parsed.serverId}") '
+              '加载其工具，再重试',
+          isError: true,
+        );
+      }
+    } else if (activePrivateServerId != parsed.serverId) {
+      // 私有槽位门控（D-C）：未占槽 / 被其他私有域抢占 → 引导 use_server。
+      final holder = activePrivateServerId;
       return ToolExecutionResult(
-        content: '服务 ${parsed.serverId} 未激活——'
-            '先调用 activate_server_tools(server_id: "${parsed.serverId}") '
-            '加载其工具，再重试',
-        isError: true,
-      );
-    }
-    final focus = focusedServer;
-    if (focus != null && parsed.serverId != focus) {
-      return ToolExecutionResult(
-        content: '当前聚焦服务 $focus（独占模式），'
-            '不可调用 ${parsed.serverId} 的工具——'
-            '用 use_server(server_id: "all") 恢复全量后再试',
+        content: holder == null
+            ? '私有服务 ${parsed.serverId} 未激活——'
+                '用 use_server(server_id: "${parsed.serverId}") 占用私有槽位'
+            : '私有槽位当前由 $holder 占用（单一私有域独占），'
+                '不可调用 ${parsed.serverId}——'
+                '先 use_server(server_id: "${parsed.serverId}") 抢占槽位，'
+                '或 use_server(server_id: "all") 清空',
         isError: true,
       );
     }

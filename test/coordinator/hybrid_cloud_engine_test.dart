@@ -17,7 +17,10 @@ class FakeCloudEngine implements CloudLlmEngine {
   String get name => 'fake-cloud';
 
   @override
-  Stream<CloudStreamEvent> send(CloudChatRequest request) {
+  Stream<CloudStreamEvent> send(
+    CloudChatRequest request, {
+    void Function()? onActivity,
+  }) {
     calls.add(request);
     if (calls.length > script.length) {
       return Stream.error(StateError('脚本耗尽'));
@@ -92,6 +95,14 @@ Stream<CloudStreamEvent> textStream(String s,
 
 Stream<CloudStreamEvent> errorStream(CloudLlmException e) async* {
   throw e;
+}
+
+/// 首 delta 立即可达、间隔 [gap] 后给第二个 delta——用于流内事件间隙阈值测试。
+Stream<CloudStreamEvent> gapStream(Duration gap, String second) async* {
+  yield CloudTextDelta('a');
+  await Future<void>.delayed(gap);
+  yield CloudTextDelta(second);
+  yield const CloudDone(finishReason: CloudFinishReason.stop);
 }
 
 void main() {
@@ -251,6 +262,38 @@ void main() {
     );
     expect(slow.health, CloudHealth.degraded);
     await hang.close();
+  });
+
+  test('流内事件间隙走 interEventGapTimeout（超阈值→降级+端侧兜底）', () async {
+    final c = DegradationController(
+      firstTokenTimeout: const Duration(milliseconds: 500),
+      interEventGapTimeout: const Duration(milliseconds: 30),
+    );
+    final e = HybridCloudEngine(
+      controller: c,
+      cloud: FakeCloudEngine()..script.add(() => gapStream(const Duration(milliseconds: 100), 'b')),
+      onDevice: device,
+    );
+    device.next = 'gap-fb';
+    final events = await e.send(noTools).toList();
+    // 引擎语义「产出优先」：间隙超时前已达的 'a' 照常透传，端侧兜底产出追加在后。
+    expect(events.whereType<CloudTextDelta>().map((d) => d.text).toList(), ['a', 'gap-fb']);
+    expect(c.health, CloudHealth.degraded);
+  });
+
+  test('流内事件间隙在预算内不误杀（合法长停顿照常完成）', () async {
+    final c = DegradationController(
+      firstTokenTimeout: const Duration(milliseconds: 500),
+      interEventGapTimeout: const Duration(milliseconds: 300),
+    );
+    final e = HybridCloudEngine(
+      controller: c,
+      cloud: FakeCloudEngine()..script.add(() => gapStream(const Duration(milliseconds: 100), 'b')),
+      onDevice: device,
+    );
+    final events = await e.send(noTools).toList();
+    expect(events.whereType<CloudTextDelta>().map((d) => d.text).toList(), ['a', 'b']);
+    expect(c.health, CloudHealth.healthy);
   });
 
   test('取消订阅即联动 cancelActive（§10 ①步端侧路径）', () async {

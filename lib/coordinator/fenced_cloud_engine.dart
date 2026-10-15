@@ -82,11 +82,14 @@ class FencedCloudEngine implements CloudLlmEngine {
   String get name => 'fenced(${inner.name})';
 
   @override
-  Stream<CloudStreamEvent> send(CloudChatRequest request) async* {
+  Stream<CloudStreamEvent> send(
+    CloudChatRequest request, {
+    void Function()? onActivity,
+  }) async* {
     final masked = await _maskRequest(request);
     final textRestorer = _session.streamRestorer();
     final argRestorers = <int, PiiStreamRestorer>{};
-    await for (final e in inner.send(masked)) {
+    await for (final e in inner.send(masked, onActivity: onActivity)) {
       switch (e) {
         case CloudTextDelta(:final text):
           final out = textRestorer.push(text);

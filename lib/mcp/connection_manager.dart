@@ -343,10 +343,46 @@ class McpConnection {
     }
   }
 
-  /// 重连后重放订阅（T4-5）：server 重启会清空订阅，[force]=true 按最新
-  /// [listResources] 重发全部 uri（覆盖 server 侧订阅表失效 + 新增资源），并重启
-  /// GET SSE 下行监听（断连时已 [stopNotificationListener]）。
-  Future<void> _resyncSubscriptions() async => _subscribeAllResources(force: true);
+  /// 重连后重放订阅（T4-5）：server 重启会清空其订阅表，重放分两步——
+  /// 1) 先按本地已记录的 [McpClient.subscribedUris] 重发（[force]=true 跳过幂等去重）：
+  ///    这是重放主路径——server 端 `resources/list` 清单未必含客户端手动订阅的 uri，
+  ///    且可能缺 `resources` 数组导致整段中断，故不依赖重列；
+  /// 2) best-effort 重列 server 资源，补订阅客户端尚未订阅的新增 uri（不覆盖主路径）。
+  /// 两步均 best-effort：单条失败仅 [DEGRADE] 留痕，不阻断连接；并重启 GET SSE
+  /// 下行监听（断连时已 [stopNotificationListener]）。
+  Future<void> _resyncSubscriptions() async {
+    try {
+      final known = client.subscribedUris;
+      for (final uri in known) {
+        try {
+          await client.subscribeResource(uri, force: true);
+        } catch (e) {
+          debugPrint('[DEGRADE] mcp-conn: replay subscribe $uri failed: $e');
+        }
+      }
+      try {
+        final fresh = await client.listResources();
+        for (final r in fresh) {
+          final uri = r['uri'];
+          if (uri is String && !known.contains(uri)) {
+            try {
+              await client.subscribeResource(uri, force: true);
+            } catch (e) {
+              debugPrint('[DEGRADE] mcp-conn: subscribe new $uri failed: $e');
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('[DEGRADE] mcp-conn: resync listResources failed: $e');
+      }
+      unawaited(client.startNotificationListener());
+      if (known.isNotEmpty) {
+        debugPrint('[mcp-conn] 已重放 $serverId 的 ${known.length} 个订阅（server 重启后）');
+      }
+    } catch (e) {
+      debugPrint('[DEGRADE] mcp-conn: resync subscriptions failed: $e');
+    }
+  }
 
   /// D19 失效感知 canonical TrackNote（订阅资源数据变更，不自动重读）。
   static const String resourceStaleMessage =

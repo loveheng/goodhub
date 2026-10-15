@@ -186,7 +186,8 @@ class MemoryStore {
         final trimmed = content.trim();
         if (trimmed.isEmpty) throw ArgumentError('记忆条目内容不能为空');
         if (!_scopeRegExp.hasMatch(scope)) {
-          throw ArgumentError('scope 必须为 user 或 srv:<serverId>：$scope');
+          throw ArgumentError(
+              'scope 必须为 user / srv:<id> / session / ws:<convId>：$scope');
         }
         await dir.create(recursive: true);
         final entries = await _readEntries(fileName);
@@ -308,6 +309,74 @@ class MemoryStore {
             .write(_renderFile(kept));
         return true;
       });
+
+  /// G1 keyed upsert（P2-1b / §3.5）：同 key（同 scope）条目整条覆盖——
+  /// 内容替换、锚点 id/scope/keyTag 保留、ts 刷新；无匹配则追加新条目。
+  /// key 以 `key:<k>` 标签锚定（防同义 key 追加膨胀、被预算淘汰——SSOT §3.6）。
+  /// 返回 (entry, isNew)。
+  Future<(MemoryEntry, bool)> upsertFacts(
+    String key,
+    String content, {
+    String scope = 'user',
+  }) =>
+      _enqueue(() async {
+        if (key.isEmpty || key.contains(',') || key.contains('[') || key.contains(']')) {
+          throw ArgumentError('非法语义 key（不得为空或含 , [ ]）：$key');
+        }
+        final trimmed = content.trim();
+        if (trimmed.isEmpty) throw ArgumentError('记忆条目内容不能为空');
+        if (!_scopeRegExp.hasMatch(scope)) {
+          throw ArgumentError(
+              'scope 必须为 user / srv:<id> / session / ws:<convId>：$scope');
+        }
+        final keyTag = '$_keyTagPrefix$key';
+        final entries = await _readEntries(memoryFileName);
+        final idx = entries.indexWhere(
+            (e) => e.scope == scope && e.tags.contains(keyTag));
+        if (idx >= 0) {
+          entries[idx] = MemoryEntry(
+            id: entries[idx].id,
+            scope: entries[idx].scope,
+            tags: entries[idx].tags,
+            ts: _clock().millisecondsSinceEpoch,
+            content: trimmed,
+          );
+          await dir.create(recursive: true);
+          await _memoryWriter.write(_renderFile(entries));
+          return (entries[idx], false);
+        }
+        final entry = MemoryEntry(
+          id: _nextId(entries),
+          scope: scope,
+          tags: {keyTag},
+          ts: _clock().millisecondsSinceEpoch,
+          content: trimmed,
+        );
+        entries.add(entry);
+        await dir.create(recursive: true);
+        await _memoryWriter.write(_renderFile(entries));
+        return (entry, true);
+      });
+
+  /// G1 keyed remove（P2-1b / §3.5）：删除该 key（可选 scope 过滤）条目。
+  /// 返回删除条数（0 = 不存在，幂等）。
+  Future<int> removeFacts(String key, {String? scope}) => _enqueue(() async {
+        if (key.isEmpty) throw ArgumentError('key 不能为空');
+        final keyTag = '$_keyTagPrefix$key';
+        final entries = await _readEntries(memoryFileName);
+        final kept = entries
+            .where((e) =>
+                !(e.tags.contains(keyTag) && (scope == null || e.scope == scope)))
+            .toList();
+        final removed = entries.length - kept.length;
+        if (removed > 0) {
+          await dir.create(recursive: true);
+          await _memoryWriter.write(_renderFile(kept));
+        }
+        return removed;
+      });
+
+  static const _keyTagPrefix = 'key:';
 
   /// user 级全量粉碎（看板危险区，F4.3/F5.3「粉碎」；对 [purgeServerScope]
   /// 注记的归属收口——user 级清空是用户显式行为，不走卸载清扫通道）。
@@ -458,7 +527,11 @@ class MemoryStore {
     r'^<!-- id: (mem_\d+)(?:, scope: (\S+))?, tags: \[([^\]]*)\], ts: (\d+) -->$',
   );
   static final RegExp _idRegExp = RegExp(r'^mem_(\d+)$');
-  static final RegExp _scopeRegExp = RegExp(r'^(user|srv:[A-Za-z0-9_-]+)$');
+  /// scope 写入门槛（G4 / P2-5 扩展）：user + `srv:<id>` + 会话域
+  /// `session` / `ws:<convId>`——会话域事实的落盘主通道是 workspace_states
+  /// （P2-1），此处放行为纵深防御（锚点行可标注会话域而不炸）。
+  static final RegExp _scopeRegExp =
+      RegExp(r'^(user|srv:[A-Za-z0-9_-]+|session|ws:[A-Za-z0-9_-]+)$');
 
   String _renderAnchor(MemoryEntry e) =>
       '<!-- id: ${e.id}, scope: ${e.scope}, tags: [${e.tags.join(',')}], '

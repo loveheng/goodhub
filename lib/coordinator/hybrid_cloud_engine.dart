@@ -76,7 +76,10 @@ class HybridCloudEngine implements CloudLlmEngine {
       : '混合引擎 · ${cloud!.name}';
 
   @override
-  Stream<CloudStreamEvent> send(CloudChatRequest request) async* {
+  Stream<CloudStreamEvent> send(
+    CloudChatRequest request, {
+    void Function()? onActivity,
+  }) async* {
     final offline = await _isOffline();
     final gate = await _deviceGate();
     if (!gate.pass) {
@@ -96,42 +99,109 @@ class HybridCloudEngine implements CloudLlmEngine {
       }
       throw const InferenceException('无可用推理引擎：云端未配置且端侧不可用');
     }
-    yield* _cloudSend(c, request, allowDeviceFallback: canDevice);
+    yield* _cloudSend(
+      c,
+      request,
+      allowDeviceFallback: canDevice,
+      onActivity: onActivity,
+    );
   }
 
   Stream<CloudStreamEvent> _cloudSend(
     CloudLlmEngine c,
     CloudChatRequest request, {
     required bool allowDeviceFallback,
+    void Function()? onActivity,
   }) async* {
     try {
-      // Stream.timeout 逐事件计隙：首事件迟到（首 Token 判据）与流中卡顿共用同一阈值，
-      // 超时注入错误并取消底层订阅（级联断开云端连接）。
-      // 注意：async* 里 try 包 yield* 接不住子流错误（sdk#30552），必须 await for + yield
+      // 流内间隙判定改造（「用其他方式判断」而非固定 30s 死计时）：
+      // 旧逻辑以「两事件间静默 > interEventGapTimeout(30s)」判卡流——思考期
+      // 模型不产 token 即被误杀（带工具请求无端侧兜底 → 直接 rethrow 中断任务）。
+      // 新逻辑改为「传输层字节活体 + 自适应预算（无上限）」：
+      //  - onActivity：底层每收到一帧字节（含 SSE 心跳注释帧）即证明连接活着，
+      //    重置看门狗；心跳帧只作存活证据、不作工作推进（D2 正交语义不变）。
+      //  - 预算自适应：首字节前用 firstTokenTimeout 快速判死连接；已有产出后随
+      //    请求已耗时放宽（interEventGapTimeout 为下限、**无上限**，[maxThinkingGap]
+      //    已移除），长思考不再被固定 30s 掐断；活体连接永不误杀，仅真死连接（持续
+      //    无字节）被兜底下限捕获，其余交给人工「中止」（状态带显示已耗时）。
+      final sw = Stopwatch()..start();
+      var sawActivity = false;
       var sawOutput = false;
-      await for (final e in c.send(request).timeout(
-        controller.firstTokenTimeout,
-        onTimeout: (sink) => sink.addError(TimeoutException(
-            '云端首 Token/事件间隙超时（判据 ${controller.firstTokenTimeout.inSeconds}s）')),
-      )) {
-        switch (e) {
-          case CloudTextDelta() || CloudToolCallDelta():
-            sawOutput = true;
-          case CloudDone():
-            break;
-        }
-        yield e;
+      final ctrl = StreamController<CloudStreamEvent>();
+      Timer? watchdog;
+      late final StreamSubscription<CloudStreamEvent> srcSub;
+      Duration computeBudget() {
+        if (!sawActivity) return controller.firstTokenTimeout;
+        // 已有活体信号：预算随请求已耗时放宽（0.5×），下限 interEventGapTimeout、
+        // **无上限**——活体连接（含 SSE 心跳）永不掐断，长思考不误杀；仅真死连接
+        // （持续无字节）被兜底下限捕获，其余交给人工「中止」（状态带显示已耗时）。
+        final grown = Duration(
+          milliseconds: (sw.elapsed.inMilliseconds * 0.5).round(),
+        );
+        final floor = controller.interEventGapTimeout;
+        return grown <= floor ? floor : grown;
       }
-      controller.reportSuccess();
-      // T7 实测新增：流式契约干净完成但零可见产出——推理型模型把 max_tokens
-      // 烧在思维链（reasoning_content 不产可见 delta）时出现。产出优先语义下
-      // 走端侧兜底；无兜底（带工具）显式暴露，禁静默空产出。
-      if (!sawOutput) {
-        if (allowDeviceFallback) {
-          yield* _deviceSend(request, reason: '云端空产出（流完成但零可见内容）');
-        } else {
-          throw const InferenceException('云端空产出（流完成但零可见内容/工具调用）');
+
+      void fireTimeout() {
+        if (ctrl.isClosed) return;
+        ctrl.addError(TimeoutException(
+          '云端流内间隙超时（首 token ${controller.firstTokenTimeout.inSeconds}s / '
+          '自适应下限 ${controller.interEventGapTimeout.inSeconds}s，随请求已耗时放宽、'
+          '无上限；心跳帧存活即不触发，仅真死连接触发）',
+        ));
+        ctrl.close();
+        srcSub.cancel();
+      }
+
+      void armWatchdog() {
+        watchdog?.cancel();
+        watchdog = Timer(computeBudget(), fireTimeout);
+      }
+
+      void noteActivity() {
+        sawActivity = true;
+        if (!ctrl.isClosed) armWatchdog();
+      }
+
+      srcSub = c.send(request, onActivity: noteActivity).listen(
+        (e) {
+          noteActivity();
+          if (e is CloudTextDelta || e is CloudToolCallDelta) sawOutput = true;
+          if (!ctrl.isClosed) ctrl.add(e);
+        },
+        onError: (Object err, StackTrace st) {
+          watchdog?.cancel();
+          if (!ctrl.isClosed) {
+            ctrl.addError(err, st);
+            ctrl.close();
+          }
+        },
+        onDone: () {
+          watchdog?.cancel();
+          if (!ctrl.isClosed) ctrl.close();
+        },
+        cancelOnError: false,
+      );
+      // 首字节前的死连接快速判据（firstTokenTimeout）。
+      armWatchdog();
+      try {
+        await for (final e in ctrl.stream) {
+          yield e;
         }
+        controller.reportSuccess();
+        // T7 实测新增：流式契约干净完成但零可见产出——推理型模型把 max_tokens
+        // 烧在思维链（reasoning_content 不产可见 delta）时出现。产出优先语义下
+        // 走端侧兜底；无兜底（带工具）显式暴露，禁静默空产出。
+        if (!sawOutput) {
+          if (allowDeviceFallback) {
+            yield* _deviceSend(request, reason: '云端空产出（流完成但零可见内容）');
+          } else {
+            throw const InferenceException('云端空产出（流完成但零可见内容/工具调用）');
+          }
+        }
+      } finally {
+        watchdog?.cancel();
+        await srcSub.cancel();
       }
     } on TimeoutException {
       controller.reportTransportTimeout();

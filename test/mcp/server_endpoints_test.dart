@@ -146,6 +146,62 @@ void main() {
     expect(loaded.single.enabled, isTrue);
   });
 
+  test('tier 隐私分层 round-trip（P1-1）：显式 public 落盘、缺省 private', () async {
+    final store = buildStore();
+    await store.save([
+      ep1,
+      ep2.copyWith(tier: ServerPrivacyTier.public),
+    ]);
+    final loaded = await buildStore().load();
+    expect(loaded[0].tier, ServerPrivacyTier.private, reason: '缺省兜底 private');
+    expect(loaded[1].tier, ServerPrivacyTier.public);
+
+    // 旧版 JSON 无 tier 字段 → 缺省 private（零迁移兼容）。
+    await file.writeAsString('''
+[{"id": "srv_old", "name": "old", "endpoint": "http://x/mcp"}]
+''');
+    final legacy = await buildStore().load();
+    expect(legacy.single.tier, ServerPrivacyTier.private);
+  });
+
+  test('tier 非法值兜底 private 不抛（沉默即安全）', () async {
+    await file.writeAsString('''
+[
+  {"id": "srv_bad", "name": "bad", "endpoint": "http://x/mcp", "tier": "host"},
+  {"id": "srv_null", "name": "nul", "endpoint": "http://x/mcp", "tier": null}
+]
+''');
+    final loaded = await buildStore().load();
+    expect(loaded.map((e) => e.tier),
+        everyElement(ServerPrivacyTier.private));
+  });
+
+  test('isDefault 钉选位 round-trip（缺省 false，显式 true 落盘）', () async {
+    final store = buildStore();
+    await store.save([
+      ep1,
+      ep2.copyWith(isDefault: true),
+    ]);
+    final loaded = await buildStore().load();
+    expect(loaded[0].isDefault, isFalse, reason: '缺省 = 非钉选');
+    expect(loaded[1].isDefault, isTrue);
+
+    // 旧版 JSON 无 isDefault 字段 → 解析缺省 false（零迁移兼容）。
+    await file.writeAsString('''
+[{"id": "srv_old", "name": "old", "endpoint": "http://x/mcp"}]
+''');
+    final legacy = await buildStore().load();
+    expect(legacy.single.isDefault, isFalse);
+  });
+
+  test('旧单端点迁移产物 tier=public（D-B：goodshare 非宿主）', () async {
+    final store = buildStore(
+      prefs: _FakePrefs({'chat.mcp.endpoint': 'http://10.0.2.2:8000/mcp'}),
+    );
+    final loaded = await store.load();
+    expect(loaded.single.tier, ServerPrivacyTier.public);
+  });
+
   test('setApiKey 空串/null 即删除密钥（防孤儿）', () async {
     final store = buildStore();
     await store.setApiKey('srv_a', 'sk-secret');

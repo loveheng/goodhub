@@ -47,13 +47,18 @@ class AnthropicChatClient implements CloudLlmEngine {
   String get name => '云端引擎 · $model（Anthropic）';
 
   @override
-  Stream<CloudStreamEvent> send(CloudChatRequest request) => mapAnthropicSse(
+  Stream<CloudStreamEvent> send(
+    CloudChatRequest request, {
+    void Function()? onActivity,
+  }) =>
+      mapAnthropicSse(
         sendSseRequest(
           client: _http,
           url: '$baseUrl/messages',
           headers: {'x-api-key': apiKey, 'anthropic-version': '2023-06-01'},
           body: buildAnthropicBody(request, model: model, defaultTemperature: temperature),
           connectTimeout: connectTimeout,
+          onActivity: onActivity,
         ),
       );
 }
@@ -64,7 +69,16 @@ Map<String, Object?> buildAnthropicBody(
   required String model,
   double? defaultTemperature,
 }) {
-  final systemLines = <String>[];
+  // 缓存断点护栏（P1-3 / SSOT §8.1 改动点 5）：单请求硬性 ≤3（Anthropic 上限
+  // 4，留余量防 invalid_request_error）；超限开发期即报错。
+  final breakpoints =
+      request.messages.where((m) => m.cacheControl != null).length;
+  assert(
+    breakpoints <= 3,
+    '[DEGRADE] cache_control 断点 $breakpoints > 3（Anthropic 上限 4）：'
+    '组装处须收敛断点数量，否则整请求 400',
+  );
+  final systemBlocks = <Object?>[];
   final messages = <Object?>[];
   final toolResults = <Map<String, Object?>>[];
 
@@ -79,16 +93,42 @@ Map<String, Object?> buildAnthropicBody(
 
   for (final m in request.messages) {
     switch (m) {
-      case SystemMessage(:final content):
-        systemLines.add(content);
-      case UserMessage(:final content):
+      case SystemMessage(:final content, :final cacheControl):
+        // system 走顶层参数；带断点时须升级为块数组形式（Anthropic system
+        // 非 role 消息，cache_control 只能挂内容块）。
+        systemBlocks.add({
+          'type': 'text',
+          'text': content,
+          if (cacheControl != null) 'cache_control': {'type': 'ephemeral'},
+        });
+      case UserMessage(:final content, :final cacheControl):
         flushToolResults();
-        messages.add({'role': 'user', 'content': content});
-      case AssistantMessage(:final content, :final toolCalls):
+        messages.add({
+          'role': 'user',
+          'content': cacheControl == null
+              ? content
+              : [
+                  {
+                    'type': 'text',
+                    'text': content,
+                    'cache_control': {'type': 'ephemeral'},
+                  },
+                ],
+        });
+      case AssistantMessage(
+          :final content,
+          :final toolCalls,
+          :final cacheControl,
+        ):
         flushToolResults();
         final blocks = <Object?>[
           if (content != null && content.isNotEmpty)
-            {'type': 'text', 'text': content},
+            {
+              'type': 'text',
+              'text': content,
+              if (cacheControl != null)
+                'cache_control': {'type': 'ephemeral'},
+            },
           for (final c in toolCalls)
             {
               'type': 'tool_use',
@@ -112,18 +152,24 @@ Map<String, Object?> buildAnthropicBody(
   }
   flushToolResults();
   final temp = request.temperature ?? defaultTemperature;
+  // system 形态：无断点 = 字符串 join（兼容旧形态）；带断点 = 块数组
+  // （cache_control 只能挂内容块，P1-3 / §8.1）。
+  final anySystemBreakpoint = systemBlocks.any(
+    (b) => (b as Map).containsKey('cache_control'),
+  );
   return {
     'model': model,
-    if (systemLines.isNotEmpty) 'system': systemLines.join('\n\n'),
+    if (systemBlocks.isNotEmpty)
+      'system': anySystemBreakpoint
+          ? systemBlocks
+          : [
+              for (final b in systemBlocks) (b as Map<String, Object?>)['text'],
+            ].join('\n\n'),
     'messages': messages,
     if (request.tools.isNotEmpty)
       'tools': [
-        for (final t in request.tools)
-          {
-            'name': t.name,
-            'description': t.description,
-            'input_schema': t.parametersSchema,
-          },
+        // 规范 toJson（G5/§8.2）：一级键序固定 + parametersSchema 递归字典序。
+        for (final t in request.tools) t.toJson(),
       ],
     'temperature': ?temp,
     'max_tokens': request.maxTokens ?? AnthropicChatClient.defaultMaxTokens,

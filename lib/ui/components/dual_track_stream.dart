@@ -101,6 +101,21 @@ class TrackNote extends TrackEntry {
   final bool danger;
 }
 
+/// 记忆胶囊（P2-6 / §3.6）：气泡底「⚡ 已记录 key=value [✕撤销]」嵌片——
+/// 模型 In-band 捎带落库后页面插入；撤销回调由页面注入（session 域 →
+/// workspace_states.remove），撤销后锁定终态呈现「已撤销」。
+/// 恢复的历史胶囊不接撤销回调（onUndo=null 锁定，completer 同口径）。
+class TrackMemoryCapsule extends TrackEntry {
+  TrackMemoryCapsule({required this.key, required this.value, this.onUndo});
+
+  final String key;
+  final String value;
+
+  /// 撤销回调（null = 撤销不可用：已撤销锁定 / 历史恢复态）。
+  void Function()? onUndo;
+  bool undone = false;
+}
+
 class DualTrackStream extends StatelessWidget {
   const DualTrackStream({
     super.key,
@@ -303,6 +318,57 @@ class DualTrackStream extends StatelessWidget {
             ),
           ),
         );
+      case TrackMemoryCapsule(:final key, :final value, :final onUndo, :final undone):
+        final t = consoleTokens(context);
+        return Container(
+          margin: const EdgeInsets.symmetric(vertical: 2),
+          padding: const EdgeInsets.fromLTRB(8, 4, 4, 4),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(t.cardRadius),
+            border: Border.all(color: t.hairline),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '⚡ 已记录 $key=$value',
+                style: TextStyle(
+                  fontFamily: t.monoFamily,
+                  fontSize: Fsz.note,
+                  color: t.terminalMuted,
+                ),
+              ),
+              if (!undone && onUndo != null)
+                TextButton(
+                  onPressed: onUndo,
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    minimumSize: const Size(0, 28),
+                  ),
+                  child: Text(
+                    '✕撤销',
+                    style: TextStyle(
+                      fontFamily: t.monoFamily,
+                      fontSize: Fsz.note,
+                      color: t.dataRef,
+                    ),
+                  ),
+                )
+              else if (undone)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  child: Text(
+                    '✕ 已撤销',
+                    style: TextStyle(
+                      fontFamily: t.monoFamily,
+                      fontSize: Fsz.note,
+                      color: t.terminalMuted,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        );
     }
   }
 }
@@ -412,6 +478,12 @@ extension TrackEntryCodec on TrackEntry {
       'text': text,
       'danger': danger,
     },
+    TrackMemoryCapsule(:final key, :final value, :final undone) => {
+      'type': 'memory',
+      'key': key,
+      'value': value,
+      'undone': undone,
+    },
   };
 
   /// 恢复轨道（终态锁定呈现）：
@@ -456,6 +528,15 @@ extension TrackEntryCodec on TrackEntry {
               m['text'] as String? ?? '',
               danger: m['danger'] as bool? ?? false,
             ),
+          );
+        case 'memory':
+          // 历史恢复胶囊：不接撤销回调（onUndo=null 锁定呈现——恢复态无
+          // 活页面的 store 绑定；撤销语义仅限当轮）。
+          out.add(
+            TrackMemoryCapsule(
+              key: m['key'] as String? ?? '?',
+              value: m['value'] as String? ?? '',
+            )..undone = m['undone'] as bool? ?? false,
           );
         case 'confirm':
           final approved = m['approved'] as bool?;

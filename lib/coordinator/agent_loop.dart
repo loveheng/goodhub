@@ -25,6 +25,7 @@ import '../llm/cloud/tool_call_accumulator.dart';
 import 'context_governor.dart';
 import 'ref_store.dart';
 import 'tool_breaker.dart';
+import 'workspace_stream_filter.dart';
 
 /// Agent Loop 事件（UI 双轨/遥测消费）。
 sealed class AgentLoopEvent {
@@ -201,6 +202,23 @@ class AgentLoop {
     required String userPrompt,
     List<CloudToolSchema> tools = const [],
     List<CloudChatMessage> history = const [],
+
+    /// 动态尾部段（P1-3b / §8.1 断点 A）：非空时 [systemPrompt] 视为静态前缀
+    /// （挂 `cache_control: ephemeral` 断点），本段（如记忆区）作为无断点
+    /// System 块置后——记忆增长不顶掉静态前缀缓存边界。null = 旧单块形态。
+    String? systemTail,
+
+    /// In-band 捎带提取分流器（P2-3 / §3.3，G2）：非空时正文 delta 经其
+    /// 实时分流——UI 只收剥离后的纯文本；自然结算轮（`calls.isEmpty`）历史与
+    /// 终文用剥离后文本；tool-call 结算轮挂 [WorkspaceStreamFilter.cancelCommit]
+    /// 禁提交；abort 挂 [WorkspaceStreamFilter.discard]。null = 功能关闭。
+    WorkspaceStreamFilter? workspaceFilter,
+
+    /// 合成桩判定（P3-2 / §9.1，D-H）：返回 true 的工具，其历史 `tool_call`
+    /// 与配对 `tool_result` 在**发送边界**替换为合成占位桩（保留 matching id，
+    /// 防 OpenAI/Anthropic 严格成对校验 400）。判定源 = 装配层读 router 投影
+    /// 态（私有 server 已让位当前私有槽位）。null = 不脱敏。
+    bool Function(String toolName)? maskTool,
   }) {
     final out = StreamController<AgentLoopEvent>();
     _out = out;
@@ -210,7 +228,10 @@ class AgentLoop {
             systemPrompt: systemPrompt,
             userPrompt: userPrompt,
             tools: tools,
-            history: history);
+            history: history,
+            systemTail: systemTail,
+            workspaceFilter: workspaceFilter,
+            maskTool: maskTool);
       } catch (e, st) {
         out.addError(e, st);
       } finally {
@@ -227,15 +248,29 @@ class AgentLoop {
     required String userPrompt,
     List<CloudToolSchema> tools = const [],
     List<CloudChatMessage> history = const [],
+    String? systemTail,
+    WorkspaceStreamFilter? workspaceFilter,
+    bool Function(String toolName)? maskTool,
   }) async {
     final out = _out!;
     void emit(AgentLoopEvent e) => out.add(e);
     // D11 多轮上下文：System 每轮重组（Skill 激活集跨 run 演进），历史原样
     // 前插（不含 System——见 [LoopFinished.transcript] 口径）。
+    // P1-3b（§8.1 断点 A）：带 tail 时静态前缀挂缓存断点、动态记忆置尾。
+    // P2-4（§9.3）：用户侧 `<` 全量转义——只有模型自身生成的裸
+    // `<workspace_update_v1>` 能触发提取；转义幂等（&lt; 不含 <）。
     final messages = <CloudChatMessage>[
-      SystemMessage(systemPrompt),
-      ...history,
-      UserMessage(userPrompt),
+      SystemMessage(
+        systemPrompt,
+        cacheControl:
+            systemTail != null ? CacheControl.ephemeral : null,
+      ),
+      if (systemTail != null) SystemMessage(systemTail),
+      for (final m in history)
+        m is UserMessage
+            ? UserMessage(WorkspaceStreamFilter.escapeUserTag(m.content))
+            : m,
+      UserMessage(WorkspaceStreamFilter.escapeUserTag(userPrompt)),
     ];
     var wallLimit = maxTurns;
     var turn = 0;
@@ -252,20 +287,32 @@ class AgentLoop {
       }
       turn++;
       final acc = CloudStreamAccumulator();
+      // P2-3（G2）：剥离后纯文本累积——历史与终文用，防结构化 JSON 污染 canonical。
+      final filteredText = StringBuffer();
+      final filter = workspaceFilter;
       await for (final e in engine.send(
         // 滑动窗口在发送边界裁剪（T6）：本地 messages 不动，步数墙放宽
         // 续跑时上下文完整；裁剪纯函数保证 Assistant/ToolResult 配对完整。
         CloudChatRequest(
-          messages: trimMessagesToWindow(messages, windowRounds),
+          messages: _applySyntheticMasking(
+            trimMessagesToWindow(messages, windowRounds),
+            maskTool: maskTool,
+          ),
           tools: toolsProvider?.call() ?? tools,
         ),
       )) {
         if (_aborted) break; // 引擎流中途中止：断流结算（已收 delta 保留在 acc）
         acc.add(e);
-        if (e is CloudTextDelta) emit(LoopTextDelta(e.text));
+        if (e is CloudTextDelta) {
+          final passthrough = filter?.feed(e.text) ?? e.text;
+          filteredText.write(passthrough);
+          emit(LoopTextDelta(passthrough));
+        }
       }
       if (_aborted) {
         // 引擎流中途中止：部分产出按普通 assistant 消息入历史（协议安全）。
+        // G6：abort 全量复位 FSM——残留 pending/json 缓冲丢弃，下轮干净起步。
+        filter?.discard();
         if (acc.text.isNotEmpty) {
           messages.add(AssistantMessage(content: acc.text));
         }
@@ -278,40 +325,53 @@ class AgentLoop {
       }
       final calls = acc.toolCalls;
       if (calls.isEmpty) {
-        // 自然结算：终文入历史（transcript 完整供下轮续接）。
-        if (acc.text.isNotEmpty) {
-          messages.add(AssistantMessage(content: acc.text));
+        // 自然结算：终文入历史（transcript 完整供下轮续接）。G2：剥离
+        // `<workspace_update_v1>` 段后再入历史（UI 已实时分流，此处保 canonical）。
+        final clean = filter?.feed('') ?? ''; // 冲刷残留 Hold 前缀（若有）
+        filteredText.write(clean);
+        final settledText = filter == null ? acc.text : filteredText.toString();
+        if (settledText.isNotEmpty) {
+          messages.add(AssistantMessage(content: settledText));
         }
         emit(LoopFinished(
-          text: acc.text,
+          text: settledText,
           finishReason: acc.finishReason ?? CloudFinishReason.stop,
           turns: turn,
           transcript: _sessionTranscript(messages),
         ));
         return;
       }
+      // G2 tool-call 轮硬压（§3.3）：清空 FSM 累积缓冲并禁止本段提交。
+      filter?.cancelCommit();
       messages.add(acc.toAssistantMessage());
-      for (final call in calls) {
-        if (_aborted) {
-          emit(LoopFinished(
-              text: acc.text,
-              finishReason: CloudFinishReason.stop,
-              turns: turn,
-              transcript: _sessionTranscript(messages)));
-          return;
-        }
-        emit(LoopToolCallStarted(call));
-        _activeCall = call;
-        final result = await _executeWithBreaker(call, failures);
-        _activeCall = null;
-        emit(LoopToolCallFinished(call: call, result: result));
+      // P3-1（D-J/§10.2）：单轮多 tool_calls 并发编排——Future.wait 派发下游；
+      // _executeWithBreaker 把任一异常收敛为 isError ToolResult（绝不向上抛
+      // 中断流），全量回填 100% tool_call_id 配对（OpenAI/Anthropic 严格校验）。
+      // 注：_activeCall 单槽在并发下交错——进度药丸为尽力而为 UI 信号。
+      final settled = await Future.wait([
+        for (final call in calls)
+          () async {
+            emit(LoopToolCallStarted(call));
+            _activeCall = call;
+            try {
+              final result = await _executeWithBreaker(call, failures);
+              final governed = await _governedContent(
+                result.content,
+                serverId: serverResolver?.call(call.name),
+              );
+              return (call: call, result: result, governed: governed);
+            } finally {
+              _activeCall = null;
+            }
+          }(),
+      ]);
+      // 回填按原序（Future.wait 保序）——canonical 历史与 tool_use 顺序一致。
+      for (final s in settled) {
+        emit(LoopToolCallFinished(call: s.call, result: s.result));
         messages.add(ToolResultMessage(
-          toolCallId: call.id,
-          content: await _governedContent(
-            result.content,
-            serverId: serverResolver?.call(call.name),
-          ),
-          isError: result.isError,
+          toolCallId: s.call.id,
+          content: s.governed,
+          isError: s.result.isError,
         ));
       }
       if (turn >= wallLimit) {
@@ -405,12 +465,14 @@ class AgentLoop {
     return out;
   }
 
-  /// 回填前治理（T6 + M3-T3 put 端）：>阈值走端侧摘要化；摘要化成功时原文
-  /// 落 $ref 暂存池、宿主注升级句柄注记——「大出参 → 句柄 → 下游工具入参
-  /// 注水」写管道闭环（§9/§12）。失败分层：摘要化失败按 E1 保留原文直传
-  /// （原文已直传，不落池）；落池失败降级为无句柄注记（摘要照常回填）——
-  /// 两处均禁静默，[DEGRADE] 留痕。
+  /// 回填前治理（T6 + M3-T3 put 端）：**入口先过 D-I 物理硬地板**（超大输出
+  /// 无论摘要器是否可用先截断，摘要失败也不回退超界原文）；>摘要阈值再走
+  /// 端侧摘要化；摘要化成功时原文落 $ref 暂存池、宿主注升级句柄注记——「大
+  /// 出参 → 句柄 → 下游工具入参注水」写管道闭环（§9/§12）。失败分层：摘要化
+  /// 失败按 E1 保留（截断后）原文直传；落池失败降级为无句柄注记——两处均
+  /// 禁静默，[DEGRADE] 留痕。
   Future<String> _governedContent(String original, {String? serverId}) async {
+    original = _hardTruncateOutput(original);
     final summarize = summarizer;
     if (summarize == null) return original;
     if (estimateTokens(original) <= summarizeThresholdTokens) return original;
@@ -432,5 +494,86 @@ class AgentLoop {
       }
     }
     return summarizedContent(summary, original, refHandle: handle);
+  }
+
+  /// D-I（P3-3 / §10.4）：超大工具输出的确定性硬地板——与摘要正交、始终
+  /// 生效（`summarizer == null` 纯云路径与摘要失败旁路此前零上限直入上下文，
+  /// 击穿单轮窗口与预算）。Head 50 + Tail 20 行折叠，中段插系统注记；折叠后
+  /// 仍超界（长行）→ 字符级再截，保证 estimateTokens 恒不超上界。
+  static const int kToolResultHardCapTokens = 2000; // T-调参：随真机预算校准
+
+  String _hardTruncateOutput(String original) {
+    if (estimateTokens(original) <= kToolResultHardCapTokens) return original;
+    const headLines = 50, tailLines = 20;
+    const noticeTmpl =
+        '[... Output truncated: {n} characters omitted. '
+        'Use specific filter or offset/limit to read more ...]';
+    String folded;
+    if (original.split('\n').length > headLines + tailLines) {
+      final lines = original.split('\n');
+      final head = lines.take(headLines).join('\n');
+      final tail = lines.skip(lines.length - tailLines).join('\n');
+      final omitted = original.length - head.length - tail.length;
+      folded = '$head\n${noticeTmpl.replaceAll('{n}', '$omitted')}\n$tail';
+    } else {
+      folded = original;
+    }
+    // 字符级保底：折叠后仍超界（长行场景）→ 硬切，上界恒成立。
+    if (estimateTokens(folded) > kToolResultHardCapTokens) {
+      final omitted = folded.length - kToolResultHardCapTokens;
+      folded =
+          '${folded.substring(0, kToolResultHardCapTokens)}\n'
+          '${noticeTmpl.replaceAll('{n}', '$omitted')}';
+    }
+    debugPrint('[DEGRADE] context-governor: 工具输出超 $kToolResultHardCapTokens tokens '
+        '已物理截断（D-I 硬地板）');
+    return folded;
+  }
+
+  /// D-H（P3-2 / §9.1）：切换私有域的发送边界投影——已让位私有域的历史
+  /// `tool_call` / 配对 `tool_result` 保留 matching `id`、替换为合成占位桩
+  /// （OpenAI/Anthropic 严格成对校验：物理删除任一方即 400）。本地 canonical
+  /// 历史不动（D11 双轨口径：本地留全、发送侧治理）。null 判定 = 直通。
+  static const kSyntheticMaskedTool = 'redacted_private_tool';
+  static const kSyntheticMaskedNotice =
+      '[System Notice: The output of this private tool execution has been '
+      'masked because the active workspace domain was switched.]';
+
+  List<CloudChatMessage> _applySyntheticMasking(
+    List<CloudChatMessage> input, {
+    bool Function(String toolName)? maskTool,
+  }) {
+    if (maskTool == null) return input;
+    final maskedIds = <String>{};
+    for (final m in input) {
+      if (m is AssistantMessage) {
+        for (final c in m.toolCalls) {
+          if (maskTool(c.name)) maskedIds.add(c.id);
+        }
+      }
+    }
+    if (maskedIds.isEmpty) return input;
+    return [
+      for (final m in input)
+        if (m is AssistantMessage && m.toolCalls.any((c) => maskedIds.contains(c.id)))
+          AssistantMessage(
+            content: m.content,
+            toolCalls: [
+              for (final c in m.toolCalls)
+                maskedIds.contains(c.id)
+                    ? AssembledToolCall(
+                        id: c.id, name: kSyntheticMaskedTool, argumentsJson: '{}')
+                    : c,
+            ],
+          )
+        else if (m is ToolResultMessage && maskedIds.contains(m.toolCallId))
+          ToolResultMessage(
+            toolCallId: m.toolCallId,
+            content: kSyntheticMaskedNotice,
+            isError: false,
+          )
+        else
+          m,
+    ];
   }
 }

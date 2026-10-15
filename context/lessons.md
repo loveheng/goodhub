@@ -38,3 +38,5 @@ last-merge: 2026-10-11
 - [android-ops] 真机自驱输入 URL：ime set 到 Gboard(LatinIME) 后 input text 仍被中文候选转换（HTTP：／／全角化复现）——Gboard 单实例承载多语言，ime set 只切 IME 不切键盘语言 ➔ 英文/URL 类自驱输入不可靠 ➔ 真机联调遇文本输入面直接交人工手输，AI 侧只做 tap/screencap/坐标换算（截图尺寸=物理分辨率，显示缩放图必错位） (Ref: m4)
 
 - [release-r2.sh] flutter analyze 含 issue 即 exit 1（存量 info 也算）➔ release-r2.sh set -e 被 1 条 deprecated info 中止构建 ➔ 发布脚本 analyze 降为告警不阻断，交付门槛由日常 analyze/test 把守 (Ref: self-update) (Ref: self-update)
+- [dart/closure] 闭包在 late final 局部变量声明前引用它编译报错「can't be referenced before it is declared」➔ Dart 禁止 late 局部变量在声明位置之前的闭包中引用（闭包可能早于初始化被调用）➔ 含 late final 局部变量且闭包需引用它时，把声明前置到闭包定义之前（即使赋值在后）(Ref: chatmessage)
+- [hybrid_cloud_engine] 流内事件间隙超时(interEventGapTimeout)永不触发，整流误判 healthy ➔ 事件处理器内重装计时器的三元 isFirst ? firstTokenTimeout : interEventGapTimeout 在首个事件到达时(isFirst=true)重装了 firstTokenTimeout——「本事件之前」的预算被错装到「本事件之后」的间隙上 ➔ 双阈值计时器：初始计时与事件后续计时是两个装配点，事件处理器里重装的预算必须是「本事件之后」的预算；代码与自身注释矛盾时先怀疑代码，注释即意图 (Ref: chatmessage)

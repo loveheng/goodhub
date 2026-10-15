@@ -40,13 +40,18 @@ class OpenAiChatClient implements CloudLlmEngine {
   String get name => '云端引擎 · $model';
 
   @override
-  Stream<CloudStreamEvent> send(CloudChatRequest request) => mapOpenAiSse(
+  Stream<CloudStreamEvent> send(
+    CloudChatRequest request, {
+    void Function()? onActivity,
+  }) =>
+      mapOpenAiSse(
         sendSseRequest(
           client: _http,
           url: '$baseUrl/chat/completions',
           headers: {'Authorization': 'Bearer $apiKey'},
           body: buildOpenAiBody(request, model: model, defaultTemperature: temperature),
           connectTimeout: connectTimeout,
+          onActivity: onActivity,
         ),
       );
 }
@@ -69,7 +74,8 @@ Map<String, Object?> buildOpenAiBody(
             'function': {
               'name': t.name,
               'description': t.description,
-              'parameters': t.parametersSchema,
+              // G5/§8.2：递归字典序归一，键序不随上游 MCP 返回漂移。
+              'parameters': CloudToolSchema.canonicalParameters(t.parametersSchema),
             },
           },
       ],

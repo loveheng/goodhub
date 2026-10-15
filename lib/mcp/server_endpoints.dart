@@ -19,6 +19,11 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import '../core/security/flutter_secure_key_value.dart';
 import '../core/security/secure_key_value.dart';
 
+/// 隐私分层（chatmessage epic P1-1，SSOT §1.4）：外部服务仅有 `private` /
+/// `public` 两档——`host`（宿主内置能力）不进 [ServerEndpoint]，由客户端以
+/// `HostNativeTools` 注入（Provider×Tier 两维解耦，D-A/D-B）。
+enum ServerPrivacyTier { private, public }
+
 class ServerEndpoint {
   const ServerEndpoint({
     required this.id,
@@ -26,6 +31,8 @@ class ServerEndpoint {
     required this.endpoint,
     this.hasKey = false,
     this.enabled = true,
+    this.tier = ServerPrivacyTier.private,
+    this.isDefault = false,
   });
 
   /// 稳定标识（安全存储键锚点；不含 `__`——ToolRouter 前缀语义约束）。
@@ -44,11 +51,20 @@ class ServerEndpoint {
   /// 装配连接池时跳过；配置与令牌保留，重开开关即恢复挂载。旧 JSON 缺省 true。
   final bool enabled;
 
+  /// 隐私分层（固有属性，与 [enabled] 运行时挂载态正交）：仅外部服务可配，
+  /// 缺省兜底 `private`（沉默即安全）。`host` 不在本模型（D-A）。
+  final ServerPrivacyTier tier;
+
+  /// 全局默认钉选（v1：会话绑定默认回退用）：单选语义，写回 mcp_servers.json。
+  final bool isDefault;
+
   ServerEndpoint copyWith({
     String? name,
     String? endpoint,
     bool? hasKey,
     bool? enabled,
+    ServerPrivacyTier? tier,
+    bool? isDefault,
   }) =>
       ServerEndpoint(
         id: id,
@@ -56,6 +72,8 @@ class ServerEndpoint {
         endpoint: endpoint ?? this.endpoint,
         hasKey: hasKey ?? this.hasKey,
         enabled: enabled ?? this.enabled,
+        tier: tier ?? this.tier,
+        isDefault: isDefault ?? this.isDefault,
       );
 
   Map<String, Object?> toJson() => <String, Object?>{
@@ -64,6 +82,8 @@ class ServerEndpoint {
         'endpoint': endpoint,
         'hasKey': hasKey,
         'enabled': enabled,
+        'tier': tier.name,
+        'isDefault': isDefault,
       };
 
   static ServerEndpoint fromJson(Map<String, Object?> j) => ServerEndpoint(
@@ -72,6 +92,12 @@ class ServerEndpoint {
         endpoint: j['endpoint'] as String? ?? '',
         hasKey: j['hasKey'] as bool? ?? false,
         enabled: j['enabled'] as bool? ?? true,
+        // 缺字段 / 非法值一律兜底 private（沉默即安全，不抛）。
+        tier: ServerPrivacyTier.values.firstWhere(
+          (t) => t.name == j['tier'],
+          orElse: () => ServerPrivacyTier.private,
+        ),
+        isDefault: j['isDefault'] as bool? ?? false,
       );
 }
 
@@ -161,6 +187,8 @@ class ServerEndpointStore {
         name: 'goodshare',
         endpoint: endpoint,
         hasKey: key != null && key.isNotEmpty,
+        // D-B：goodshare 非宿主——普通外部端点，常驻可混用。
+        tier: ServerPrivacyTier.public,
       ),
     ];
     await save(migrated);

@@ -30,6 +30,7 @@ import '../coordinator/memory_tool_executor.dart';
 import '../coordinator/permission_gateway.dart';
 import '../coordinator/ref_hydrator.dart';
 import '../coordinator/ref_store.dart';
+import '../coordinator/workspace_stream_filter.dart';
 import '../coordinator/skill_activation_executor.dart';
 import '../coordinator/skill_registry.dart';
 import '../coordinator/tool_breaker.dart';
@@ -47,6 +48,7 @@ import '../mcp/server_capabilities.dart';
 import '../mcp/server_endpoints.dart';
 import '../sandbox/conversation_store.dart';
 import '../sandbox/memory_store.dart';
+import '../sandbox/workspace_state_store.dart';
 import '../gateway/gateway_controller.dart';
 import 'components/call_card.dart';
 import 'components/cross_source_consent_card.dart';
@@ -116,11 +118,26 @@ class _ChatPageState extends State<ChatPage> {
   // 会话持久化（M4-T3b，D10/D13）：当前会话 id + 标题 + 侧边栏列表
   ConversationStore? _convStore;
   String? _conversationId;
+
+  /// P2-6（G3）：会话级事实库懒建（首个任务轮起与 ConversationStore 同期装配）。
+  WorkspaceStateStore? _wsStates;
   var _conversationTitle = '';
   var _conversations = <ConversationMeta>[];
+  // 会话级 MCP 绑定（v1）：null=未设定（按默认回退）/ ''=显式纯公共 / 否则 serverId。
+  String? _activePrivateServerId;
+  // 端点缓存（供 composer menu 与默认回退使用；_send 内刷新）。
+  List<ServerEndpoint> _endpoints = <ServerEndpoint>[];
+  // 本地插件缓存（零配置自动发现；系统托管、始终挂载；供状态带/菜单展示）。
+  List<LocalPluginInfo> _localPlugins = const <LocalPluginInfo>[];
 
   // Run 期柄（Abort/卡状态机/卡死判定接线目标；finally 清）
   var _running = false;
+
+  /// 运行起始时刻（状态带计时显示用；running=false 时清空）。
+  DateTime? _runStartedAt;
+
+  /// 状态带秒级计时刷新定时器（running 期间每秒 setState 刷新已耗时）。
+  Timer? _elapsedTimer;
   var _pillLabel = 'idle';
   var _pillTone = CapsuleTone.idle;
 
@@ -141,10 +158,12 @@ class _ChatPageState extends State<ChatPage> {
     _scrollCtrl.addListener(_onUserScroll);
     unawaited(_loadConfig());
     unawaited(_initConversations());
+    unawaited(_loadEndpoints());
   }
 
   @override
   void dispose() {
+    _elapsedTimer?.cancel();
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
     _gatewayTokenCtrl.dispose();
@@ -193,6 +212,7 @@ class _ChatPageState extends State<ChatPage> {
         title: _conversationTitle,
         track: TrackEntryCodec.encode(_track),
         messages: ConversationStore.encodeMessages(_history),
+        activePrivateServerId: _activePrivateServerId,
       );
       await _refreshConversations();
     } on Object catch (e) {
@@ -246,6 +266,7 @@ class _ChatPageState extends State<ChatPage> {
     setState(() {
       _conversationId = snap.id;
       _conversationTitle = snap.title;
+      _activePrivateServerId = snap.activePrivateServerId;
       _history.addAll(ConversationStore.decodeMessages(snap.messages));
       _track.addAll(TrackEntryCodec.decode(snap.track));
     });
@@ -387,6 +408,207 @@ class _ChatPageState extends State<ChatPage> {
       _pillLabel = label;
       _pillTone = tone;
     });
+  }
+
+  /// 端点缓存预热（供 composer menu / 默认回退；首屏即可列服务）。
+  /// 同时完成「新会话默认锁定」（①）：未显式绑定时按默认回退锁定首个启用的
+  /// private（已显式绑定/纯公共 '' 则沿用），确保状态带与菜单开屏即正确。
+  Future<void> _loadEndpoints() async {
+    final support = await getApplicationSupportDirectory();
+    final all = await _epStore(support.path).load();
+    // 本地插件零配置自动发现（系统托管、始终挂载；与 _send 装配同口径）。
+    // 通道不可用（宿主未就绪）按空目录，不阻断 HTTP 端点装配。
+    final locals = <LocalPluginInfo>[];
+    try {
+      locals.addAll(await localPluginDiscovery.scan());
+    } on Object {
+      // 发现通道不可用：视为无本地插件。
+    }
+    if (!mounted) return;
+    final bound = _activePrivateServerId ?? _resolveBinding(all);
+    setState(() {
+      _endpoints = all;
+      _localPlugins = locals;
+      _activePrivateServerId = bound;
+    });
+  }
+
+  /// 是否处于"已绑定某私有服务"的弱感知态（用于状态带胶囊）。
+  bool get _hasContext =>
+      _activePrivateServerId != null && _activePrivateServerId!.isNotEmpty;
+
+  /// 会话绑定默认回退：未显式绑定时 → 全局钉选 isDefault → 首个启用的 private
+  /// → null（纯公共）。已显式绑定（含 '' 显式公共）则直接用。
+  String? _resolveBinding(List<ServerEndpoint> eps) {
+    final bound = _activePrivateServerId;
+    if (bound != null) return bound.isEmpty ? null : bound;
+    String? firstPrivate;
+    for (final e in eps) {
+      if (e.tier != ServerPrivacyTier.private) continue;
+      if (e.isDefault) return e.id; // 全局钉选优先
+      firstPrivate ??= e.id;
+    }
+    return firstPrivate;
+  }
+
+  /// 即时绑定（composer menu 调用）：写页面态 + 落会话元数据（对话未建则安全早退）。
+  void _bindSessionServer(String? serverId) {
+    setState(() => _activePrivateServerId = serverId);
+    unawaited(_persistConversation());
+  }
+
+  /// 全局默认钉选写回（单选）：更新 mcp_servers.json 并刷新缓存。
+  Future<void> _setGlobalDefault(String serverId, bool on) async {
+    final support = await getApplicationSupportDirectory();
+    final epStore = _epStore(support.path);
+    final all = await epStore.load();
+    var changed = false;
+    final updated = <ServerEndpoint>[];
+    for (final e in all) {
+      final want = on && e.id == serverId;
+      if (e.isDefault != want) {
+        updated.add(e.copyWith(isDefault: want));
+        changed = true;
+      } else {
+        updated.add(e);
+      }
+    }
+    if (!changed) return;
+    await epStore.save(updated);
+    if (mounted) setState(() => _endpoints = updated);
+  }
+
+  String _endpointName(String id) {
+    for (final e in _endpoints) {
+      if (e.id == id) return e.name;
+    }
+    return id;
+  }
+
+  String? _defaultId() {
+    for (final e in _endpoints) {
+      if (e.isDefault) return e.id;
+    }
+    return null;
+  }
+
+  /// Composer Menu（药丸内左侧「+」→ 底部弹层）：本会话绑定哪个私有服务 +
+  /// 全局默认钉选。数据驱动列表，未来附件/模型切换等仅追加项。
+  Future<void> _openComposerMenu() async {
+    if (!_guardRunning('打开上下文菜单')) return;
+    // 开菜单前先重读端点目录：大厅新增/卸载服务后返回聊天页，initState 缓存可能
+    // 已过时，直接重读保证菜单列出当前真实存在的私有服务。
+    await _loadEndpoints();
+    if (!mounted) return;
+    final t = consoleTokens(context);
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) {
+          final bound = _activePrivateServerId;
+          final priv = _endpoints
+              .where((e) => e.enabled && e.tier == ServerPrivacyTier.private)
+              .toList();
+          final defaultId = _defaultId();
+          return Padding(
+            padding: EdgeInsets.only(
+              left: 16,
+              right: 16,
+              top: 16,
+              bottom: 16 + MediaQuery.of(ctx).viewInsets.bottom,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('本次会话上下文',
+                      style: TextStyle(
+                          fontSize: Fsz.telemetry, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 4),
+                  Text(
+                    bound != null && bound.isNotEmpty
+                        ? '已锁定：${_endpointName(bound)}（$bound）'
+                        : (_localPlugins.isNotEmpty
+                            ? '本地插件自动挂载（${_localPlugins.length}）· 未锁定手动私有服务'
+                            : '纯公共模式（无私有域）'),
+                    style: TextStyle(
+                        fontSize: Fsz.note, color: t.terminalMuted),
+                  ),
+                  const Divider(height: 16),
+                  if (priv.isEmpty && _localPlugins.isEmpty)
+                    Text('无可用私有服务（私有端点请在 ⚙ 设置/服务大厅添加）',
+                        style: TextStyle(
+                            fontSize: Fsz.note, color: t.terminalMuted)),
+                  for (final e in priv)
+                    ListTile(
+                      leading: const Icon(Icons.lock_outline),
+                      title: Text(e.name),
+                      subtitle: Text(e.id),
+                      trailing: (bound != null && bound == e.id)
+                          ? const Icon(Icons.check, size: 18)
+                          : null,
+                      onTap: () {
+                        _bindSessionServer(e.id);
+                        setSheet(() {});
+                      },
+                    ),
+                  if (_localPlugins.isNotEmpty) ...[
+                    const Divider(height: 16),
+                    Text('本地私有插件（自动挂载 · 零配置）',
+                        style: TextStyle(
+                            fontSize: Fsz.telemetry,
+                            fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 4),
+                    Text('私有 · 系统托管，始终参与本次任务，无需绑定选择',
+                        style: TextStyle(
+                            fontSize: Fsz.note, color: t.terminalMuted)),
+                    for (final lp in _localPlugins)
+                      ListTile(
+                        leading: const Icon(Icons.lock_outline),
+                        title: Text(
+                            lp.serverTitle.isEmpty ? lp.serverId : lp.serverTitle),
+                        subtitle: Text(lp.packageName),
+                        trailing: Text('私有 · 始终挂载',
+                            style: TextStyle(
+                                fontSize: Fsz.note, color: t.l1Info)),
+                      ),
+                  ],
+                  if (bound != null && bound.isNotEmpty) ...[
+                    SwitchListTile(
+                      title: const Text('设为全局默认'),
+                      subtitle: const Text('新会话默认锁定此服务'),
+                      value: defaultId == bound,
+                      onChanged: (v) async {
+                        await _setGlobalDefault(bound, v);
+                        setSheet(() {});
+                      },
+                    ),
+                    ListTile(
+                      leading: const Icon(Icons.public),
+                      title: const Text('清空（纯公共）'),
+                      onTap: () {
+                        _bindSessionServer('');
+                        setSheet(() {});
+                      },
+                    ),
+                  ],
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: FilledButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      child: const Text('完成'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
   }
 
   /// 设置面板（P1 瘦身后）：PC 远程网关 + 本地插件信任；服务端点全生命周期
@@ -713,6 +935,7 @@ class _ChatPageState extends State<ChatPage> {
     // T5 节点卡挂载位（ui-design §3.3）：enabled=false 的卸载节点不进连接池
     // （配置与令牌保留，大厅节点卡可重开）。
     final endpoints = allEndpoints.where((e) => e.enabled).toList();
+    _endpoints = allEndpoints;
     final unmounted = allEndpoints.length - endpoints.length;
     if (unmounted > 0) {
       _add(TrackNote('⊘ 有 $unmounted 项服务已卸载，未参与本次任务（服务大厅可重新挂载）', danger: false));
@@ -742,10 +965,54 @@ class _ChatPageState extends State<ChatPage> {
     _conversationTitle = _conversationTitle.isEmpty
         ? _titleFrom(prompt)
         : _conversationTitle;
+    // P2-6（§3.6/G3）：会话级事实库懒建——In-band 捎带 session 域落点。
+    final wsStates =
+        _wsStates ??= WorkspaceStateStore.underSupportDir(support.path);
+    final convId = _conversationId!;
     RefStore? refStore;
     final connections = <String, McpConnection>{}; // T4-5 收官：每 server 一条韧性连接（函数作用域，finally 可见）
     try {
       final memoryStore = MemoryStore.underSupportDir(support.path);
+      // P2-6/P2-1b：In-band 提取分流——session 域落 workspace_states，
+      // user/srv 域走 MemoryStore keyed 映射（G1）；胶囊撤销 = 对应 remove。
+      final workspaceFilter = WorkspaceStreamFilter(
+        onExtracted: (facts) {
+          for (final f in facts) {
+            final scope = f.normalizedScope;
+            if (scope == null) continue; // 幻觉 scope 丢弃（G4）
+            if (scope == 'session') {
+              if (f.action == 'remove') {
+                unawaited(wsStates.remove(convId, f.key));
+              } else {
+                unawaited(wsStates.upsert(convId, f.key, f.value));
+              }
+            } else {
+              // P2-1b（G1）：user/srv 域走 MemoryStore keyed 映射——同 key
+              // 覆盖不追加；remove 幂等。
+              if (f.action == 'remove') {
+                unawaited(memoryStore.removeFacts(f.key, scope: scope));
+              } else {
+                unawaited(memoryStore.upsertFacts(f.key, f.value, scope: scope));
+              }
+            }
+            final capsule = TrackMemoryCapsule(key: f.key, value: f.value);
+            capsule.onUndo = () {
+              if (scope == 'session') {
+                unawaited(wsStates.remove(convId, f.key));
+              } else {
+                unawaited(memoryStore.removeFacts(f.key, scope: scope));
+              }
+              if (!mounted) return;
+              setState(() {
+                capsule
+                  ..undone = true
+                  ..onUndo = null;
+              });
+            };
+            _add(capsule);
+          }
+        },
+      );
       // T6-2 多连接池：每个端点一个 client + face（协商 + 能力目录）。
       final faces = <String, McpToolFace>{};
       final clients = <String, McpClient>{};
@@ -836,8 +1103,22 @@ class _ChatPageState extends State<ChatPage> {
         }
       }
       // T6：路由注册表（实例随会话建）+ 默认激活全部已挂载（保单服务回归）。
-      final router = ToolRouter(faces: faces);
-      router.activatedServers.addAll(router.serverIds);
+      // P1-4（§1.6）：tier 注入——private 端点进单一私有槽位模型，本地插件
+      // 系统托管 = public 常驻（缺省公共）。
+      final router = ToolRouter(
+        faces: faces,
+        privateServerIds: {
+          for (final ep in endpoints)
+            if (ep.tier == ServerPrivacyTier.private) ep.id,
+        },
+      );
+      router.activatedServers.addAll(
+        router.serverIds.where((id) => !router.privateServerIds.contains(id)),
+      );
+      // 会话绑定（v1）：本会话锁定的私有服务——未显式绑定则按默认回退
+      // （全局钉选 isDefault → 首个启用的 private → null）。每轮重建 router
+      // 时从此恢复，确保跨轮稳固锁定、免每轮重选。
+      router.activePrivateServerId = _resolveBinding(endpoints);
       // 链路序（T6 设计）：Loop → Discovery → SkillActivation → MemoryTool →
       // Hydration → Gateway → ToolRouter → faces。
       final memoryTool = MemoryToolExecutor(inner: router, store: memoryStore);
@@ -1023,15 +1304,27 @@ class _ChatPageState extends State<ChatPage> {
       );
       _setPill('thinking', CapsuleTone.l1);
       await for (final e in loop.run(
-        systemPrompt:
-            skills.composeSystemPrompt(
-              _systemPrompt,
-              connectedServerIds: router.serverIds,
-            ) +
+        // P1-3b（§8.1 断点 A）：静态角色+skills+mountedSection 为静态前缀
+        // （挂 ephemeral 断点），记忆区走 systemTail 置尾——记忆增长不顶掉
+        // 静态前缀缓存边界。P2-4（§3.2）：workspace_update 提取指令为固定
+        // 静态区追加（含「tool-call 轮严禁输出」铁律）。
+        systemPrompt: skills.composeSystemPrompt(
+          _systemPrompt,
+          connectedServerIds: router.serverIds,
+        ) +
             mountedSection +
-            memSection,
+            WorkspaceStreamFilter.promptInstructions,
+        systemTail: memSection,
         userPrompt: prompt,
         history: List.of(_history), // D11：上轮 transcript 续接
+        workspaceFilter: workspaceFilter, // P2-6：In-band 分流+胶囊
+        // P3-2（D-H/§9.1）：已让位私有域的历史调用发送边界合成桩脱敏。
+        maskTool: (name) {
+          final sid = router.serverFor(name);
+          return sid != null &&
+              router.privateServerIds.contains(sid) &&
+              router.activePrivateServerId != sid;
+        },
         tools: const [],
       )) {
         switch (e) {
@@ -1096,6 +1389,15 @@ class _ChatPageState extends State<ChatPage> {
             unawaited(HapticFeedback.selectionClick());
         }
       }
+      // 会话绑定捕获：模型可能在本轮经 use_server/activate 改写私有槽位，
+      // 收尾前落到会话元数据，使该会话后续轮次稳固锁定（免每轮重选）。
+      final slot = router.activePrivateServerId;
+      if (slot != null) {
+        _activePrivateServerId = slot;
+      } else if (_activePrivateServerId != null &&
+          _activePrivateServerId!.isNotEmpty) {
+        _activePrivateServerId = ''; // 曾绑定 → 本轮 use_server('all') 清空 = 显式公共
+      }
     } on Object catch (e) {
       _add(TrackNote('✕ 任务中断：$e', danger: true));
       _setPill('failed', CapsuleTone.danger);
@@ -1114,6 +1416,9 @@ class _ChatPageState extends State<ChatPage> {
       await refStore?.expireAll(); // §9：Session 结束直清临时文件
       refStore?.dispose();
       await _persistConversation(); // T3b：Run 收尾快照（含 Cancelled 终态）
+      _elapsedTimer?.cancel();
+      _elapsedTimer = null;
+      _runStartedAt = null;
       if (mounted) setState(() => _running = false);
     }
   }
@@ -1298,20 +1603,73 @@ class _ChatPageState extends State<ChatPage> {
     _ => label,
   };
 
-  /// 输入条内嵌状态（§3.1 左位：呼吸点 + 等宽相位；收敛自顶部胶囊行）。
-  /// 无边框裸点+文字——容器即输入条本身，不再套药丸描边。
-  Widget _inlineStatus(ConsoleTokens t) {
+  /// 输入条内嵌状态带（§3.1：状态做在输入框本身上沿，不挤占文本区）。
+  /// idle 由调用处将高度收 0（AnimatedContainer 平滑），运行态展开为极简状态带：
+  /// 1px hairline 分隔 + 呼吸点 + 等宽相位；文本输入区始终全宽（D+B 改造）。
+  /// 已绑定私有服务时，状态带常驻显示上下文胶囊（药丸内弱感知）；
+  /// 公共态（有可绑定端点）显示「公共」胶囊。**胶囊可点 → 打开会话上下文菜单**，
+  /// 因此即便输入中「+」隐藏，也能随时切换绑定（解决输入一半想切服务的痛点）。
+  Widget _statusStrip(ConsoleTokens t) {
     final color = switch (_pillTone) {
       CapsuleTone.idle => t.terminalMuted,
       CapsuleTone.l1 => t.l1Info,
       CapsuleTone.l2 => t.l2Warn,
       CapsuleTone.danger => t.danger,
     };
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 132),
+    final ctxId = _activePrivateServerId;
+    final hasCtx = ctxId != null && ctxId.isNotEmpty;
+    final hasLocal = _localPlugins.isNotEmpty;
+    // 绑定私有端点 / 本地插件 均按「私有」呈现（锁形 + l1 色），不视作公有；
+    // 三者任一即显示上下文胶囊（均可点开菜单）。
+    final isPrivate = hasCtx || hasLocal;
+    final showChip = isPrivate || _endpoints.isNotEmpty;
+    Widget? chip;
+    if (showChip) {
+      final chipColor = isPrivate ? t.l1Info : t.terminalMuted;
+      final chipIcon = isPrivate ? Icons.lock_outline : Icons.public;
+      final chipText = hasCtx
+          ? _endpointName(ctxId)
+          : (hasLocal ? '本地×${_localPlugins.length}' : '公共');
+      chip = GestureDetector(
+        onTap: _openComposerMenu,
+        child: Container(
+          margin: const EdgeInsets.only(right: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            color: chipColor.withValues(alpha: 0.16),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                chipIcon,
+                size: 11,
+                color: chipColor,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                chipText,
+                style: TextStyle(
+                  fontFamily: t.monoFamily,
+                  fontSize: Fsz.micro,
+                  color: chipColor,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    return Container(
+      height: 30,
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: t.hairline, width: 1)),
+      ),
       child: Row(
-        mainAxisSize: MainAxisSize.min,
         children: [
+          ? chip,
           // §4.2 紧凑动效：状态点颜色随相位过渡（150~200ms，禁 Spring）。
           AnimatedContainer(
             width: 7,
@@ -1319,8 +1677,8 @@ class _ChatPageState extends State<ChatPage> {
             duration: t.fastDuration,
             decoration: BoxDecoration(color: color, shape: BoxShape.circle),
           ),
-          const SizedBox(width: 5),
-          Flexible(
+          const SizedBox(width: 8),
+          Expanded(
             child: Text(
               _pillText(_pillLabel),
               maxLines: 1,
@@ -1332,9 +1690,29 @@ class _ChatPageState extends State<ChatPage> {
               ),
             ),
           ),
+          if (_running && _runStartedAt != null)
+            Padding(
+              padding: const EdgeInsets.only(left: 8),
+              child: Text(
+                _fmtElapsed(_runStartedAt!),
+                style: TextStyle(
+                  fontFamily: t.monoFamily,
+                  fontSize: Fsz.micro,
+                  color: color,
+                ),
+              ),
+            ),
         ],
       ),
     );
+  }
+
+  /// 状态带已耗时格式化（mm:ss），自 [_runStartedAt] 起算，供运行态计时显示。
+  static String _fmtElapsed(DateTime start) {
+    final s = DateTime.now().difference(start).inSeconds;
+    final m = s ~/ 60;
+    final sec = s % 60;
+    return '${m.toString().padLeft(2, '0')}:${sec.toString().padLeft(2, '0')}';
   }
 
   /// Run 进行中离开拦截(破坏性防护 P0):系统返回/手势先弹确认——确认则
@@ -1447,9 +1825,9 @@ class _ChatPageState extends State<ChatPage> {
                   constraints: const BoxConstraints(maxWidth: 720),
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
-                    // 底部控制集群：药丸输入条（状态点 + 相位 + 输入 + 发送）+
-                    // 运行态右侧 [ABORT]（§3.1 布局：左状态 / 中阶段 / 右中止，
-                    // 由顶部胶囊行收敛进输入条，省一条常驻空行）。
+                    // 底部控制集群：药丸输入条（状态带 + 相位 + 输入 + 主操作钮）；
+                    // 运行态发送钮形变复用为「中止」键（§3.1：单一主操作槽切换
+                    // 发送↔中止，避免右侧另起红键挤占输入区，省一条常驻空行）。
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
@@ -1460,81 +1838,83 @@ class _ChatPageState extends State<ChatPage> {
                               border: Border.all(color: t.hairline),
                               color: Theme.of(context).cardColor,
                             ),
-                            padding: const EdgeInsets.only(
-                              left: 12,
-                              right: 6,
-                              top: 2,
-                              bottom: 2,
-                            ),
-                            child: Row(
+                            clipBehavior: Clip.antiAlias,
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
                               children: [
-                                _inlineStatus(t),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: TextField(
-                                    controller: _inputCtrl,
-                                    // 运行中保持可预输入（发送由按钮/_guard 挡 running）。
-                                    minLines: 1,
-                                    maxLines: 4,
-                                    textInputAction: TextInputAction.send,
-                                    decoration: InputDecoration(
-                                      hintText: '描述任务…（Enter 发送；如：列出今天的待办）',
-                                      border: InputBorder.none,
-                                      contentPadding: const EdgeInsets.symmetric(
-                                        horizontal: 0,
-                                        vertical: 12,
+                                // §3.1 状态做在输入框本身上沿（框内顶部状态带），idle
+                                // 高度收 0，运行态平滑展开；文本输入区始终全宽（D+B 改造）。
+                                AnimatedContainer(
+                                  duration: t.fastDuration,
+                                  curve: Curves.easeOut,
+                                  height: (_running || _hasContext || _endpoints.isNotEmpty)
+                                      ? 30
+                                      : 0,
+                                  clipBehavior: Clip.antiAlias,
+                                  decoration: const BoxDecoration(
+                                    borderRadius: BorderRadius.vertical(
+                                      top: Radius.circular(24),
+                                    ),
+                                  ),
+                                  child: _statusStrip(t),
+                                ),
+                                Row(
+                                  children: [
+                                      IconButton(
+                                        icon: const Icon(Icons.add),
+                                        tooltip: '会话上下文（绑定 MCP 服务）',
+                                        onPressed: _openComposerMenu,
+                                        padding: EdgeInsets.zero,
+                                        constraints: const BoxConstraints(
+                                            minWidth: 36, minHeight: 36),
+                                      ),
+                                    Expanded(
+                                      child: TextField(
+                                        controller: _inputCtrl,
+                                        // 运行中保持可预输入（发送由按钮/_guard 挡 running）。
+                                        minLines: 1,
+                                        maxLines: 4,
+                                        textInputAction: TextInputAction.send,
+                                        decoration: InputDecoration(
+                                          hintText: _running
+                                              ? '生成中…可先预输入下一轮'
+                                              : '描述任务…（Enter 发送；如：列出今天的待办）',
+                                          border: InputBorder.none,
+                                          contentPadding: const EdgeInsets.fromLTRB(14, 12, 6, 12),
+                                        ),
+                                        onSubmitted: (_) {
+                                          // 生成中静默拦截：发送钮已形变为「中止」，键盘回车
+                                          // 不再弹 Toast 打扰（行业惯例：停止为即时动作）。
+                                          if (_running) return;
+                                          _send();
+                                        },
                                       ),
                                     ),
-                                    onSubmitted: (_) {
-                                      if (_running) {
-                                        _toast('任务运行中，可先输入，结束后再发送');
-                                        return;
-                                      }
-                                      _send();
-                                    },
-                                  ),
-                                ),
-                                const SizedBox(width: 4),
-                                // 内嵌发送钮；运行中可点——给原因反馈而非静默置灰。
-                                IconButton.filledTonal(
-                                  style: IconButton.styleFrom(
-                                    minimumSize: const Size(36, 36),
-                                    padding: EdgeInsets.zero,
-                                  ),
-                                  onPressed: () {
-                                    if (_running) {
-                                      _toast('任务运行中，可先输入，结束后再发送');
-                                      return;
-                                    }
-                                    _send();
-                                  },
-                                  tooltip: '发送',
-                                  icon: const Icon(Icons.arrow_upward, size: 20),
+                                    const SizedBox(width: 4),
+                                    // §3.1 复用发送钮：运行态形变为主操作「中止」键，
+                                    // 单一槽位内切换 发送↔中止，避免右侧另起红键挤占输入区。
+                                    IconButton.filledTonal(
+                                      style: IconButton.styleFrom(
+                                        minimumSize: const Size(36, 36),
+                                        padding: EdgeInsets.zero,
+                                        foregroundColor:
+                                            _running ? t.dangerDeep : null,
+                                      ),
+                                      onPressed: _running ? _abort : _send,
+                                      tooltip: _running ? '中止' : '发送',
+                                      icon: Icon(
+                                        _running
+                                            ? Icons.stop
+                                            : Icons.arrow_upward,
+                                        size: 20,
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ],
                             ),
                           ),
                         ),
-                        // §3.1 右位：高反差低误触的红色 ABORT（仅运行态出现）。
-                        if (_running) ...[
-                          const SizedBox(width: 8),
-                          TextButton(
-                            key: const Key('capsule-abort'),
-                            style: TextButton.styleFrom(
-                              foregroundColor: t.dangerDeep,
-                              padding: const EdgeInsets.symmetric(horizontal: 8),
-                              minimumSize: const Size(0, 36),
-                            ),
-                            onPressed: _abort,
-                            child: Text(
-                              '[ABORT]',
-                              style: TextStyle(
-                                fontFamily: t.monoFamily,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ],
                       ],
                     ),
                   ),

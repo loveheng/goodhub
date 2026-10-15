@@ -45,6 +45,7 @@ class ConversationSnapshot {
     required this.updatedAt,
     required this.track,
     required this.messages,
+    required this.activePrivateServerId,
   });
 
   final String id;
@@ -56,6 +57,10 @@ class ConversationSnapshot {
 
   /// AgentLoop transcript JSON（[decodeMessages] 还原）。
   final List<Map<String, Object?>> messages;
+
+  /// 本会话锁定的私有 MCP 服务（v1 会话绑定）：null=未设定（按默认回退）/
+  /// ''=显式纯公共 / 否则为 serverId。
+  final String? activePrivateServerId;
 }
 
 class ConversationStore {
@@ -78,7 +83,10 @@ class ConversationStore {
 
   /// 新建空会话，返回 id（epoch 毫秒锚点；同毫秒并发由目录内文件名唯一性
   /// 承担——单页会话操作串行，不构成现实竞态）。
-  Future<String> create({required String title}) async {
+  Future<String> create({
+    required String title,
+    String? activePrivateServerId,
+  }) async {
     await dir.create(recursive: true);
     final id = 'conv_${DateTime.now().millisecondsSinceEpoch}';
     await _writer(id).write(jsonEncode(<String, Object?>{
@@ -87,6 +95,7 @@ class ConversationStore {
       'updatedAt': DateTime.now().millisecondsSinceEpoch,
       'track': <Object?>[],
       'messages': <Object?>[],
+      'activePrivateServerId': activePrivateServerId,
     }));
     return id;
   }
@@ -97,6 +106,7 @@ class ConversationStore {
     required String title,
     required List<Map<String, Object?>> track,
     required List<Map<String, Object?>> messages,
+    required String? activePrivateServerId,
   }) async {
     if (id.isEmpty) throw ArgumentError('conversation id 不能为空');
     await dir.create(recursive: true);
@@ -106,6 +116,7 @@ class ConversationStore {
       'updatedAt': DateTime.now().millisecondsSinceEpoch,
       'track': track,
       'messages': messages,
+      'activePrivateServerId': activePrivateServerId,
     }));
   }
 
@@ -150,6 +161,7 @@ class ConversationStore {
           for (final m in data['messages'] as List? ?? const [])
             if (m is Map) Map<String, Object?>.from(m),
         ],
+        activePrivateServerId: data['activePrivateServerId'] as String?,
       );
     } on Object catch (e) {
       debugPrint('[DEGRADE] conversation-store: 会话损坏无法恢复 $id: $e');

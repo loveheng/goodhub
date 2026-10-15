@@ -71,6 +71,71 @@ void main() {
       await expectLater(s.remember('   '), throwsArgumentError);
     });
 
+    test('G4 scope 扩展（P2-5）：session / ws:<convId> 放行，幻觉 scope 拒绝', () async {
+      final dir = await tmpDir();
+      final s = MemoryStore(dir: dir);
+      final a = await s.remember('会话事实', scope: 'session');
+      final b = await s.remember('工作区事实', scope: 'ws:conv_9');
+      expect(a.scope, 'session');
+      expect(b.scope, 'ws:conv_9');
+      await expectLater(
+        s.remember('幻觉', scope: 'public'),
+        throwsArgumentError,
+        reason: 'MemoryStore 层只认归一后的四类——"public" 由 G4 归一为 session',
+      );
+      await expectLater(
+        s.remember('幻觉', scope: 'evil:1'),
+        throwsArgumentError,
+      );
+    });
+
+    test('G1 keyed upsert（P2-1b）：同 key 同 scope 整条覆盖不追加，跨 scope 隔离', () async {
+      final dir = await tmpDir();
+      final s = MemoryStore(dir: dir);
+      final (e1, isNew1) = await s.upsertFacts('db', 'PostgreSQL');
+      expect(isNew1, isTrue);
+      expect(e1.tags, contains('key:db'));
+
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      final (e2, isNew2) = await s.upsertFacts('db', 'SQLite');
+      expect(isNew2, isFalse, reason: '同 key 覆盖不追加（§3.6 防膨胀）');
+      expect(e2.id, e1.id, reason: '锚点 id 保留');
+      final all = await s.listMemories();
+      expect(all, hasLength(1));
+      expect(all.single.content, 'SQLite');
+
+      // 跨 scope 同 key 不互覆。
+      await s.upsertFacts('db', 'goodshare 专用', scope: 'srv:goodshare');
+      expect(await s.listMemories().then((l) => l.length), 2);
+    });
+
+    test('G1 keyed remove（P2-1b）：按 key 删除，scope 过滤，幂等返 0', () async {
+      final dir = await tmpDir();
+      final s = MemoryStore(dir: dir);
+      await s.upsertFacts('k1', 'v-user', scope: 'user');
+      await s.upsertFacts('k1', 'v-srv', scope: 'srv:gs');
+      // scope 过滤只删该域。
+      expect(await s.removeFacts('k1', scope: 'user'), 1);
+      expect(
+        await s.listMemories().then(
+            (l) => l.where((e) => e.tags.contains('key:k1')).length),
+        1,
+      );
+      // 不带 scope 删剩余；再删幂等返 0。
+      expect(await s.removeFacts('k1'), 1);
+      expect(await s.removeFacts('k1'), 0);
+    });
+
+    test('G1 keyed 防线：非法 key（空/含 , [ ]）拒绝', () async {
+      final dir = await tmpDir();
+      final s = MemoryStore(dir: dir);
+      for (final bad in ['', 'a,b', 'a[b]', 'a]b']) {
+        await expectLater(s.upsertFacts(bad, 'v'), throwsArgumentError,
+            reason: '非法 key: $bad');
+      }
+      await expectLater(s.removeFacts(''), throwsArgumentError);
+    });
+
     test('无锚点手写内容不丢不炸，后续 id 从 mem_001 起', () async {
       final dir = await tmpDir();
       File('${dir.path}/memory.md')

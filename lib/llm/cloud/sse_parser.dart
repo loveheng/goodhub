@@ -44,12 +44,16 @@ Stream<String> _splitLines(Stream<String> chunks) async* {
   if (buf.isNotEmpty) yield buf;
 }
 
-Stream<SseEvent> parseSse(Stream<String> chunks) async* {
+Stream<SseEvent> parseSse(
+  Stream<String> chunks, {
+  void Function()? onActivity,
+}) async* {
   var firstLine = true;
   var eventName = 'message';
   var dataLines = <String>[];
 
   await for (final line in _splitLines(chunks)) {
+    onActivity?.call(); // 任意行到达 = 传输层有字节流动（含心跳注释帧），证明连接活着
     var l = line;
     if (firstLine) {
       // UTF-8 BOM（EF BB BF）解码残留
