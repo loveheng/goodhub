@@ -676,4 +676,170 @@ void main() {
       expect(sent.whereType<ToolResultMessage>().single.content, 'r');
     });
   });
+
+  group('阶梯截断归档摘要（context-stepped-pruning §2.2）', () {
+    /// System + n 轮完整对（与 context_governor_test 同构）。
+    List<CloudChatMessage> rounds(int n) => [
+          for (var i = 1; i <= n; i++) ...[
+            UserMessage('u$i'),
+            AssistantMessage(
+              content: 'a$i',
+              toolCalls: [AssembledToolCall(id: 'c$i', name: 'f', argumentsJson: '{}')],
+            ),
+            ToolResultMessage(toolCallId: 'c$i', content: 'r$i'),
+          ],
+        ];
+
+    test('触高水位（13 轮历史）：归档摘要插装 System 后，保留区 7 轮完整对', () async {
+      final corpora = <String>[];
+      final steppedLoop = AgentLoop(
+        engine: engine,
+        executor: executor,
+        summarizer: (corpus) async {
+          corpora.add(corpus);
+          return '摘要A';
+        },
+      );
+      engine.script.add(() => textStream('done'));
+      await steppedLoop
+          .run(
+            systemPrompt: 's',
+            userPrompt: 'unew',
+            history: rounds(13),
+          )
+          .toList();
+
+      expect(corpora, hasLength(1), reason: '触线一次归档一次');
+      expect(corpora.single, contains('a1'), reason: '被裁轮次原文入摘要语料');
+      expect(corpora.single, isNot(contains('a13')), reason: '保留轮不进语料');
+
+      final sent = engine.calls.single.messages;
+      expect(sent.first, isA<SystemMessage>());
+      // 摘要块：前导（System+u1）之后、第一个保留轮（u7,a7）之前的 UserMessage。
+      final noteIdx = sent.indexWhere(
+        (m) => m is UserMessage && m.content.contains('归档摘要'),
+      );
+      expect(noteIdx, greaterThan(0), reason: '摘要块在位');
+      final note = sent[noteIdx] as UserMessage;
+      expect(note.content, contains('摘要A'));
+      final firstRoundIdx =
+          sent.indexWhere((m) => m is AssistantMessage);
+      expect(noteIdx, firstRoundIdx - 1, reason: '摘要块紧贴保留区首 Assistant 之前');
+      // 保留区：R7~R13 完整对（含各自 User 提问），R2~R6 已出窗归档。
+      final keptAssistantIds = sent
+          .whereType<AssistantMessage>()
+          .map((m) => m.toolCalls.single.id)
+          .toList();
+      expect(keptAssistantIds, ['c7', 'c8', 'c9', 'c10', 'c11', 'c12', 'c13']);
+      final userContents =
+          sent.whereType<UserMessage>().map((m) => m.content).toList();
+      expect(userContents, contains('u1'),
+          reason: '前导 User 随 System 恒保留（朴素滑动同口径）');
+      expect(userContents, contains('u7'),
+          reason: '保留轮自己的提问必须随轮走（steppedWindow 回退纪律）');
+      expect(userContents, isNot(contains('u2')), reason: '被裁轮次提问不入发送区');
+      expect(corpora.single, isNot(contains('u7')),
+          reason: '保留轮提问不混入归档语料');
+    });
+
+    test('轮数未触高水位：纯追加，不调摘要器、无摘要块', () async {
+      var summarized = 0;
+      final steppedLoop = AgentLoop(
+        engine: engine,
+        executor: executor,
+        summarizer: (_) async {
+          summarized++;
+          return '不应出现';
+        },
+      );
+      engine.script.add(() => textStream('done'));
+      await steppedLoop
+          .run(systemPrompt: 's', userPrompt: 'unew', history: rounds(6))
+          .toList();
+      expect(summarized, 0, reason: '低水位内纯追加（缓存 100% 命中）');
+      expect(
+        engine.calls.single.messages.whereType<UserMessage>().map((m) => m.content),
+        isNot(contains(contains('归档摘要'))),
+      );
+    });
+
+    test('摘要器失败：弃归档降级朴素滑动（E1 口径，禁中断）', () async {
+      final steppedLoop = AgentLoop(
+        engine: engine,
+        executor: executor,
+        summarizer: (_) async => throw const SummarizeException('端侧不可用'),
+      );
+      engine.script.add(() => textStream('done'));
+      final events = await steppedLoop
+          .run(
+            systemPrompt: 's',
+            userPrompt: 'unew',
+            history: rounds(13),
+          )
+          .toList();
+      expect(events.whereType<LoopFinished>().single.text, 'done',
+          reason: '摘要失败不中断 Run');
+      final sent = engine.calls.single.messages;
+      expect(
+        sent.whereType<UserMessage>().map((m) => m.content),
+        isNot(contains(contains('归档摘要'))),
+        reason: '失败即弃归档（朴素滑动兜底）',
+      );
+      // 朴素滑动兜底：仅最近 windowRounds=6 轮（c8~c13）。
+      expect(
+        sent.whereType<AssistantMessage>().map((m) => m.toolCalls.single.id),
+        ['c8', 'c9', 'c10', 'c11', 'c12', 'c13'],
+      );
+    });
+
+    test('summarizer=null：朴素滑动契约不变（纯云路径零行为变化）', () async {
+      engine.script.add(() => textStream('done'));
+      await loop.run(systemPrompt: 's', userPrompt: 'unew', history: rounds(13)).toList();
+      final sent = engine.calls.single.messages;
+      expect(
+        sent.whereType<UserMessage>().map((m) => m.content),
+        isNot(contains(contains('归档摘要'))),
+      );
+      expect(
+        sent.whereType<AssistantMessage>().map((m) => m.toolCalls.single.id),
+        ['c8', 'c9', 'c10', 'c11', 'c12', 'c13'],
+        reason: 'windowRounds=6 朴素滑动',
+      );
+    });
+
+    test('contextFooter（§6.5 Delta 后置）：插在 history 之后、提问之前，`<` 消毒', () async {
+      engine.script.add(() => textStream('done'));
+      await loop
+          .run(
+            systemPrompt: 's',
+            userPrompt: 'unew',
+            history: [
+              const UserMessage('u1'),
+              const AssistantMessage(content: 'a1'),
+              const UserMessage('u2'),
+              const AssistantMessage(content: 'a2'),
+            ],
+            contextFooter: '[Recent Memory Updates]\n- SET user.k = <v1>',
+          )
+          .toList();
+      final sent = engine.calls.single.messages;
+      final contents =
+          sent.whereType<UserMessage>().map((m) => m.content).toList();
+      expect(contents.last, 'unew', reason: '本轮提问仍在最末尾');
+      expect(contents[contents.length - 2], contains('SET user.k'),
+          reason: '增量区紧贴本轮提问（沉底）');
+      expect(contents[contents.length - 2], contains('&lt;v1>'),
+          reason: 'footer 内容过 escapeUserTag 消毒（只转义 <，幂等口径）');
+      expect(contents.take(2), ['u1', 'u2'], reason: '历史原文位置不变（前缀不推移）');
+    });
+
+    test('contextFooter 空/null：不注入（零行为变化）', () async {
+      engine.script.add(() => textStream('done'));
+      await loop
+          .run(systemPrompt: 's', userPrompt: 'u', contextFooter: '')
+          .toList();
+      final sent = engine.calls.single.messages;
+      expect(sent.whereType<UserMessage>().map((m) => m.content), ['u']);
+    });
+  });
 }

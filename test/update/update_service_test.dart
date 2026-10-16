@@ -197,5 +197,38 @@ void main() {
       );
       expect(await file.readAsBytes(), payload);
     });
+
+    test('下载取消（ux-hardening P0-3）：isCancelled 命中即中止——半成品删除、'
+        '抛 UpdateCancelled（取消≠失败）', () async {
+      // 慢速分块响应：让 isCancelled 在第一个 chunk 之后有机会命中。
+      final s = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      servers.add(s);
+      s.listen((req) async {
+        final res = req.response;
+        res.statusCode = 200;
+        for (var i = 0; i < 20; i++) {
+          res.add(List<int>.filled(64, i));
+          await res.flush();
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        await res.close();
+      });
+      final prefs = await SharedPreferences.getInstance();
+      final svc = UpdateService(prefs);
+      var cancelled = false;
+      expect(
+        () => svc.downloadApk(
+          'http://127.0.0.1:${s.port}/app.apk',
+          to: tmp,
+          onProgress: (received, _) {
+            if (received >= 64) cancelled = true; // 首 chunk 后置取消
+          },
+          isCancelled: () => cancelled,
+        ),
+        throwsA(isA<UpdateCancelled>()),
+      );
+      expect(File('${tmp.path}/update.apk.part').existsSync(), isFalse,
+          reason: '取消即删半成品，不留残留');
+    });
   });
 }

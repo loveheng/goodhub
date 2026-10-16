@@ -6,8 +6,6 @@
 ## Phase 1 · 数据模型与缓存基建
 > 交付目标：访问性枚举落地 + 工具序 / 缓存确定性，为记忆提取与网关虚拟化铺路（无记忆行为改动）。
 
-- [ ] P1-1 `ServerPrivacyTier` 落地（§1.4 / §1.5）：enum 两档 + `ServerEndpoint.tier` + `fromJson` 缺省兜底 `private`（不抛）+ goodshare 迁移 `tier: public`（✅ 10-15 完成，devlog 有账；P1-2 已流转 done.md）
-- [ ] P1-3 `CloudChatMessage.cacheControl` 断点 A（P0-CACHE-1 / §8.1）：基类 `CacheControl` 字段 + Anthropic 挂 `cache_control:{type:"ephemeral"}` + 断点计数护栏 `≤3`（✅ 10-15 完成，devlog 有账）
 
 - **DoD(P1)**：`flutter analyze` 0 issue；`ServerPrivacyTier.fromJson` 缺字段 / 非法值单测均兜底 `private`；同激活集两次 `toolsProvider()` 列表顺序与字节一致；Anthropic 首轮 usage 含 `cache_creation_input_tokens>0`、次轮含 `cache_read_input_tokens>0`；无缓存能力的 provider 行为零变化。
 
@@ -20,7 +18,6 @@
 ## Phase 3 · 网关鲁棒性治理
 > 交付目标：多工具并发、私有域切换脱敏、超大输出截断——稳定性保底（依赖 Phase 1 工具序 / Phase 2 提取稳定）。
 
-- [ ] P3-2 Synthetic 成对脱敏（D-H / §9.1）：切换私有域保留 `tool_call_id` 替换合成占位桩，上游严格成对不收 `400`（✅ 10-15 完成——落点 agent_loop 发送边界 maskTool，已流转 done.md；下方 (block) 登记一并解除）
 
 - **DoD(P3)**：单轮多 `tool_calls` 总耗时显著下降且零异常中断流；切换私有域发往上游的历史严格成对、不触发 `400 Bad Request`；超大 result 回填永不超越 `2000 token` 上界。
 

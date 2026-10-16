@@ -47,6 +47,57 @@ void main() {
     expect(c2.undone, isTrue);
   });
 
+  test('上下文归因条（展示 only）往返：快照保真 + 恢复态不接排除回调', () {
+    final entries = <TrackEntry>[
+      TrackContextAttribution(
+        memories: const [
+          ContextAttributionItem(source: 'user', text: '偏好 Dart 强类型'),
+          ContextAttributionItem(source: 'srv:goodshare', text: '方案 B（单槽隔离）'),
+        ],
+        services: const [
+          ContextAttributionItem(source: 'goodshare', text: 'goodshare Tier 2'),
+        ],
+        droppedCount: 2,
+      ),
+    ];
+
+    final decoded = TrackEntryCodec.decode(TrackEntryCodec.encode(entries));
+    final c = decoded.single as TrackContextAttribution;
+    expect(c.memories, hasLength(2));
+    expect(c.memories[0].source, 'user');
+    expect(c.memories[0].text, '偏好 Dart 强类型');
+    expect(c.memories[1].source, 'srv:goodshare');
+    expect(c.services.single.text, 'goodshare Tier 2');
+    expect(c.droppedCount, 2);
+    expect(c.onItemExclude, isNull, reason: '历史恢复归因条不接排除回调（锁定同 capsule 口径）');
+  });
+
+  test('错误行动卡（P0-2）往返：字段保真 + 恢复态不接重试回调', () {
+    final card = TrackError(
+      title: '连不上推理服务',
+      advice: '检查网络连接与端点地址是否可达，然后重试',
+      detail: 'CloudNetworkException: connection reset',
+    )..retried = true;
+
+    final decoded = TrackEntryCodec.decode(TrackEntryCodec.encode([card]));
+    final e = decoded.single as TrackError;
+    expect(e.title, '连不上推理服务');
+    expect(e.advice, '检查网络连接与端点地址是否可达，然后重试');
+    expect(e.detail, 'CloudNetworkException: connection reset');
+    expect(e.retried, isTrue);
+    expect(e.onAction, isNull,
+        reason: '恢复历史无可重跑的任务（锁定同 capsule 口径）');
+  });
+
+  test('引导卡不持久化（P0-1）：编码兜底降级为通告行（瞬态条目）', () {
+    final decoded = TrackEntryCodec.decode(TrackEntryCodec.encode([
+      const TrackGuide(text: '尚未配置任何 MCP 服务', actionLabel: '去配置'),
+    ]));
+    final note = decoded.single as TrackNote;
+    expect(note.text, '尚未配置任何 MCP 服务');
+    expect(note.danger, isFalse);
+  });
+
   test('恢复降级：进行态 call → cancelled +「(会话中断)」（恢复历史无在途工具）', () {
     final decoded = TrackEntryCodec.decode([
       {

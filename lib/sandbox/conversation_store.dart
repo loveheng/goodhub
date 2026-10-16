@@ -28,6 +28,7 @@ class ConversationMeta {
     required this.id,
     required this.title,
     required this.updatedAt,
+    this.messageCount = 0,
   });
 
   final String id;
@@ -35,6 +36,9 @@ class ConversationMeta {
 
   /// epoch 毫秒（侧边栏按此倒序）。
   final int updatedAt;
+
+  /// transcript 消息条数（ux-hardening P1-5 侧边栏元信息；旧数据缺省 0）。
+  final int messageCount;
 }
 
 /// 会话快照（恢复装配消费）。
@@ -133,6 +137,7 @@ class ConversationStore {
           id: data['id'] as String,
           title: data['title'] as String? ?? '（无标题）',
           updatedAt: data['updatedAt'] as int? ?? 0,
+          messageCount: (data['messages'] as List? ?? const []).length,
         ));
       } on Object catch (e) {
         debugPrint('[DEGRADE] conversation-store: 列表解析失败 '
@@ -177,6 +182,27 @@ class ConversationStore {
     } catch (e) {
       // DEGRADE: 单文件删除失败不阻断列表刷新（下次删除重试），留痕。
       debugPrint('[DEGRADE] conversation-store: delete failed $id: $e');
+    }
+  }
+
+  /// 重命名（ux-hardening P1-5）：**只改标题**——updatedAt 原样保留（重命名
+  /// 不制造「最近活跃」假象、不打乱列表序），轨道/消息/绑定不动；temp+rename
+  /// 原子重写。文件缺失/损坏 → false（DEGRADE 留痕，不抛穿）。
+  Future<bool> rename(String id, String title) async {
+    final f = _file(id);
+    try {
+      if (!await f.exists()) {
+        debugPrint('[DEGRADE] conversation-store: rename 目标缺失 $id');
+        return false;
+      }
+      final data =
+          jsonDecode(await f.readAsString()) as Map<String, Object?>;
+      data['title'] = title;
+      await _writer(id).write(jsonEncode(data));
+      return true;
+    } on Object catch (e) {
+      debugPrint('[DEGRADE] conversation-store: rename failed $id: $e');
+      return false;
     }
   }
 

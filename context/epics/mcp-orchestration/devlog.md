@@ -72,3 +72,14 @@
 - **测试**：新增 `test/coordinator/tool_router_test.dart`——钉住核心机制：私有 tier（含本地插件 id）未激活时不进 `focusedSchemas` 且 `execute` 被单槽门控拦截；仅激活的单一私有可见、其余私有被互斥隐藏。`mcp_runtime` 把本地插件 id 并入 `privateServerIds` 即依赖此机制。
 - **影响面**：仅宿主（手机）路由隔离生效；网关/PC 路径不受影响（网关本就不挂载本地插件，本地插件不进 `GatewayController.privateServerIds`）。`discovery_executor.use_server` 因 `privateServerIds` 现含本地插件 id，亦可绑定本地插件占用单槽。
 - **验证**：`flutter analyze` 全量 0 issue；`flutter test` 全量 637 例绿（新增 2 例）。
+## 2026-10-16 · 默认私有服务统一钉选（Hybrid：设置页管默认，聊天菜单管本会话覆盖）
+
+- **裁决（用户拍板 Hybrid）**：「设为全局默认」原是藏在聊天上下文菜单里的小开关（写 `isDefault` 进 mcp_servers.json），且对本地插件是 no-op（本地插件不在 endpoints store，钉选写不进去）——持久默认应放**设置页**（可发现、持久、覆盖手动端点+本地插件）；聊天菜单保留**本次会话即时切换/覆盖**。
+- **改动**：
+  - 新增 `lib/mcp/default_private_server.dart`：统一持久键 `default.private.server`（SharedPreferences）+ `readDefaultPrivateServerId`/`writeDefaultPrivateServerId`。与遗留 `ServerEndpoint.isDefault` 的关系：isDefault 是旧「手动端点内单选」位，本键为统一权威默认。
+  - `chat_page.dart`：新增 `_defaultPrivateId` 状态；`_loadEndpoints` 读取统一默认（先刷缓存再解析绑定，修掉旧实现 setState 前读缓存的时序坑）；`_resolveBinding` 回退链改为「显式绑定 → 统一默认（须当前仍存在：启用 private 端点或已发现本地插件）→ 首个手动 private → null」；删除 `_defaultId()`（读 isDefault）与 `_setGlobalDefault()`（写 isDefault）；`_openComposerMenu` 传 `defaultId: _defaultPrivateId`、移除 `onSetDefault`。
+  - `session_context_sheet.dart`：移除「设为全局默认」SwitchListTile 与 `onSetDefault` 参数；顶部状态区新增只读提示「默认私有服务：X（在设置可改）」；会话锁定值 ≠ 默认时提示「已为本会话覆盖默认：X」。
+  - `settings_page.dart`：新增「默认私有服务」面板（本地插件面板之后）——单选列启用 private 手动端点 + 已发现本地插件 + 「无（纯公共）」，经 `RadioGroup` 写统一键；独立初始化失败按空（DEGRADE 不拖垮页面）。
+- **运行时自洽**：`mcp_runtime.resolveBinding`（顶层纯函数，测试钉住 isDefault 语义）签名不动；聊天页在 init 即把统一默认绑定进 `ConversationSession.activePrivateServerId`，装配时 `bound` 非空直接生效——统一默认（含本地插件）经会话态进运行时，isDefault 分支仅作遗留兜底。
+- **测试**：`flutter analyze`（4 改动文件）0 issue；`test/coordinator/mcp_runtime_test.dart` + `test/ui/chat_page_smoke_test.dart` + `test/mcp/server_endpoints_test.dart` 33 例绿；`test/ui/settings_page_test.dart` + `test/ui/local_plugins_panel_test.dart` 11 例绿（测试环境 SharedPreferences 不可用 → default-private 按无默认 DEGRADE，与 gateway-token/about-panel 同模式非致命）。
+- **行为变化**：本地插件现可被钉选为持久默认（原 no-op 修复）；聊天菜单不再能改持久默认（只能本会话覆盖）；旧 `isDefault` 字段保留（JSON 兼容 + resolveBinding 遗留兜底），不再有写入入口。

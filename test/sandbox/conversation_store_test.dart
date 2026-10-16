@@ -57,6 +57,43 @@ void main() {
       expect(snap.messages[2]['type'], 'toolResult');
     });
 
+    test('rename（ux-hardening P1-5）：只改标题、updatedAt 保留、轨道/消息不动',
+        () async {
+      final dir = await tmpDir();
+      final store = ConversationStore(dir: dir);
+      final id = await store.create(title: '旧标题');
+      await store.save(
+        id: id,
+        title: '旧标题',
+        track: [
+          {'type': 'user', 'text': '旧标题'},
+        ],
+        messages: [
+          {'type': 'user', 'content': '旧标题'},
+        ],
+        activePrivateServerId: null,
+      );
+      final before = (await store.list()).single;
+
+      expect(await store.rename(id, '新标题'), isTrue);
+      final metas = await store.list();
+      expect(metas.single.title, '新标题');
+      expect(metas.single.updatedAt, before.updatedAt,
+          reason: '重命名不制造「最近活跃」假象、不打乱列表序');
+      expect(metas.single.messageCount, 1, reason: '列表元信息：消息条数');
+
+      final snap = await store.load(id);
+      expect(snap!.title, '新标题');
+      expect(snap.track, hasLength(1), reason: '轨道不动');
+      expect(snap.messages, hasLength(1), reason: 'transcript 不动');
+    });
+
+    test('rename 目标缺失 → false（不抛穿）', () async {
+      final dir = await tmpDir();
+      final store = ConversationStore(dir: dir);
+      expect(await store.rename('conv_missing', 'x'), isFalse);
+    });
+
     test('activePrivateServerId 随快照保真（绑定 / 显式公共）', () async {
       final dir = await tmpDir();
       final store = ConversationStore(dir: dir);

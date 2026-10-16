@@ -56,3 +56,9 @@ class UpdateException implements Exception {
   @override
   String toString() => message;
 }
+
+/// 下载被用户主动取消（ux-hardening P0-3）：区别于失败——页面以中性语气
+/// 呈现，不计错误。extends [UpdateException] 保证既有 catch 路径兼容。
+class UpdateCancelled extends UpdateException {
+  const UpdateCancelled() : super('下载已取消');
+}

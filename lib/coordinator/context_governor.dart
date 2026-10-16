@@ -56,6 +56,57 @@ List<CloudChatMessage> trimMessagesToWindow(
   ];
 }
 
+/// 阶梯截断结果：保留区 + 被裁出的完整轮次（供调用方归档摘要）。
+class SteppedWindowResult {
+  const SteppedWindowResult({required this.kept, required this.pruned});
+
+  /// 发送区：前导消息（System/User）+ 保留轮完整对（未触发时 = 原表）。
+  final List<CloudChatMessage> kept;
+
+  /// 被裁出的完整轮次平铺（Assistant(+tool_calls) → ToolResult* 成对；
+  /// 未触发时为空表）。供调用方送摘要器归档——本函数不做摘要。
+  final List<CloudChatMessage> pruned;
+}
+
+/// 阶梯截断（纯函数，设计稿 context-stepped-pruning §2.1）：高低水位双缓冲——
+/// 可用轮 ≤ 高水位（low + step）时**纯追加不裁剪**（吃满前缀缓存）；触线时
+/// 一次性剪出最早 [step] 轮交调用方归档摘要，保留区回到低水位。窗口在
+/// low ~ low+step 间阶梯波动，截断频率从「每轮」降为「每 step 轮一次」。
+///
+/// 与 [trimMessagesToWindow] 同纪律：轮起点只认 AssistantMessage、裁剪点只落
+/// Assistant 边界（tool_calls 与 ToolResult 严禁拆对）、前导消息恒保留。
+/// [step] ≤ 0 视为关闭阶梯（调用方走朴素滑动）。
+SteppedWindowResult steppedWindow(
+  List<CloudChatMessage> messages, {
+  required int low,
+  required int step,
+}) {
+  final roundStarts = <int>[
+    for (var i = 0; i < messages.length; i++)
+      if (messages[i] is AssistantMessage) i,
+  ];
+  final high = low + step;
+  if (low <= 0 || step <= 0 || roundStarts.length <= high) {
+    // 未触高水位：纯追加，原样放行（缓存 100% 命中）。
+    return SteppedWindowResult(kept: List.of(messages), pruned: const []);
+  }
+  // 触线：剪出最早的 step 轮（roundStarts[0..step)），保留起点 = 第 step 轮
+  // 的 Assistant——保留区恰剩 low 轮，回到基底。
+  var cutAt = roundStarts[step];
+  // 保留轮 k 的 User 提问紧贴其 Assistant 之前——必须随保留轮走：回退越过
+  // 紧贴的 UserMessage（否则保留轮失去自己的提问，语料混入下一轮 prompt）。
+  while (cutAt > roundStarts.first && messages[cutAt - 1] is UserMessage) {
+    cutAt--;
+  }
+  return SteppedWindowResult(
+    kept: [
+      ...messages.sublist(0, roundStarts.first), // 前导（System/User）恒保留
+      ...messages.sublist(cutAt),
+    ],
+    pruned: messages.sublist(roundStarts.first, cutAt),
+  );
+}
+
 /// 摘要化失败（端侧引擎不可用/空产出/异常）——E1 兜底在调用方，禁静默放行。
 class SummarizeException implements Exception {
   const SummarizeException(this.message);

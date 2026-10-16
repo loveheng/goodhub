@@ -96,7 +96,9 @@ void main() {
   testWidgets('空态渲染 + 新增模型（profile 落库 + 密钥走安全存储不入 profile）',
       (tester) async {
     await pumpHall(tester);
-    expect(find.text('（暂无模型配置——云端引擎未装配，仅端侧路径）'), findsOneWidget);
+    expect(find.text('（暂无模型配置——未接入云端模型，仅端侧路径）'), findsOneWidget);
+    expect(find.text('云端引擎（自带 API Key）'), findsOneWidget,
+        reason: 'P1-7：标题去 BYOK 黑话');
 
     await tester.tap(find.byKey(const Key('byok-new')));
     await tester.pumpAndSettle();

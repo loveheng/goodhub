@@ -90,6 +90,9 @@ class ConversationArchive {
 
   /// 读取落盘的配额（进程重启恢复；文件缺失/损坏/签名不符 → null——
   /// 篡改检出按无配额记录处理，宁可重置不信任被改数据）。
+  ///
+  /// P2-1：损坏/签名不符不再静默清零——原文件备份保留（防之后 saveQuota
+  /// 无声覆盖证据），并经 [lastQuotaError] 供窗口出用户可见提示。
   Future<SamplingQuota?> loadQuota() async {
     try {
       if (!await _quotaFile.exists()) return null;
@@ -106,7 +109,12 @@ class ConversationArchive {
       final payload = jsonEncode(hits);
       final sig = data['sig'] as String? ?? '';
       final expected = _sign(await _quotaHmacKey(), payload);
-      if (!_constantTimeEquals(sig, expected)) return null; // 篡改/密钥轮换
+      if (!_constantTimeEquals(sig, expected)) {
+        // 篡改/密钥轮换：按无记录处理（安全立场），但备份 + 留因可可见。
+        await _backupCorruptQuota();
+        _lastQuotaError = '配额记录签名不符（疑似篡改或密钥轮换），已按无记录处理';
+        return null;
+      }
       final quota = SamplingQuota();
       quota.restoreHits(hits);
       return quota;
@@ -114,7 +122,28 @@ class ConversationArchive {
       // DEGRADE: 配额文件损坏按无记录（重置），日志留痕。
       // ignore: avoid_print
       print('[DEGRADE] conversation-archive: 配额文件损坏按重置: $e');
+      await _backupCorruptQuota();
+      _lastQuotaError = '配额记录损坏，已按无记录处理（$e）';
       return null;
+    }
+  }
+
+  /// 上次 loadQuota 的损坏/签名不符原因（P2-1；null = 正常或无文件）。
+  String? _lastQuotaError;
+
+  /// 供窗口出用户可见提示（chat_page 会话初始化时读）。
+  String? get lastQuotaError => _lastQuotaError;
+
+  /// 损坏/异常配额文件备份（rename 原子；失败不阻断——原文件保留留痕）。
+  Future<void> _backupCorruptQuota() async {
+    try {
+      if (!await _quotaFile.exists()) return;
+      final backup = File(
+          '${_quotaFile.path}.corrupt-${DateTime.now().millisecondsSinceEpoch}');
+      await _quotaFile.rename(backup.path);
+    } on Object catch (e) {
+      // ignore: avoid_print
+      print('[DEGRADE] conversation-archive: 配额损坏文件备份失败（原文件保留）: $e');
     }
   }
 
@@ -195,6 +224,14 @@ class ConversationArchive {
 
   /// 删除会话（文件缺失幂等，透传 store）。
   Future<void> delete(String id) => store.delete(id);
+
+  /// 重命名（ux-hardening P1-5，透传 store）：当前会话同名时同步
+  /// [_currentTitle]——否则下次 [saveCurrent] 会把旧标题写回，重命名被覆盖。
+  Future<bool> rename(String id, String title) async {
+    final ok = await store.rename(id, title);
+    if (ok && id == _currentId) _currentTitle = title;
+    return ok;
+  }
 
   /// 重置当前态：新建会话/删除当前会话后调用（激活集属会话，随新 session 重开）。
   void resetCurrent() {

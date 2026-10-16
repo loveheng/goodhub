@@ -26,12 +26,14 @@ void main() {
   late WorkspaceStateStore wsStates;
   late MemoryKernel kernel;
   final capsules = <(String, String)>[];
+  final journalDeltas = <(String, String, String)>[]; // (action, scope, key)
 
   setUp(() async {
     dir = await tmpDir();
     wsStates = WorkspaceStateStore(dir: dir);
     kernel = MemoryKernel(MemoryStore(dir: Directory('${dir.path}/mem')));
     capsules.clear();
+    journalDeltas.clear();
   });
 
   /// 落盘走 discarded_futures（真实文件 IO），显式等队列排空再断言。
@@ -40,7 +42,10 @@ void main() {
   WorkspaceStreamFilter filter() => kernel.buildFilter(
         wsStates: wsStates,
         conversationId: 'conv_1',
-        onCapsule: (key, value, undo) => capsules.add((key, value)),
+        onCapsule: (key, value, action, scope, undo) {
+          capsules.add((key, value));
+          journalDeltas.add((action, scope, key));
+        },
       );
 
   void deliver(WorkspaceStreamFilter f, List<WorkspaceFactUpdate> facts) =>
@@ -66,6 +71,11 @@ void main() {
         'zzh',
       );
       expect(capsules.map((c) => c.$1), ['ui.theme', 'user.name']);
+      // journal 通道（context-stepped-pruning §6.3）：action/scope 随胶囊回传。
+      expect(journalDeltas, [
+        ('upsert', 'session', 'ui.theme'),
+        ('upsert', 'user', 'user.name'),
+      ]);
     });
 
     test('srv 域按 scope 落 MemoryStore；同 key 覆盖不追加（G1）', () async {
@@ -125,7 +135,7 @@ void main() {
       final f = kernel.buildFilter(
         wsStates: wsStates,
         conversationId: 'conv_1',
-        onCapsule: (key, value, undo) => capturedUndo = undo,
+        onCapsule: (key, value, action, scope, undo) => capturedUndo = undo,
       );
       deliver(f, [
         const WorkspaceFactUpdate(

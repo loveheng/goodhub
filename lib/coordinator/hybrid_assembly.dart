@@ -25,20 +25,27 @@ import 'hybrid_cloud_engine.dart';
 /// [maskOverride]（联调注入位，仅 debug 页与测试传入）：透传
 /// [FencedCloudEngine.maskOverride]——遮蔽失败路径注入，真机验证拦截卡三态
 /// （取消/明文一次/fail-closed）；生产调用方一律不传（约定见引擎字段注释）。
+///
+/// [onNote]（ux-hardening P2-1）：BYOK 读取失败的**用户可见**通道——历史病是
+/// 该失败仅 debugPrint，用户自带 key 失效后效果变差（静默退端侧）而完全不知
+/// 道为什么；现经装配 note 通道以轨道通告呈现。
 Future<HybridCloudEngine> assembleDefaultHybridEngine({
   DegradationController? controller,
   PiiFenceDelegate? piiFenceDelegate,
   Future<String> Function(String)? maskOverride,
+  void Function(String message, {bool danger})? onNote,
+  ByokStore? byokStoreOverride,
 }) async {
   final ctrl = controller ?? DegradationController();
   CloudLlmEngine? cloud;
   try {
-    final store = ByokStore();
+    final store = byokStoreOverride ?? ByokStore();
     final profiles = await store.load();
     if (profiles.isNotEmpty) {
       // 生效位优先（用户显式选择，设置页置顶写入）；未选回退列表首位。
       final preferred = await store.preferredProfileId();
-      final active = profiles.where((p) => p.id == preferred).firstOrNull ??
+      final active =
+          profiles.where((p) => p.id == preferred).firstOrNull ??
           profiles.first;
       final key = await store.apiKey(active.id);
       if (key != null && key.isNotEmpty) {
@@ -56,6 +63,8 @@ Future<HybridCloudEngine> assembleDefaultHybridEngine({
   } catch (e) {
     // DEGRADE: BYOK 配置读取失败不阻断任务循环——云端缺位走端侧/可观测报错。
     debugPrint('[DEGRADE] byok-assembly: $e');
+    // P2-1：失败不再只留痕——经 note 通道告知用户「本次为什么只有端侧」。
+    onNote?.call('⚠ 云端模型配置读取失败，本次任务仅走端侧路径：$e', danger: true);
   }
   return HybridCloudEngine(
     controller: ctrl,

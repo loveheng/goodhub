@@ -52,6 +52,12 @@ class CowOverridesStore {
   Map<String, Object?> _cache = const {};
   bool _loaded = false;
 
+  /// 上次加载发现覆写文件损坏时的备份路径（P2-1；null = 未损坏）。
+  String? _corruptBackup;
+
+  /// 覆写文件损坏备份路径（供设置面板警示 + 用户手动找回被清掉的覆写）。
+  String? get corruptBackupPath => _corruptBackup;
+
   File get _file => File('${dir.path}/$fileName');
 
   Future<Map<String, Object?>> _load() async {
@@ -67,9 +73,25 @@ class CowOverridesStore {
     } catch (e) {
       // DEGRADE: 覆写文件损坏（手改/写坏）——按空库起步并重写，不阻断同步；留痕。
       debugPrint('[DEGRADE] cow-store: overrides file unreadable, starting fresh: $e');
+      // P2-1 收紧：损坏文件**先备份再按空库起步**——旧行为直接重写会把用户
+      // 手改的覆写无声清掉且不可恢复；备份后数据可人工找回。
+      _corruptBackup = await _backupCorrupt();
       _cache = {};
     }
     return _cache;
+  }
+
+  /// 损坏文件备份（rename 原子；失败不阻断——原文件未被移动，留痕）。
+  Future<String?> _backupCorrupt() async {
+    try {
+      final backup =
+          File('${_file.path}.corrupt-${DateTime.now().millisecondsSinceEpoch}');
+      await _file.rename(backup.path);
+      return backup.path;
+    } on Object catch (e) {
+      debugPrint('[DEGRADE] cow-store: 损坏文件备份失败（原文件保留）: $e');
+      return null;
+    }
   }
 
   Future<void> _save() async {

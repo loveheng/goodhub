@@ -32,14 +32,16 @@ void main() {
   Future<void> settleIo(WidgetTester tester) async {
     for (var i = 0; i < 40; i++) {
       await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 50)));
+        () => Future<void>.delayed(const Duration(milliseconds: 50)),
+      );
       await tester.pump();
     }
   }
 
   Future<void> pumpSettings(WidgetTester tester) async {
-    await tester
-        .pumpWidget(MaterialApp(home: SettingsPage(storeOverride: store)));
+    await tester.pumpWidget(
+      MaterialApp(home: SettingsPage(storeOverride: store)),
+    );
     await settleIo(tester);
   }
 
@@ -83,7 +85,11 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  Future<void> enterVisible(WidgetTester tester, Finder finder, String text) async {
+  Future<void> enterVisible(
+    WidgetTester tester,
+    Finder finder,
+    String text,
+  ) async {
     await tester.ensureVisible(finder);
     await tester.pumpAndSettle();
     await tester.enterText(finder, text);
@@ -95,8 +101,16 @@ void main() {
     expect(find.text('（暂无覆写——模板按 server 版生效）'), findsOneWidget);
 
     await tapVisible(tester, find.byKey(const Key('cow-new')));
-    await enterVisible(tester, find.byKey(const Key('cow-new-name')), 'weekly_review');
-    await enterVisible(tester, find.byKey(const Key('cow-new-content')), '新覆写正文');
+    await enterVisible(
+      tester,
+      find.byKey(const Key('cow-new-name')),
+      'weekly_review',
+    );
+    await enterVisible(
+      tester,
+      find.byKey(const Key('cow-new-content')),
+      '新覆写正文',
+    );
     await tapVisible(tester, find.byKey(const Key('cow-create')));
     // 保存 = setOverride 真实文件写 + _reload 读
     await settleIo(tester);
@@ -104,8 +118,9 @@ void main() {
 
     expect(find.byKey(const Key('cow-item-weekly_review')), findsOneWidget);
     String? saved;
-    await tester
-        .runAsync(() async => saved = await store.overrideOf('weekly_review'));
+    await tester.runAsync(
+      () async => saved = await store.overrideOf('weekly_review'),
+    );
     expect(saved, '新覆写正文');
   });
 
@@ -117,17 +132,25 @@ void main() {
 
     await tapVisible(tester, find.byKey(const Key('cow-edit-item_digest')));
     expect(find.byKey(const Key('cow-edit-field')), findsOneWidget);
-    await enterVisible(tester, find.byKey(const Key('cow-edit-field')), '改后的正文');
+    await enterVisible(
+      tester,
+      find.byKey(const Key('cow-edit-field')),
+      '改后的正文',
+    );
     await tapVisible(tester, find.byKey(const Key('cow-save')));
     await settleIo(tester);
     await scrollToCow(tester);
 
     String? saved;
-    await tester
-        .runAsync(() async => saved = await store.overrideOf('item_digest'));
+    await tester.runAsync(
+      () async => saved = await store.overrideOf('item_digest'),
+    );
     expect(saved, '改后的正文');
-    expect(find.byKey(const Key('cow-edit-field')), findsNothing,
-        reason: '保存后退出编辑态');
+    expect(
+      find.byKey(const Key('cow-edit-field')),
+      findsNothing,
+      reason: '保存后退出编辑态',
+    );
   });
 
   testWidgets('一键重置（确认弹卡 → reset 落库 → 列表消失）', (tester) async {
@@ -158,11 +181,15 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300)); // SnackBar 退出动画收口
 
     String? saved;
-    await tester
-        .runAsync(() async => saved = await store.overrideOf('item_digest'));
+    await tester.runAsync(
+      () async => saved = await store.overrideOf('item_digest'),
+    );
     expect(saved, '旧正文', reason: '空正文被拒，旧覆写保持');
-    expect(find.textContaining('覆写正文不能为空'), findsOneWidget,
-        reason: 'SnackBar 提示');
+    expect(
+      find.textContaining('覆写正文不能为空'),
+      findsOneWidget,
+      reason: 'SnackBar 提示',
+    );
   });
 
   testWidgets('PC 远程网关面板：默认关闭态 + Token 输入 + 风险文案', (tester) async {
@@ -179,10 +206,7 @@ void main() {
     expect(find.byKey(const Key('gateway-toggle')), findsOneWidget);
     expect(find.byKey(const Key('gateway-token')), findsOneWidget);
     // 未起服：running=false，展示「关闭」态与开启后效果说明。
-    expect(
-      find.textContaining('关闭——开启后 PC 经 Streamable HTTP'),
-      findsOneWidget,
-    );
+    expect(find.textContaining('关闭——开启后 PC 经 Streamable HTTP'), findsOneWidget);
     expect(
       find.textContaining('⚠ 开启后同一局域网的 PC 可经 :8766'),
       findsOneWidget,
@@ -190,8 +214,7 @@ void main() {
     );
   });
 
-  testWidgets('关于面板：版本占位 + 检查更新常驻 + 长按标题唤出 debug 联调入口',
-      (tester) async {
+  testWidgets('关于面板：版本占位 + 检查更新常驻 + 长按标题唤出 debug 联调入口', (tester) async {
     await pumpSettings(tester);
     await scrollTo(tester, find.byKey(const Key('about-title')));
 
@@ -208,4 +231,69 @@ void main() {
     expect(find.text('网关/熔断联调'), findsOneWidget);
     expect(find.text('M1 任务循环（claim/apply）'), findsOneWidget);
   });
+
+  testWidgets('面板级错误隔离 + 重试恢复（ux-hardening P0-3）：一处初始化失败不再打死整页', (
+    tester,
+  ) async {
+    final flaky = _FlakyCowStore(dir: tempDir);
+    await tester.pumpWidget(
+      MaterialApp(home: SettingsPage(storeOverride: flaky)),
+    );
+    await settleIo(tester);
+    await scrollToCow(tester);
+
+    // 失败面板自持错误态（Rose 文案 + 重试），页面骨架照常——历史病是一处
+    // 失败把整页替换成一句错误文本（其余面板可用也被打死）。
+    expect(find.textContaining('覆写库读取失败'), findsOneWidget);
+    expect(find.text('设置'), findsOneWidget, reason: 'AppBar 在，页面没被打死');
+    expect(find.byKey(const Key('cow-error-retry')), findsOneWidget);
+
+    // 重试 → 恢复：错误消失，空态出现（面板自愈路径闭环）。
+    await tapVisible(tester, find.byKey(const Key('cow-error-retry')));
+    await settleIo(tester);
+    await scrollToCow(tester);
+    expect(find.textContaining('覆写库读取失败'), findsNothing);
+    expect(find.text('（暂无覆写——模板按 server 版生效）'), findsOneWidget);
+  });
+  testWidgets('P2-1：覆写文件损坏 → 面板警示 + 备份路径明示（不再无声按空库）', (tester) async {
+    // 真实文件 I/O 必须经 runAsync 让路（本文件纪律：fake async 不驱动真实事件）。
+    await tester.runAsync(() async {
+      await File('${tempDir.path}/cow_overrides.json')
+          .writeAsString('{ 手改坏了的覆写文件');
+    });
+    final corrupt = CowOverridesStore(dir: tempDir);
+    await tester.pumpWidget(
+      MaterialApp(home: SettingsPage(storeOverride: corrupt)),
+    );
+    await settleIo(tester);
+    await scrollToCow(tester);
+
+    expect(find.textContaining('覆写文件损坏，已备份为'), findsOneWidget);
+    expect(
+      find.textContaining('.corrupt-'),
+      findsOneWidget,
+      reason: '备份路径明示，用户可手动找回',
+    );
+    expect(
+      find.text('（暂无覆写——模板按 server 版生效）'),
+      findsOneWidget,
+      reason: '按空库显示（行为不变），但有警示',
+    );
+  });
+}
+
+/// 首调失败、之后正常的假覆写库（驱动面板错误态 → 重试恢复闭环）。
+class _FlakyCowStore extends CowOverridesStore {
+  _FlakyCowStore({required super.dir});
+
+  var failFirst = true;
+
+  @override
+  Future<List<String>> overrideNames() async {
+    if (failFirst) {
+      failFirst = false;
+      throw Exception('瞬时磁盘故障');
+    }
+    return super.overrideNames();
+  }
 }

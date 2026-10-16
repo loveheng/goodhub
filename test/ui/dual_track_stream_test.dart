@@ -100,4 +100,94 @@ void main() {
     expect(find.byType(BreakerCard), findsOneWidget);
     expect(find.textContaining('add_item'), findsWidgets);
   });
+
+  testWidgets('TrackGuide 引导卡：正文 + 动作钮 + 回调（P0-1 冷启动）', (tester) async {
+    var opened = 0;
+    await pump(tester, [
+      TrackGuide(
+        text: '尚未配置任何 MCP 服务，也未发现本地插件。',
+        actionLabel: '去配置',
+        onAction: () => opened++,
+      ),
+    ]);
+    expect(find.textContaining('尚未配置'), findsOneWidget);
+    expect(find.text('去配置'), findsOneWidget);
+
+    await tester.tap(find.text('去配置'));
+    expect(opened, 1);
+  });
+
+  testWidgets('TrackError 错误行动卡：白话标题/建议/可复制异常 + 重试后锁定',
+      (tester) async {
+    var retried = 0;
+    final card = TrackError(
+      title: '连不上推理服务',
+      advice: '检查网络连接与端点地址是否可达，然后重试',
+      detail: 'CloudNetworkException: connection reset',
+    );
+    card.onAction = () => retried++;
+    await pump(tester, [card]);
+
+    expect(find.text('✕ 连不上推理服务'), findsOneWidget);
+    expect(find.textContaining('检查网络连接'), findsOneWidget);
+    expect(find.text('CloudNetworkException: connection reset'), findsOneWidget,
+        reason: '原始异常留痕可复制（排障）');
+    expect(find.text('重试'), findsOneWidget);
+
+    await tester.tap(find.text('重试'));
+    expect(retried, 1);
+    card.retried = true; // 页面侧锁定（终态锁定，ui-design §3.2）
+    await pump(tester, [card]);
+    expect(find.text('↻ 已重试'), findsOneWidget);
+    expect(find.text('重试'), findsNothing, reason: '锁定后重试钮消失');
+  });
+
+  testWidgets('TrackError 恢复态（onAction=null）：无重试钮（历史无可重跑任务）',
+      (tester) async {
+    await pump(tester, [
+      TrackError(
+        title: '任务意外中断',
+        advice: '稍后可重新发送任务继续',
+        detail: 'Exception: boom',
+      ),
+    ]);
+    expect(find.textContaining('任务意外中断'), findsOneWidget);
+    expect(find.text('重试'), findsNothing);
+    expect(find.textContaining('Exception: boom'), findsOneWidget);
+  });
+
+  testWidgets('归因条降噪（P1-6）：仅服务无记忆 → 不渲染（遥测噪音收敛）',
+      (tester) async {
+    await pump(tester, [
+      TrackContextAttribution(
+        memories: const [],
+        services: const [
+          ContextAttributionItem(source: 'goodshare', text: 'goodshare Tier 2'),
+        ],
+      ),
+    ]);
+    expect(find.textContaining('本轮上下文'), findsNothing,
+        reason: '服务数与状态带上下文胶囊重复——不重复遥测');
+  });
+
+  testWidgets('归因条呈现（P1-6）：携带记忆注入才出现 + 点开详情',
+      (tester) async {
+    await pump(tester, [
+      TrackContextAttribution(
+        memories: const [
+          ContextAttributionItem(source: 'user', text: '偏好 Dart 强类型'),
+        ],
+        services: const [
+          ContextAttributionItem(source: 'goodshare', text: 'goodshare Tier 2'),
+        ],
+      ),
+    ]);
+    expect(find.textContaining('本轮上下文：记忆 1 条'), findsOneWidget);
+
+    await tester.tap(find.textContaining('本轮上下文'));
+    await tester.pumpAndSettle();
+    expect(find.text('本轮携带上下文'), findsOneWidget);
+    expect(find.text('宿主记忆（1）'), findsOneWidget);
+    expect(find.text('已挂载服务（1）'), findsOneWidget);
+  });
 }

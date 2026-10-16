@@ -132,6 +132,9 @@ void main() {
 
     await tester.tap(find.byKey(const Key('mb-purge')));
     await tester.pumpAndSettle();
+    // P1-7：确认框文案去内部指称（user 级/srv: → 个人记忆/按服务绑定）。
+    expect(find.text('粉碎全部个人记忆'), findsOneWidget);
+    expect(find.textContaining('按服务绑定的记忆'), findsOneWidget);
     await tester.tap(find.byKey(const Key('mb-purge-confirm')));
     await settleIo(tester);
 
@@ -139,4 +142,71 @@ void main() {
     await tester.runAsync(() async => saved = await store.listMemories());
     expect(saved.single.scope, 'srv:goodshare');
   });
+
+  testWidgets('初始化失败：错误可见 + 重试恢复（P1-7/P0-3 同口径）', (tester) async {
+    final flaky = _FlakyMemoryStore(dir: tempDir);
+    await tester.pumpWidget(
+        MaterialApp(home: MemoryBoardPage(storeOverride: flaky)));
+    await settleIo(tester);
+
+    expect(find.textContaining('记忆库初始化失败'), findsOneWidget);
+    expect(find.byKey(const Key('mb-retry')), findsOneWidget,
+        reason: '失败态带重试入口，不甩原始异常了事');
+
+    await tester.tap(find.byKey(const Key('mb-retry')));
+    await settleIo(tester);
+    expect(find.textContaining('记忆库初始化失败'), findsNothing);
+    expect(find.text('（暂无记忆条目——Agent 写入后将在此出现）'), findsOneWidget);
+  });
+
+  testWidgets('审计 Tab 筛选（P1-7）：工具/服务名子串 + 仅看失败 + 计数 + 无匹配态',
+      (tester) async {
+    await tester.runAsync(() async {
+      await store.audit(
+          server: 'goodshare', tool: 'get_task', ok: true, durationMs: 20);
+      await store.audit(
+          server: 'local', tool: 'update_memory', ok: false, error: 'denied');
+      await store.audit(server: 'goodshare', tool: 'list_items', ok: true);
+    });
+    await pumpBoard(tester);
+    await goTab(tester, 2);
+    expect(find.text('3 / 3 条'), findsOneWidget);
+
+    // 工具名子串过滤（跨 tool/server 两列匹配）。
+    await tester.enterText(find.byKey(const Key('ops-filter')), 'update');
+    await tester.pump();
+    expect(find.text('1 / 3 条'), findsOneWidget);
+    expect(find.textContaining('update_memory @local'), findsOneWidget);
+    expect(find.textContaining('get_task @goodshare'), findsNothing);
+
+    // 清空 → 仅看失败。
+    await tester.tap(find.byIcon(Icons.close));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('ops-only-fail')));
+    await tester.pumpAndSettle();
+    expect(find.text('1 / 3 条'), findsOneWidget);
+    expect(find.textContaining('update_memory @local'), findsOneWidget);
+    expect(find.textContaining('get_task @goodshare'), findsNothing);
+
+    // 无匹配空态（与「暂无审计记录」区分）。
+    await tester.enterText(find.byKey(const Key('ops-filter')), 'zzz');
+    await tester.pump();
+    expect(find.text('（无匹配审计记录）'), findsOneWidget);
+  });
+}
+
+/// 首调失败、之后正常的假记忆库（驱动初始化错误态 → 重试恢复闭环）。
+class _FlakyMemoryStore extends MemoryStore {
+  _FlakyMemoryStore({required super.dir});
+
+  var failFirst = true;
+
+  @override
+  Future<List<MemoryEntry>> listMemories() async {
+    if (failFirst) {
+      failFirst = false;
+      throw Exception('瞬时读取故障');
+    }
+    return super.listMemories();
+  }
 }

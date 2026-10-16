@@ -526,6 +526,7 @@ class McpRuntime {
         await assembleDefaultHybridEngine(
           controller: context.degradation ?? DegradationController(),
           piiFenceDelegate: delegates.fenceDelegate, // D4 有人值守拦截卡（可空）
+          onNote: note, // P2-1：BYOK 读取失败的用户可见通道
         );
     note?.call('✓ 引擎就绪：${effectiveEngine.name}', danger: false);
 

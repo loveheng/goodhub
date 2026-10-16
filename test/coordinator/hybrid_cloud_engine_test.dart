@@ -87,8 +87,10 @@ class FakeDeviceEngine implements OnDeviceLlmEngine {
   Future<bool> isWarmed() async => true;
 }
 
-Stream<CloudStreamEvent> textStream(String s,
-        {CloudFinishReason reason = CloudFinishReason.stop}) async* {
+Stream<CloudStreamEvent> textStream(
+  String s, {
+  CloudFinishReason reason = CloudFinishReason.stop,
+}) async* {
   yield CloudTextDelta(s);
   yield CloudDone(finishReason: reason);
 }
@@ -139,14 +141,20 @@ void main() {
   test('降级态无工具请求直走端侧（云端零调用），消息压平为单发 prompt', () async {
     controller.reportTransportTimeout();
     device.next = '端侧产出';
-    final events = await engine.send(const CloudChatRequest(messages: [
-      SystemMessage('sys'),
-      UserMessage('u1'),
-    ])).toList();
+    final events = await engine
+        .send(
+          const CloudChatRequest(
+            messages: [SystemMessage('sys'), UserMessage('u1')],
+          ),
+        )
+        .toList();
     expect(cloud.calls, isEmpty);
     expect(device.prompts.single, 'sys|u1');
     expect(events.whereType<CloudTextDelta>().single.text, '端侧产出');
-    expect(events.whereType<CloudDone>().single.finishReason, CloudFinishReason.stop);
+    expect(
+      events.whereType<CloudDone>().single.finishReason,
+      CloudFinishReason.stop,
+    );
   });
 
   test('带工具请求降级态仍走云端（§2 端侧不承担通用调度）', () async {
@@ -173,7 +181,9 @@ void main() {
   });
 
   test('云端 5xx：当次端侧兜底且计数 1（未达阈值不降级）', () async {
-    cloud.script.add(() => errorStream(const CloudHttpException('boom', statusCode: 500)));
+    cloud.script.add(
+      () => errorStream(const CloudHttpException('boom', statusCode: 500)),
+    );
     device.next = 'fallback';
     final events = await engine.send(noTools).toList();
     expect(events.whereType<CloudTextDelta>().single.text, 'fallback');
@@ -195,7 +205,9 @@ void main() {
   });
 
   test('端侧也不可用 → 上抛端侧失败（禁静默吞）', () async {
-    cloud.script.add(() => errorStream(const CloudHttpException('boom', statusCode: 500)));
+    cloud.script.add(
+      () => errorStream(const CloudHttpException('boom', statusCode: 500)),
+    );
     device.next = null;
     await expectLater(
       engine.send(noTools).toList(),
@@ -209,7 +221,9 @@ void main() {
       cloud: cloud,
       onDevice: null,
     );
-    cloud.script.add(() => errorStream(const CloudHttpException('boom', statusCode: 500)));
+    cloud.script.add(
+      () => errorStream(const CloudHttpException('boom', statusCode: 500)),
+    );
     await expectLater(
       e.send(noTools).toList(),
       throwsA(isA<CloudHttpException>()),
@@ -217,7 +231,10 @@ void main() {
   });
 
   test('云端未配置且端侧在 → 端侧路径；两者皆无 → InferenceException', () async {
-    final deviceOnly = HybridCloudEngine(controller: controller, onDevice: device);
+    final deviceOnly = HybridCloudEngine(
+      controller: controller,
+      onDevice: device,
+    );
     device.next = 'd';
     final events = await deviceOnly.send(noTools).toList();
     expect(events.whereType<CloudTextDelta>().single.text, 'd');
@@ -230,10 +247,11 @@ void main() {
   });
 
   test('首 Token 超时：注入 TimeoutException → 降级 + 当次端侧兜底', () async {
-    final slow = DegradationController(firstTokenTimeout: const Duration(milliseconds: 40));
+    final slow = DegradationController(
+      firstTokenTimeout: const Duration(milliseconds: 40),
+    );
     final hang = StreamController<CloudStreamEvent>(); // 永不产出
-    final hangingCloud = FakeCloudEngine()
-      ..script.add(() => hang.stream);
+    final hangingCloud = FakeCloudEngine()..script.add(() => hang.stream);
     final e = HybridCloudEngine(
       controller: slow,
       cloud: hangingCloud,
@@ -247,10 +265,11 @@ void main() {
   });
 
   test('无端侧首 Token 超时 → 原样上抛 TimeoutException', () async {
-    final slow = DegradationController(firstTokenTimeout: const Duration(milliseconds: 40));
+    final slow = DegradationController(
+      firstTokenTimeout: const Duration(milliseconds: 40),
+    );
     final hang = StreamController<CloudStreamEvent>();
-    final hangingCloud = FakeCloudEngine()
-      ..script.add(() => hang.stream);
+    final hangingCloud = FakeCloudEngine()..script.add(() => hang.stream);
     final e = HybridCloudEngine(
       controller: slow,
       cloud: hangingCloud,
@@ -271,13 +290,17 @@ void main() {
     );
     final e = HybridCloudEngine(
       controller: c,
-      cloud: FakeCloudEngine()..script.add(() => gapStream(const Duration(milliseconds: 100), 'b')),
+      cloud: FakeCloudEngine()
+        ..script.add(() => gapStream(const Duration(milliseconds: 100), 'b')),
       onDevice: device,
     );
     device.next = 'gap-fb';
     final events = await e.send(noTools).toList();
     // 引擎语义「产出优先」：间隙超时前已达的 'a' 照常透传，端侧兜底产出追加在后。
-    expect(events.whereType<CloudTextDelta>().map((d) => d.text).toList(), ['a', 'gap-fb']);
+    expect(events.whereType<CloudTextDelta>().map((d) => d.text).toList(), [
+      'a',
+      'gap-fb',
+    ]);
     expect(c.health, CloudHealth.degraded);
   });
 
@@ -288,18 +311,24 @@ void main() {
     );
     final e = HybridCloudEngine(
       controller: c,
-      cloud: FakeCloudEngine()..script.add(() => gapStream(const Duration(milliseconds: 100), 'b')),
+      cloud: FakeCloudEngine()
+        ..script.add(() => gapStream(const Duration(milliseconds: 100), 'b')),
       onDevice: device,
     );
     final events = await e.send(noTools).toList();
-    expect(events.whereType<CloudTextDelta>().map((d) => d.text).toList(), ['a', 'b']);
+    expect(events.whereType<CloudTextDelta>().map((d) => d.text).toList(), [
+      'a',
+      'b',
+    ]);
     expect(c.health, CloudHealth.healthy);
   });
 
   test('取消订阅即联动 cancelActive（§10 ①步端侧路径）', () async {
     controller.reportTransportTimeout(); // 降级态：无工具请求直走端侧
     device.hangUntil = Completer<void>();
-    final sub = engine.send(noTools).listen(
+    final sub = engine
+        .send(noTools)
+        .listen(
           (_) {},
           onError: (_) {}, // 取消后挂起生成按空产出落 InferenceException，忽略
         );
@@ -368,6 +397,26 @@ void main() {
       throwsA(isA<InferenceException>()),
     );
     expect(device.prompts, isEmpty);
+  });
+
+  test('P2-1：门禁探测异常 → fail-closed 关闸（原放行方向偏危险）', () async {
+    controller.reportTransportTimeout();
+    final gated = HybridCloudEngine(
+      controller: controller,
+      cloud: cloud,
+      onDevice: device,
+      deviceTierGate: () async {
+        throw Exception('探针通道不可用');
+      },
+    );
+    cloud.script.add(() => textStream('云端接管'));
+    final events = await gated.send(noTools).toList();
+    expect(device.prompts, isEmpty, reason: '关闸 ≡ 端侧不可用——不在状态未知的弱设备上跑端侧');
+    expect(
+      events.whereType<CloudTextDelta>().single.text,
+      '云端接管',
+      reason: '有云端走云端，用户仍得到回答',
+    );
   });
 
   group('云端空产出兜底（T7 实测：推理型模型烧光 max_tokens 零可见内容）', () {

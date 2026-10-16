@@ -1,6 +1,7 @@
 /// 本地插件面板 widget 测试（settings_page 本地插件段，2026-10-15 新增）：
 /// Binder 发现项渲染（标题/包名/transportId/已挂载）+ 信任态 pill（同签名私有生态
-/// 自动信任 / 第三方待信任按钮）+ 信任卡片确认后转「已信任」+ 包变更流热刷新。
+/// 自动信任 / 第三方待信任按钮）+ 信任卡片确认后转「已信任」+ 包变更流热刷新
+/// + 默认私有服务钉选（2026-10-16 方案 A：独立 radio 面板撤销，降级为卡片图钉）。
 /// 纪律：store 读写走真实异步，全部经 [WidgetTester.runAsync] 让路（settleIo 轮询）。
 library;
 
@@ -12,6 +13,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/coordinator/cow_sync.dart';
 import 'package:goodhub/core/security/secure_key_value.dart';
 import 'package:goodhub/llm/cloud/byok_store.dart';
+import 'package:goodhub/mcp/default_private_server.dart';
 import 'package:goodhub/mcp/local_plugin_discovery.dart';
 import 'package:goodhub/mcp/server_endpoints.dart';
 import 'package:goodhub/ui/settings_page.dart';
@@ -228,5 +230,33 @@ void main() {
       findsNothing,
       reason: '第三方已卸载不再出现',
     );
+  });
+
+  testWidgets('默认私有钉选（方案 A）：本地插件可钉选/取消（与端点同一默认键）',
+      (tester) async {
+    await pumpPanel(tester);
+    expect(find.text('默认私有'), findsNothing);
+
+    // 钉选同签名私有插件（serverId='priv'）。
+    await scrollTo(
+        tester, find.byKey(const Key('local-default-local:com.zzh.goodhub.priv_priv')));
+    await tester
+        .tap(find.byKey(const Key('local-default-local:com.zzh.goodhub.priv_priv')));
+    await settleIo(tester);
+
+    String? stored;
+    await tester.runAsync(() async => stored = await readDefaultPrivateServerId());
+    expect(stored, 'priv', reason: '本地插件 serverId 入统一默认键');
+    expect(find.text('默认私有'), findsOneWidget);
+    expect(find.byTooltip('取消默认私有服务'), findsOneWidget);
+
+    // 再点取消：清键 + pill 消失。
+    await tester
+        .tap(find.byKey(const Key('local-default-local:com.zzh.goodhub.priv_priv')));
+    await settleIo(tester);
+
+    await tester.runAsync(() async => stored = await readDefaultPrivateServerId());
+    expect(stored, isNull);
+    expect(find.text('默认私有'), findsNothing);
   });
 }

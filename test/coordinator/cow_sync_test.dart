@@ -14,10 +14,10 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 http.Response _json(Object result) => http.Response(
-      '{"jsonrpc":"2.0","id":1,"result":${jsonEncode(result)}}',
-      200,
-      headers: {'content-type': 'application/json'},
-    );
+  '{"jsonrpc":"2.0","id":1,"result":${jsonEncode(result)}}',
+  200,
+  headers: {'content-type': 'application/json'},
+);
 
 /// Mock server：prompts 清单（可配版本/minHub）+ 原文回包。
 ({McpClient client, List<String> rawRequested}) cowClient({
@@ -97,7 +97,9 @@ void main() {
       await store.setKnownVersion('p1', '1.0.0');
       final reopened = CowOverridesStore(dir: tmpDir);
       // ignore: avoid_print
-      print('COW-FILE=${await File('${tmpDir.path}/cow_overrides.json').readAsString()}');
+      print(
+        'COW-FILE=${await File('${tmpDir.path}/cow_overrides.json').readAsString()}',
+      );
       // ignore: avoid_print
       print('KNOWN=${await reopened.knownVersion('p1')}');
       // ignore: avoid_print
@@ -110,8 +112,7 @@ void main() {
     });
 
     test('损坏 JSON → 按空库起步不抛（DEGRADE 留痕）', () async {
-      await File('${tmpDir.path}/cow_overrides.json')
-          .writeAsString('{broken');
+      await File('${tmpDir.path}/cow_overrides.json').writeAsString('{broken');
       final reopened = CowOverridesStore(dir: tmpDir);
       expect(await reopened.overrideOf('p1'), isNull);
     });
@@ -119,16 +120,21 @@ void main() {
 
   group('CowSyncService.sync 六态', () {
     test('无覆写 → imported（content 为 server 原文，known 记录）', () async {
-      final (client: client, rawRequested: _) = cowClient(templateVersion: '1.0.0');
-      final items = await CowSyncService(store: store).sync(client, serverId: 'goodshare');
+      final (client: client, rawRequested: _) = cowClient(
+        templateVersion: '1.0.0',
+      );
+      final items = await CowSyncService(store: store)
+          .sync(client, serverId: 'goodshare');
       expect(items.single.action, CowSyncAction.imported);
       expect(items.single.content, contains('模板正文'));
       expect(await store.knownVersion('item_digest'), '1.0.0');
     });
 
     test('min_hub_version 高于宿主 → skippedIncompatible（不拉原文）', () async {
-      final (client: client, rawRequested: raw) =
-          cowClient(templateVersion: '1.0.0', minHub: '99.0.0');
+      final (client: client, rawRequested: raw) = cowClient(
+        templateVersion: '1.0.0',
+        minHub: '99.0.0',
+      );
       final items = await CowSyncService(store: store)
           .sync(client, serverId: 'goodshare', hostVersion: '0.1.0');
       expect(items.single.action, CowSyncAction.skippedIncompatible);
@@ -136,31 +142,41 @@ void main() {
     });
 
     test('有覆写无跃迁 → keptLocal（本地副本不回传，基线刷新防累积告警）', () async {
-      final (client: client, rawRequested: raw) = cowClient(templateVersion: '1.0.0');
+      final (client: client, rawRequested: raw) = cowClient(
+        templateVersion: '1.0.0',
+      );
       await store.setOverride('item_digest', '我的本地版');
       await store.setKnownVersion('item_digest', '1.0.0');
-      final items = await CowSyncService(store: store).sync(client, serverId: 'goodshare');
+      final items = await CowSyncService(store: store)
+          .sync(client, serverId: 'goodshare');
       expect(items.single.action, CowSyncAction.keptLocal);
       expect(items.single.content, isNull);
       expect(raw, isEmpty, reason: '本地版生效时不拉原文');
     });
 
-    test('有覆写 + major 跃迁 + delegate 重置 → resetToServer（覆写删除回 server 版）', () async {
-      final (client: client, rawRequested: raw) = cowClient(templateVersion: '2.0.0');
-      await store.setOverride('item_digest', '旧本地版');
-      await store.setKnownVersion('item_digest', '1.0.0');
-      final items = await CowSyncService(
-        store: store,
-        onMajorJump: (_, _, _) async => true,
-      ).sync(client, serverId: 'goodshare');
-      expect(items.single.action, CowSyncAction.resetToServer);
-      expect(items.single.content, contains('模板正文'));
-      expect(await store.overrideOf('item_digest'), isNull);
-      expect(raw, isNotEmpty);
-    });
+    test(
+      '有覆写 + major 跃迁 + delegate 重置 → resetToServer（覆写删除回 server 版）',
+      () async {
+        final (client: client, rawRequested: raw) = cowClient(
+          templateVersion: '2.0.0',
+        );
+        await store.setOverride('item_digest', '旧本地版');
+        await store.setKnownVersion('item_digest', '1.0.0');
+        final items = await CowSyncService(
+          store: store,
+          onMajorJump: (_, _, _) async => true,
+        ).sync(client, serverId: 'goodshare');
+        expect(items.single.action, CowSyncAction.resetToServer);
+        expect(items.single.content, contains('模板正文'));
+        expect(await store.overrideOf('item_digest'), isNull);
+        expect(raw, isNotEmpty);
+      },
+    );
 
     test('有覆写 + major 跃迁 + delegate 保留 → keptLocal 且基线刷新（不重复告警）', () async {
-      final (client: client, rawRequested: raw) = cowClient(templateVersion: '2.0.0');
+      final (client: client, rawRequested: raw) = cowClient(
+        templateVersion: '2.0.0',
+      );
       await store.setOverride('item_digest', '旧本地版');
       await store.setKnownVersion('item_digest', '1.0.0');
       final svc = CowSyncService(
@@ -172,34 +188,77 @@ void main() {
       expect(await store.overrideOf('item_digest'), '旧本地版');
       expect(await store.knownVersion('item_digest'), '2.0.0');
       final again = await svc.sync(client, serverId: 'goodshare');
-      expect(again.single.action, CowSyncAction.keptLocal, reason: '基线已刷新，二次同步不再触发告警');
+      expect(
+        again.single.action,
+        CowSyncAction.keptLocal,
+        reason: '基线已刷新，二次同步不再触发告警',
+      );
       expect(raw, isEmpty);
     });
 
     test('有覆写 + major 跃迁 + delegate 缺省 → 保留本地（保守默认）', () async {
-      final (client: client, rawRequested: _) = cowClient(templateVersion: '3.0.0');
+      final (client: client, rawRequested: _) = cowClient(
+        templateVersion: '3.0.0',
+      );
       await store.setOverride('item_digest', '旧本地版');
       await store.setKnownVersion('item_digest', '1.0.0');
-      final items = await CowSyncService(store: store).sync(client, serverId: 'goodshare');
+      final items = await CowSyncService(store: store)
+          .sync(client, serverId: 'goodshare');
       expect(items.single.action, CowSyncAction.keptLocal);
       expect(await store.overrideOf('item_digest'), '旧本地版');
     });
   });
 
   group('toSkill 与注册合流', () {
-    test('cow/<name> 命名 + appScoped 绑 server + source=cow（name 唯一闸防撞）', () async {
-      final (client: client, rawRequested: _) = cowClient(templateVersion: '1.0.0');
-      final items = await CowSyncService(store: store).sync(client, serverId: 'goodshare');
-      final skill = CowSyncService.toSkill(items.single, 'goodshare');
-      expect(skill.name, 'cow/item_digest');
-      expect(skill.scope, SkillScope.appScoped);
-      expect(skill.serverId, 'goodshare');
-      expect(skill.source, SkillSource.cow);
+    test(
+      'cow/<name> 命名 + appScoped 绑 server + source=cow（name 唯一闸防撞）',
+      () async {
+        final (client: client, rawRequested: _) = cowClient(
+          templateVersion: '1.0.0',
+        );
+        final items = await CowSyncService(store: store)
+            .sync(client, serverId: 'goodshare');
+        final skill = CowSyncService.toSkill(items.single, 'goodshare');
+        expect(skill.name, 'cow/item_digest');
+        expect(skill.scope, SkillScope.appScoped);
+        expect(skill.serverId, 'goodshare');
+        expect(skill.source, SkillSource.cow);
 
-      final registry = SkillRegistry()..registerAll(builtinSkills());
-      registry.register(skill);
-      final out = registry.composeSystemPrompt('base', connectedServerIds: const ['goodshare']);
-      expect(out, contains('模板正文'));
+        final registry = SkillRegistry()..registerAll(builtinSkills());
+        registry.register(skill);
+        final out = registry.composeSystemPrompt(
+          'base',
+          connectedServerIds: const ['goodshare'],
+        );
+        expect(out, contains('模板正文'));
+      },
+    );
+  });
+
+  group('覆写文件损坏（P2-1：备份保留，不再无声清空用户覆写）', () {
+    test('损坏 → 备份 + 按空库起步 + 后续写入不覆盖备份', () async {
+      final dir = await Directory.systemTemp.createTemp('cow_corrupt');
+      addTearDown(() async {
+        if (await dir.exists()) await dir.delete(recursive: true);
+      });
+      const garbage = '{ 这不是合法 JSON（用户手改坏了）';
+      await File('${dir.path}/cow_overrides.json').writeAsString(garbage);
+
+      final store = CowOverridesStore(dir: dir);
+      expect(await store.overrideNames(), isEmpty, reason: '按空库起步（行为不变）');
+
+      final backups = dir
+          .listSync()
+          .where((f) => f.path.contains('.corrupt-'))
+          .toList();
+      expect(backups, hasLength(1), reason: '损坏文件已备份，数据可人工找回');
+      expect(await File(backups.single.path).readAsString(), garbage);
+      expect(store.corruptBackupPath, backups.single.path);
+
+      // 备份不被后续写入覆盖（旧行为：直接重写 = 用户覆写永久丢失）。
+      await store.setOverride('weekly_review', '新正文');
+      expect(await File(backups.single.path).readAsString(), garbage);
+      expect(await store.overrideNames(), ['weekly_review']);
     });
   });
 }

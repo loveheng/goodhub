@@ -35,6 +35,10 @@ class _MemoryBoardPageState extends State<MemoryBoardPage>
   var _memories = const <MemoryEntry>[];
   var _lessons = const <MemoryEntry>[];
   var _ops = const <OpsLogLine>[];
+
+  /// 审计 Tab 筛选态（P1-7：设计承诺「机器可查可筛」，UI 补上）。
+  var _opsQuery = '';
+  var _opsOnlyFail = false;
   String? _error;
 
   @override
@@ -57,6 +61,7 @@ class _MemoryBoardPageState extends State<MemoryBoardPage>
             (await getApplicationSupportDirectory()).path,
           );
       await _reload(store);
+      if (mounted) setState(() => _error = null); // P1-7：重试成功即清错误态
     } catch (e) {
       if (mounted) setState(() => _error = '记忆库初始化失败: $e');
     }
@@ -92,7 +97,9 @@ class _MemoryBoardPageState extends State<MemoryBoardPage>
         actions: [
           IconButton(
             key: const Key('mb-export'),
-            tooltip: '导出全量（含锚点）',
+            // P1-7：tooltip 说清去向——实际是复制进剪贴板（FC1 备份可恢复），
+            // 不误导用户期待文件/系统分享面板。
+            tooltip: '复制全量到剪贴板（含锚点）',
             icon: const Icon(Icons.ios_share_outlined),
             onPressed: _export,
           ),
@@ -114,7 +121,27 @@ class _MemoryBoardPageState extends State<MemoryBoardPage>
       ),
       body: _error != null
           ? Center(
-              child: Text(_error!, style: TextStyle(color: t.danger)),
+              // P1-7/P0-3 同口径：初始化失败可见 + 可重试，不甩原始异常了事。
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      '⚠ $_error',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: t.danger, fontSize: Fsz.note),
+                    ),
+                    const SizedBox(height: 8),
+                    TextButton.icon(
+                      key: const Key('mb-retry'),
+                      onPressed: _init,
+                      icon: const Icon(Icons.refresh, size: 16),
+                      label: const Text('重试'),
+                    ),
+                  ],
+                ),
+              ),
             )
           : _store == null
           ? const Center(
@@ -220,7 +247,8 @@ class _MemoryBoardPageState extends State<MemoryBoardPage>
     final text = await showDialog<String>(
       context: context,
       builder: (ctx) => _EditEntryDialog(
-        title: '编辑${lessons ? '教训' : '记忆'} ${e.id}',
+        // P1-7：标题用人类可识别指称（正文预览在框内），不甩 mb_xxx 内部 ID。
+        title: '编辑这条${lessons ? '教训' : '记忆'}',
         initial: e.content,
       ),
     );
@@ -242,8 +270,9 @@ class _MemoryBoardPageState extends State<MemoryBoardPage>
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('删除${lessons ? '教训' : '记忆'} ${e.id}'),
-        content: Text('删除该条目？正文：${_preview(e.content)}'),
+        // P1-7：同口径——指称用「这条」+ 正文预览，不用内部 ID 当标题。
+        title: Text('删除这条${lessons ? '教训' : '记忆'}？'),
+        content: Text('正文：${_preview(e.content)}\n\n删除后不可恢复。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -263,74 +292,148 @@ class _MemoryBoardPageState extends State<MemoryBoardPage>
     _flash(ok ? '✓ 已删除 ${e.id}' : '⚠ 条目不存在');
   }
 
-  // —— Tab ③：操作审计面（D7 JSONL → 人类可读行） ——
+  // —— Tab ③：操作审计面（D7 JSONL → 人类可读行；P1-7 补筛选） ——
 
   Widget _opsTab(ConsoleTokens t) {
-    return ListView(
-      padding: const EdgeInsets.all(12),
+    final q = _opsQuery.trim().toLowerCase();
+    final visible = _ops.where((line) {
+      final matchQ =
+          q.isEmpty ||
+          line.tool.toLowerCase().contains(q) ||
+          line.server.toLowerCase().contains(q);
+      return matchQ && (!_opsOnlyFail || !line.ok);
+    }).toList();
+    return Column(
       children: [
-        if (_ops.isEmpty)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 16),
-            child: Text('（暂无审计记录）', style: TextStyle(fontSize: Fsz.telemetry)),
+        // P1-7：设计（D7）承诺「机器可查可筛的人类可读面」，UI 补上筛选——
+        // 工具/服务名子串 + 仅看失败；审计日志只增不清（清审计=毁证，不提供）。
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  key: const Key('ops-filter'),
+                  style: TextStyle(
+                    fontFamily: t.monoFamily,
+                    fontSize: Fsz.telemetry,
+                  ),
+                  decoration: InputDecoration(
+                    hintText: '筛选工具/服务名…',
+                    prefixIcon: const Icon(Icons.search, size: 18),
+                    isDense: true,
+                    border: const OutlineInputBorder(),
+                    suffixIcon: _opsQuery.isEmpty
+                        ? null
+                        : IconButton(
+                            icon: const Icon(Icons.close, size: 16),
+                            tooltip: '清空筛选',
+                            onPressed: () => setState(() => _opsQuery = ''),
+                          ),
+                  ),
+                  onChanged: (v) => setState(() => _opsQuery = v),
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilterChip(
+                key: const Key('ops-only-fail'),
+                label: const Text('仅看失败'),
+                selected: _opsOnlyFail,
+                onSelected: (v) => setState(() => _opsOnlyFail = v),
+              ),
+            ],
           ),
-        for (final line in _ops)
-          Container(
-            margin: const EdgeInsets.only(bottom: 4),
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(t.cardRadius),
-              border: Border.all(color: t.hairline),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              '${visible.length} / ${_ops.length} 条',
+              style: TextStyle(
+                fontFamily: t.monoFamily,
+                fontSize: Fsz.microSm,
+                color: t.terminalMuted,
+              ),
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Text(
-                      line.ok ? '✓' : '✗',
-                      style: TextStyle(
-                        fontSize: Fsz.telemetry,
-                        fontWeight: FontWeight.w600,
-                        color: line.ok ? t.l1Ok : t.danger,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.all(12),
+            children: [
+              if (visible.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  child: Text(
+                    _ops.isEmpty ? '（暂无审计记录）' : '（无匹配审计记录）',
+                    style: const TextStyle(fontSize: Fsz.telemetry),
+                  ),
+                ),
+              for (final line in visible)
+                Container(
+                  margin: const EdgeInsets.only(bottom: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(t.cardRadius),
+                    border: Border.all(color: t.hairline),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Text(
+                            line.ok ? '✓' : '✗',
+                            style: TextStyle(
+                              fontSize: Fsz.telemetry,
+                              fontWeight: FontWeight.w600,
+                              color: line.ok ? t.l1Ok : t.danger,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              '${line.tool} @${line.server}',
+                              style: TextStyle(
+                                fontFamily: t.monoFamily,
+                                fontSize: Fsz.telemetry,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (line.durationMs != null)
+                            Text(
+                              '${line.durationMs}ms',
+                              style: TextStyle(
+                                fontFamily: t.monoFamily,
+                                fontSize: Fsz.microSm,
+                                color: t.terminalMuted,
+                              ),
+                            ),
+                        ],
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        '${line.tool} @${line.server}',
-                        style: TextStyle(
-                          fontFamily: t.monoFamily,
-                          fontSize: Fsz.telemetry,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    if (line.durationMs != null)
                       Text(
-                        '${line.durationMs}ms',
+                        [
+                          _fmtIso(line.ts),
+                          if (line.error != null) 'error: ${line.error}',
+                        ].join(' · '),
                         style: TextStyle(
                           fontFamily: t.monoFamily,
                           fontSize: Fsz.microSm,
                           color: t.terminalMuted,
                         ),
                       ),
-                  ],
-                ),
-                Text(
-                  [
-                    _fmtIso(line.ts),
-                    if (line.error != null) 'error: ${line.error}',
-                  ].join(' · '),
-                  style: TextStyle(
-                    fontFamily: t.monoFamily,
-                    fontSize: Fsz.microSm,
-                    color: t.terminalMuted,
+                    ],
                   ),
                 ),
-              ],
-            ),
+            ],
           ),
+        ),
       ],
     );
   }
@@ -355,10 +458,10 @@ class _MemoryBoardPageState extends State<MemoryBoardPage>
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('粉碎 user 级记忆'),
+        title: const Text('粉碎全部个人记忆'),
         content: const Text(
-          '清空全部 user 全局记忆与教训条目？\n\n'
-          '服务绑定（srv:）条目保留；此操作不可撤销。',
+          '将清空全部个人记忆与踩坑教训。\n\n'
+          '按服务绑定的记忆（随对应服务生效）会保留；此操作不可撤销。',
         ),
         actions: [
           TextButton(

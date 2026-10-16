@@ -42,11 +42,29 @@ lib/
     └── console/                # 设置页与 Integration Hub 面板
 ```
 
-> **现状对照（2026-10-15 对账注记）**：上图是**目标拓扑**；仓库现状是**扁平域目录**——`lib/mcp/`、`lib/coordinator/`、`lib/llm/`、`lib/sandbox/`、`lib/gateway/`、`lib/ui/`、`lib/core/`、`lib/task/`、`lib/update/` + `main.dart`。映射关系：`features/mcp_bus` → `lib/mcp/`（客户端 / 本地插件发现 / 传输 / 探活 / 端点存储）+ `lib/coordinator/tool_router.dart`（ToolRouter 前缀路由，M4-T6）；`features/coordinator` → `lib/coordinator/`（含 Skill 注册表与 `$ref` 暂存池 `ref_store.dart`）；`features/sandbox` → `lib/sandbox/`（记忆 / 会话）；`features/session` → **无独立落点**（会话态散在 `ui/chat_page` + `gateway_server` + `skill_registry`，SessionManager 仲裁已显式关闭，见 architecture.md §15）；`lib/gateway/`（2026-10-12 网关解冻后新增）与 `lib/update/`（自更新）为拓扑图外的新增域。
+> **现状对照（2026-10-15 对账注记）**：上图是**目标拓扑**；仓库现状是**扁平域目录**——`lib/mcp/`、`lib/coordinator/`、`lib/llm/`、`lib/sandbox/`、`lib/gateway/`、`lib/ui/`、`lib/core/`、`lib/task/`、`lib/update/` + `main.dart`。映射关系：`features/mcp_bus` → `lib/mcp/`（客户端 / 本地插件发现 / 传输 / 探活 / 端点存储）+ `lib/coordinator/tool_router.dart`（ToolRouter 前缀路由，M4-T6）；`features/coordinator` → `lib/coordinator/`（含 Skill 注册表与 `$ref` 暂存池 `ref_store.dart`）；`features/sandbox` → `lib/sandbox/`（记忆 / 会话）；`features/session` → **无独立落点**（会话态散在 `ui/chat_page` + `gateway_server` + `skill_registry`，SessionManager 仲裁已显式关闭，见 architecture.md §15）；**2026-10-16 起由 window-kernel-split 立 `ConversationSession` 内核承接**（落点随步 0 定，见 [`window-kernel-split.md`](../design/window-kernel-split.md) §3.1 / §7.5）；`lib/gateway/`（2026-10-12 网关解冻后新增）与 `lib/update/`（自更新）为拓扑图外的新增域。
 >
-> **收敛纪律（M4-D4 拍板）**：新增文件**沿用现状扁平域目录**；在统一收敛拍板之前，禁止单独引入 `features/` 前缀造成双拓扑并存。
+> **收敛纪律（M4-D4 拍板，2026-10-16 修订）**：新增文件**沿用现状扁平域目录**；在统一收敛拍板之前，禁止单独引入 `features/` 前缀造成双拓扑并存。
+>
+> **唯一例外（2026-10-16 新增，解 M4-D4 死锁）**：**`lib/app/`（装配容器 / 依赖注入）允许先行建立**，作为目标拓扑的**唯一 seed**。理由：① 规则 1 三处 `dart:io` 的整改触发条件是「`platform/interfaces` 建立」，而该层无人建、无触发条件，死锁；② 「统一收敛拍板」无 owner 无日期，永不到来。二者共享同一个单点解——装配容器。落点与时机见 [`window-kernel-split.md`](../design/window-kernel-split.md) §7.5 步 0-T7。**除 `lib/app/` 外，任何新前缀一律视为双拓扑，禁止**。
+>
+> **收敛 owner 与触发条件（补 M4-D4 缺口）**：owner = 装配容器首次落地那一轮的实施者；触发条件 = 三处 `dart:io` 豁免清零（见规则 1）**或** 出现第二个需跨窗口共享的应用级内核，届时回本文重评整体拓扑收敛。
 
-**core/network 与 mcp_bus 的边界纪律**：`core/network` 只放**纯传输底座**（HTTP client、指数退避算法等通用件）；**JSON-RPC/SSE 协议语义必须住在 `features/mcp_bus`**——重连期间「积压队列整体丢弃并回告模型、不静默重放」（F1.12）是总线策略，漏到 core 即围栏旁路。
+### 1.1 窗口层 / 内核层分层纪律（window-kernel-split，2026-10-16 立）
+
+> 内容 SSOT：[`window-kernel-split.md`](../design/window-kernel-split.md)。本节只固化**编码时必守的五条**，细则与内核清单一律查该文，**本文不复制正文**（防双源漂移）。
+
+架构形态 = **两层 + 端口**：**窗口**（投影层，`lib/ui/` 各页 + headless 的 `gateway_controller`）**单向依赖内核**（领域层）；向下传**值对象**（`SessionContext` + 装配选项），向上传**回调端口**（`RuntimeDelegates`，控制反转）。
+
+**形态判据（新增代码必过；用于判「形式合规但实质走偏」）**：① 新消费点**不得就地构造**共享内核——一律取装配容器单一实例；② 新窗口**不得持有领域态**——只持视图态与端口实现；③ 新内核须**先登记生命周期层级**（应用级 / 会话级 / Run 级），**未定层级不得开工**。终态形态与内核清单一律以设计稿为准，本文不列。
+
+1. **内核纯 Dart**：内核文件（`ServiceDirectory` / `McpRuntime` / `ConversationSession` 及后续登记内核）**严禁 import Flutter**（`material.dart` / `BuildContext` / `setState` / `ChangeNotifier`）。内核须可被 headless 路径复用，染 Flutter 即失效。**机械验收**：新增内核文件 grep 无 `package:flutter`。
+2. **单一 owner，禁止就地构造**：跨窗口共享的应用级状态（服务目录 / 记忆 / 会话档案等）**只能有一个 owner**，由装配容器供给**单一实例**；消费点**禁止就地 `new` 或自行拼路径**。反例（已产出生产 bug）：`mcp_servers.json` 曾在 3 处各拼一次，`gateway_controller` 那处漏带 `prefs` 迁移 → 旧配置在网关侧读不到。
+3. **生命周期单向依赖**：应用级 ← 会话级 ← Run 级，**严禁反向依赖**；短周期消亡不得拉扯长周期实例销毁；长周期变更经**快照 + 端口**下传。**不引事件总线**——总线会把 Run 级生命周期拉成应用级，必然泄漏。
+4. **视图态不下沉、领域态不上浮**：双轨渲染模型 / 流控 / 滚动跟随 / CallCard 相位**永远留在窗口**；transcript / 技能激活集 / 降级判据 / 私有域绑定**永远留在内核**。二者同居一个 `State` 是「新增字段要改 3 处、漏改即静默 bug」的根源。
+5. **内核命名须登记**：新增内核前先在设计稿 §3.1 内核清单登记，**禁止自造同义名**（已裁决用 `McpRuntime`，不得另写 `ServiceRuntime` / `ServiceManager`）。
+
+### 1.2 core/network 与 mcp_bus 的边界纪律`core/network` 只放**纯传输底座**（HTTP client、指数退避算法等通用件）；**JSON-RPC/SSE 协议语义必须住在 `features/mcp_bus`**——重连期间「积压队列整体丢弃并回告模型、不静默重放」（F1.12）是总线策略，漏到 core 即围栏旁路。
 
 ## 2. 核心编码纪律与硬性规则（Hard Rules）
 
@@ -55,7 +73,8 @@ lib/
 - **禁止平台污染**：`lib/features/` 与 `lib/ui/` 下**绝对禁止** `import 'dart:io'`（文件系统统一走 `core/storage` 或抽象接口），**绝对禁止**导入含 Android/iOS 专有概念的代码。
 - **接口驱动**：所有系统特权能力（剪贴板、通知、端侧推理引擎）必须定义纯 Dart 抽象类（`abstract interface class`），平台实现在 `lib/app/` 初始化阶段经依赖注入装配。
 - **机械验收**：CI 断言 `flutter analyze` 全绿 + `lib/ui/` 目录 grep 无 `dart:io`。
-- **2026-10-15 对账：现存三处违规（临时豁免，非免检）**：`lib/ui/chat_page.dart:12`、`lib/ui/settings_page.dart:19`、`lib/ui/update_page.dart:1` 直接 `import 'dart:io'`。**豁免理由**：三处消费的都是平台专属能力（支持目录 / 临时目录 / 安装与文件路径），而 `lib/platform/` 抽象层（目标拓扑）尚未建立——在无抽象层时硬套会造出第三处旁路。**整改触发条件**：`lib/platform/interfaces`（或等价抽象）建立时，三处必须改为经抽象接口注入。**在此之前禁止新增第四处违规**。
+- **2026-10-16 对账：现存三处违规（临时豁免，非免检）**：`lib/ui/chat_page.dart:12`（支持目录）、`lib/ui/settings_page.dart:35`（**行号自 :19 漂移修正**）、`lib/ui/update_page.dart:1`（安装与文件路径）直接 `import 'dart:io'`。**豁免理由**：三处消费的都是平台专属能力，而 `lib/platform/` 抽象层（目标拓扑）尚未建立——在无抽象层时硬套会造出第三处旁路。
+- **整改触发条件（2026-10-16 扩展，解死锁）**：① `lib/platform/interfaces`（或等价抽象）建立时；② **或 `lib/app/` 装配容器建立时**（§1 唯一例外）——**二者先到为准**，届时三处必须改为经抽象接口 / 装配容器注入。**在此之前禁止新增第四处违规**。预期顺序：`chat_page.dart:12` 随 window-kernel-split 步 0（`ServiceDirectory` 单一入口 + 装配容器）率先消除。
 
 ### 规则 2：单 OS 进程与并发调度防死锁
 
@@ -90,6 +109,7 @@ class ActionCardFailed extends ActionCardState { final String error; /* ... */ }
 - **Cancelled ≠ Failed（§10 纪律）**：用户 Abort / `notifications/cancelled` 级联终态必须落 `Cancelled`；仅真实错误落 `Failed`。**禁止混用**——审计语义不可逆。
 - **Abort 级联固定顺序（§10）**：UI Abort → ① 终止本地 LLM Generator → ② 终结本地执行队列 → ③ 对外部 Server 下发 `notifications/cancelled`（不只断 SSE）→ ④ 卡片终结为 `Cancelled`。实现必须按此顺序，不得乱序/跳步。
 - **命名口径（2026-10-15 修正）**：取消通知的 MCP 2025-06-18 规范名是 **`notifications/cancelled`**；`$/cancelRequest` 为早期草案方法名，**代码已于 M3-T2 全量改为前者**，本文残留旧名的两处同步修正——新增注释/文档一律用规范名。
+- **状态归属与生命周期（2026-10-16 新增，§1.1 配套）**：**领域态与视图态不得同居一个 `State`**——同一份会话态既要渲染又要入模型，必然退化为「新增字段要改 3 处（声明 / reset / 落盘）、漏改即静默 bug」。新增会话级字段一律落内核并随之持久化，**禁止在窗口 `State` 加裸字段 + 手工枚举 reset**。Run 级资源句柄（连接池 / RefStore / 路由）**随 Run 焚**：`close()` 必须**幂等**且覆盖正常与异常两条路径；窗口**不得缓存 Run 焚后的引用**。
 
 ## 4. 命名约定与代码风格
 
@@ -157,6 +177,7 @@ abstract interface class PiiRedactionPipeline {
 - `mcp_bus`：ToolRouter 命名空间隔离、JIT 元工具命中解析。
 - `aggregator`：`$ref` 注入生命周期、越权跨 App 隔离拦截。
 - `coordinator`：两步熔断、`max_turns=10` 步数墙、**用户拒绝不计入熔断计数**。
+- **内核须带注入位 + 装配级测试（2026-10-16 新增）**：新增或搬迁内核时，装配函数**必须接受依赖注入位**（范式：`server_probe.dart` 的 `clientFactory`、`settings_page` 的 `storeOverride` / `probeOverride`）——资源句柄封死后，「连接是否全部 close」**只能靠注入假件计数断言**，无注入位即无从验证；同时补**装配产物等价性**单测（搬迁前后逐项一致），**不得只靠真机冒烟**。
 
 ### 6.2 死锁防护集成测试
 

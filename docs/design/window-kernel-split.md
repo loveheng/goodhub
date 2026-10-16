@@ -324,6 +324,7 @@ MCP 的 progress 通告、resources 变更、断连 / 积压回告、sampling �
 - **D-D「连接平面全局 / 投影平面按工作区隔离」**——本设计是它的 UI 侧落地：Directory 是连接平面（全局），各窗口是投影平面（按窗口隔离）。与 `chatmessage/todos.md` 依赖跟踪「§2.4 投影平面按工作区隔离（从 `GatewayController.shared` 单例拆出）」同一条线。
 - **§15「激活集属会话，跨会话必须重开」**——`ConversationSession` 就是这个生命周期边界。
 - **D-C「私有 + 私有由单一槽位保证」**——私有域绑定归 Session，不归窗口也不归 Runtime。
+- **MO1~MO7 网关可见性双档与 PC 投影**——两档（public/private，无 host 服务端档）、host 非服务档、防火墙 `toolsList` = host+public+active private、PC 阶段一只读镜像、MO7 `$ref` 守卫仅网关入站；见 §8.4。
 
 ### 8.1 架构裁决台账（2026-10-16 二轮拍板 · 六项）
 
@@ -363,6 +364,29 @@ MCP 的 progress 通告、resources 变更、断连 / 积压回告、sampling �
 | 底层传输未显式释放 | `finally` 只调 `c.stop()`、未调 `client.close()` = 既有技术债，**随步 1 搬迁一并修正** | `todos.md` · `(清理)[short]`（不单独立项） |
 | 切会话写冲突 | **不存在**：`_guardRunning('切换会话')` + `_persistIfAny()` 已挡（`chat_page:241-250`） | 无需处理 |
 | `clientFactory` 离线装配 | **已解决**：§7.5 步 0 强制项，默认 `McpClient.http` | §7.5 步 0 |
+
+### 8.4 网关可见性双档与 PC 投影模型（MO1~MO7 · 2026-10-16 拍板）
+
+> 本小节是**网关侧可见性与 PC 投影的权威口径**，epic `mcp-orchestration/memory.md` 仅记状态与指针。凡与下列冲突的表述一律以此为准。
+
+**两档可见性（服务端，唯一权威 = `ServerPrivacyTier{private,public}`）**
+- 后端 MCP 服务只有两档：**public**（跨服务共享面 / Shared Plane）与 **private**（私有备选池 / Private Slot）。**服务端没有 host 这一档**——`lib/mcp/server_endpoints.dart` 的枚举已是唯一权威，规范两平面图对服务端完整自洽，不引入第三档。
+- 命名勘误：内核 #9 写作「Gateway 对外代理（host）」，其中 **host = 宿主 App 自身充当服务端**，是网关这个内核的别称，**不是任何后端服务的可见性类型**；勿据此把 host 解读为服务端第三档。
+
+**host 非服务、非可见性档**
+- `HostNativeTools`（switch_server / 权限 / 工作区 IO 等）是**客户端自家工具**，不是后端 MCP、不计入任何可见性档；它经网关投影面常驻呈现，给 PC（及本地模型）当控制客户端用。PC 取用 host 走同一套投影机制，无特权后端通道。
+
+**防火墙 / 投影规则（已落地 MO6 阶段一）**
+- `GatewayHandler.toolsList`（防火墙）只回 **host 内置 + 全部 public +（绑定的单一 active private）**；private 默认不进共享面。
+- **阶段一（当前）PC 只读镜像**：PC 接网关代理仅透传客户端当前激活投影（Host + Public + 宿主当前选中的 Active Private）；PC 只能调用，**无权**发起 `use_server` 动态换绑。依据——`GatewayController.shared` 现为全局单例，放行 PC 换绑会直接改写宿主当前 `activePrivateServerId`，造成跨会话状态踩踏。`chat_page` 三处私有绑定变更点（恢复会话 / 端点预热 / 菜单即时绑定）经 `GatewayController.syncActivePrivate(id)` 推送宿主激活私有。
+- **阶段二（D-D 落地后）**：`GatewayController` 改造为按 connection/workspace 分配独立投影上下文（见上方 D-D §2.4 对齐）后，再解锁 PC 自主发送 `use_server` 独占属于 PC 会话的私有槽位。
+
+**`$ref` 跨服务防火墙守卫范围（MO7 · 仅网关入站 / 跨源边界）**
+- 规则 1「跨源请求须持 Session Context / `$ref` 否则拒」**仅约束经网关入站的跨源请求**（PC / LAN 入站 RPC）。
+- 坚决**不侵入本地同进程调用**：本地同进程结构性安全——D-C 单私有槽已保证会话上下文至多一个私有服务、其余皆 public，`AgentLoop` / `ToolRouter` 无「两私有互相偷调」物理通路。
+- LAN 直连 goodhub 看不见跨源代理边界，靠「private 不进共享面」兜底。
+- 守卫死锁在 `lib/gateway/mcp_gateway_handler.dart` 入站分发层，保住纯 Dart 协调内核 `coordinator/` 的纯粹与零开销，避免本地单测 / 本地链路引入繁重上下文权限检查。
+- **[已实施 2026-10-16]** `toolsCall` 新增 `sessionId` 入参（`gateway_server` 透传 `Mcp-Session-Id`）；递归扫描入参收集「引用 serverId ≠ 目标 serverId」的跨源 `$ref` 句柄，无有效会话即拒绝（整值匹配口径，与 `ref_hydrator` 一致）；守卫只做会话归属校验、不做注水（网关按字面转发句柄）。4 单测锁定，`test/gateway` 全 41 例绿。
 
 ## 9. 不做边界
 

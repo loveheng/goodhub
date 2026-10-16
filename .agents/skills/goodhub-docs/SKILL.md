@@ -16,7 +16,7 @@ description: goodhub 的文档体系归属索引——只登记三项项目数�
 |---|---|---|---|
 | project（项目接入/工程事实） | `docs/project/` | 接入定稿、coding-standards | 2 |
 | product（产品设计） | `docs/product/` | 产品架构、需求、FC 锚点、UI 规范 SSOT、聊天交互 SSOT | 5 |
-| design（大功能设计稿） | `docs/design/` | 各 epic 设计 SSOT（m2-5 / m3 / m4 / thirdconnect） | 4 |
+| design（大功能设计稿） | `docs/design/` | 各 epic 设计 SSOT（m2-5 / m3 / m4 / thirdconnect / page-revamp / self-update / stream-perf / window-kernel-split / ux-hardening 等） | 14 |
 
 ## 2. 本仓 lint 脚本路径
 

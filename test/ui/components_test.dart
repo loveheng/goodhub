@@ -7,6 +7,7 @@ import 'package:goodhub/ui/components/breaker_card.dart';
 import 'package:goodhub/ui/components/confirmation_card.dart';
 import 'package:goodhub/ui/components/fence_block_card.dart';
 import 'package:goodhub/ui/components/status_capsule.dart';
+import 'package:goodhub/ui/components/status_strip.dart';
 import 'package:goodhub/ui/tokens/console_tokens.dart';
 
 Widget host(Widget child) => MaterialApp(
@@ -64,6 +65,33 @@ void main() {
   });
 
   group('BreakerCard（排查卡）', () {
+    testWidgets('P1-6 白话层：三操作各附后果说明（用户知选哪个、后果是什么）',
+        (tester) async {
+      await tester.pumpWidget(host(BreakerCard(
+        report: const BreakerReport(
+          toolName: 'flaky',
+          consecutiveFailures: 2,
+          lastError: 'ECONNREFUSED',
+          argumentsJson: '{}',
+        ),
+        onBreaker: (_) {},
+      )));
+      expect(find.textContaining('单步重试 = 原地再试一次'), findsOneWidget);
+      expect(find.textContaining('跳过 = 把「出错了」作为结果告诉模型'),
+          findsOneWidget);
+      expect(find.textContaining('人工接管 = 你直接把正确结果填给模型'),
+          findsOneWidget);
+    });
+
+    testWidgets('P1-6 白话层：步数墙两操作后果说明', (tester) async {
+      await tester.pumpWidget(host(BreakerCard(
+        wall: const StepWallReport(turnsUsed: 10, limit: 10),
+        onStepWall: (_) {},
+      )));
+      expect(find.textContaining('放宽 = 再给 10 轮继续尝试'), findsOneWidget);
+      expect(find.textContaining('终止 = 就此结束任务'), findsOneWidget);
+    });
+
     testWidgets('熔断态：错误摘要 + 单步重试/跳过/人工接管三操作', (tester) async {
       Object? resolution;
       await tester.pumpWidget(host(BreakerCard(
@@ -180,6 +208,75 @@ void main() {
     )));
     expect(find.text('goodshare::list_items'), findsOneWidget);
     expect(find.text('failed'), findsOneWidget);
+  });
+
+  group('StatusStrip（输入条状态带，§3.1）', () {
+    test('fmtElapsed：mm:ss 格式化（跨分钟不进小时位）', () {
+      expect(StatusStrip.fmtElapsed(DateTime.now()), '00:00');
+      expect(
+        StatusStrip.fmtElapsed(
+            DateTime.now().subtract(const Duration(seconds: 65))),
+        '01:05',
+      );
+      expect(
+        StatusStrip.fmtElapsed(
+            DateTime.now().subtract(const Duration(minutes: 60))),
+        '60:00',
+      );
+    });
+
+    test('pillText 人话化（P1-6：breaker/fence 去黑话）', () {
+      expect(StatusStrip.pillText('breaker'), '工具报错，待处理');
+      expect(StatusStrip.pillText('fence'), '敏感信息，待确认');
+      expect(StatusStrip.pillText('thinking'), '思考中');
+      // 工具名等宽原名透传（不进人话表）。
+      expect(StatusStrip.pillText('goodshare::list_items'),
+          'goodshare::list_items');
+    });
+
+    testWidgets('运行态显示已耗时 + 人话相位（P1-4：_runStartedAt 死代码修复）',
+        (tester) async {
+      await tester.pumpWidget(host(StatusStrip(
+        t: ConsoleTokens.fallback,
+        pillTone: CapsuleTone.l1,
+        pillLabel: 'thinking',
+        running: true,
+        runStartedAt: DateTime.now().subtract(const Duration(seconds: 3)),
+        contextId: null,
+        localPluginCount: 0,
+        hasEndpoints: false,
+        endpointName: (id) => id,
+        onOpenMenu: () {},
+      )));
+      expect(find.text('思考中'), findsOneWidget,
+          reason: 'thinking 人话化——工具结束后的 Run 中相位（P1-4）');
+      expect(find.text('00:03'), findsOneWidget, reason: '运行态状态带显示已耗时');
+    });
+
+    testWidgets('非运行态无计时；空闲相位人话', (tester) async {
+      await tester.pumpWidget(host(StatusStrip(
+        t: ConsoleTokens.fallback,
+        pillTone: CapsuleTone.idle,
+        pillLabel: 'idle',
+        running: false,
+        runStartedAt: null,
+        contextId: null,
+        localPluginCount: 0,
+        hasEndpoints: false,
+        endpointName: (id) => id,
+        onOpenMenu: () {},
+      )));
+      expect(find.text('空闲'), findsOneWidget);
+      final texts = tester
+          .widgetList<Text>(find.byType(Text))
+          .map((w) => w.data)
+          .toList();
+      expect(
+        texts.any((t) => t != null && RegExp(r'^\d{2}:\d{2}$').hasMatch(t)),
+        isFalse,
+        reason: '非运行态不显示计时',
+      );
+    });
   });
 
   test('ConsoleTokens：语义色与基础 token 固定值', () {

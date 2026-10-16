@@ -1,7 +1,10 @@
 /// 设置页（2026-10-16 合并改名词：原「服务大厅」，名词映射见
 /// docs/design/page-revamp.md）。M3-T4 建页（architecture §5「服务与配置大厅」
 /// 的 M3 交付面；形态 = ui-design §3.3 控制台式卡片阵列），M4-T5 增 BYOK /
-/// 节点卡面板，2026-10-16 合并聊天页 ⚙ 设置弹层后定稿六段。
+/// 节点卡面板，2026-10-16 合并聊天页 ⚙ 设置弹层后定稿六段；**2026-10-16 方案 A
+/// 撤销「默认私有服务」独立 radio 面板**（HCI 评估：该面板无独立数据源，候选集
+/// 是 ②③ 的二次渲染，同屏双份+四层作用域过载）——默认钉选降级为 ②③ 卡片行内
+/// 「图钉按钮 + 默认私有 pill」，存储键 `default.private.server` 与回退链不变。
 ///
 /// **本页 scope（边界声明——防无边界膨胀）**：设置 = **服务与引擎配置**，仅收纳
 /// 下列六段。记忆看板（`MemoryBoardPage`）、应用更新（`UpdatePage`）、会话历史
@@ -15,10 +18,14 @@
 ///    延迟毫秒 / 在线点 / 已暴露工具计数，等宽遥测轨）+ 鉴权态（401/403 待授权
 ///    Rose，禁与离线灰阶混淆）+ 挂载/卸载开关（卸载只摘出连接池，配置与令牌
 ///    保留）+ 增删改表单（同一 ServerEndpointStore 文件——服务全生命周期已收敛
-///    本页，聊天页 ⚙ 不再持有）；数据面 = lib/mcp/server_probe.dart 探活器；
+///    本页，聊天页 ⚙ 不再持有）+ **默认私有服务钉选**（图钉 + 「默认私有」pill，
+///    候选 = enabled 且 private tier；与 ③ 共用统一默认键，聊天页可临时覆盖）；
+///    数据面 = lib/mcp/server_probe.dart 探活器；
 /// ③ **本地插件**——Binder 同机发现项渲染 + 信任态 pill + **信任 / 撤销信任**
 ///    （撤销 = 移出白名单；因信任闸门是装配期校验而非长连接状态，下一轮装配
-///    本机重新弹卡确认、PC 网关侧直接跳过不再暴露，故撤销无需动连接池）；
+///    本机重新弹卡确认、PC 网关侧直接跳过不再暴露，故撤销无需动连接池）+
+///    **默认私有服务钉选**（同 ② 图钉语义，候选 = serverId 非空——本地插件
+///    与原 radio 面板同过滤口径，含未信任项：信任闸门在装配期仍会拦）；
 /// ④ **PC 远程网关**——:8766 起停 + 配对 Token + 局域网暴露风险文案（2026-10-16
 ///    自聊天页 ⚙ 迁入；是本次合并的唯一净新增能力）；
 /// ⑤ **Skill 覆写（CoW 编辑面）**——覆写列表/编辑/保存（setOverride）/ 一键重置；
@@ -46,6 +53,7 @@ import '../llm/cloud/byok_store.dart';
 import '../llm/cloud/cloud_llm.dart';
 import '../mcp/server_endpoints.dart';
 import '../mcp/server_probe.dart';
+import '../mcp/default_private_server.dart';
 import 'components/server_endpoint_forms.dart';
 import 'claim_loop_page.dart';
 import 'gateway_loop_debug_page.dart';
@@ -111,7 +119,9 @@ class _SettingsPageState extends State<SettingsPage> {
   final _newNameCtrl = TextEditingController();
   final _newContentCtrl = TextEditingController();
   var _creating = false;
-  String? _error;
+  // 面板级错误态（ux-hardening P0-3）：初始化失败不再打死整页——面板内
+  // Rose 文案 + 重试入口；面板间无数据依赖，其余照常可用。
+  String? _cowError;
 
   // —— BYOK 面板状态（M4-T5）——
   ByokStore? _byokStore;
@@ -120,6 +130,7 @@ class _SettingsPageState extends State<SettingsPage> {
   final _hasByokKey = <String>{}; // 安全存储已有密钥的 profileId（真值不入内存明文）
   String? _editingByokId;
   var _creatingByok = false;
+  String? _byokError;
   var _byokProto = CloudProtocol.openaiCompatible;
   final _byokNameCtrl = TextEditingController();
   final _byokUrlCtrl = TextEditingController();
@@ -136,12 +147,19 @@ class _SettingsPageState extends State<SettingsPage> {
   final _epKeys = <String, String?>{}; // id → 已存令牌（编辑表单预填）
   var _addingEp = false;
   String? _editingEpId;
+  String? _nodesError;
 
   // —— 本地插件面板（Binder 发现，零配置自动挂载）——
   Future<List<LocalPluginInfo>> Function()? _localScan;
   var _localPlugins = const <LocalPluginInfo>[];
   var _trustedPackages = const <String>{}; // 已信任包名（同签名免确认仍显式标）
   StreamSubscription<void>? _localChangesSub;
+  String? _localError;
+
+  // —— 默认私有服务（统一钉选，覆盖手动端点 + 本地插件；持久于 SharedPreferences）——
+  // 方案 A（2026-10-16）：独立 radio 面板撤销，钉选态降级为 ②③ 卡片行内
+  // （图钉按钮 + 「默认私有」pill）——空 = 无默认（纯公共回退）。
+  var _defaultPrivateId = '';
 
   // —— 关于面板（2026-10-16 自聊天页 AppBar 迁入）——
   String _appVersion = '—'; // PackageInfo 不可用时占位（宁空勿炸）
@@ -174,46 +192,14 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _init() async {
-    try {
-      final store =
-          widget.storeOverride ??
-          CowOverridesStore(dir: await getApplicationDocumentsDirectory());
-      await _reload(store);
-    } catch (e) {
-      if (mounted) setState(() => _error = '覆写库初始化失败: $e');
-    }
-    // BYOK 独立初始化：覆写库失败不拖垮面板（面板间无数据依赖）。
-    try {
-      final byok = widget.byokStoreOverride ?? ByokStore();
-      await _reloadByok(byok);
-    } catch (e) {
-      debugPrint('[DEGRADE] byok-panel: 配置读取失败按空目录: $e');
-    }
-    // 节点卡独立初始化：与聊天页 ⚙ 设置同一 ServerEndpointStore 文件
-    // （应用支持目录/mcp_servers.json + 旧单端点 SharedPreferences 迁移同口径）。
-    try {
-      final epStore = widget.endpointStoreOverride ?? await _epStoreProd();
-      await _reloadEndpoints(epStore);
-    } catch (e) {
-      debugPrint('[DEGRADE] nodes-panel: 端点目录读取失败按空目录: $e');
-    }
+    await _initCow();
+    await _initByok();
+    await _initNodes();
     // P2：进入页面自动探活一次——「未探测 · 已存令牌」不再让用户先找按钮。
     if (widget.autoProbe && mounted) {
       unawaited(_probeAll());
     }
-    // 本地插件面板独立初始化：Binder 通道拉扫同机插件（零配置自动挂载），
-    // 订阅包变更流做热刷新；失败（通道不可用）按空目录，不拖垮页面。
-    try {
-      _localScan = widget.localScanOverride ?? localPluginDiscovery.scan;
-      final changes =
-          widget.localChangesOverride ?? localPluginDiscovery.changes;
-      _localChangesSub = changes.listen((_) {
-        if (mounted) unawaited(_reloadLocalPlugins());
-      });
-      await _reloadLocalPlugins();
-    } catch (e) {
-      debugPrint('[DEGRADE] local-plugins-panel: 初始化失败按空目录: $e');
-    }
+    await _initLocalPlugins();
     // 网关面板独立初始化：只读当前起停态与持久化 Token——网关是全局单例，
     // 页面 dispose **不停服**（起停是用户显式动作，页面进出不该带副作用）。
     try {
@@ -226,9 +212,80 @@ class _SettingsPageState extends State<SettingsPage> {
     // 关于面板独立初始化：版本号只作展示，读不到按占位（不影响任何功能面）。
     try {
       final info = await PackageInfo.fromPlatform();
-      if (mounted) setState(() => _appVersion = '${info.version}+${info.buildNumber}');
+      if (mounted) {
+        setState(() => _appVersion = '${info.version}+${info.buildNumber}');
+      }
     } on Object catch (e) {
       debugPrint('[DEGRADE] about-panel: 版本读取失败按占位: $e');
+    }
+    // 默认私有服务钉选读取（独立初始化：失败按空，不拖垮页面）。
+    try {
+      final def = await readDefaultPrivateServerId();
+      if (mounted) setState(() => _defaultPrivateId = def ?? '');
+    } on Object catch (e) {
+      debugPrint('[DEGRADE] default-private: 读取失败按无默认: $e');
+    }
+  }
+
+  /// 覆写面板初始化（ux-hardening P0-3）：失败置面板级错误态（Rose + 重试），
+  /// 不再打死整页；成功即清错误。重试入口 = 本方法自身。
+  Future<void> _initCow() async {
+    try {
+      final store =
+          widget.storeOverride ??
+          CowOverridesStore(dir: await getApplicationDocumentsDirectory());
+      await _reload(store);
+      if (mounted) setState(() => _cowError = null);
+    } catch (e) {
+      if (mounted) setState(() => _cowError = '覆写库读取失败：$e');
+    }
+  }
+
+  /// BYOK 面板初始化（P0-3 同口径）：失败从「静默按空目录」升级为面板级
+  /// 错误态——用户自带 key 失效时看得到原因，而非面对空列表猜疑。
+  Future<void> _initByok() async {
+    try {
+      final byok = widget.byokStoreOverride ?? ByokStore();
+      await _reloadByok(byok);
+      if (mounted) setState(() => _byokError = null);
+    } catch (e) {
+      debugPrint('[DEGRADE] byok-panel: 配置读取失败: $e');
+      if (mounted) setState(() => _byokError = '模型配置读取失败：$e');
+    }
+  }
+
+  /// 节点卡面板初始化（P0-3 同口径）：失败置面板级错误态（与聊天页 ⚙ 设置
+  /// 同一 ServerEndpointStore 文件——应用支持目录/mcp_servers.json + 旧单端点
+  /// SharedPreferences 迁移同口径）。
+  Future<void> _initNodes() async {
+    try {
+      final epStore = widget.endpointStoreOverride ?? await _epStoreProd();
+      await _reloadEndpoints(epStore);
+      if (mounted) setState(() => _nodesError = null);
+    } catch (e) {
+      debugPrint('[DEGRADE] nodes-panel: 端点目录读取失败: $e');
+      if (mounted) setState(() => _nodesError = '节点目录读取失败：$e');
+    }
+  }
+
+  /// 本地插件面板初始化（P0-3 同口径）：Binder 通道拉扫同机插件（零配置自动
+  /// 挂载），订阅包变更流做热刷新；失败（通道不可用）置面板级错误态 + 重试，
+  /// 不再永显「读取本地插件…」。
+  Future<void> _initLocalPlugins() async {
+    try {
+      _localScan = widget.localScanOverride ?? localPluginDiscovery.scan;
+      final changes =
+          widget.localChangesOverride ?? localPluginDiscovery.changes;
+      // 重试路径防重复订阅：先摘旧订阅再挂新（幂等）。
+      await _localChangesSub?.cancel();
+      _localChangesSub = changes.listen((_) {
+        if (mounted) unawaited(_reloadLocalPlugins());
+      });
+      await _reloadLocalPlugins();
+      if (mounted) setState(() => _localError = null);
+    } catch (e) {
+      debugPrint('[DEGRADE] local-plugins-panel: 初始化失败: $e');
+      if (mounted) setState(() => _localError = '本地插件读取失败：$e');
     }
   }
 
@@ -252,8 +309,9 @@ class _SettingsPageState extends State<SettingsPage> {
     final token = _gwTokenCtrl.text.trim();
     try {
       if (value) {
-        await SharedPreferences.getInstance()
-            .then((sp) => sp.setString('gateway.token', token));
+        await SharedPreferences.getInstance().then(
+          (sp) => sp.setString('gateway.token', token),
+        );
         await GatewayController.shared.start(port: 8766, token: token);
       } else {
         await GatewayController.shared.stop();
@@ -425,8 +483,8 @@ class _SettingsPageState extends State<SettingsPage> {
         _hasByokKey
           ..clear()
           ..addAll(withKey);
-        _byokPreferredId = preferred ??
-            (profiles.isNotEmpty ? profiles.first.id : null);
+        _byokPreferredId =
+            preferred ?? (profiles.isNotEmpty ? profiles.first.id : null);
         _creatingByok = false;
         _editingByokId = null;
       });
@@ -497,34 +555,66 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  /// 面板级错误态（ux-hardening P0-3）：Rose 文案 + 重试按钮。替代两种历史
+  /// 病：一处初始化失败打死整页（其余面板可用被替换）；store 读取失败后
+  /// `store == null` 永显「读取中…」（错误不可见、无恢复入口）。
+  Widget _panelError(
+    ConsoleTokens t,
+    String message,
+    VoidCallback onRetry, {
+    ValueKey<String>? key,
+  }) {
+    return Padding(
+      key: key,
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '⚠ $message',
+            style: TextStyle(fontSize: Fsz.telemetry, color: t.danger),
+          ),
+          const SizedBox(height: 2),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              key: key == null ? null : ValueKey('${key.value}-retry'),
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh, size: 16),
+              label: const Text('重试'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final t = consoleTokens(context);
     return Scaffold(
       appBar: AppBar(title: const Text('设置')),
-      body: _error != null
-          ? Center(
-              child: Text(_error!, style: TextStyle(color: t.danger)),
-            )
-          : ListView(
-              padding: const EdgeInsets.all(12),
-              children: [
-                // 顺序按使用频率：先选引擎，再接服务，后管放行与覆写。
-                _byokPanel(context, t),
-                const SizedBox(height: 12),
-                _nodesPanel(context, t),
-                const SizedBox(height: 12),
-                _localPluginsPanel(context, t),
-                const SizedBox(height: 12),
-                _gatewayPanel(context, t),
-                const SizedBox(height: 12),
-                _cowPanel(context, t),
-                const SizedBox(height: 12),
-                _crossSourcePanel(context, t),
-                const SizedBox(height: 12),
-                _aboutPanel(context, t),
-              ],
-            ),
+      // ux-hardening P0-3：面板初始化失败不再打死整页——各面板自持错误态
+      // （Rose + 重试），此处恒渲染完整面板列表。
+      body: ListView(
+        padding: const EdgeInsets.all(12),
+        children: [
+          // 顺序按使用频率：先选引擎，再接服务，后管放行与覆写。
+          _byokPanel(context, t),
+          const SizedBox(height: 12),
+          _nodesPanel(context, t),
+          const SizedBox(height: 12),
+          _localPluginsPanel(context, t),
+          const SizedBox(height: 12),
+          _gatewayPanel(context, t),
+          const SizedBox(height: 12),
+          _cowPanel(context, t),
+          const SizedBox(height: 12),
+          _crossSourcePanel(context, t),
+          const SizedBox(height: 12),
+          _aboutPanel(context, t),
+        ],
+      ),
     );
   }
 
@@ -562,14 +652,32 @@ class _SettingsPageState extends State<SettingsPage> {
             const SizedBox(height: 4),
             Text(
               '官方模板（goodshare prompts）的本地覆写副本，优先级最高；'
-              '模板大版本跃迁时同步流会弹卡让你选重置/保留。',
+              '官方模板大版本更新时，同步流会弹卡让你选重置或保留本地改法。',
               style: TextStyle(
                 fontSize: Fsz.telemetrySm,
                 color: Theme.of(context).hintColor,
               ),
             ),
             const SizedBox(height: 8),
-            if (store == null)
+            // P2-1：覆写文件损坏备份警示——旧行为是用户手改变的配置被无声
+            // 清空（按空库重写），现在备份保留 + 面板明示。
+            if (store != null && store.corruptBackupPath != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Text(
+                  '⚠ 覆写文件损坏，已备份为 ${store.corruptBackupPath}；'
+                  '当前按空库显示，可手动找回备份。',
+                  style: TextStyle(fontSize: Fsz.telemetry, color: t.danger),
+                ),
+              ),
+            if (_cowError != null)
+              _panelError(
+                t,
+                _cowError!,
+                _initCow,
+                key: const ValueKey('cow-error'),
+              )
+            else if (store == null)
               const Padding(
                 padding: EdgeInsets.all(8),
                 // 静态文案不用 spinner：无限动画会让 pumpAndSettle 永不收口，
@@ -799,7 +907,8 @@ class _SettingsPageState extends State<SettingsPage> {
             Row(
               children: [
                 Text(
-                  'BYOK 云端引擎',
+                  // P1-7：标题去首字母缩略语——BYOK 对普通用户是黑话。
+                  '云端引擎（自带 API Key）',
                   style: const TextStyle(
                     fontSize: Fsz.sectionTitle,
                     fontWeight: FontWeight.w600,
@@ -818,15 +927,22 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
             const SizedBox(height: 4),
             Text(
-              '自带 API Key 接入云端模型（OpenAI 兼容 / Anthropic）。'
-              '标注「生效中」的为当前装配模型，可点「设为生效引擎」或聊天页 ⚙ 切换。',
+              '用你自己的 API Key 接入云端模型（OpenAI 兼容 / Anthropic）。'
+              '标注「生效中」的是当前实际使用的模型，可点「设为生效引擎」切换。',
               style: TextStyle(
                 fontSize: Fsz.telemetrySm,
                 color: Theme.of(context).hintColor,
               ),
             ),
             const SizedBox(height: 8),
-            if (store == null)
+            if (_byokError != null)
+              _panelError(
+                t,
+                _byokError!,
+                _initByok,
+                key: const ValueKey('byok-error'),
+              )
+            else if (store == null)
               const Padding(
                 padding: EdgeInsets.all(8),
                 child: Center(
@@ -837,13 +953,13 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
               )
             else ...[
-              for (final p in _byokProfiles)
-                _byokItem(context, t, p),
+              for (final p in _byokProfiles) _byokItem(context, t, p),
               if (_byokProfiles.isEmpty)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 6),
                   child: Text(
-                    '（暂无模型配置——云端引擎未装配，仅端侧路径）',
+                    // P1-7：空态文案去「装配」黑话。
+                    '（暂无模型配置——未接入云端模型，仅端侧路径）',
                     style: TextStyle(
                       fontSize: Fsz.telemetry,
                       color: Theme.of(context).hintColor,
@@ -868,11 +984,7 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Widget _byokItem(
-    BuildContext context,
-    ConsoleTokens t,
-    ByokProfile p,
-  ) {
+  Widget _byokItem(BuildContext context, ConsoleTokens t, ByokProfile p) {
     final editing = _editingByokId == p.id;
     final hasKey = _hasByokKey.contains(p.id);
     final active = _byokPreferredId == p.id;
@@ -1229,7 +1341,8 @@ class _SettingsPageState extends State<SettingsPage> {
           _policyRow(
             context,
             Icons.visibility_off_outlined,
-            '禁盲签',
+            // P1-7：策略行标题去黑话（禁盲签 → 看得懂的动作口径）。
+            '看不清不放行',
             '数据摘要不可读即拒；摘要封顶 300 字符（标题+前 5 行）',
           ),
           _policyRow(
@@ -1325,14 +1438,22 @@ class _SettingsPageState extends State<SettingsPage> {
             const SizedBox(height: 4),
             Text(
               '已配置的 MCP 服务节点。卸载开关只把节点摘出会话装配，配置与'
-              '令牌保留；鉴权被拒（403）用红色标注，与离线区分。',
+              '令牌保留；鉴权被拒（403）用红色标注，与离线区分。'
+              '图钉 = 钉选为默认私有服务（新会话默认锁定，聊天页可临时改本次会话）。',
               style: TextStyle(
                 fontSize: Fsz.telemetrySm,
                 color: Theme.of(context).hintColor,
               ),
             ),
             const SizedBox(height: 8),
-            if (_epStore == null)
+            if (_nodesError != null)
+              _panelError(
+                t,
+                _nodesError!,
+                _initNodes,
+                key: const ValueKey('nodes-error'),
+              )
+            else if (_epStore == null)
               const Padding(
                 padding: EdgeInsets.all(8),
                 child: Center(
@@ -1426,6 +1547,13 @@ class _SettingsPageState extends State<SettingsPage> {
                             ),
                           ),
                         ],
+                        // 默认私有 pill（与「已卸载」同款行内态；仅 eligible 时出现）。
+                        if (_isDefaultPrivate(ep.id) &&
+                            ep.enabled &&
+                            ep.tier == ServerPrivacyTier.private) ...[
+                          const SizedBox(width: 6),
+                          _defaultPill(t),
+                        ],
                       ],
                     ),
                     Text(
@@ -1459,6 +1587,14 @@ class _SettingsPageState extends State<SettingsPage> {
                 iconSize: 18,
                 icon: const Icon(Icons.delete_outline),
                 onPressed: () => unawaited(_deleteEndpoint(ep)),
+              ),
+              // 默认私有服务钉选（方案 A：原独立面板撤销，降级为行内图钉；
+              // 非破坏性即时写，无确认卡——与原 radio 单选同口径）。
+              _defaultPinButton(
+                pinKey: Key('node-default-${ep.id}'),
+                id: ep.id,
+                label: ep.name,
+                eligible: ep.enabled && ep.tier == ServerPrivacyTier.private,
               ),
               // 破坏性操作与高频挂载开关之间留间距，防误触卸载成删除。
               const SizedBox(width: 6),
@@ -1601,10 +1737,7 @@ class _SettingsPageState extends State<SettingsPage> {
             if (kDebugMode)
               Text(
                 '（debug 构建：长按「关于」进入联调入口）',
-                style: TextStyle(
-                  fontSize: Fsz.microSm,
-                  color: t.terminalMuted,
-                ),
+                style: TextStyle(fontSize: Fsz.microSm, color: t.terminalMuted),
               ),
             ListTile(
               key: const Key('about-check-update'),
@@ -1649,8 +1782,8 @@ class _SettingsPageState extends State<SettingsPage> {
               subtitle: Text(
                 _gwRunning
                     ? '运行中——PC 配置：'
-                        '${_gwLanAddrs.isEmpty ? 'http://<手机IP>' : _gwLanAddrs.map((a) => 'http://$a').join(' 或 ')}'
-                        ':8766/mcp（ADB 场景 127.0.0.1:8766）'
+                          '${_gwLanAddrs.isEmpty ? 'http://<手机IP>' : _gwLanAddrs.map((a) => 'http://$a').join(' 或 ')}'
+                          ':8766/mcp（ADB 场景 127.0.0.1:8766）'
                     : '关闭——开启后 PC 经 Streamable HTTP 调用手机内全部服务',
                 style: const TextStyle(fontSize: Fsz.telemetrySm),
               ),
@@ -1776,14 +1909,22 @@ class _SettingsPageState extends State<SettingsPage> {
             const SizedBox(height: 4),
             Text(
               '已安装且声明 MCP_SERVER 的同机插件，零配置自动挂载；同签名私有生态免确认，'
-              '第三方首次需信任确认。不进手填配置（与远端节点不同源）。',
+              '第三方首次需信任确认。不进手填配置（与远端节点不同源）。'
+              '图钉 = 钉选为默认私有服务（与「Server 节点」同一默认键）。',
               style: TextStyle(
                 fontSize: Fsz.telemetrySm,
                 color: Theme.of(context).hintColor,
               ),
             ),
             const SizedBox(height: 8),
-            if (_localScan == null)
+            if (_localError != null)
+              _panelError(
+                t,
+                _localError!,
+                _initLocalPlugins,
+                key: const ValueKey('local-error'),
+              )
+            else if (_localScan == null)
               const Padding(
                 padding: EdgeInsets.all(8),
                 child: Center(
@@ -1818,8 +1959,7 @@ class _SettingsPageState extends State<SettingsPage> {
     ConsoleTokens t,
     LocalPluginInfo p,
   ) {
-    final trusted =
-        p.sameSignature || _trustedPackages.contains(p.packageName);
+    final trusted = p.sameSignature || _trustedPackages.contains(p.packageName);
     return Container(
       key: Key('local-plugin-${p.transportId}'),
       margin: const EdgeInsets.symmetric(vertical: 4),
@@ -1835,10 +1975,7 @@ class _SettingsPageState extends State<SettingsPage> {
           Container(
             width: 10,
             height: 10,
-            decoration: BoxDecoration(
-              color: t.l1Ok,
-              shape: BoxShape.circle,
-            ),
+            decoration: BoxDecoration(color: t.l1Ok, shape: BoxShape.circle),
           ),
           const SizedBox(width: 8),
           Expanded(
@@ -1871,6 +2008,11 @@ class _SettingsPageState extends State<SettingsPage> {
                         color: t.terminalMuted,
                       ),
                     ),
+                    // 默认私有 pill（方案 A：与节点卡同款行内态）。
+                    if (_isDefaultPrivate(p.serverId)) ...[
+                      const SizedBox(width: 8),
+                      _defaultPill(t),
+                    ],
                     const SizedBox(width: 8),
                     if (p.sameSignature)
                       Text(
@@ -1893,14 +2035,19 @@ class _SettingsPageState extends State<SettingsPage> {
                       // 同签名私有生态免确认（不入白名单，无撤销对象）。
                       if (!p.sameSignature) ...[
                         const SizedBox(width: 6),
-                        TextButton(
-                          key: Key('local-untrust-${p.transportId}'),
-                          onPressed: () => _untrustPlugin(p),
-                          child: const Text('撤销'),
+                        // P1-8：撤销入口补后果 tooltip（可发现性 = 看得见
+                        // + 看得懂点了会怎样）。TextButton 无 tooltip 形参，
+                        // 外包 Tooltip 承载。
+                        Tooltip(
+                          message: '撤销后下次使用需重新确认信任，PC 网关也不再暴露它',
+                          child: TextButton(
+                            key: Key('local-untrust-${p.transportId}'),
+                            onPressed: () => _untrustPlugin(p),
+                            child: const Text('撤销'),
+                          ),
                         ),
                       ],
-                    ]
-                    else ...[
+                    ] else ...[
                       Text(
                         '待信任',
                         style: TextStyle(
@@ -1921,8 +2068,78 @@ class _SettingsPageState extends State<SettingsPage> {
               ],
             ),
           ),
+          // 默认私有服务钉选（方案 A：与节点卡同款图钉；候选 = serverId 非空）。
+          _defaultPinButton(
+            pinKey: Key('local-default-${p.transportId}'),
+            id: p.serverId,
+            label: p.serverTitle.isNotEmpty ? p.serverTitle : p.serverId,
+            eligible: p.serverId.isNotEmpty,
+          ),
         ],
       ),
     );
+  }
+
+  // —— 默认私有服务（方案 A：统一钉选降级为 ②③ 卡片行内态，2026-10-16）——
+
+  /// 当前卡片是否为持久默认（空 id 永假——防空串与「无默认」初始态误判）。
+  bool _isDefaultPrivate(String id) => id.isNotEmpty && _defaultPrivateId == id;
+
+  /// 「默认私有」pill（L1 就绪语义，与「生效中 / 已信任」同款字形）。
+  Widget _defaultPill(ConsoleTokens t) => Text(
+    '默认私有',
+    style: TextStyle(
+      fontSize: Fsz.microSm,
+      color: t.l1Ok,
+      fontWeight: FontWeight.w600,
+    ),
+  );
+
+  /// 默认私有服务钉选按钮：filled pin + L1 = 当前默认（再点取消）；outline =
+  /// 可设默认。非破坏性即时写（无确认卡，与原 radio 单选同口径）。
+  ///
+  /// [eligible] = 候选资格，与撤销前 `_defaultPrivateCandidates` 同过滤口径：
+  /// 远端节点须 `enabled && tier == private`；本地插件须 `serverId` 非空
+  /// （含未信任项——信任闸门在装配期仍会拦，不在此预过滤）。
+  Widget _defaultPinButton({
+    required Key pinKey,
+    required String id,
+    required String label,
+    required bool eligible,
+  }) {
+    if (!eligible) return const SizedBox.shrink();
+    final t = consoleTokens(context);
+    final isDefault = _isDefaultPrivate(id);
+    return IconButton(
+      key: pinKey,
+      tooltip: isDefault ? '取消默认私有服务' : '设为默认私有服务',
+      iconSize: 18,
+      onPressed: () =>
+          isDefault ? _clearDefaultPrivate() : _setDefaultPrivate(id, label),
+      icon: Icon(
+        isDefault ? Icons.push_pin : Icons.push_pin_outlined,
+        color: isDefault ? t.l1Ok : null,
+      ),
+    );
+  }
+
+  Future<void> _setDefaultPrivate(String id, String label) async {
+    try {
+      await writeDefaultPrivateServerId(id);
+      if (mounted) setState(() => _defaultPrivateId = id);
+      _flash('✓ 已设默认私有服务：$label');
+    } on Object catch (e) {
+      _flash('⚠ 默认私有服务保存失败: $e');
+    }
+  }
+
+  Future<void> _clearDefaultPrivate() async {
+    try {
+      await writeDefaultPrivateServerId(null);
+      if (mounted) setState(() => _defaultPrivateId = '');
+      _flash('✓ 已取消默认私有服务（新会话按纯公共/首私有回退）');
+    } on Object catch (e) {
+      _flash('⚠ 默认私有服务保存失败: $e');
+    }
   }
 }

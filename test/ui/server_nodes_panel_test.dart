@@ -1,6 +1,7 @@
 /// M4-T5 Server 节点卡面板 widget 测试（settings_page 节点卡段）：
 /// 节点渲染（端口/延迟/工具计数/鉴权态等宽遥测轨）+ 探测全联动 + 挂载开关
-/// 落盘（enabled=false → _send 装配过滤，见 chat_page 侧约定）。
+/// 落盘（enabled=false → _send 装配过滤，见 chat_page 侧约定）+ 默认私有服务
+/// 钉选（2026-10-16 方案 A：原独立 radio 面板撤销，降级为卡片图钉 + pill）。
 /// 纪律：同 byok_panel_test——store 读写走真实异步，全部经
 /// [WidgetTester.runAsync] 让路（settleIo 轮询），长列表目标先 ensureVisible。
 library;
@@ -12,9 +13,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/coordinator/cow_sync.dart';
 import 'package:goodhub/core/security/secure_key_value.dart';
 import 'package:goodhub/llm/cloud/byok_store.dart';
+import 'package:goodhub/mcp/default_private_server.dart';
 import 'package:goodhub/mcp/server_endpoints.dart';
 import 'package:goodhub/mcp/server_probe.dart';
 import 'package:goodhub/ui/settings_page.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   late Directory tmp;
@@ -200,5 +203,71 @@ void main() {
     await tester.runAsync(() async => loaded = await store.load());
     expect(loaded.single.enabled, isTrue);
     expect(find.text('已卸载'), findsNothing);
+  });
+
+  testWidgets('默认私有钉选（方案 A）：图钉写 SharedPreferences + pill + 再点取消',
+      (tester) async {
+    // 钉选键走 SharedPreferences——mock 初值（其余面板假件见 pumpPanel 注入）。
+    SharedPreferences.setMockInitialValues({});
+    await pumpPanel(tester);
+
+    // 初始无默认：无 pill，图钉为 outline 态。
+    expect(find.text('默认私有'), findsNothing);
+    expect(find.byTooltip('设为默认私有服务'), findsNWidgets(2));
+    expect(find.byTooltip('取消默认私有服务'), findsNothing);
+
+    await tapVisible(tester, find.byKey(const Key('node-default-srv_a')));
+    await settleIo(tester);
+
+    String? stored;
+    await tester.runAsync(() async => stored = await readDefaultPrivateServerId());
+    expect(stored, 'srv_a', reason: '统一默认键落盘');
+    expect(find.text('默认私有'), findsOneWidget, reason: '默认卡出行内 pill');
+    expect(find.byTooltip('取消默认私有服务'), findsOneWidget);
+    expect(find.byTooltip('设为默认私有服务'), findsOneWidget, reason: 'srv_b 仍可设');
+
+    // 再点 = 取消：清键 + pill 消失（回退纯公共/首私有）。
+    await tapVisible(tester, find.byKey(const Key('node-default-srv_a')));
+    await settleIo(tester);
+
+    await tester.runAsync(() async => stored = await readDefaultPrivateServerId());
+    expect(stored, isNull);
+    expect(find.text('默认私有'), findsNothing);
+  });
+
+  testWidgets('默认私有钉选资格：卸载/公共档节点无图钉（同撤销前候选过滤）',
+      (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    await tester.runAsync(() async {
+      await store.save(const [
+        ServerEndpoint(
+          id: 'srv_pub',
+          name: 'goodshare',
+          endpoint: 'http://10.0.2.2:8765/mcp',
+          tier: ServerPrivacyTier.public,
+        ),
+        ServerEndpoint(
+          id: 'srv_off',
+          name: 'shuguang',
+          endpoint: 'http://10.0.2.2:9000/mcp',
+          enabled: false,
+        ),
+      ]);
+    });
+    await pumpPanel(tester);
+
+    expect(find.byKey(const Key('node-default-srv_pub')), findsNothing,
+        reason: '公共档不进私有默认候选');
+    expect(find.byKey(const Key('node-default-srv_off')), findsNothing,
+        reason: '卸载态不进候选（配置保留，重挂载后恢复）');
+  });
+
+  testWidgets('默认私有钉选预置态：读键回填 pill（持久默认跨会话可见）',
+      (tester) async {
+    SharedPreferences.setMockInitialValues({'default.private.server': 'srv_b'});
+    await pumpPanel(tester);
+
+    expect(find.text('默认私有'), findsOneWidget);
+    expect(find.byTooltip('取消默认私有服务'), findsOneWidget);
   });
 }

@@ -22,7 +22,6 @@ class SessionContextSheetBody extends StatelessWidget {
     required this.endpointName,
     required this.onBind,
     required this.onClear,
-    required this.onSetDefault,
     required this.onDone,
   });
 
@@ -39,7 +38,6 @@ class SessionContextSheetBody extends StatelessWidget {
 
   final ValueChanged<String> onBind;
   final VoidCallback onClear;
-  final Future<void> Function(bool value) onSetDefault;
   final VoidCallback onDone;
 
   @override
@@ -68,6 +66,14 @@ class SessionContextSheetBody extends StatelessWidget {
                       : '纯公共模式（无私有域）'),
               style: TextStyle(fontSize: Fsz.note, color: t.terminalMuted),
             ),
+            if (defaultId != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Text(
+                  '默认私有服务：${endpointName(defaultId!)}（在「设置」可改）',
+                  style: TextStyle(fontSize: Fsz.note, color: t.terminalMuted),
+                ),
+              ),
             const Divider(height: 16),
             if (privEndpoints.isEmpty && localPlugins.isEmpty)
               Text('无可用私有服务（私有端点请在侧边栏 → 设置页添加）',
@@ -103,12 +109,15 @@ class SessionContextSheetBody extends StatelessWidget {
                 ),
             ],
             if (bound != null && bound!.isNotEmpty) ...[
-              SwitchListTile(
-                title: const Text('设为全局默认'),
-                subtitle: const Text('新会话默认锁定此服务'),
-                value: defaultId == bound,
-                onChanged: (v) => onSetDefault(v),
-              ),
+              if (defaultId != null && defaultId != bound)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Text(
+                    '已为本会话覆盖默认：${endpointName(defaultId!)}',
+                    style:
+                        TextStyle(fontSize: Fsz.note, color: t.terminalMuted),
+                  ),
+                ),
               ListTile(
                 leading: const Icon(Icons.public),
                 title: const Text('清空（纯公共）'),

@@ -25,3 +25,7 @@ updated: 2026-10-13
   - [design/page-revamp.md](design/page-revamp.md) — 页面整改底子文档（全量 UI 评估结论 + P0~P2 整改分解与验收口径）
   - [design/self-update.md](design/self-update.md) — 打包推 R2 + 应用内自动更新设计（goodshare 同款移植：发布脚本 + lib/update/ 三件 + 更新页）
   - [design/stream-perf.md](design/stream-perf.md) — 流式输出性能优化（P0 流控缓冲 + P1 前缀块缓存；业界四维分层防御在 goodhub 的裁剪落地）
+  - [design/window-kernel-split.md](design/window-kernel-split.md) — 从「胖窗口」到「内核 + 多投影」：四内核（Directory/Runtime/Session/Memory）与窗口投影的职责矩阵、三条所有权铁律、分期（未立项 draft）
+  - [design/host-gateway-accessibility-memory.md](design/host-gateway-accessibility-memory.md) — Host 网关架构 · 访问性模型 · 记忆 In-band 捎带提取（Provider×Tier 解耦 / 聚合反向代理 / `<workspace_update>`），chatmessage epic 的设计 SSOT
+  - [design/context-stepped-pruning.md](design/context-stepped-pruning.md) — 上下文阶梯截断与归档摘要（高低水位双缓冲 6~12 轮 / 端侧摘要归档 / 前缀缓存保命中，draft）
+  - [design/ux-hardening.md](design/ux-hardening.md) — 普通用户可用性加固：冷启动/错误自救/术语白话/危险操作权重/DEGRADE 用户可见性（page-revamp 已清零后的第二批）

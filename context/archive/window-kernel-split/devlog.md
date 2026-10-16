@@ -45,3 +45,5 @@ last-merge: none
 - [2026-10-16] [验证]: flutter test --timeout 60s test/coordinator/mcp_runtime_test.dart → 14/14 全绿；flutter analyze → 0 issue
 - [2026-10-16] [变更]: 验收①②处置：①切会话即重置配额降级单测（旧实例烧尽→新实例满额，入 mcp_runtime_test）；②headless L2 恒 user_rejected 已有 permission_gateway_test:175 精确断言覆盖（headless 无 UI 本无真机观察面，联调页为唯一肉眼佐证位）——三项行为变更验收全部闭环
 - [2026-10-16] [验证]: flutter test --timeout 60s mcp_runtime/permission_gateway/sampling 三测试文件 → 36/36 全绿；flutter analyze → 0 issue
+- [2026-10-16] [变更]: 步0-T8（misc#17 半句收尾）：ChatPage 加 `endpointStoreOverride` / `engineOverride` 注入位，解「构造无参 → 只能冒烟」可测性债。`_resolveEpStore()` 统一解析并缓存 `_epStore` 单一实例（生产走 service_directory.dart 工厂，测试传假 store 免文件系统）；原 4 处直调 `serverEndpointStore()` 收敛为该解析；`McpRuntime.assemble` 接入 `engine: widget.engineOverride`（null=默认 `assembleDefaultHybridEngine`）。新增 `CloudLlmEngine` 导入（`lib/llm/cloud/cloud_llm.dart`）；注入位命名对齐 settings_page 的 `endpointStoreOverride`。
+- [2026-10-16] [验证]: flutter analyze lib/ui/chat_page.dart test/ui/chat_page_smoke_test.dart → 0 issue；flutter test test/ui/chat_page_smoke_test.dart → 3/3 全绿（含新增「注入 endpointStoreOverride 绕过文件系统」用例，内存假 store 覆盖 load/save/apiKey）

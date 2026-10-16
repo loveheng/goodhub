@@ -45,28 +45,38 @@ class HybridCloudEngine implements CloudLlmEngine {
   final Future<({bool pass, String reason})> Function()? deviceTierGate;
 
   /// 断网探测（无探测位 = 视作在线）。
+  ///
+  /// 探测异常按**在线**处理的方向取舍（P2-1 评估后保留）：失败朝向「更丰富的
+  /// 路径」——继续尝试云端，云端自有判据（超时/5xx/连接失败）兜底，且其失败
+  /// 已经过 P0-2 错误行动卡对用户可见；反向（按离线切端侧）会让用户在云端
+  /// 其实可用时静默失去云端能力，同样不可解释。
   Future<bool> _isOffline() async {
     final probe = isOfflineProbe;
     if (probe == null) return false;
     try {
       return await probe();
     } catch (e) {
-      // DEGRADE: 探测失败视作在线——云端路径自有判据兜底，留痕可观测。
+      // DEGRADE: 探测失败视作在线——方向=朝向更丰富路径，其失败可见（P0-2）。
       debugPrint('[DEGRADE] hybrid-offline-probe: $e');
       return false;
     }
   }
 
   /// 设备门禁查询（无门禁位 = 放行）。
+  ///
+  /// 探测异常按**关闸**处理的方向取舍（P2-1 收紧，原为放行）：门禁是设备
+  /// 分级兜底（RAM/电量/温控），探针异常时放行 = 在弱设备上跑端侧，风险是
+  /// OOM/过热——保守方向应为关闸（与配额篡改「宁可重置不信任被改数据」同
+  /// 哲学）。关闸后路由：有云端走云端，否则报「无可用推理引擎」可见错误。
   Future<({bool pass, String reason})> _deviceGate() async {
     final gate = deviceTierGate;
     if (gate == null) return (pass: true, reason: '无门禁位');
     try {
       return await gate();
     } catch (e) {
-      // DEGRADE: 门禁探测失败放行——探针异常不应拖垮兜底路径，留痕可观测。
+      // DEGRADE: 门禁探测异常 → fail-closed 关闸（P2-1：原放行方向偏危险）。
       debugPrint('[DEGRADE] hybrid-device-gate: $e');
-      return (pass: true, reason: '门禁探测异常放行');
+      return (pass: false, reason: '门禁探测异常，端侧关闸（保守）');
     }
   }
 

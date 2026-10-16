@@ -24,6 +24,8 @@ import '../coordinator/fenced_cloud_engine.dart';
 import '../coordinator/mcp_runtime.dart';
 import '../llm/cloud/cloud_llm.dart';
 import '../coordinator/memory_kernel.dart';
+import '../coordinator/memory_governor.dart';
+import '../coordinator/context_governor.dart' show estimateTokens;
 import '../coordinator/permission_gateway.dart';
 import '../coordinator/workspace_stream_filter.dart';
 import '../coordinator/skill_registry.dart';
@@ -33,6 +35,7 @@ import '../mcp/connection_manager.dart';
 import '../mcp/local_plugin_discovery.dart';
 import '../mcp/trusted_plugins.dart';
 import '../mcp/server_endpoints.dart';
+import '../mcp/default_private_server.dart';
 import '../gateway/gateway_controller.dart';
 import '../sandbox/conversation_store.dart';
 import '../sandbox/memory_store.dart';
@@ -42,6 +45,7 @@ import 'components/cross_source_consent_card.dart';
 import 'components/conversation_drawer.dart';
 import 'components/dual_track_stream.dart';
 import 'components/session_context_sheet.dart';
+import 'error_copy.dart';
 import 'components/status_capsule.dart';
 import 'components/status_strip.dart';
 import 'components/stream_text_buffer.dart';
@@ -98,6 +102,11 @@ class _ChatPageState extends State<ChatPage> {
   // 配额/激活集/降级判据/事实库随会话实例生灭，切会话即重置）。
   ConversationSession _session = ConversationSession();
 
+  /// 记忆治理器（context-stepped-pruning §6，内核层）：journal/TTL/Tick 判定
+  /// 全在 MemoryGovernor（window-kernel-split 落点纪律）；窗口只测量 transcript
+  /// （轮数/体量）并投影 systemTail + contextFooter。切会话即重置。
+  final MemoryGovernor _memGovernor = MemoryGovernor();
+
   // 会话持久化（archive-memory-claim 步 1）：落盘事实 owner = ConversationArchive
   // 内核（懒建/快照组装/恢复/删除门面），窗口只持侧边栏列表投影。
   ConversationArchive? _archive;
@@ -107,12 +116,18 @@ class _ChatPageState extends State<ChatPage> {
   List<ServerEndpoint> _endpoints = <ServerEndpoint>[];
   // 本地插件缓存（零配置自动发现；系统托管、始终挂载；供状态带/菜单展示）。
   List<LocalPluginInfo> _localPlugins = const <LocalPluginInfo>[];
+  // 统一默认私有服务 id（设置页钉选，覆盖手动端点 + 本地插件）；null = 无默认。
+  // 开会话回退链以本键为准（见 _resolveBinding）。
+  String? _defaultPrivateId;
 
   // Run 期柄（Abort/卡状态机/卡死判定接线目标；finally 清）
   var _running = false;
 
   /// 运行起始时刻（状态带计时显示用；running=false 时清空）。
   DateTime? _runStartedAt;
+
+  /// 上一句发送的任务文本（ux-hardening P0-2：错误卡「重试」重跑语料）。
+  String? _lastPrompt;
 
   /// 状态带秒级计时刷新定时器（running 期间每秒 setState 刷新已耗时）。
   Timer? _elapsedTimer;
@@ -162,6 +177,12 @@ class _ChatPageState extends State<ChatPage> {
     _archive = ConversationArchive.underSupportDir(support.path);
     // SamplingQuota 恢复（杀进程重启不清零；切会话仍重置=行为变更①）。
     final quota = await _archive!.loadQuota();
+    // P2-1：配额损坏/签名不符不再静默清零——原文件已备份，用户可见提示
+    // （旧行为：用户对额度重置毫无知觉）。
+    if (_archive!.lastQuotaError != null) {
+      _add(TrackNote('⚠ 用量配额记录损坏，已按全新额度计算（原文件已备份）',
+          danger: true));
+    }
     if (quota != null && mounted) {
       setState(() => _session = ConversationSession(samplingQuota: quota));
     }
@@ -182,7 +203,11 @@ class _ChatPageState extends State<ChatPage> {
     final archive = _archive;
     if (archive == null || !archive.hasCurrent) return;
     final ok = await archive.saveCurrent(
-      trackJson: TrackEntryCodec.encode(_track),
+      // ux-hardening P0-1：引导卡瞬态（动作回调不可序列化）——持久化前
+      // 过滤，恢复会话不出现；未配置状态由 _loadEndpoints 重插。
+      trackJson: TrackEntryCodec.encode(
+        _track.where((e) => e is! TrackGuide).toList(),
+      ),
       session: _session,
     );
     if (!ok) _add(TrackNote('⚠ 会话快照保存失败（见日志）', danger: true));
@@ -207,6 +232,8 @@ class _ChatPageState extends State<ChatPage> {
       _archive?.resetCurrent();
       _activeCallEntry = null;
       _pillLabel = 'idle';
+      // 记忆治理器随会话生灭（§6.2：传输态切会话即弃，重置周期锚点）。
+      _memGovernor.reset();
       _pillTone = CapsuleTone.idle;
     });
   }
@@ -299,6 +326,105 @@ class _ChatPageState extends State<ChatPage> {
     _pinToBottom();
   }
 
+  /// 错误行动卡（ux-hardening P0-2）：异常白话翻译 + 原始异常留痕 + 重试
+  /// 入口。重试 = 以 [_lastPrompt] 重跑（[_send] override 路径）；重试后
+  /// 卡片锁定为灰阶「已重试」（终态锁定，ui-design §3.2）。
+  void _addErrorCard(Object error) {
+    final copy = humanizeError(error);
+    final card = TrackError(
+      title: copy.title,
+      advice: copy.advice,
+      detail: '$error',
+    );
+    card.onAction = () {
+      final p = _lastPrompt;
+      if (p == null || p.isEmpty) return;
+      if (!_guardRunning('重试')) return;
+      setState(() => card.retried = true);
+      unawaited(_send(p));
+    };
+    _add(card);
+  }
+
+  /// 本会话轨道是否存在记忆胶囊（悬浮 ≡ 按钮的显隐依据）。
+  bool get _hasMemoryCapsules => _track.any((e) => e is TrackMemoryCapsule);
+
+  /// 会话记忆汇总列表（BottomSheet）：轨道内全部 TrackMemoryCapsule 快照，
+  /// 已撤销条目灰阶弱化（终态锁定语义，ui-design §3.2）。纯展示——落盘与
+  /// 撤销仍由内联胶囊的 undo 通道负责，此处不做修改入口。
+  void _showMemoryListSheet() {
+    final t = consoleTokens(context);
+    final capsules =
+        _track.whereType<TrackMemoryCapsule>().toList(growable: false);
+    unawaited(
+      showModalBottomSheet<void>(
+        context: context,
+        showDragHandle: true,
+        builder: (sheetCtx) => SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '本会话记忆（${capsules.length}）',
+                  style: TextStyle(
+                    fontSize: Fsz.telemetry,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '模型从对话中提取落库的事实要点（session/user/srv 域）',
+                  style: TextStyle(fontSize: Fsz.note, color: t.terminalMuted),
+                ),
+                const Divider(height: 16),
+                if (capsules.isEmpty)
+                  Text(
+                    '本会话暂无提取的记忆',
+                    style:
+                        TextStyle(fontSize: Fsz.note, color: t.terminalMuted),
+                  ),
+                for (final c in capsules)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 3),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          width: 6,
+                          height: 6,
+                          margin: const EdgeInsets.only(top: 6),
+                          decoration: BoxDecoration(
+                            color: c.undone ? t.terminalMuted : t.l1Ok,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            c.undone ? '${c.key}=${c.value}（已撤销）' : '${c.key}=${c.value}',
+                            style: TextStyle(
+                              fontFamily: t.monoFamily,
+                              fontSize: Fsz.note,
+                              color: c.undone ? t.terminalMuted : null,
+                              decoration:
+                                  c.undone ? TextDecoration.lineThrough : null,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   void _appendText(String delta) {
     if (!mounted) return;
     // P0 流控层（stream-perf §3）：delta 入池，40ms 节拍批量刷盘；流结束/中止/
@@ -380,14 +506,61 @@ class _ChatPageState extends State<ChatPage> {
       // 发现通道不可用：视为无本地插件。
     }
     if (!mounted) return;
-    final bound = _session.activePrivateServerId ?? _resolveBinding(all);
+    final def = await readDefaultPrivateServerId();
+    if (!mounted) return;
     setState(() {
       _endpoints = all;
       _localPlugins = locals;
-      _session.bindPrivateServer(bound);
+      _defaultPrivateId = def;
     });
+    // 先刷新端点/插件缓存，再按统一默认回退解析本会话绑定。
+    final bound = _session.activePrivateServerId ?? _resolveBinding(all);
+    setState(() => _session.bindPrivateServer(bound));
     // MO6 阶段一：端点预热/默认锁定后 → 网关投影同步宿主当前激活私有域。
     GatewayController.shared.syncActivePrivate(_session.activePrivateServerId);
+    // ux-hardening P0-1：未配置（无启用端点且无本地插件）→ 轨道内引导卡
+    // 替代历史上的整页跳转；幂等入轨，瞬态不持久化。
+    _ensureGuide();
+  }
+
+  /// 未配置判定（ux-hardening P0-1）：与 [_send] 装配口径一致——无启用端点
+  /// 且无本地插件（全部卸载等同未配置）。
+  bool get _unconfigured =>
+      _endpoints.where((e) => e.enabled).isEmpty && _localPlugins.isEmpty;
+
+  /// 冷启动引导卡（chat-interaction.md §1）：幂等——已在轨不重复插。
+  void _ensureGuide() {
+    if (!_unconfigured) return;
+    if (_track.any((e) => e is TrackGuide)) return;
+    _add(
+      TrackGuide(
+        text: '尚未配置任何 MCP 服务，也未发现本地插件。'
+            '先配置一个服务端点，才能下达任务。',
+        actionLabel: '去配置',
+        onAction: _openSettingsFromGuide,
+      ),
+    );
+  }
+
+  /// 配置就绪后摘除引导卡（用户从设置返回时重估）。
+  void _removeGuide() {
+    if (!mounted) return;
+    setState(() => _track.removeWhere((e) => e is TrackGuide));
+  }
+
+  /// 引导卡动作：进设置页；返回后重估配置——已配置摘卡，仍未配置保留可再入。
+  Future<void> _openSettingsFromGuide() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(builder: (_) => const SettingsPage()),
+    );
+    if (!mounted) return;
+    await _loadEndpoints();
+    if (!mounted) return;
+    if (_unconfigured) {
+      _ensureGuide();
+    } else {
+      _removeGuide();
+    }
   }
 
   /// 是否处于"已绑定某私有服务"的弱感知态（用于状态带胶囊）。
@@ -395,15 +568,24 @@ class _ChatPageState extends State<ChatPage> {
       _session.activePrivateServerId != null &&
       _session.activePrivateServerId!.isNotEmpty;
 
-  /// 会话绑定默认回退：未显式绑定时 → 全局钉选 isDefault → 首个启用的 private
-  /// → null（纯公共）。已显式绑定（含 '' 显式公共）则直接用。
+  /// 会话绑定默认回退：已显式绑定直接用（'' → null = 显式公共）→ 统一默认
+  /// 私有服务（设置页钉选，覆盖手动端点 + 本地插件，须当前仍存在）→ 首个手动
+  /// private 端点（遗留回退）→ null（纯公共）。
   String? _resolveBinding(List<ServerEndpoint> eps) {
     final bound = _session.activePrivateServerId;
     if (bound != null) return bound.isEmpty ? null : bound;
+    final def = _defaultPrivateId;
+    if (def != null && def.isNotEmpty) {
+      final exists = eps.any((e) =>
+              e.enabled &&
+              e.tier == ServerPrivacyTier.private &&
+              e.id == def) ||
+          _localPlugins.any((lp) => lp.serverId == def);
+      if (exists) return def;
+    }
     String? firstPrivate;
     for (final e in eps) {
       if (e.tier != ServerPrivacyTier.private) continue;
-      if (e.isDefault) return e.id; // 全局钉选优先
       firstPrivate ??= e.id;
     }
     return firstPrivate;
@@ -415,26 +597,6 @@ class _ChatPageState extends State<ChatPage> {
     // MO6 阶段一：菜单即时绑定/清空 → 网关投影同步宿主当前激活私有域。
     GatewayController.shared.syncActivePrivate(_session.activePrivateServerId);
     unawaited(_persistCurrent());
-  }
-
-  /// 全局默认钉选写回（单选）：更新 mcp_servers.json 并刷新缓存。
-  Future<void> _setGlobalDefault(String serverId, bool on) async {
-    final epStore = await _resolveEpStore();
-    final all = await epStore.load();
-    var changed = false;
-    final updated = <ServerEndpoint>[];
-    for (final e in all) {
-      final want = on && e.id == serverId;
-      if (e.isDefault != want) {
-        updated.add(e.copyWith(isDefault: want));
-        changed = true;
-      } else {
-        updated.add(e);
-      }
-    }
-    if (!changed) return;
-    await epStore.save(updated);
-    if (mounted) setState(() => _endpoints = updated);
   }
 
   String _endpointName(String id) {
@@ -449,15 +611,8 @@ class _ChatPageState extends State<ChatPage> {
     return id;
   }
 
-  String? _defaultId() {
-    for (final e in _endpoints) {
-      if (e.isDefault) return e.id;
-    }
-    return null;
-  }
-
-  /// Composer Menu（药丸内左侧「+」→ 底部弹层）：本会话绑定哪个私有服务 +
-  /// 全局默认钉选。数据驱动列表，未来附件/模型切换等仅追加项。
+  /// Composer Menu（药丸内左侧「+」→ 底部弹层）：本会话绑定哪个私有服务。
+  /// 持久默认（设置页钉选）不在此处改——此处只做本次会话即时切换/覆盖。
   Future<void> _openComposerMenu() async {
     if (!_guardRunning('打开上下文菜单')) return;
     // 开菜单前先重读端点目录：大厅新增/卸载服务后返回聊天页，initState 缓存可能
@@ -477,7 +632,7 @@ class _ChatPageState extends State<ChatPage> {
               .where((e) => e.enabled && e.tier == ServerPrivacyTier.private)
               .toList(),
           localPlugins: _localPlugins,
-          defaultId: _defaultId(),
+          defaultId: _defaultPrivateId,
           endpointName: _endpointName,
           onBind: (id) {
             _bindSessionServer(id);
@@ -485,10 +640,6 @@ class _ChatPageState extends State<ChatPage> {
           },
           onClear: () {
             _bindSessionServer('');
-            setSheet(() {});
-          },
-          onSetDefault: (v) async {
-            await _setGlobalDefault(_session.activePrivateServerId!, v);
             setSheet(() {});
           },
           onDone: () => Navigator.pop(ctx),
@@ -499,8 +650,11 @@ class _ChatPageState extends State<ChatPage> {
 
 
   /// M4-T3 发送（D11 多轮）：上轮 transcript 作 history 续接；一次一个 Run。
-  Future<void> _send() async {
-    final prompt = _inputCtrl.text.trim();
+  /// [promptOverride] = 错误卡「重试」入口重跑上一句（ux-hardening P0-2）：
+  /// 不重复插用户轮卡、不清输入框（用户可能正在预输入下一轮）。
+  Future<void> _send([String? promptOverride]) async {
+    final isRetry = promptOverride != null;
+    final prompt = (promptOverride ?? _inputCtrl.text).trim();
     if (prompt.isEmpty || _running) return;
     // —— T6-2 多服务装配：ServerEndpointStore 读多端点（含旧 SharedPreferences
     // 迁移）→ 每端点一个 McpClient + McpToolFace → ToolRouter（实例随会话建）——
@@ -524,25 +678,31 @@ class _ChatPageState extends State<ChatPage> {
       // 发现通道不可用（宿主未就绪）→ 视为无本地插件，不阻断 HTTP 端点装配。
     }
     if (endpoints.isEmpty && locals.isEmpty) {
-      _add(TrackNote('⚠ 尚未配置任何 MCP 服务，且未发现本地插件', danger: true));
-      // 未配置任何服务：直接进设置页（2026-10-16：设置页入口收敛到侧边栏，
-      // 此处同步改为整页 push；输入内容不丢，返回即可继续）。
-      if (!mounted) return;
-      unawaited(
-        Navigator.of(context).push<void>(
-          MaterialPageRoute<void>(builder: (_) => const SettingsPage()),
-        ),
-      );
+      // ux-hardening P0-1：轨道内引导卡替代整页跳转设置页——输入内容保留
+      // （下方 clear() 在本 return 前不执行），用户经卡上「去配置」自选进入；
+      // 从设置返回后按配置状态摘卡/保留（chat-interaction.md §1）。
+      _endpoints = allEndpoints;
+      _localPlugins = locals;
+      _ensureGuide();
       return;
     }
-    _inputCtrl.clear();
+    // P0-2：错误卡「重试」的语料（未配置路径不设——重试无意义，走引导卡）。
+    _lastPrompt = prompt;
+    if (!isRetry) _inputCtrl.clear();
     setState(() {
       _running = true;
       _pillLabel = 'connecting';
       _pillTone = CapsuleTone.l1;
       _autoFollow = true; // 新任务：回到底部并恢复自动跟随
     });
-    _add(TrackUser(prompt));
+    // P1-4：运行计时接通——_runStartedAt/_elapsedTimer 此前定义后从未赋值
+    // （死代码），状态带 runStartedAt 分支永不亮；秒级 tick 刷已耗时。
+    _runStartedAt = DateTime.now();
+    _elapsedTimer?.cancel();
+    _elapsedTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+    if (!isRetry) _add(TrackUser(prompt));
     // T3b：会话懒建（首个任务起落盘；标题截取策略在 Archive 内核）。
     await _archive!.ensureCurrent(prompt: prompt);
     // P2-6（§3.6/G3）：会话级事实库懒建——In-band 捎带 session 域落点。
@@ -558,7 +718,19 @@ class _ChatPageState extends State<ChatPage> {
       final workspaceFilter = MemoryKernel(memoryStore).buildFilter(
         wsStates: _session.wsStates,
         conversationId: convId,
-        onCapsule: (key, value, undo) {
+        onCapsule: (key, value, action, scope, undo) {
+          // 记忆增量日志（context-stepped-pruning §6.3/§6.7）：本 Run 提取的
+          // 变更只追加 pending 池（user/srv 域——journal 覆盖注入 prompt 的
+          // 域），下一 Run 组装才生效（单向栅栏）；session 域不进 prompt，
+          // 不入 journal。
+          if (scope != 'session') {
+            _memGovernor.record(
+              action: action,
+              scope: scope,
+              key: key,
+              value: value,
+            );
+          }
           final capsule = TrackMemoryCapsule(key: key, value: value);
           capsule.onUndo = () {
             undo(); // 落盘回滚（内核侧闭包）
@@ -703,17 +875,47 @@ class _ChatPageState extends State<ChatPage> {
       final memView = await memoryStore.memoryView(
         serverScopes: router.serverIds,
       );
-      final memSection = await memoryPromptSection(
-        memoryStore,
-        serverScopes: router.serverIds,
+      // 记忆冷热分层（context-stepped-pruning §6，策略在 MemoryGovernor）：
+      // 窗口只测量 transcript（轮数/体量），systemTail + 沉底增量区由
+      // governor 投影——Tick（滑窗高水位/TTL/体量突发）时压实，非 Tick 时
+      // 快照字节冻结、delta 只追加。
+      final transcriptRounds =
+          _session.transcript.whereType<AssistantMessage>().length;
+      // 估算口径 = 字符级粗估（core/tokens 同族），消息 content 逐条拼接。
+      final transcriptTokens = estimateTokens(
+        _session.transcript.map((m) {
+          if (m is UserMessage) return m.content;
+          if (m is AssistantMessage) return m.content ?? '';
+          if (m is ToolResultMessage) return m.content;
+          if (m is SystemMessage) return m.content;
+          return '';
+        }).join('\n'),
       );
+      final memSection = await _memGovernor.assembleSystemTail(
+        store: memoryStore,
+        serverScopes: router.serverIds,
+        transcriptRounds: transcriptRounds,
+        transcriptTokens: transcriptTokens,
+      );
+      final contextFooter = _memGovernor.renderFooter();
       // T6：静态首级摘要「## 已挂载服务」（自动生成，标注工具名前缀格式）。
       final mountedSection = _mountedServicesSection(router, assembly.serverSummaries);
+      // 上下文归因（展示 only）：本轮注入的记忆/服务快照挂轨道，点开 BottomSheet
+      // 查详情。「本轮排除」为预留钩子——当前不接线（onItemExclude=null）。
       _add(
-        TrackNote(
-          '✓ 已载入宿主记忆 ${memView.entries.length} 条'
-          '${memView.truncated ? '（超预算丢弃 ${memView.droppedCount} 条）' : ''}',
-          danger: false,
+        TrackContextAttribution(
+          memories: [
+            for (final e in memView.entries)
+              ContextAttributionItem(source: e.scope, text: e.content),
+          ],
+          services: [
+            for (final id in router.serverIds)
+              ContextAttributionItem(
+                source: id,
+                text: assembly.serverSummaries[id] ?? '(无摘要)',
+              ),
+          ],
+          droppedCount: memView.droppedCount,
         ),
       );
       _setPill('thinking', CapsuleTone.l1);
@@ -729,6 +931,9 @@ class _ChatPageState extends State<ChatPage> {
             mountedSection +
             WorkspaceStreamFilter.promptInstructions,
         systemTail: memSection,
+        // 记忆增量区沉底（context-stepped-pruning §6.5）：周期内提取的变更
+        // 只追加在稳定前缀之后、本轮提问之前，不推移快照+窗口原文。
+        contextFooter: contextFooter.isEmpty ? null : contextFooter,
         userPrompt: prompt,
         history: List.of(_session.transcript), // D11：上轮 transcript 续接
         workspaceFilter: workspaceFilter, // P2-6：In-band 分流+胶囊
@@ -791,7 +996,9 @@ class _ChatPageState extends State<ChatPage> {
             }
             _activeCallEntry = null;
             _watcher?.stop();
-            _setPill(rejected ? 'rejected' : 'idle', CapsuleTone.l1);
+            // P1-4：工具结束 ≠ Run 结束——回「思考中」（环回到模型推理），
+            // 杜绝旧行为置 idle 让用户误判任务已完成。
+            _setPill(rejected ? 'rejected' : 'thinking', CapsuleTone.l1);
           case LoopFinished(:final text, :final transcript):
             // 步 3 写回契约（§8.1-1）：全量替换（非 append）——D11 下轮续接
             //（未配对尾巴已截断），同会话多轮后条数不翻倍 = 行为变更③。
@@ -812,12 +1019,16 @@ class _ChatPageState extends State<ChatPage> {
         _session.unbindToPublic(); // 曾绑定 → 本轮 use_server('all') 清空 = 显式公共
       }
     } on Object catch (e) {
-      _add(TrackNote('✕ 任务中断：$e', danger: true));
+      // ux-hardening P0-2：白话错误卡（标题/建议/可复制原始异常）+ 重试入口，
+      // 替代原始异常栈直怼轨道。
+      _addErrorCard(e);
       _setPill('failed', CapsuleTone.danger);
     } finally {
       _watcher?.stop();
       _watcher = null;
       _activeCallEntry = null;
+      // §6.4 TTL 机会主义压实的判定起点：本 Run 结束时刻（governor 持有）。
+      _memGovernor.markRunEnded();
       // P0 尾帧铁律（stream-perf §3）：快照与终态渲染前强制清空流控缓冲——
       // 覆盖正常收尾 / Abort / 异常三条路径，缓冲期内到达的尾帧不得丢失。
       _streamBuf.flush();
@@ -871,7 +1082,25 @@ class _ChatPageState extends State<ChatPage> {
       },
       onLoad: _loadConversation,
       onDelete: (meta) => unawaited(_deleteConversation(meta)),
+      onRename: (meta, title) => unawaited(_renameConversation(meta, title)),
     );
+  }
+
+  /// 重命名会话（ux-hardening P1-5）：内核透传（当前会话同名时内核同步
+  /// _currentTitle，防下次 saveCurrent 覆盖回旧标题）+ 列表刷新。元数据
+  /// 操作不动 transcript，运行中亦可（无会话态扰动，故不走运行守卫）。
+  Future<void> _renameConversation(
+      ConversationMeta meta, String rawTitle) async {
+    final title = rawTitle.trim();
+    if (title.isEmpty) return;
+    final ok = await _archive?.rename(meta.id, title) ?? false;
+    if (!mounted) return;
+    if (!ok) {
+      _toast('⚠ 重命名失败（会话文件可能已损坏）');
+      return;
+    }
+    await _refreshConversations();
+    _toast('✓ 已重命名为「$title」');
   }
 
   static String _preview(String content) {
@@ -953,13 +1182,14 @@ class _ChatPageState extends State<ChatPage> {
                   DualTrackStream(
                     entries: _track,
                     controller: _scrollCtrl,
-                    emptyHint: '下达自然语言任务，宿主调度已挂载服务完成\n'
-                        '（首次使用请先在侧边栏 → 设置页里配置服务端点）',
+                    // 未配置时的可操作引导在轨道内引导卡（ux-hardening P0-1，
+                    // _ensureGuide），空态提示只承担已配置用户的首次指引。
+                    emptyHint: '下达自然语言任务，宿主调度已挂载服务完成',
                   ),
                   if (!_autoFollow && _track.isNotEmpty)
                     Positioned(
                       right: 16,
-                      bottom: 8,
+                      bottom: _hasMemoryCapsules ? 72 : 8,
                       child: FloatingActionButton.small(
                         heroTag: 'chat-scroll-bottom',
                         tooltip: '回到最新',
@@ -975,6 +1205,19 @@ class _ChatPageState extends State<ChatPage> {
                               });
                         },
                         child: const Icon(Icons.arrow_downward),
+                      ),
+                    ),
+                  // 悬浮记忆入口（≡）：与「回到最新」同款 FAB——本会话轨道
+                  // 存在记忆胶囊时显示，点击弹 BottomSheet 汇总列表。
+                  if (_hasMemoryCapsules)
+                    Positioned(
+                      right: 16,
+                      bottom: 8,
+                      child: FloatingActionButton.small(
+                        heroTag: 'chat-memory-list',
+                        tooltip: '会话记忆',
+                        onPressed: _showMemoryListSheet,
+                        child: const Icon(Icons.reorder),
                       ),
                     ),
                 ],
@@ -1046,9 +1289,11 @@ class _ChatPageState extends State<ChatPage> {
                                           contentPadding: const EdgeInsets.fromLTRB(14, 12, 6, 12),
                                         ),
                                         onSubmitted: (_) {
-                                          // 生成中静默拦截：发送钮已形变为「中止」，键盘回车
-                                          // 不再弹 Toast 打扰（行业惯例：停止为即时动作）。
-                                          if (_running) return;
+                                          // SSOT §1：运行中触发发送等动作
+                                          // 须给 SnackBar 说明（禁止静默禁用）——
+                                          // 回车不是「键盘坏了」，是「在忙」；
+                                          // 复用 _guardRunning 共用话术。
+                                          if (!_guardRunning('发送')) return;
                                           _send();
                                         },
                                       ),
@@ -1056,11 +1301,16 @@ class _ChatPageState extends State<ChatPage> {
                                     const SizedBox(width: 4),
                                     // §3.1 复用发送钮：运行态形变为主操作「中止」键，
                                     // 单一槽位内切换 发送↔中止，避免右侧另起红键挤占输入区。
+                                    // P1-4（§1 高反差拍板）：Crimson 实底 + 白图标 +
+                                    // 40×40——filledTonal 的 tonal 底在运行态不足以让
+                                    // 普通用户一眼找到「停止」。
                                     IconButton.filledTonal(
                                       style: IconButton.styleFrom(
-                                        minimumSize: const Size(36, 36),
+                                        minimumSize: const Size(40, 40),
                                         padding: EdgeInsets.zero,
                                         foregroundColor:
+                                            _running ? Colors.white : null,
+                                        backgroundColor:
                                             _running ? t.dangerDeep : null,
                                       ),
                                       onPressed: _running ? _abort : _send,

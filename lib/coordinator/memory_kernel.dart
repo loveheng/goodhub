@@ -26,10 +26,15 @@ class MemoryKernel {
 
   /// 构造 In-band 提取面（原 `ConversationSession.memoryFilter` 语义原样迁入，
   /// mcp_runtime.dart:770-806）。
+  ///
+  /// [onCapsule] 回传 (key, value, action, scope, undo)——action/scope 供
+  /// 记忆增量日志（memory_journal，context-stepped-pruning §6.3）区分
+  /// SET/OVERRIDE/DEL 与域标签；undo 闭包已含落盘回滚。
   WorkspaceStreamFilter buildFilter({
     required WorkspaceStateStore? wsStates,
     required String conversationId,
-    required void Function(String key, String value, void Function() undo)
+    required void Function(
+            String key, String value, String action, String scope, void Function() undo)
         onCapsule,
   }) =>
       WorkspaceStreamFilter(
@@ -53,7 +58,7 @@ class MemoryKernel {
                   ? memoryStore.removeFacts(f.key, scope: scope)
                   : memoryStore.upsertFacts(f.key, f.value, scope: scope));
             }
-            onCapsule(f.key, f.value, undo);
+            onCapsule(f.key, f.value, f.action, scope, undo);
           }
         },
       );

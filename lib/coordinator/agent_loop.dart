@@ -112,6 +112,7 @@ class AgentLoop {
     this.maxTurns = 10,
     this.breakerThreshold = 2,
     this.windowRounds = 6,
+    this.windowStep = 6,
     this.summarizeThresholdTokens = 1000,
     this.summarizer,
     this.refStore,
@@ -135,6 +136,12 @@ class AgentLoop {
   /// 滑动窗口轮数（architecture §12：仅留最近 N 轮原始对，N 初值 6 可配）。
   /// 发送边界裁剪、本地历史不裁——步数墙放宽续跑依赖完整上下文。
   final int windowRounds;
+
+  /// 阶梯截断步长（context-stepped-pruning §2.1，仅 [summarizer] != null 生效）：
+  /// 可用轮 ≤ windowRounds + windowStep 时纯追加不裁剪（吃满前缀缓存），
+  /// 触线一次性剪出 windowStep 轮交端侧摘要器归档，保留区回到 windowRounds。
+  /// null/≤0 语义上等同关闭——默认 6 与低水位同宽（高低水位 6~12）。
+  final int windowStep;
 
   /// 工具结果摘要化阈值（token 字符级粗估，>阈值回填前端侧摘要；T7 调参）。
   final int summarizeThresholdTokens;
@@ -214,6 +221,12 @@ class AgentLoop {
     /// 禁提交；abort 挂 [WorkspaceStreamFilter.discard]。null = 功能关闭。
     WorkspaceStreamFilter? workspaceFilter,
 
+    /// 记忆增量区沉底注入（context-stepped-pruning §6.5）：非空时以
+    /// UserMessage 形态插在 history 之后、userPrompt 之前——高频变化项沉底，
+    /// 不推移其前的稳定前缀（快照+窗口原文）。内容经 [WorkspaceStreamFilter
+    /// .escapeUserTag] 消毒。null/空 = 不注入。
+    String? contextFooter,
+
     /// 合成桩判定（P3-2 / §9.1，D-H）：返回 true 的工具，其历史 `tool_call`
     /// 与配对 `tool_result` 在**发送边界**替换为合成占位桩（保留 matching id，
     /// 防 OpenAI/Anthropic 严格成对校验 400）。判定源 = 装配层读 router 投影
@@ -231,6 +244,7 @@ class AgentLoop {
             history: history,
             systemTail: systemTail,
             workspaceFilter: workspaceFilter,
+            contextFooter: contextFooter,
             maskTool: maskTool);
       } catch (e, st) {
         out.addError(e, st);
@@ -250,6 +264,7 @@ class AgentLoop {
     List<CloudChatMessage> history = const [],
     String? systemTail,
     WorkspaceStreamFilter? workspaceFilter,
+    String? contextFooter,
     bool Function(String toolName)? maskTool,
   }) async {
     final out = _out!;
@@ -270,12 +285,20 @@ class AgentLoop {
         m is UserMessage
             ? UserMessage(WorkspaceStreamFilter.escapeUserTag(m.content))
             : m,
+      // §6.5（context-stepped-pruning）：记忆增量区沉底——插在 history 之后、
+      // 本轮提问之前，不推移其前的稳定前缀（快照+窗口原文）。
+      if (contextFooter != null && contextFooter.isNotEmpty)
+        UserMessage(WorkspaceStreamFilter.escapeUserTag(contextFooter)),
       UserMessage(WorkspaceStreamFilter.escapeUserTag(userPrompt)),
     ];
     var wallLimit = maxTurns;
     var turn = 0;
     // 熔断按工具计数（C1）；本方法 = 一个用户轮次，计数天然从零开始
     final failures = <String, int>{};
+    // 归档摘要（context-stepped-pruning §2.2，Run 级滚动）：阶梯截断触线时
+    // 被裁轮次经端侧摘要器归档于此，摘要块插装 System 后、保留窗口前。
+    // Run 间不持久化——本地 transcript 全量，下个 Run 重算（端侧零计费）。
+    var archivedSummary = '';
     while (true) {
       if (_aborted) {
         emit(LoopFinished(
@@ -290,12 +313,43 @@ class AgentLoop {
       // P2-3（G2）：剥离后纯文本累积——历史与终文用，防结构化 JSON 污染 canonical。
       final filteredText = StringBuffer();
       final filter = workspaceFilter;
+      // 发送边界窗口治理（context-stepped-pruning §2.1/§2.3）：summarizer 在位
+      // 走阶梯截断（高低水位 windowRounds ~ windowRounds+windowStep，触线归档
+      // 摘要）；null = 纯云/测试路径，保持朴素滑动契约不变。摘要失败按 E1
+      // 口径弃归档降级朴素滑动，[DEGRADE] 留痕（宁丢归档不失可用性）。
+      var sendMessages = trimMessagesToWindow(messages, windowRounds);
+      final summarize = summarizer;
+      if (summarize != null && windowStep > 0) {
+        final stepped = steppedWindow(
+          messages,
+          low: windowRounds,
+          step: windowStep,
+        );
+        if (stepped.pruned.isNotEmpty) {
+          try {
+            final corpus = archivedSummary.isEmpty
+                ? _roundsCorpus(stepped.pruned)
+                : '既有归档摘要：\n$archivedSummary\n\n\n新完成轮次原文：\n'
+                    '${_roundsCorpus(stepped.pruned)}';
+            archivedSummary = (await summarize(corpus)).trim();
+            if (archivedSummary.isEmpty) {
+              throw const SummarizeException('归档摘要产出为空');
+            }
+          } on Object catch (e) {
+            debugPrint('[DEGRADE] agent-loop: 归档摘要失败，弃归档降级朴素滑动: $e');
+            archivedSummary = '';
+          }
+        }
+        if (archivedSummary.isNotEmpty) {
+          sendMessages = _withArchiveSummary(stepped.kept, archivedSummary);
+        }
+      }
       await for (final e in engine.send(
         // 滑动窗口在发送边界裁剪（T6）：本地 messages 不动，步数墙放宽
         // 续跑时上下文完整；裁剪纯函数保证 Assistant/ToolResult 配对完整。
         CloudChatRequest(
           messages: _applySyntheticMasking(
-            trimMessagesToWindow(messages, windowRounds),
+            sendMessages,
             maskTool: maskTool,
           ),
           tools: toolsProvider?.call() ?? tools,
@@ -463,6 +517,39 @@ class AgentLoop {
       i++;
     }
     return out;
+  }
+
+  /// 被裁轮次的归档语料（context-stepped-pruning §2.2）：平铺为角色前缀文本
+  /// 供摘要器压缩。ToolResult 原文照送——摘要器输出有 maxTokens 封顶，
+  /// 输入侧体量由批次步长天然有界。
+  static String _roundsCorpus(List<CloudChatMessage> rounds) => [
+        for (final m in rounds)
+          switch (m) {
+            SystemMessage(:final content) => 'System: $content',
+            UserMessage(:final content) => 'User: $content',
+            AssistantMessage(:final content) =>
+              'Assistant: ${content ?? '(tool_calls)'}',
+            ToolResultMessage(:final content) => 'ToolResult: $content',
+          },
+      ].join('\n\n');
+
+  /// 归档摘要块插装：置于前导消息（System/静态区）之后、第一个保留轮
+  /// （Assistant）之前——摘要变更频率低（每批一次），不顶掉静态前缀缓存。
+  static List<CloudChatMessage> _withArchiveSummary(
+    List<CloudChatMessage> kept,
+    String summary,
+  ) {
+    final note = UserMessage(
+      '[宿主注：以下为此前对话轮次的归档摘要（端侧生成，原文已移出上下文）'
+      '——已定事实与结论以摘要为准]\n$summary',
+    );
+    final firstRound = kept.indexWhere((m) => m is AssistantMessage);
+    if (firstRound <= 0) return [note, ...kept];
+    return [
+      ...kept.sublist(0, firstRound),
+      note,
+      ...kept.sublist(firstRound),
+    ];
   }
 
   /// 回填前治理（T6 + M3-T3 put 端）：**入口先过 D-I 物理硬地板**（超大输出

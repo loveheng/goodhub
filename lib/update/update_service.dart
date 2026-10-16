@@ -87,11 +87,15 @@ class UpdateService {
 
   /// 流式下载 APK，边下边算 sha256；[manifest.sha256] 非空时下载完成即校验。
   /// 返回落盘文件；[to] 主要供测试注入临时目录。
+  /// [isCancelled] 每 chunk 轮询（ux-hardening P0-3 页面「取消下载」入口）：
+  /// true 即中止——删半成品文件、抛 [UpdateCancelled]（取消≠失败，页面中性
+  /// 呈现）。注意：连接 stall（无数据流动）时取消要等下一个 chunk 才生效。
   Future<File> downloadApk(
     String url, {
     String? expectedSha256,
     void Function(int received, int? total)? onProgress,
     Directory? to,
+    bool Function()? isCancelled,
   }) async {
     final dir = to ?? Directory('${(await getApplicationDocumentsDirectory()).path}/updates');
     await dir.create(recursive: true);
@@ -110,6 +114,15 @@ class UpdateService {
       final sink = dest.openWrite();
       try {
         await for (final chunk in res) {
+          if (isCancelled?.call() ?? false) {
+            // 半成品删除失败无害：下次下载同路径 openWrite 截断重写。
+            try {
+              await dest.delete();
+            } on Object {
+              // 忽略：残留由下次下载覆盖。
+            }
+            throw const UpdateCancelled();
+          }
           hasher.add(chunk);
           sink.add(chunk);
           received += chunk.length;

@@ -123,6 +123,17 @@ class _BreakerCardState extends State<BreakerCard> {
           ],
           if (isWall) ...[
             const SizedBox(height: 8),
+            // P1-6 白话层：两选项各是什么后果（用户面对选项不知选哪个）。
+            Text(
+              '放宽 = 再给 10 轮继续尝试；终止 = 就此结束任务'
+              '（已完成的调用结果不回滚）。',
+              style: TextStyle(
+                fontSize: Fsz.note,
+                color: t.terminalMuted,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 4),
             // 语义色纪律：终止 = 危险动作（Rose 主按钮）；放宽续跑 = 常规按钮。
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
@@ -141,6 +152,18 @@ class _BreakerCardState extends State<BreakerCard> {
             ),
           ] else ...[
             const SizedBox(height: 8),
+            // P1-6 白话层：三操作后果一句话说清（原仅按钮标签，用户不知
+            // 「错误回填/人工接管」意味着什么）。
+            Text(
+              '单步重试 = 原地再试一次；跳过 = 把「出错了」作为结果告诉模型，'
+              '让它换条路；人工接管 = 你直接把正确结果填给模型。',
+              style: TextStyle(
+                fontSize: Fsz.note,
+                color: t.terminalMuted,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 4),
             if (_takingOver) ...[
               TextField(
                 controller: _takeoverCtrl,

@@ -26,6 +26,10 @@ last-merge: none
   - 阶段二（D-D 落地后）：`GatewayController` 改造为按 connection/workspace 分配独立投影上下文后，解锁 PC 自主发送 `use_server` 独占属于 PC 会话的私有槽位。
 - **MO7 $ref 跨服务防火墙守卫精确范围（仅网关入站/跨源边界）**：裁决「仅限网关入站与跨源代理边界拦截，坚决不侵入本地同进程调用」。（依据：① 本地同进程结构性安全——D-C 单私有槽已保证会话上下文至多一个私有服务、其余皆 Public，同进程 `AgentLoop`/`ToolRouter` 无"两私有互相偷调"物理通路；② 真正风险在外源——跨服务泄漏唯一风险来自网络入站的外部 RPC（外部 MCP/PC 越权持私有句柄调其他服务）；③ 防过度设计——`$ref` 校验死锁在 `lib/gateway/mcp_gateway_handler.dart` 入站分发层，保住纯 Dart 协调内核 `coordinator/` 的纯粹与零开销，避免本地单测/本地链路引入繁重上下文权限检查。）规则 1「跨源请求须持 Session Context/$ref 否则拒」= 仅约束经网关入站的跨源请求；LAN 直连 goodhub 看不见、靠「private 不进共享面」兜底。
   - **[已实施 2026-10-16]** 守卫落地于 `GatewayHandler.toolsCall`：递归扫描入参（整值匹配口径，与 `ref_hydrator` 一致）收集「引用 serverId ≠ 目标 serverId」的跨源 `$ref` 句柄，须持 `sessionId`（网关 `Mcp-Session-Id`）否则拒绝；`gateway_server` 透传 `sessionId`；守卫只做会话归属校验，不做注水（网关是代理按字面转发句柄，注水属宿主运行时路径）。4 单测锁定（跨源无会话拒绝 / 跨源带会话放行 / 同源不触发 / 嵌套检出），`test/gateway` 全 41 例绿、analyze 0 issue。
+- **MO8 本地插件同属私有 tier + 默认钉选 Hybrid（2026-10-16 用户拍板）**：
+  - **私有是权限维度，挂载方式（自动/手动）是接入维度，二者正交**——本地自动挂载插件同为 private，一并进 `privateServerIds`、不默认激活、受单槽门控（不选则隐藏、选中才可用）。私有≠免隔离。
+  - **持久默认放设置页（Hybrid）**：统一默认键 `default.private.server`（`lib/mcp/default_private_server.dart`）覆盖手动端点 + 本地插件；聊天菜单只做本次会话即时切换/覆盖，不再持有持久默认开关（原 `isDefault` 小开关对本地插件是 no-op，已废弃写入入口；字段保留作 JSON 兼容 + `resolveBinding` 遗留兜底）。
+  - 运行时自洽：聊天页 init 即把统一默认绑定进 `ConversationSession.activePrivateServerId`，装配 `bound` 直达；顶层 `resolveBinding` 纯函数签名不动。
 
 ## 断点
 

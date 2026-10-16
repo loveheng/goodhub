@@ -122,6 +122,21 @@ void main() {
     expect(extracted, isEmpty);
   });
 
+  test('cancelCommit 后新开的结构化段仍须提交（禁令不株连后续轮次）', () {
+    // 复现：首个工具轮 cancelCommit 置禁令后，下一自然结算轮的合法段
+    // 曾被静默丢弃（记忆胶囊不出现/不落盘）——修复：新段开启即解除禁令。
+    final extracted = <List<WorkspaceFactUpdate>>[];
+    final f = WorkspaceStreamFilter(onExtracted: extracted.add);
+    f.feed('中途$startTag{"facts":['); // 工具轮残段（未闭合）
+    f.cancelCommit(); // 结算硬压：清空 + 禁令
+    // 下一轮自然作答：完整合法段必须提交。
+    f.feed('答案$startTag${payload([
+      {'key': 'k', 'value': 'v', 'scope': 'user', 'action': 'upsert'}
+    ])}$endTag');
+    expect(extracted, hasLength(1));
+    expect(extracted.single.single.key, 'k');
+  });
+
   test('discard：全量复位后下轮干净起步（abort 生命线）', () {
     final extracted = <List<WorkspaceFactUpdate>>[];
     final texts = <String>[];
@@ -148,5 +163,66 @@ void main() {
     // 超限后状态已复位：闭合标签按普通文本流出。
     expect(f.feed(endTag), endTag);
     expect(extracted, isEmpty);
+  });
+
+  group('四域默会提取协议（2026-10-16 口径）', () {
+    // 静态锚点：提示词文本保证四域白名单与 schema 关键字在位——
+    // 模型行为不可单测，锚定协议文本即锚定少样本一致性。
+    test('promptInstructions 含四域白名单与 schema 关键字', () {
+      const p = WorkspaceStreamFilter.promptInstructions;
+      expect(p, contains('facts'), reason: '示例 JSON 必须含 facts 包裹（解析器 schema）');
+      expect(p, contains('task.goal'));
+      expect(p, contains('decision.'), reason: '决策域（含理由原子记录）');
+      expect(p, contains('constraint.avoid_'), reason: '废案禁令域');
+      expect(p, contains('remove'), reason: 'action=remove 触发规则须显式给出');
+      expect(p, contains('严禁输出本标签'), reason: '空态禁输出（省 token 防闲聊污染）');
+      expect(p, contains('<主题>'), reason: '占位符禁用 <n>——防端侧小模型误解为数字编号');
+    });
+
+    // FSM 管道：新标准格式端到端——四域 facts 全量收集、remove 透传、
+    // 正文标签干净剥离。
+    test('新格式管道解析：四域 facts 收集 + remove 透传 + 标签剥离', () {
+      final texts = <String>[];
+      final extracted = <List<WorkspaceFactUpdate>>[];
+      final f = WorkspaceStreamFilter(
+        onText: texts.add,
+        onExtracted: extracted.add,
+      );
+      final ui = f.feed('定了。$startTag${payload([
+        {
+          'key': 'decision.db',
+          'value': '选 PostgreSQL；原因：团队已有运维经验',
+          'scope': 'session',
+          'action': 'upsert',
+        },
+        {
+          'key': 'constraint.avoid_resident',
+          'value': '严禁将业务服务设为全局公共常驻',
+          'scope': 'session',
+          'action': 'upsert',
+        },
+        {
+          'key': 'constraint.avoid_inline_expand',
+          'value': 'UI 禁止行内展开',
+          'scope': 'session',
+          'action': 'remove',
+        },
+      ])}$endTag');
+      expect(ui, '定了。', reason: '正文与标签段干净分流');
+      expect(texts.join(), '定了。');
+      expect(extracted, hasLength(1));
+      final facts = extracted.single;
+      expect(facts.map((e) => e.key).toList(), [
+        'decision.db',
+        'constraint.avoid_resident',
+        'constraint.avoid_inline_expand',
+      ]);
+      expect(
+        facts.every((e) => e.normalizedScope == 'session'),
+        isTrue,
+        reason: '四域默认 session（G4 归一）',
+      );
+      expect(facts[2].action, 'remove', reason: 'remove 动作透传落盘层（解禁通路）');
+    });
   });
 }

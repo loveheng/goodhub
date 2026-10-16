@@ -68,6 +68,24 @@ description: goodhub（AI 宿主 App）的「功能 → 代码落点 + 文档落
 | Binder 联调评估与修复请求 | 本仓 `docs/design/goodhub-goodshare-binder-eval.md` + `goodshare-binder-poc-fix-request.md` | active（注意：文中引用的 `context/epics/goodhub-local-plugin/` **不存在**，结果回写改投 thirdconnect 域） |
 | 端侧 LLM 设计（LiteRT-LM / FoundationModels） | **本仓不存在**——goodshare 仓 `docs/design/on-device-llm.md`（跨仓只读） | 勿在本仓按此路径引用 |
 | Host 网关架构 · 访问性模型 · 记忆捎带提取（Provider×Tier 解耦 / 聚合反向代理 / In-band `<workspace_update>`） | 本仓 `docs/design/host-gateway-accessibility-memory.md` | active；绑定 epic = `chatmessage`（§3 记忆提取主战场，§1/§2 依赖项） |
+| 窗口解耦（内核 + 多投影：ServiceDirectory / McpRuntime / ConversationSession） | 本仓 `docs/design/window-kernel-split.md` | draft（架构裁决已拍板十二项 §8.1，冻结解除；epic `window-kernel-split` 已建，步 0 可开工） |
+| 普通用户可用性加固（冷启动/错误自救/术语白话/危险权重/DEGRADE 可见性） | 本仓 `docs/design/ux-hardening.md` | active；绑定 epic = `ux-hardening`（page-revamp 清零后的第二批） |
+
+## 架构债与依赖违例登记（2026-10-16 架构盘点立 · 改相关代码前必读）
+
+> 违例黑名单、依赖方向红灯与施工纪律全量在 `goodhub-workflow` skill「架构依赖纪律与修复施工规范」节（规则 SSOT 链：`window-kernel-split.md` §5 → `coding-standards.md` §1.1）。本表只作**改前定位速查**；每清零一项，同步更新：① 本表状态列 ② workflow 红灯清单 ③ 设计稿/ epic todos。不在本表之外的散修须先在此登记再动手。
+
+| # | 债 | 落点 | 状态 |
+|---|---|---|---|
+| 1 | **服务目录三拼且不一致**（gateway 处漏 prefs 迁移 = 活 bug，正确性缺陷） | `ui/chat_page.dart` / `ui/settings_page.dart` / `gateway/gateway_controller.dart` | 待修（window-kernel-split 步 0，最高优先） |
+| 2 | chat_page 装配越权（`_send` 内联 client/face/router/装饰器链） | `ui/chat_page.dart` | 待迁（步 1 → `coordinator/mcp_runtime.dart`） |
+| 3 | 装配第二/第三副本（无装饰器链版 / 联调简化版） | `gateway/gateway_controller.dart` / `ui/gateway_loop_debug_page.dart` | 待收敛（步 2，其中 gateway 点带债 #1 优先） |
+| 4 | `mcp → coordinator/sandbox` 反向依赖 | `mcp/connection_manager.dart` | 待斩（步 1/2 搬迁一并处理） |
+| 5 | `mcp/sandbox → llm` 反向依赖 | `mcp/sampling.dart` / `sandbox/conversation_store.dart` | 待斩（类型下沉 core 或入参注入） |
+| 6 | `ui ↔ gateway` 跨域环 | `ui/chat_page.dart` / `ui/settings_page.dart` ↔ `gateway/gateway_security.dart` | 待斩（gateway→ui 改端口注入，经 `appNavigatorKey` 现状收敛；ui→gateway 收敛为快照消费） |
+| 7 | `GatewayController.shared` 全局单例持会话态 | `gateway/gateway_controller.dart` | 阻塞 D-D PC 阶段二；随 ConversationSession 内迁 |
+| 8 | 会话态手工枚举（新增字段要改声明/reset/落盘 3 处，漏改即静默 bug） | `ui/chat_page.dart` | 待迁 ConversationSession（步 3） |
+| 9 | 装配级 / chat_page 级测试基线缺失 | `test/` | 步 0 先行补（coding-standards §6.1 注入位范式） |
 
 ## 命令速查
 

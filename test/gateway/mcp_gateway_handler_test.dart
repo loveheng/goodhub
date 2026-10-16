@@ -75,6 +75,75 @@ class _BoomTransport implements McpTransport {
   void close() {}
 }
 
+class _ToolListTransport implements McpTransport {
+  _ToolListTransport(this._tools);
+  final List<Map<String, Object?>> _tools;
+
+  Map<String, Object?> _resp(Map<String, Object?> req, Object result) => {
+        'jsonrpc': '2.0',
+        'id': req['id'],
+        'result': result,
+      };
+
+  @override
+  Future<TransportResponse> send(String requestBody) async {
+    final req = jsonDecode(requestBody) as Map<String, Object?>;
+    final method = req['method'];
+    final result = method == 'tools/list'
+        ? {'tools': _tools}
+        : {
+            'content': [
+              {'type': 'text', 'text': 'ok'}
+            ]
+          };
+    return TransportResponse(
+      statusCode: 200,
+      contentType: 'application/json',
+      body: jsonEncode(_resp(req, result)),
+    );
+  }
+
+  @override
+  Future<StreamedTransportResponse> sendStream(String requestBody) async {
+    final req = jsonDecode(requestBody) as Map<String, Object?>;
+    final method = req['method'];
+    final result = method == 'tools/list'
+        ? {'tools': _tools}
+        : {
+            'content': [
+              {'type': 'text', 'text': 'ok'}
+            ]
+          };
+    return StreamedTransportResponse(
+      statusCode: 200,
+      contentType: 'application/json',
+      lines: Stream<String>.fromIterable([jsonEncode(_resp(req, result))]),
+    );
+  }
+
+  @override
+  Future<StreamedTransportResponse> getStream() =>
+      throw UnsupportedError('test transport 不支持 GET SSE 订阅通道');
+
+  @override
+  void close() {}
+}
+
+Future<McpToolFace> _faceWithTools(List<Map<String, Object?>> tools) async {
+  final f = McpToolFace(
+    client: McpClient(_ToolListTransport(tools)),
+    serverId: 'x',
+  );
+  await f.listTools();
+  return f;
+}
+
+/// 假 face（echo 成功路径）：用于跨源 $ref 守卫测试，目标服务任意 serverId。
+/// 无需 listTools——[GatewayHandler.toolsCall] 直接走 face.client.callWithProgress，
+/// 不依赖 cachedSchemas（_annotationsFor 对空 schema 返回 null 即可）。
+McpToolFace _echoFace(String serverId) =>
+    McpToolFace(client: McpClient(_EchoTransport()), serverId: serverId);
+
 void main() {
   group('入站校验', () {
     test('工具名缺服务前缀 → isError（非协议错误）', () async {
@@ -201,6 +270,136 @@ void main() {
       );
       expect(r.isError, isTrue);
       expect(guard.inFlightCount, 0); // 异常路径也必须释放
+    });
+  });
+
+  group('MO6 阶段一：PC 只读镜像投影', () {
+    test('toolsList 仅投影 public + 激活 private，其余私有隐藏', () async {
+      final pub = await _faceWithTools([
+        {'name': 'pub_tool', 'description': '', 'inputSchema': {}}
+      ]);
+      final privA = await _faceWithTools([
+        {'name': 'a_tool', 'description': '', 'inputSchema': {}}
+      ]);
+      final privB = await _faceWithTools([
+        {'name': 'b_tool', 'description': '', 'inputSchema': {}}
+      ]);
+      final h = GatewayHandler(
+        faces: {'pub': pub, 'privA': privA, 'privB': privB},
+        privateServerIds: {'privA', 'privB'},
+        activePrivateServerId: 'privA',
+      );
+      final names = h.toolsList().map((e) => e['name']).toList();
+      expect(names, contains('pub__pub_tool'));
+      expect(names, contains('privA__a_tool'));
+      expect(names, isNot(contains('privB__b_tool'))); // 非激活私有被隐藏
+    });
+
+    test('privateServerIds 为空 → 全量投影（向后兼容无私有门控）', () async {
+      final a = await _faceWithTools([
+        {'name': 'a_tool', 'description': '', 'inputSchema': {}}
+      ]);
+      final b = await _faceWithTools([
+        {'name': 'b_tool', 'description': '', 'inputSchema': {}}
+      ]);
+      final h = GatewayHandler(faces: {'a': a, 'b': b});
+      final names = h.toolsList().map((e) => e['name']).toList();
+      expect(names, contains('a__a_tool'));
+      expect(names, contains('b__b_tool'));
+    });
+
+    test('调用非激活私有服务 → 防火墙拒绝（禁 use_server 换绑）', () async {
+      final privA = await _faceWithTools([
+        {'name': 'a_tool', 'description': '', 'inputSchema': {}}
+      ]);
+      final privB = await _faceWithTools([
+        {'name': 'b_tool', 'description': '', 'inputSchema': {}}
+      ]);
+      final h = GatewayHandler(
+        faces: {'privA': privA, 'privB': privB},
+        privateServerIds: {'privA', 'privB'},
+        activePrivateServerId: 'privA',
+      );
+      final r = await h.toolsCall(
+        name: 'privB__b_tool',
+        arguments: const {},
+        onProgress: (_) {},
+      );
+      expect(r.isError, isTrue);
+      expect(r.content, contains('只读镜像'));
+    });
+
+    test('调用激活私有服务 → 放行', () async {
+      final privA = await _faceWithTools([
+        {'name': 'a_tool', 'description': '', 'inputSchema': {}}
+      ]);
+      final h = GatewayHandler(
+        faces: {'privA': privA},
+        privateServerIds: {'privA'},
+        activePrivateServerId: 'privA',
+      );
+      final r = await h.toolsCall(
+        name: 'privA__a_tool',
+        arguments: const {},
+        onProgress: (_) {},
+      );
+      expect(r.isError, isFalse);
+      expect(r.content, 'ok');
+    });
+  });
+
+  group('MO7 跨源 \$ref 防火墙（仅网关入站/跨源边界）', () {
+    test('跨源 \$ref（指向 privA）无会话 → 拒绝', () async {
+      final pub = _echoFace('pub');
+      final h = GatewayHandler(faces: {'pub': pub});
+      final r = await h.toolsCall(
+        name: 'pub__echo',
+        arguments: {'ref': r'$ref:privA:abc'},
+        onProgress: (_) {},
+      );
+      expect(r.isError, isTrue);
+      expect(r.content, contains('跨服务'));
+      expect(r.content, contains('会话'));
+    });
+
+    test('跨源 \$ref 携带有效会话 → 放行', () async {
+      final pub = _echoFace('pub');
+      final h = GatewayHandler(faces: {'pub': pub});
+      final r = await h.toolsCall(
+        name: 'pub__echo',
+        arguments: {'ref': r'$ref:privA:abc'},
+        onProgress: (_) {},
+        sessionId: 'gw-session-1',
+      );
+      expect(r.isError, isFalse);
+      expect(r.content, 'ok');
+    });
+
+    test('同源 \$ref（指向目标服务自身）无会话 → 不触发跨源守卫', () async {
+      final pub = _echoFace('pub');
+      final h = GatewayHandler(faces: {'pub': pub});
+      final r = await h.toolsCall(
+        name: 'pub__echo',
+        arguments: {'ref': r'$ref:pub:abc'},
+        onProgress: (_) {},
+      );
+      expect(r.isError, isFalse);
+      expect(r.content, 'ok');
+    });
+
+    test('嵌套结构中的跨源 \$ref → 仍被检出并拒绝（无会话）', () async {
+      final pub = _echoFace('pub');
+      final h = GatewayHandler(faces: {'pub': pub});
+      final r = await h.toolsCall(
+        name: 'pub__echo',
+        arguments: {
+          'list': [r'$ref:privA:xyz'],
+          'nested': {'deep': r'$ref:privA:zzz'},
+        },
+        onProgress: (_) {},
+      );
+      expect(r.isError, isTrue);
+      expect(r.content, contains('跨服务'));
     });
   });
 }

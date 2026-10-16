@@ -101,6 +101,48 @@ class TrackNote extends TrackEntry {
   final bool danger;
 }
 
+/// 引导卡（ux-hardening P0-1 冷启动）：会话内可操作提示——正文 + 单一
+/// 动作按钮（如未配置服务的「去配置」）。
+/// **瞬态条目**：动作回调不可序列化，页面在持久化前过滤（恢复会话不出
+/// 现引导卡，由页面按当前配置状态重插）；编码侧兜底为通告行防万一直插。
+class TrackGuide extends TrackEntry {
+  const TrackGuide({
+    required this.text,
+    required this.actionLabel,
+    this.onAction,
+  });
+
+  final String text;
+  final String actionLabel;
+
+  /// 动作回调（null = 锁定态：仅展示标签，不渲染按钮）。
+  final VoidCallback? onAction;
+}
+
+/// 错误行动卡（ux-hardening P0-2）：任务中断的白话呈现——标题 + 建议 +
+/// 可复制原始异常 + 「重试」动作。区别于 [TrackNote] 的纯通告：本卡携带
+/// 自救入口。持久化保留（历史保真）；恢复会话 onAction=null 锁定为不可
+/// 重试（恢复的历史里不存在可重跑的任务）。
+class TrackError extends TrackEntry {
+  TrackError({
+    required this.title,
+    required this.advice,
+    required this.detail,
+  });
+
+  final String title;
+  final String advice;
+
+  /// 原始异常文本（$error）——排障留痕，可复制。
+  final String detail;
+
+  /// 重试回调（null = 锁定态：恢复历史不可重试）。
+  VoidCallback? onAction;
+
+  /// 已点过重试 → 锁定为灰阶「已重试」（终态锁定，ui-design §3.2）。
+  bool retried = false;
+}
+
 /// 记忆胶囊（P2-6 / §3.6）：气泡底「⚡ 已记录 key=value [✕撤销]」嵌片——
 /// 模型 In-band 捎带落库后页面插入；撤销回调由页面注入（session 域 →
 /// workspace_states.remove），撤销后锁定终态呈现「已撤销」。
@@ -114,6 +156,40 @@ class TrackMemoryCapsule extends TrackEntry {
   /// 撤销回调（null = 撤销不可用：已撤销锁定 / 历史恢复态）。
   void Function()? onUndo;
   bool undone = false;
+}
+
+/// 本轮上下文归因条目（展示 only）：Run 装配后由页面插入，呈现「本轮携带
+/// 哪些上下文」——记忆条目（scope 标签 + 内容）与已挂载服务；历史恢复态
+/// 锁定呈现（onItemExclude=null，同 TrackMemoryCapsule 口径）。
+/// 「本轮排除」为预留钩子：回调由页面注入才出现 ✕ 按钮，当前不接线，
+/// 仅承载未来「排除 → 重新生成」的交互落点。
+class ContextAttributionItem {
+  const ContextAttributionItem({required this.source, required this.text});
+
+  /// 来源标签（记忆 scope 如 `user` / `srv:goodshare`；服务则为其摘要名）。
+  final String source;
+  final String text;
+}
+
+class TrackContextAttribution extends TrackEntry {
+  TrackContextAttribution({
+    required this.memories,
+    required this.services,
+    this.droppedCount = 0,
+    this.onItemExclude,
+  });
+
+  /// 注入本轮 prompt 的记忆快照（原始顺序，页面上限内逐条展示）。
+  final List<ContextAttributionItem> memories;
+
+  /// 已挂载服务展示名快照（serverSummaries 值）。
+  final List<ContextAttributionItem> services;
+
+  /// 超预算丢弃的记忆条数（0 = 无截断）。
+  final int droppedCount;
+
+  /// 预留：单条排除回调（null = 不渲染排除按钮；当前页面不接线）。
+  void Function(ContextAttributionItem item)? onItemExclude;
 }
 
 class DualTrackStream extends StatelessWidget {
@@ -318,6 +394,57 @@ class DualTrackStream extends StatelessWidget {
             ),
           ),
         );
+      case TrackGuide(:final text, :final actionLabel, :final onAction):
+        return _TrackActionCard(
+          danger: false,
+          actionLabel: actionLabel,
+          onAction: onAction,
+          child: Text(
+            text,
+            style: const TextStyle(fontSize: Fsz.note, height: 1.4),
+          ),
+        );
+      case TrackError(
+        :final title,
+        :final advice,
+        :final detail,
+        :final retried,
+        :final onAction,
+      ):
+        final t = consoleTokens(context);
+        return _TrackActionCard(
+          danger: true,
+          actionLabel: retried ? null : '重试',
+          onAction: retried ? null : onAction,
+          lockedLabel: retried ? '↻ 已重试' : null,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '✕ $title',
+                style: TextStyle(
+                  fontSize: Fsz.note,
+                  fontWeight: FontWeight.w600,
+                  color: t.danger,
+                ),
+              ),
+              Text(
+                advice,
+                style: const TextStyle(fontSize: Fsz.note, height: 1.4),
+              ),
+              if (detail.isNotEmpty)
+                SelectableText(
+                  detail,
+                  style: TextStyle(
+                    fontFamily: t.monoFamily,
+                    fontSize: Fsz.telemetrySm,
+                    color: t.terminalMuted,
+                  ),
+                ),
+            ],
+          ),
+        );
       case TrackMemoryCapsule(:final key, :final value, :final onUndo, :final undone):
         final t = consoleTokens(context);
         return Container(
@@ -369,7 +496,262 @@ class DualTrackStream extends StatelessWidget {
             ],
           ),
         );
+      case TrackContextAttribution(:final memories, :final services, :final droppedCount, :final onItemExclude):
+        return _ContextAttributionRow(
+          memories: memories,
+          services: services,
+          droppedCount: droppedCount,
+          onItemExclude: onItemExclude,
+        );
     }
+  }
+}
+
+/// 轨道行动卡（引导卡 / 错误卡共用，ux-hardening P0-1/P0-2）：细边框容器
+/// + 危险态 Rose 左竖条（同 TrackUser 数据指针条族，ui-design §3.2 同轴
+/// 卡片族纪律）；动作钮等宽遥测轨数据指针色，锁定态灰阶弱化。
+class _TrackActionCard extends StatelessWidget {
+  const _TrackActionCard({
+    required this.danger,
+    required this.child,
+    this.actionLabel,
+    this.onAction,
+    this.lockedLabel,
+  });
+
+  final bool danger;
+  final Widget child;
+  final String? actionLabel;
+  final VoidCallback? onAction;
+
+  /// 锁定态角标（如「↻ 已重试」）——替代动作钮的灰阶呈现。
+  final String? lockedLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = consoleTokens(context);
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(t.cardRadius),
+        border: Border.all(color: t.hairline),
+      ),
+      child: IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (danger) Container(width: 3, color: t.danger),
+            if (danger) const SizedBox(width: 8),
+            Expanded(child: child),
+            if (actionLabel != null && onAction != null)
+              TextButton(
+                onPressed: onAction,
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  minimumSize: const Size(0, 32),
+                ),
+                child: Text(
+                  actionLabel!,
+                  style: TextStyle(
+                    fontFamily: t.monoFamily,
+                    fontSize: Fsz.note,
+                    color: t.dataRef,
+                  ),
+                ),
+              )
+            else if (lockedLabel != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Text(
+                  lockedLabel!,
+                  style: TextStyle(
+                    fontFamily: t.monoFamily,
+                    fontSize: Fsz.note,
+                    color: t.terminalMuted,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 本轮上下文归因 pill（展示 only）：收起态一行等宽遥测轨（数据指针色
+/// Indigo，ui-design §1），点击弹 BottomSheet 详情——来源标签（等宽微底色
+/// 容器）+ 内容（阅读轨小字）+ 预留排除位（onItemExclude 非空才渲染）。
+/// **静默即无（P1-6 降噪）**：无记忆注入且无超预算丢弃时不渲染——「服务
+/// N 个」与输入条状态带的上下文胶囊重复，每轮必出是遥测噪音，稀释真正的
+/// 回答。携带记忆注入或丢弃计数时才出现（这两样用户别处看不到）。
+class _ContextAttributionRow extends StatelessWidget {
+  const _ContextAttributionRow({
+    required this.memories,
+    required this.services,
+    required this.droppedCount,
+    required this.onItemExclude,
+  });
+
+  final List<ContextAttributionItem> memories;
+  final List<ContextAttributionItem> services;
+  final int droppedCount;
+  final void Function(ContextAttributionItem item)? onItemExclude;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = consoleTokens(context);
+    // P1-6 降噪：无记忆注入且无超预算丢弃 → 不渲染（服务数与状态带胶囊
+    // 重复，每轮必出属遥测噪音）。
+    if (memories.isEmpty && droppedCount == 0) {
+      return const SizedBox.shrink();
+    }
+    final label =
+        '本轮上下文：记忆 ${memories.length} 条 · 服务 ${services.length} 个'
+        '${droppedCount > 0 ? '（超预算丢弃 $droppedCount）' : ''}';
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 2),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(t.cardRadius),
+        border: Border.all(color: t.hairline),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(t.cardRadius),
+        onTap: () => _showDetailSheet(context, t),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '≡ $label ▾',
+                style: TextStyle(
+                  fontFamily: t.monoFamily,
+                  fontSize: Fsz.note,
+                  color: t.dataRef,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showDetailSheet(BuildContext context, ConsoleTokens t) {
+    unawaited(
+      showModalBottomSheet<void>(
+        context: context,
+        showDragHandle: true,
+        builder: (sheetCtx) => SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '本轮携带上下文',
+                  style: TextStyle(
+                    fontSize: Fsz.telemetry,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '以下内容在本轮回答前已注入模型（快照，仅展示）',
+                  style: TextStyle(fontSize: Fsz.note, color: t.terminalMuted),
+                ),
+                if (droppedCount > 0) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    '另有 $droppedCount 条记忆超出预算未注入（可经 query_memory 检索）',
+                    style: TextStyle(fontSize: Fsz.note, color: t.l2Warn),
+                  ),
+                ],
+                if (memories.isNotEmpty) ...[
+                  const Divider(height: 16),
+                  Text(
+                    '宿主记忆（${memories.length}）',
+                    style: TextStyle(
+                      fontSize: Fsz.telemetry,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  for (final m in memories)
+                    _ContextItemRow(item: m, onExclude: onItemExclude),
+                ],
+                if (services.isNotEmpty) ...[
+                  const Divider(height: 16),
+                  Text(
+                    '已挂载服务（${services.length}）',
+                    style: TextStyle(
+                      fontSize: Fsz.telemetry,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  for (final s in services)
+                    _ContextItemRow(item: s, onExclude: onItemExclude),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 详情单行：等宽来源标签（数据指针色）+ 内容（阅读轨小字）+ 预留排除按钮。
+class _ContextItemRow extends StatelessWidget {
+  const _ContextItemRow({required this.item, required this.onExclude});
+
+  final ContextAttributionItem item;
+  final void Function(ContextAttributionItem item)? onExclude;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = consoleTokens(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+            decoration: BoxDecoration(
+              color: t.hairline,
+              borderRadius: BorderRadius.circular(t.cardRadius),
+            ),
+            child: Text(
+              item.source,
+              style: TextStyle(
+                fontFamily: t.monoFamily,
+                fontSize: Fsz.note,
+                color: t.dataRef,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              item.text,
+              style: TextStyle(fontSize: Fsz.note),
+            ),
+          ),
+          // 预留排除位：回调未接线（null）时不占位，交互零痕迹。
+          if (onExclude != null)
+            IconButton(
+              icon: const Icon(Icons.close, size: 14),
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+              tooltip: '本轮排除此上下文',
+              onPressed: () => onExclude!(item),
+            ),
+        ],
+      ),
+    );
   }
 }
 
@@ -478,12 +860,41 @@ extension TrackEntryCodec on TrackEntry {
       'text': text,
       'danger': danger,
     },
+    // 瞬态条目：页面持久化前已过滤；此处兜底防直插（丢动作保文本）。
+    TrackGuide(:final text) => {
+      'type': 'note',
+      'text': text,
+      'danger': false,
+    },
+    // 错误卡持久化保留（历史保真）：onAction 不序列化（恢复态锁定）。
+    TrackError e => {
+      'type': 'error',
+      'title': e.title,
+      'advice': e.advice,
+      'detail': e.detail,
+      'retried': e.retried,
+    },
     TrackMemoryCapsule(:final key, :final value, :final undone) => {
       'type': 'memory',
       'key': key,
       'value': value,
       'undone': undone,
     },
+    TrackContextAttribution(
+      :final memories,
+      :final services,
+      :final droppedCount,
+    ) =>
+      {
+        'type': 'context',
+        'memories': [
+          for (final m in memories) {'s': m.source, 't': m.text},
+        ],
+        'services': [
+          for (final s in services) {'s': s.source, 't': s.text},
+        ],
+        'droppedCount': droppedCount,
+      },
   };
 
   /// 恢复轨道（终态锁定呈现）：
@@ -529,6 +940,16 @@ extension TrackEntryCodec on TrackEntry {
               danger: m['danger'] as bool? ?? false,
             ),
           );
+        case 'error':
+          // 恢复的错误卡：onAction=null 锁定（恢复历史里无可重跑的任务），
+          // retried 原样保留呈现。
+          out.add(
+            TrackError(
+              title: m['title'] as String? ?? '任务中断',
+              advice: m['advice'] as String? ?? '',
+              detail: m['detail'] as String? ?? '',
+            )..retried = m['retried'] as bool? ?? false,
+          );
         case 'memory':
           // 历史恢复胶囊：不接撤销回调（onUndo=null 锁定呈现——恢复态无
           // 活页面的 store 绑定；撤销语义仅限当轮）。
@@ -537,6 +958,23 @@ extension TrackEntryCodec on TrackEntry {
               key: m['key'] as String? ?? '?',
               value: m['value'] as String? ?? '',
             )..undone = m['undone'] as bool? ?? false,
+          );
+        case 'context':
+          // 历史恢复归因条：仅展示快照（onItemExclude=null 锁定，同上口径）。
+          List<ContextAttributionItem> items(Object? raw) => [
+                for (final e in (raw as List? ?? const []))
+                  if (e is Map)
+                    ContextAttributionItem(
+                      source: e['s'] as String? ?? '?',
+                      text: e['t'] as String? ?? '',
+                    ),
+              ];
+          out.add(
+            TrackContextAttribution(
+              memories: items(m['memories']),
+              services: items(m['services']),
+              droppedCount: m['droppedCount'] as int? ?? 0,
+            ),
           );
         case 'confirm':
           final approved = m['approved'] as bool?;

@@ -105,6 +105,16 @@ class CrossSourceConsentCard extends StatelessWidget {
             ),
           ],
           const SizedBox(height: 8),
+          // P1-6 白话层：「注水/拒绝」对普通用户的后果一句话说清。
+          Text(
+            '允许 = 把上面这份数据交给「目标」工具使用；拒绝 = 本次调用中止。'
+            '仅本次生效，不记忆、不豁免。',
+            style: TextStyle(
+              fontSize: Fsz.note,
+              color: t.terminalMuted,
+              height: 1.4,
+            ),
+          ),
           if (locked)
             Text(
               lockedDecision! ? '✓ 已允许注水${_atSuffix()}' : '✕ 已拒绝${_atSuffix()}',
