@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 updated: 2026-10-16
 ---
 

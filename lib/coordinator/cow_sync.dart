@@ -71,8 +71,9 @@ class CowOverridesStore {
         }
       }
     } catch (e) {
-      // DEGRADE: 覆写文件损坏（手改/写坏）——按空库起步并重写，不阻断同步；留痕。
-      debugPrint('[DEGRADE] cow-store: overrides file unreadable, starting fresh: $e');
+      // DEGRADE: 覆写文件损坏（手改/写坏）——先备份再按空库起步（P2-1：用户
+      // 手改的覆写可人工找回，不再被无声清掉），不阻断同步；留痕。
+      debugPrint('[DEGRADE] cow-store: overrides file unreadable, backed up + starting fresh: $e');
       // P2-1 收紧：损坏文件**先备份再按空库起步**——旧行为直接重写会把用户
       // 手改的覆写无声清掉且不可恢复；备份后数据可人工找回。
       _corruptBackup = await _backupCorrupt();

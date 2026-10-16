@@ -69,7 +69,7 @@ description: goodhub（AI 宿主 App）的「功能 → 代码落点 + 文档落
 | 端侧 LLM 设计（LiteRT-LM / FoundationModels） | **本仓不存在**——goodshare 仓 `docs/design/on-device-llm.md`（跨仓只读） | 勿在本仓按此路径引用 |
 | Host 网关架构 · 访问性模型 · 记忆捎带提取（Provider×Tier 解耦 / 聚合反向代理 / In-band `<workspace_update>`） | 本仓 `docs/design/host-gateway-accessibility-memory.md` | active；绑定 epic = `chatmessage`（§3 记忆提取主战场，§1/§2 依赖项） |
 | 窗口解耦（内核 + 多投影：ServiceDirectory / McpRuntime / ConversationSession） | 本仓 `docs/design/window-kernel-split.md` | draft（架构裁决已拍板十二项 §8.1，冻结解除；epic `window-kernel-split` 已建，步 0 可开工） |
-| 普通用户可用性加固（冷启动/错误自救/术语白话/危险权重/DEGRADE 可见性） | 本仓 `docs/design/ux-hardening.md` | active；绑定 epic = `ux-hardening`（page-revamp 清零后的第二批） |
+| 普通用户可用性加固（冷启动/错误自救/术语白话/危险权重/DEGRADE 可见性） | 本仓 `docs/design/ux-hardening.md` | active；epic `ux-hardening` 已收尾归档（2026-10-16 ::done，9 项全闭环；page-revamp 清零后的第二批） |
 
 ## 架构债与依赖违例登记（2026-10-16 架构盘点立 · 改相关代码前必读）
 

@@ -119,9 +119,10 @@ class ConversationArchive {
       quota.restoreHits(hits);
       return quota;
     } on Object catch (e) {
-      // DEGRADE: 配额文件损坏按无记录（重置），日志留痕。
+      // DEGRADE: 配额文件损坏按无记录（重置）——先备份 + lastQuotaError 面板
+      // 可见（P2-1：额度不再静默清零），日志留痕。
       // ignore: avoid_print
-      print('[DEGRADE] conversation-archive: 配额文件损坏按重置: $e');
+      print('[DEGRADE] conversation-archive: 配额文件损坏按重置（已备份，面板可见）: $e');
       await _backupCorruptQuota();
       _lastQuotaError = '配额记录损坏，已按无记录处理（$e）';
       return null;
