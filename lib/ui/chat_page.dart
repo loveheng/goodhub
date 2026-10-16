@@ -24,16 +24,11 @@ import '../coordinator/conversation_archive.dart';
 import '../coordinator/chat_session_service.dart';
 import '../coordinator/degradation_controller.dart';
 
+import '../coordinator/chat_run_orchestrator.dart';
 import '../coordinator/mcp_runtime.dart';
 import '../llm/cloud/cloud_llm.dart';
-import '../coordinator/memory_kernel.dart';
-import '../coordinator/memory_governor.dart';
-import '../coordinator/context_governor.dart' show estimateTokens;
 
-import '../coordinator/workspace_stream_filter.dart';
 import '../coordinator/skill_registry.dart';
-
-import '../coordinator/tool_router.dart';
 
 import '../mcp/connection_manager.dart';
 import '../mcp/local_plugin_discovery.dart';
@@ -119,7 +114,9 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
   /// 记忆治理器（context-stepped-pruning §6，内核层）：journal/TTL/Tick 判定
   /// 全在 MemoryGovernor（window-kernel-split 落点纪律）；窗口只测量 transcript
   /// （轮数/体量）并投影 systemTail + contextFooter。切会话即重置。
-  final MemoryGovernor _memGovernor = MemoryGovernor();
+  // Run 编排下沉件（window-slim P1-A）：记忆内核接线/冷热分层/系统前缀/slot
+  // 写回/governor 生命周期收口 coordinator——本页只持展示态与 UI 端口实现。
+  final ChatRunOrchestrator _runOrchestrator = ChatRunOrchestrator();
 
   // 会话持久化（archive-memory-claim 步 1）：落盘事实 owner = ConversationArchive
   // 内核（懒建/快照组装/恢复/删除门面），窗口只持侧边栏列表投影（已下沉
@@ -233,8 +230,9 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
       _track.clear();
       _activeCallEntry = null;
       _pillLabel = 'idle';
-      // 记忆治理器随会话生灭（§6.2：传输态切会话即弃，重置周期锚点）。
-      _memGovernor.reset();
+      // 记忆治理器随会话生灭（§6.2：传输态切会话即弃，重置周期锚点）——
+      // governor 随编排件（window-slim P1-A），本页只触发重置。
+      _runOrchestrator.memGovernor.reset();
       _pillTone = CapsuleTone.idle;
     });
     _sessionSvc.resetSession(); // 内核态重置（会话实例 + 归档当前指针）
@@ -298,25 +296,6 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
     await _sessionSvc.delete(meta.id);
     if (_sessionSvc.archive?.currentId == meta.id) _resetSessionState();
     if (mounted) setState(() {}); // 侧边栏列表随服务刷新
-  }
-
-  /// T6：静态首级摘要「## 已挂载服务」（自动生成，标注工具名前缀格式）。
-  static String _mountedServicesSection(
-    ToolRouter router,
-    Map<String, String> summaries,
-  ) {
-    final lines = [
-      for (final id in router.serverIds)
-        '- $id: ${summaries[id] ?? '(无摘要)'}'
-            '${router.activatedServers.contains(id) ? '' : ' ［未激活，需 activate_server_tools］'}',
-    ];
-    final first = router.serverIds.isEmpty
-        ? 'server_id'
-        : router.serverIds.first;
-    return '\n\n## 已挂载服务（自动生成）\n'
-        '工具名带服务前缀，格式 `<server_id>__<tool>`，例如 `${first}__get_item`。\n'
-        '服务列表：\n${lines.join('\n')}\n'
-        '未激活服务用 get_connected_apps 查看、activate_server_tools 激活。';
   }
 
   void _add(TrackEntry entry) {
@@ -710,39 +689,30 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
     McpAssembly? assembly; // Run 级句柄：finally 统一释放（内核持资源谁释放）
     try {
       final memoryStore = MemoryStore.underSupportDir(support.path);
-      // 步 2（archive-memory-claim）：In-band 提取面认领进 Memory 内核——
-      // session 域落 workspace_states（所有权仍在 Session，按调用传入），
-      // user/srv 域走 MemoryStore keyed 映射（G1）；UI 胶囊经 onCapsule 回传
-      // 窗口（渲染与撤销挂载留窗口，undo 已含落盘回滚）。
-      final workspaceFilter = MemoryKernel(memoryStore).buildFilter(
-        wsStates: _session.wsStates,
-        conversationId: convId,
-        onCapsule: (key, value, action, scope, undo) {
-          // 记忆增量日志（context-stepped-pruning §6.3/§6.7）：本 Run 提取的
-          // 变更只追加 pending 池（user/srv 域——journal 覆盖注入 prompt 的
-          // 域），下一 Run 组装才生效（单向栅栏）；session 域不进 prompt，
-          // 不入 journal。
-          if (scope != 'session') {
-            _memGovernor.record(
-              action: action,
-              scope: scope,
-              key: key,
-              value: value,
-            );
-          }
-          final capsule = TrackMemoryCapsule(key: key, value: value);
-          capsule.onUndo = () {
-            undo(); // 落盘回滚（内核侧闭包）
-            if (!mounted) return;
-            setState(() {
-              capsule
-                ..undone = true
-                ..onUndo = null;
-            });
-          };
-          _add(capsule);
-        },
-      );
+      // 记忆内核接线收口编排件（window-slim P1-A）；窗口只留胶囊 UI
+      // （TrackMemoryCapsule 渲染与撤销挂载）与写失败可见轨道（P1-C）。
+      void onCapsule(String key, String value, String action, String scope,
+          void Function() undo) {
+        final capsule = TrackMemoryCapsule(key: key, value: value);
+        capsule.onUndo = () {
+          undo(); // 落盘回滚（内核侧闭包）
+          if (!mounted) return;
+          setState(() {
+            capsule
+              ..undone = true
+              ..onUndo = null;
+          });
+        };
+        _add(capsule);
+      }
+
+      void onWriteFailure(String key, String scope) {
+        if (!mounted) return;
+        setState(() {
+          _add(TrackNote('⚠ 记忆写入失败（$scope 域 $key），本条事实未保存',
+              danger: true));
+        });
+      }
       // 步 1（window-kernel-split）：装配段迁入 McpRuntime（内核）；本页收集
       // 会话快照 + 实现端口。本地插件信任闸门是 UI（信任卡片）——窗口先裁再传，
       // 内核只挂载（§7.1：不为此造第 10 个端口）。
@@ -870,41 +840,25 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
       );
       _activeAssembly = assembly;
       final router = assembly.router;
-      // M4-T2 记忆注入（D8 三层作用域）+ 超限可观测：作用域 = 全部已连服务。
-      final memView = await memoryStore.memoryView(
-        serverScopes: router.serverIds,
+      // Run 编排核下沉（window-slim P1-A）：workspaceFilter/记忆冷热分层/
+      // 系统前缀/归因数据/maskTool 由编排件组装，窗口只映射到轨道。
+      final plan = await _runOrchestrator.plan(
+        assembly: assembly,
+        memoryStore: memoryStore,
+        wsStates: _session.wsStates,
+        conversationId: convId,
+        transcript: _session.transcript,
+        skills: _session.skills!,
+        baseSystemPrompt: _systemPrompt,
+        onCapsule: onCapsule,
+        onWriteFailure: onWriteFailure,
       );
-      // 记忆冷热分层（context-stepped-pruning §6，策略在 MemoryGovernor）：
-      // 窗口只测量 transcript（轮数/体量），systemTail + 沉底增量区由
-      // governor 投影——Tick（滑窗高水位/TTL/体量突发）时压实，非 Tick 时
-      // 快照字节冻结、delta 只追加。
-      final transcriptRounds =
-          _session.transcript.whereType<AssistantMessage>().length;
-      // 估算口径 = 字符级粗估（core/tokens 同族），消息 content 逐条拼接。
-      final transcriptTokens = estimateTokens(
-        _session.transcript.map((m) {
-          if (m is UserMessage) return m.content;
-          if (m is AssistantMessage) return m.content ?? '';
-          if (m is ToolResultMessage) return m.content;
-          if (m is SystemMessage) return m.content;
-          return '';
-        }).join('\n'),
-      );
-      final memSection = await _memGovernor.assembleSystemTail(
-        store: memoryStore,
-        serverScopes: router.serverIds,
-        transcriptRounds: transcriptRounds,
-        transcriptTokens: transcriptTokens,
-      );
-      final contextFooter = _memGovernor.renderFooter();
-      // T6：静态首级摘要「## 已挂载服务」（自动生成，标注工具名前缀格式）。
-      final mountedSection = _mountedServicesSection(router, assembly.serverSummaries);
       // 上下文归因（展示 only）：本轮注入的记忆/服务快照挂轨道，点开 BottomSheet
       // 查详情。「本轮排除」为预留钩子——当前不接线（onItemExclude=null）。
       _add(
         TrackContextAttribution(
           memories: [
-            for (final e in memView.entries)
+            for (final e in plan.memoryEntries)
               ContextAttributionItem(source: e.scope, text: e.content),
           ],
           services: [
@@ -914,35 +868,20 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
                 text: assembly.serverSummaries[id] ?? '(无摘要)',
               ),
           ],
-          droppedCount: memView.droppedCount,
+          droppedCount: plan.droppedCount,
         ),
       );
       _setPill('thinking', CapsuleTone.l1);
       await for (final e in assembly.loop.run(
-        // P1-3b（§8.1 断点 A）：静态角色+skills+mountedSection 为静态前缀
-        // （挂 ephemeral 断点），记忆区走 systemTail 置尾——记忆增长不顶掉
-        // 静态前缀缓存边界。P2-4（§3.2）：workspace_update 提取指令为固定
-        // 静态区追加（含「tool-call 轮严禁输出」铁律）。
-        systemPrompt: _session.skills!.composeSystemPrompt(
-          _systemPrompt,
-          connectedServerIds: router.serverIds,
-        ) +
-            mountedSection +
-            WorkspaceStreamFilter.promptInstructions,
-        systemTail: memSection,
+        systemPrompt: plan.systemPrompt, // 静态前缀（P1-3b 断点 A，编排件组装）
+        systemTail: plan.memSection,
         // 记忆增量区沉底（context-stepped-pruning §6.5）：周期内提取的变更
         // 只追加在稳定前缀之后、本轮提问之前，不推移快照+窗口原文。
-        contextFooter: contextFooter.isEmpty ? null : contextFooter,
+        contextFooter: plan.contextFooter,
         userPrompt: prompt,
         history: List.of(_session.transcript), // D11：上轮 transcript 续接
-        workspaceFilter: workspaceFilter, // P2-6：In-band 分流+胶囊
-        // P3-2（D-H/§9.1）：已让位私有域的历史调用发送边界合成桩脱敏。
-        maskTool: (name) {
-          final sid = router.serverFor(name);
-          return sid != null &&
-              router.privateServerIds.contains(sid) &&
-              router.activePrivateServerId != sid;
-        },
+        workspaceFilter: plan.workspaceFilter, // P2-6：In-band 分流+胶囊
+        maskTool: plan.maskTool, // P3-2：让位私有域发送边界脱敏
         tools: const [],
       )) {
         switch (e) {
@@ -1009,14 +948,9 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
             unawaited(HapticFeedback.selectionClick());
         }
       }
-      // 会话绑定捕获：模型可能在本轮经 use_server/activate 改写私有槽位，
-      // 收尾前经三态写回契约落到会话元数据（免每轮重选）。
-      final slot = router.activePrivateServerId;
-      if (slot != null) {
-        _session.bindPrivateServer(slot);
-      } else if ((_session.activePrivateServerId ?? '').isNotEmpty) {
-        _session.unbindToPublic(); // 曾绑定 → 本轮 use_server('all') 清空 = 显式公共
-      }
+      // 会话绑定捕获（window-slim P1-A：三态写回契约收口编排件）——模型可能
+      // 在本轮经 use_server/activate 改写私有槽位，收尾前落会话元数据。
+      _runOrchestrator.writebackSlot(router: router, session: _session);
     } on Object catch (e) {
       // ux-hardening P0-2：白话错误卡（标题/建议/可复制原始异常）+ 重试入口，
       // 替代原始异常栈直怼轨道。
@@ -1026,8 +960,9 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
       _watcher?.stop();
       _watcher = null;
       _activeCallEntry = null;
-      // §6.4 TTL 机会主义压实的判定起点：本 Run 结束时刻（governor 持有）。
-      _memGovernor.markRunEnded();
+      // §6.4 TTL 机会主义压实的判定起点：本 Run 结束时刻（governor 持有，
+      // 随编排件——window-slim P1-A）。
+      _runOrchestrator.markRunEnded();
       // P0 尾帧铁律（stream-perf §3）：快照与终态渲染前强制清空流控缓冲——
       // 覆盖正常收尾 / Abort / 异常三条路径，缓冲期内到达的尾帧不得丢失。
       _streamBuf.flush();

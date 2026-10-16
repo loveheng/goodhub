@@ -14,6 +14,8 @@ library;
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
 import '../sandbox/memory_store.dart';
 import '../sandbox/workspace_state_store.dart';
 import 'workspace_stream_filter.dart';
@@ -36,27 +38,46 @@ class MemoryKernel {
     required void Function(
             String key, String value, String action, String scope, void Function() undo)
         onCapsule,
+    void Function(String key, String scope)? onWriteFailure,
   }) =>
       WorkspaceStreamFilter(
         onExtracted: (facts) {
           for (final f in facts) {
             final scope = f.normalizedScope;
             if (scope == null) continue; // 幻觉 scope 丢弃（G4）
+            // window-slim P1-C：数据面写失败不再静默——写错误上报
+            // [onWriteFailure]（chat_page 接 TrackNote 用户可见），未接回调时
+            // 至少 DEGRADE 留痕；undo 语义不变（remove 幂等可回滚半写）。
+            void reportFailure(Object e) {
+              debugPrint(
+                  '[DEGRADE] memory-kernel: 事实写失败 key=${f.key} scope=$scope: $e');
+              onWriteFailure?.call(f.key, scope);
+            }
+
             Future<void> undo() => scope == 'session'
                 ? wsStates!.remove(conversationId, f.key)
                 : memoryStore.removeFacts(f.key, scope: scope);
+            // window-slim P1-C：写失败不再静默（try/catch 上报，见 reportFailure）。
+            Future<void> guardedWrite(Future<Object?> write) async {
+              try {
+                await write;
+              } on Object catch (e) {
+                reportFailure(e);
+              }
+            }
+
             if (scope == 'session') {
               // ignore: discarded_futures
-              unawaited(f.action == 'remove'
+              unawaited(guardedWrite(f.action == 'remove'
                   ? wsStates!.remove(conversationId, f.key)
-                  : wsStates!.upsert(conversationId, f.key, f.value));
+                  : wsStates!.upsert(conversationId, f.key, f.value)));
             } else {
               // P2-1b（G1）：user/srv 域走 MemoryStore keyed 映射——同 key
               // 覆盖不追加；remove 幂等。
               // ignore: discarded_futures
-              unawaited(f.action == 'remove'
+              unawaited(guardedWrite(f.action == 'remove'
                   ? memoryStore.removeFacts(f.key, scope: scope)
-                  : memoryStore.upsertFacts(f.key, f.value, scope: scope));
+                  : memoryStore.upsertFacts(f.key, f.value, scope: scope)));
             }
             onCapsule(f.key, f.value, f.action, scope, undo);
           }

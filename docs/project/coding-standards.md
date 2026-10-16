@@ -186,6 +186,14 @@ abstract interface class PiiRedactionPipeline {
 
 - 遮蔽失败**拦截请确认，严禁静默放行**（N7）。
 
+### 5.3 降级可见性分级（window-slim P1-C，2026-10-17 立）
+
+`[DEGRADE]` 埋点按**数据面 / 非数据面**两档划界，禁止一切「磁盘满/权限失败静默丢数据」：
+
+- **数据面写失败**（落盘事实、会话快照、配置持久化等用户资产的写路径）：失败必须**升为用户可观测**——经回调升 UI 轨道（如 `MemoryKernel.onWriteFailure` → `TrackNote(danger)`），未接回调时至少 `[DEGRADE]` 留痕；`unawaited` 只允许挂在**已接错误上报**的 future 上，裸 `discarded_futures` 即违例。
+- **非数据面降级**（心跳保活、progress 瞬态帧、审计流水等：失败不丢用户数据，只损可观测性）：允许 `[DEGRADE]`/空吞留痕不阻断主链路，但**须在代码注释声明其非数据面属性**。
+- **fail-closed 边界成文**（与 §5.2 衔接）：出站安全过滤（PII 遮蔽）失败一律拦截（fail-closed，§5.2）；网关 progress 帧 message 走 `redactSync` 同步遮蔽、遮蔽失败原样透传属**非数据面豁免**（瞬态文本，终局结果由会话级遮蔽兜一致性）——该豁免仅限 progress 帧，不得类推到结果帧（`gateway_security` 会话级遮蔽 + handler `onProgress` 注释为两处口径锚点，改任一处须同步另一处）。
+
 ## 6. 测试与质量门禁（Quality Gates）
 
 ### 6.1 单元测试覆盖要求

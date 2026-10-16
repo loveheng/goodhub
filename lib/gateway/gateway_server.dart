@@ -292,7 +292,7 @@ class McpGatewayServer {
     for (final resp in _sseSubs.values) {
       try {
         resp.write(': keep-alive\n\n');
-      } on Object catch (_) {}
+      } on Object catch (_) {} // 非数据面（coding-standards §5.3）：保活帧失败不丢用户数据，留痕不阻断
     }
   }
 
