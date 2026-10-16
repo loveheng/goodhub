@@ -19,9 +19,8 @@ import 'package:path_provider/path_provider.dart';
 
 import '../app/service_directory.dart';
 import '../coordinator/hybrid_assembly.dart';
-import '../coordinator/mcp_tool_face.dart';
+import '../coordinator/mcp_runtime.dart';
 import '../mcp/local_plugin_discovery.dart';
-import '../mcp/mcp_client.dart';
 import '../mcp/trusted_plugins.dart';
 import '../mcp/sampling.dart';
 import '../sandbox/memory_store.dart';
@@ -129,14 +128,13 @@ class GatewayController {
       }
       final client = localPluginDiscovery.createClient(info);
       try {
-        await client.negotiate();
-        final face = McpToolFace(
-          client: client,
+        // 步 2-1（window-kernel-split）：挂载原语收敛（client→negotiate→face→listTools）。
+        final m = await const McpRuntime().mount(
           serverId: info.serverId,
+          client: client,
           opsLog: opsLog,
         );
-        await face.listTools();
-        handler.faces[info.serverId] = face;
+        handler.faces[info.serverId] = m.face;
       } on Object catch (e) {
         debugPrint(
             '[DEGRADE] gateway: local plugin ${info.serverId} mount failed: $e');
@@ -149,22 +147,17 @@ class GatewayController {
     final epStore = await serverEndpointStore(supportPath: support);
     for (final ep in await epStore.load()) {
       if (ep.endpoint.isEmpty || handler.faces.containsKey(ep.id)) continue;
-      final client = McpClient.http(
-        baseUrl: ep.endpoint,
-        apiKey: await epStore.apiKey(ep.id),
-      );
       try {
-        await client.negotiate();
-        final face = McpToolFace(
-          client: client,
-          serverId: ep.id,
+        // 步 2-1：mountEndpoint 拥有它建的 client——失败自清理再上抛，
+        // 此处只按 DEGRADE 口径收尾（宁缺勿炸，不阻断其余源）。
+        final m = await const McpRuntime().mountEndpoint(
+          ep,
           opsLog: opsLog,
+          apiKeyReader: epStore.apiKey,
         );
-        await face.listTools();
-        handler.faces[ep.id] = face;
+        handler.faces[ep.id] = m.face;
       } on Object catch (e) {
         debugPrint('[DEGRADE] gateway: endpoint ${ep.id} mount failed: $e');
-        client.close();
       }
     }
 

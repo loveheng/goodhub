@@ -15,6 +15,7 @@ import 'package:flutter/foundation.dart';
 
 import '../mcp/goodshare_task_api.dart';
 import '../mcp/mcp_client.dart';
+import '../mcp/server_endpoints.dart';
 import 'task_inference.dart';
 
 /// 闭环单步事件（双入口共用的事件流；UI 据此渲染日志，AI loop 据此记遥测）。
@@ -203,7 +204,14 @@ TaskLoopService buildApi({
   String? apiKey,
   required TaskInference inference,
 }) {
-  final client = McpClient.http(baseUrl: baseUrl, apiKey: apiKey);
+  // 步 2-3 适配（window-kernel-split，§8.1-9 凭证隔离）：任务侧连接经 ephemeral
+  // 端点对象构造——明文键只入内存（ephemeralKey 不参与 toJson/fromJson），
+  // 不进 Directory 列表、不参与 store.save()（全量覆写即落盘）；claim→心跳→apply
+  // 调度模型不动，不走 mountEndpoint（任务 API 只需原始 client，
+  // 多付 negotiate+listTools RPC 无益）；task 侧无记忆/日志写入点，
+  // scope 强制任务上下文由推理侧实现承接（现状无写点 = 隔离天然成立）。
+  final ep = ServerEndpoint.ephemeral(endpoint: baseUrl, ephemeralKey: apiKey);
+  final client = McpClient.http(baseUrl: ep.endpoint, apiKey: ep.ephemeralKey);
   return TaskLoopService(
     api: GoodshareTaskApi(client),
     inference: inference,

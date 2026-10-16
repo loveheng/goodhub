@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -218,5 +219,19 @@ void main() {
     await store.save([ep1]);
     File('${file.path}.tmp').writeAsStringSync('[]'); // 模拟历史残留
     expect(await store.load().then((l) => l.single.id), 'srv_a');
+  });
+
+  test('ephemeral 端点：明文键不序列化（§8.1-9 凭证隔离，round-trip 后即丢）', () {
+    // window-kernel-split 步 2-3：ephemeral 任务侧端点凭证只入内存——
+    // toJson 不含 ephemeralKey（防「进列表即落盘」类意外路径泄漏明文）。
+    final eph = const ServerEndpoint.ephemeral(
+      endpoint: 'http://10.0.2.2:8000/mcp',
+      ephemeralKey: 'sk-secret',
+    );
+    expect(eph.ephemeralKey, 'sk-secret');
+    expect(jsonEncode(eph.toJson()), isNot(contains('sk-secret')),
+        reason: '明文键不得进 toJson（save 全量覆写即落盘）');
+    final restored = ServerEndpoint.fromJson(eph.toJson());
+    expect(restored.ephemeralKey, isNull, reason: '反序列化不还原明文键');
   });
 }

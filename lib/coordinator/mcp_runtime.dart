@@ -33,7 +33,7 @@ import 'tool_breaker.dart' show BlockDelegate;
 import 'tool_router.dart';
 import '../core/errors/mcp_error.dart';
 import '../llm/cloud/cloud_llm.dart'
-    show AssembledToolCall, CloudChatMessage, CloudLlmEngine;
+    show AssembledToolCall, CloudChatMessage, CloudLlmEngine, CloudToolSchema;
 import '../mcp/connection_manager.dart';
 import '../mcp/local_plugin_discovery.dart';
 import '../mcp/mcp_client.dart';
@@ -633,6 +633,68 @@ class McpRuntime {
       };
     conn.start();
     return conn;
+  }
+
+  // -------------------------------------------------------------------------
+  // 步 2 · 挂载原语（§7.5 步 2：三处窗口调用点重复的装配胶水收敛于此）
+  // -------------------------------------------------------------------------
+
+  /// 挂载原语：`client → negotiate → face → listTools`——原 chat_page /
+  /// gateway_controller / 联调页三处重复的这段。步 1 后 chat 走 [assemble]
+  /// （内部同一套链路）；gateway / 联调页直接复用本原语，**不开特权分支**
+  /// （§8.1-11）。negotiate 有 client 实例缓存，重复取不增 RPC。
+  ///
+  /// client 由调用方创建并持有失败清理权（本原语不 close——gateway 单源挂载
+  /// 失败需按自身 DEGRADE 口径收尾）。
+  Future<({McpToolFace face, ServerCapabilities caps, List<CloudToolSchema> schemas})>
+      mount({
+    required String serverId,
+    required McpClient client,
+    MemoryStore? opsLog,
+    ToolProgressCallback? onProgress,
+  }) async {
+    final caps = await client.negotiate();
+    final face = McpToolFace(
+      client: client,
+      serverId: serverId,
+      opsLog: opsLog,
+      onProgress: onProgress,
+    );
+    final schemas = await face.listTools();
+    return (face: face, caps: caps, schemas: schemas);
+  }
+
+  /// 端点挂载原语（§7.5 步 2-3）：按 [ServerEndpoint] 建 HTTP client 并挂载。
+  /// 本原语**拥有**它创建的 client：挂载失败即 close 再上抛（调用方无须也无从
+  /// 持 client 引用）。
+  ///
+  /// - 手填端点：key 经 [apiKeyReader]（Directory 安全存储）读取；
+  /// - ephemeral 端点（任务侧，§8.1-9）：key 走 [ServerEndpoint.ephemeralKey]
+  ///   内存传递，不进 Directory 列表、不参与 `store.save()`。
+  Future<({McpToolFace face, ServerCapabilities caps, List<CloudToolSchema> schemas})>
+      mountEndpoint(
+    ServerEndpoint ep, {
+    MemoryStore? opsLog,
+    ToolProgressCallback? onProgress,
+    McpClientFactory? clientFactory,
+    Future<String?> Function(String serverId)? apiKeyReader,
+  }) async {
+    final key = ep.ephemeralKey ??
+        (apiKeyReader != null ? await apiKeyReader(ep.id) : null);
+    final client =
+        (clientFactory ?? (u, k) => McpClient.http(baseUrl: u, apiKey: k))(
+            ep.endpoint, key);
+    try {
+      return await mount(
+          serverId: ep.id, client: client, opsLog: opsLog, onProgress: onProgress);
+    } on Object {
+      try {
+        client.close();
+      } on Object catch (e) {
+        developer.log('[DEGRADE] mcp-runtime: mountEndpoint client.close failed: $e');
+      }
+      rethrow;
+    }
   }
 }
 

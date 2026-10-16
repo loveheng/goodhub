@@ -33,6 +33,7 @@ class ServerEndpoint {
     this.enabled = true,
     this.tier = ServerPrivacyTier.private,
     this.isDefault = false,
+    this.ephemeralKey,
   });
 
   /// 稳定标识（安全存储键锚点；不含 `__`——ToolRouter 前缀语义约束）。
@@ -58,6 +59,22 @@ class ServerEndpoint {
   /// 全局默认钉选（v1：会话绑定默认回退用）：单选语义，写回 mcp_servers.json。
   final bool isDefault;
 
+  /// ephemeral 任务侧端点的明文键（window-kernel-split 步 2-3，§8.1-9 凭证
+  /// 隔离）：**只入内存，不序列化**——[toJson] 不含此字段，[fromJson] 不还原；
+  /// ephemeral 端点不进 Directory 列表、不参与 [ServerEndpointStore.save]。
+  final String? ephemeralKey;
+
+  /// 任务侧一次性端点（§8.1-9）：凭证只入内存，与用户服务目录完全隔离。
+  const ServerEndpoint.ephemeral({
+    required String endpoint,
+    String? ephemeralKey,
+  }) : this(
+          id: 'ephemeral',
+          name: 'ephemeral',
+          endpoint: endpoint,
+          ephemeralKey: ephemeralKey,
+        );
+
   ServerEndpoint copyWith({
     String? name,
     String? endpoint,
@@ -65,6 +82,7 @@ class ServerEndpoint {
     bool? enabled,
     ServerPrivacyTier? tier,
     bool? isDefault,
+    String? ephemeralKey,
   }) =>
       ServerEndpoint(
         id: id,
@@ -74,9 +92,11 @@ class ServerEndpoint {
         enabled: enabled ?? this.enabled,
         tier: tier ?? this.tier,
         isDefault: isDefault ?? this.isDefault,
+        ephemeralKey: ephemeralKey ?? this.ephemeralKey,
       );
 
   Map<String, Object?> toJson() => <String, Object?>{
+        // ephemeralKey 有意排除：明文凭证不落盘（§8.1-9）。
         'id': id,
         'name': name,
         'endpoint': endpoint,

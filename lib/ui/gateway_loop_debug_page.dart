@@ -17,6 +17,7 @@ import 'package:goodhub/coordinator/context_governor.dart';
 import 'package:goodhub/coordinator/cow_sync.dart';
 import 'package:goodhub/coordinator/fenced_cloud_engine.dart';
 import 'package:goodhub/coordinator/hybrid_assembly.dart';
+import 'package:goodhub/coordinator/mcp_runtime.dart';
 import 'package:goodhub/coordinator/mcp_tool_face.dart';
 import 'package:goodhub/coordinator/memory_tool_executor.dart';
 import 'package:goodhub/coordinator/permission_gateway.dart';
@@ -312,22 +313,14 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
             )
           : localPluginDiscovery.createClient(localTarget);
       final serverId = localTarget?.serverId ?? 'goodshare';
-      // M2.5-T2 能力协商接线：握手结果与 Tier 判定进轨迹；Tier 2（vanilla）
-      // 额外生成静态摘要（C-4：500 字符封顶 + 「自动生成」标注）。
-      final caps = await client.negotiate();
-      _add(
-        _TextEntry(
-          '能力协商：${caps.serverName ?? '?'} v${caps.serverVersion ?? '?'} ｜ '
-          'protocol ${caps.protocolVersion} ｜ ${caps.isTier1 ? 'Tier 1（prompts+resources 全量）' : 'Tier 2（vanilla，Polyfill 接管）'}\n',
-        ),
-      );
       AgentLoop? loopBox;
-      final face = McpToolFace(
-        client: client,
+      // 步 2-2（window-kernel-split）：复用内核挂载原语（与生产同路径，
+      // 拒绝 isFakeDebug 特权分支——§8.1-11；fake 传输经 clientFactory 注入）。
+      final mounted = await const McpRuntime().mount(
         serverId: serverId,
+        client: client,
         // M2.5-T7：progress 通告 → 药丸 Running(progress) 最小呈现 + M3-T2
         // 桥接 AgentLoop 事件流（LoopToolProgress，卡状态机全量数据源）。
-        // Tier 2（vanilla）额外生成静态摘要（C-4：500 字符封顶 + 「自动生成」标注）。
         onProgress: (tool, progress, total, message) {
           loopBox?.emitToolProgress(tool, progress, total, message);
           _setPill(
@@ -336,7 +329,17 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
           );
         },
       );
-      final schemas = await face.listTools();
+      final face = mounted.face;
+      final caps = mounted.caps;
+      // M2.5-T2 能力协商接线：握手结果与 Tier 判定进轨迹；Tier 2（vanilla）
+      // 额外生成静态摘要（C-4：500 字符封顶 + 「自动生成」标注）。
+      _add(
+        _TextEntry(
+          '能力协商：${caps.serverName ?? '?'} v${caps.serverVersion ?? '?'} ｜ '
+          'protocol ${caps.protocolVersion} ｜ ${caps.isTier1 ? 'Tier 1（prompts+resources 全量）' : 'Tier 2（vanilla，Polyfill 接管）'}\n',
+        ),
+      );
+      final schemas = mounted.schemas;
       if (caps.isTier2) {
         _add(
           _TextEntry(
