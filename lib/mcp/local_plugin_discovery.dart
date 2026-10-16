@@ -65,7 +65,24 @@ class LocalPluginInfo {
 }
 
 /// 本地插件发现门面（单例）：拉扫 + 包变更订阅。
-class LocalPluginDiscovery {
+/// 本地插件来源——**装配侧的消费面**（2026-10-17 P0-B 引入）。
+///
+/// 原状：`GatewayController` 直依赖顶层全局 `localPluginDiscovery`，该类私有
+/// 构造且平台通道内聚，测试无从注入假件 → 重扫释放、起服失败回滚两条关键
+/// 路径只能真机验收（债 #14）。本接口只暴露装配期真正消费的三个成员，
+/// 生产实现 = [LocalPluginDiscovery]。
+abstract interface class LocalPluginSource {
+  /// 包变更广播（安装/卸载/替换本地插件 → 装配层据此重扫）。
+  Stream<void> get changes;
+
+  /// 扫描当前已安装的本地插件。
+  Future<List<LocalPluginInfo>> scan();
+
+  /// 为该插件建传输客户端（Binder）。
+  McpClient createClient(LocalPluginInfo info);
+}
+
+class LocalPluginDiscovery implements LocalPluginSource {
   LocalPluginDiscovery._();
 
   static final LocalPluginDiscovery instance = LocalPluginDiscovery._();
@@ -79,6 +96,7 @@ class LocalPluginDiscovery {
   bool _listening = false;
 
   /// 包变更流（安装/卸载/替换本地插件 → 触发，装配层据此重扫/推送 tools/list_changed）。
+  @override
   Stream<void> get changes {
     _ensureListening();
     return _changes.stream;
@@ -95,6 +113,7 @@ class LocalPluginDiscovery {
 
   /// 拉扫已安装本地插件（宿主 PackageManager 扫描 + meta-data 解析）。
   /// 失败（通道不可用/宿主未就绪）→ 返回空目录，不抛（§1.2.4 零配置，失败即无）。
+  @override
   Future<List<LocalPluginInfo>> scan() async {
     try {
       final result = await _binderChannel.invokeMethod<String>('discover');
@@ -113,6 +132,7 @@ class LocalPluginDiscovery {
 
   /// 为本地插件构造同机 Binder 传输的 [McpClient]（零端口）。
   /// 调用方负责接线 [McpClient.onServerRequest]（如 [samplingRequestHandler]）。
+  @override
   McpClient createClient(LocalPluginInfo info) => McpClient.binder(
         transportId: info.transportId,
         packageName: info.packageName,

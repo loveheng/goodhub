@@ -1,0 +1,37 @@
+# goodhub CI（债 #13 / P0-C「CI 虚设」收口）：pre-commit 门禁只跑秒级 arch-guard，
+# 从不跑 flutter test——本 workflow 是全量门禁的远端兜底：
+#   1. flutter analyze        → 0 issue 交付线（goodhub-workflow skill 口径）
+#   2. flutter test 全量      → pre-commit 10s 预算装不下的部分
+#   3. arch-deps 依赖护栏     → test/architecture/ 全套 + 扫描器金丝雀（ARCH_GATE_FULL 同口径）
+# Flutter 版本与本地开发基线对齐（3.47.5 stable），升级时同步改这里。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.5
+          channel: stable
+          cache: true
+
+      - name: pub get
+        run: flutter pub get
+
+      - name: analyze
+        run: flutter analyze
+
+      - name: test (full suite)
+        run: flutter test --timeout 180s
+
+      - name: arch-deps (dependency guard)
+        run: ./scripts/agent-tools/arch-deps.sh

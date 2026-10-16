@@ -9,7 +9,16 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// 信任白名单（持久化于 SharedPreferences）。
-class TrustedPlugins {
+/// 插件信任闸门——**装配期的只读面**（2026-10-17 P0-B 引入）。
+///
+/// 同 [LocalPluginSource] 的引入理由：`TrustedPlugins` 私有构造且绑
+/// SharedPreferences，装配侧直依赖它即无法注入预设白名单（债 #14）。
+abstract interface class PluginTrustGate {
+  /// 该包名是否已入信任白名单。
+  bool isTrusted(String packageName);
+}
+
+class TrustedPlugins implements PluginTrustGate {
   TrustedPlugins._(this._prefs);
 
   static const String _key = 'goodhub.trusted_plugins';
@@ -40,6 +49,7 @@ class TrustedPlugins {
       _prefs.setString(_key, jsonEncode(m));
 
   /// 是否已信任该包名。
+  @override
   bool isTrusted(String packageName) => _map().containsKey(packageName);
 
   /// 加入白名单（记录指纹/展示名/时间，便于审计与撤销）。

@@ -91,6 +91,26 @@ class GatewayController {
   /// 触发重扫就累积一批），起服失败亦无回滚。
   final Map<String, McpMount> _mounted = {};
 
+  // —— 装配依赖注入位（默认 = 生产实现；测试可整体替换）——
+  // 2026-10-17 P0-B（债 #14）：此前四个依赖都是**顶层全局直引用且无注入位**
+  // （`localPluginDiscovery` / `serverEndpointStore` / `getApplicationSupportDirectory`
+  // / `TrustedPlugins.instance`），重扫释放与起服失败回滚两条关键路径无从单测，
+  // 只能真机验收。注入位不改变生产行为（默认值即原实现）。
+
+  /// 本地插件来源（扫描 / 建 client / 包变更广播）。
+  LocalPluginSource discovery = localPluginDiscovery;
+
+  /// 端点 store 工厂（注入可指向临时文件 + 假安全存储）。
+  Future<ServerEndpointStore> Function({String? supportPath}) endpointStore =
+      serverEndpointStore;
+
+  /// 应用支持目录解析（注入可绕开 path_provider 平台通道）。
+  Future<Directory> Function() supportDir = getApplicationSupportDirectory;
+
+  /// 信任闸门（注入可返回预设白名单）。
+  Future<PluginTrustGate> Function() trustGate = () async =>
+      TrustedPlugins.instance;
+
   bool get running => server.running;
 
   /// 局域网 IPv4 地址列表（G5：PC 配置展示用，`http://<IP>:8766/mcp`；
@@ -129,14 +149,7 @@ class GatewayController {
       started = true;
       await GatewayServiceChannel.start(); // G4：前台保活（失败 DEGRADE 不阻断）
       notifyToolsListChanged();
-      _pkgSub ??= localPluginDiscovery.changes.listen((_) async {
-        try {
-          await _assemble();
-          notifyToolsListChanged();
-        } on Object catch (e) {
-          debugPrint('[DEGRADE] gateway: rescan failed: $e');
-        }
-      });
+      _pkgSub ??= discovery.changes.listen((_) => rescan());
     } finally {
       _starting = false;
       // P0-B：起服失败零残留（装配成功但绑端口/后续步骤失败 → 回滚全部句柄）
@@ -153,6 +166,19 @@ class GatewayController {
     security.resetSessionGrants(); // C7：豁免不跨网关生命周期存活
   }
 
+  /// 重扫并热同步（包变更回调与手动触发共用；单源失败 DEGRADE 不阻断）。
+  ///
+  /// 公开而非私有：装配-释放链是 P0-B 的核心契约面，须可单测（此前因无注入位
+  /// 只能真机验收）。
+  Future<void> rescan() async {
+    try {
+      await _assemble();
+      notifyToolsListChanged();
+    } on Object catch (e) {
+      debugPrint('[DEGRADE] gateway: rescan failed: $e');
+    }
+  }
+
   /// 全量卸载：逐个 close 装配句柄（幂等）→ 清表 → 清 face 集。
   ///
   /// **先清 [faces] 再 close**：避免卸载期间新入站请求拿到正在关闭的 face。
@@ -160,6 +186,7 @@ class GatewayController {
   Future<void> _unmountAll() async {
     final mounted = Map<String, McpMount>.of(_mounted);
     _mounted.clear();
+    // P0-B：先清 [faces] 再 close——避免卸载期间新入站请求拿到正在关闭的 face。
     faces.clear();
     for (final entry in mounted.entries) {
       try {
@@ -175,13 +202,13 @@ class GatewayController {
   Future<void> _assemble() async {
     // P0-B：重扫前先释放上一批句柄——此前裸 faces.clear() 会丢掉全部旧 client
     await _unmountAll();
-    final support = (await getApplicationSupportDirectory()).path;
+    final support = (await supportDir()).path;
     final opsLog = MemoryStore.underSupportDir(support);
     security.opsLog = opsLog; // G3 入站审计与 face 级审计同汇
 
     // —— 本地插件（Binder，系统托管，零配置）——
-    final trusted = await TrustedPlugins.instance;
-    for (final info in await localPluginDiscovery.scan()) {
+    final trusted = await trustGate();
+    for (final info in await discovery.scan()) {
       if (info.serverId.isEmpty || faces.containsKey(info.serverId)) {
         continue;
       }
@@ -194,7 +221,7 @@ class GatewayController {
             '（${info.packageName}）；请先在聊天页或 ⚙ 设置中信任');
         continue;
       }
-      final client = localPluginDiscovery.createClient(info);
+      final client = discovery.createClient(info);
       try {
         // 步 2-1（window-kernel-split）：挂载原语收敛（client→negotiate→face→listTools）。
         final m = await const McpRuntime().mount(
@@ -215,7 +242,7 @@ class GatewayController {
 
     // —— 手填 HTTP 端点（用户托管，Streamable HTTP；经单一入口装配，
     // 步 0-T7：含旧 SharedPreferences 迁移——此前此处漏带 prefs，旧配置读不到）——
-    final epStore = await serverEndpointStore(supportPath: support);
+    final epStore = await endpointStore(supportPath: support);
     final eps = await epStore.load();
     // MO6 阶段一投影边界：私有端点（tier==private）进私有服务集——仅激活私有
     // 域进 PC 投影；本地插件系统托管恒 public（不在此集，常驻曝光）。
