@@ -51,4 +51,4 @@ last-merge: none
 - 后续新增议题进 §8.1 台账或 §8.3（不入本轮），本表不再累积。
 
 ## 断点
-- [断点] 下一步：步 0 完成（T7 + T1~T6 + B1~B3 全落，零接线零破坏）。下一步：步 1 搬迁装配内核（chat_page._send 658→970 → mcp_runtime.dart，含 _startConnection/_GuardedExecutor/整个 try-finally；991 起事件循环不搬）+ test/coordinator/mcp_runtime_test.dart 补装配产物等价性与资源释放断言（clientFactory 注入 fake client 计数）；步 1 DoD 需真机端到端冒烟，无真机则挂起不交付
+- [断点] 下一步：步 1 代码搬迁 + 单测完成（600 全绿）；DoD 未完项：真机端到端冒烟（聊天 + 私有域切换）未执行——无真机则步 1 挂起不交付，禁止以编译通过冒充验收。下一步：真机侧载冒烟 → 过则步 2（gateway_controller._assemble 生产路径优先接入，顺序=plan §4）→ 步 3 ChatPage 接线瘦身（ConversationSession 三项行为变更显式验收）

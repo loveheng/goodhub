@@ -179,6 +179,7 @@ MCP 的 progress 通告、resources 变更、断连 / 积压回告、sampling �
 |---|---|---|---|---|
 | 1 | `onNote` 轨迹 / 告警 | `_add(TrackNote)` ×8：712 / 780 / 787 / 854 / 913 / 925 / 934 / 1087 | 内联 | **新建** |
 | 2 | `onProgress` 状态带 + LoopToolProgress 桥接 | 723-729 / 766-772 | 内联 `_setPill` + `loopBox?.` | **新建** |
+| 2a | `onNotice` 网关通告（**步 1 迁移补记**：L1 放行/会话豁免的状态带+触感，触发时机不与 confirm() 重合，无法并入 gate 挂起端口；语义属 onProgress 同族，独立成第 9 广播口） | 800-803 | 内联 `_setPill` + haptic | **新建** |
 | 3 | `connectionReport` 断连 / 积压 / 资源变更 | 1115-1135 | `_startConnection` 三回调，含 `mounted` 守卫 | **新建** |
 | 4 | `majorJumpDelegate` CoW 大版本跃迁确认 | 884-904 | 内联 `showDialog` + `Navigator.pop` | **新建** |
 | 5 | `consentDelegate` 跨源授权 | 833-847 | 已是闭包入参 | 零（原样传） |

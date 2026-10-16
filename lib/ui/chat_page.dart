@@ -18,29 +18,19 @@ import 'package:path_provider/path_provider.dart';
 
 import '../app/service_directory.dart';
 import '../coordinator/agent_loop.dart';
-import '../coordinator/cow_sync.dart';
 import '../coordinator/degradation_controller.dart';
 import '../coordinator/fenced_cloud_engine.dart';
-import '../coordinator/hybrid_assembly.dart';
-import '../coordinator/mcp_tool_face.dart';
-import '../coordinator/memory_tool_executor.dart';
+import '../coordinator/mcp_runtime.dart';
 import '../coordinator/permission_gateway.dart';
-import '../coordinator/ref_hydrator.dart';
-import '../coordinator/ref_store.dart';
 import '../coordinator/workspace_stream_filter.dart';
-import '../coordinator/skill_activation_executor.dart';
 import '../coordinator/skill_registry.dart';
 import '../coordinator/tool_breaker.dart';
-import '../coordinator/discovery_executor.dart';
 import '../coordinator/tool_router.dart';
 import '../mcp/connection_manager.dart';
-import '../core/errors/mcp_error.dart';
 import '../llm/cloud/cloud_llm.dart';
-import '../mcp/mcp_client.dart';
 import '../mcp/local_plugin_discovery.dart';
 import '../mcp/trusted_plugins.dart';
 import '../mcp/sampling.dart';
-import '../mcp/server_capabilities.dart';
 import '../mcp/server_endpoints.dart';
 import '../sandbox/conversation_store.dart';
 import '../sandbox/memory_store.dart';
@@ -57,24 +47,6 @@ import 'memory_board_page.dart';
 
 /// 连接配置持久化（T6-2）：改走 [ServerEndpointStore]（多端点 JSON + apiKey
 /// 走安全存储）；旧单端点 SharedPreferences 由该 store 在首次 load 时迁移。
-
-/// T4-5 收官：工具执行按 server 路由到对应 [McpConnection.guardExecute]（离线
-/// 窗口内整体丢弃、不重放）；无 server 前缀的工具（JIT 元工具/本地工具）透传。
-class _GuardedExecutor implements ToolExecutor {
-  _GuardedExecutor(this.connections, this.router, this.inner);
-
-  final Map<String, McpConnection> connections;
-  final ToolRouter router;
-  final ToolExecutor inner;
-
-  @override
-  Future<ToolExecutionResult> execute(AssembledToolCall call) {
-    final sid = router.serverFor(call.name);
-    final conn = sid != null ? connections[sid] : null;
-    if (conn != null) return conn.guardExecute(() => inner.execute(call));
-    return inner.execute(call);
-  }
-}
 
 class ChatPage extends StatefulWidget {
   const ChatPage({super.key});
@@ -131,8 +103,7 @@ class _ChatPageState extends State<ChatPage> {
 
   /// 流式自动跟随（P2）：用户上翻看历史时暂停「拽回底部」，回到底部恢复。
   var _autoFollow = true;
-  AgentLoop? _activeLoop;
-  McpToolFace? _activeFace;
+  McpAssembly? _activeAssembly; // Run 期句柄（Abort/finally 释放；步 1 内核化后窗口只持句柄）
   TrackCall? _activeCallEntry;
   StuckWatcher? _watcher;
 
@@ -641,8 +612,7 @@ class _ChatPageState extends State<ChatPage> {
     final wsStates =
         _wsStates ??= WorkspaceStateStore.underSupportDir(support.path);
     final convId = _conversationId!;
-    RefStore? refStore;
-    final connections = <String, McpConnection>{}; // T4-5 收官：每 server 一条韧性连接（函数作用域，finally 可见）
+    McpAssembly? assembly; // Run 级句柄：finally 统一释放（内核持资源谁释放）
     try {
       final memoryStore = MemoryStore.underSupportDir(support.path);
       // P2-6/P2-1b：In-band 提取分流——session 域落 workspace_states，
@@ -685,48 +655,12 @@ class _ChatPageState extends State<ChatPage> {
           }
         },
       );
-      // T6-2 多连接池：每个端点一个 client + face（协商 + 能力目录）。
-      final faces = <String, McpToolFace>{};
-      final clients = <String, McpClient>{};
-      final summaries = <String, String>{};
-      final serverCaps = <String, ServerCapabilities>{};
-      AgentLoop? loopBox;
-      for (final ep in endpoints) {
-        final key = await epStore.apiKey(ep.id);
-        final client = McpClient.http(baseUrl: ep.endpoint, apiKey: key);
-        final caps = await client.negotiate();
-        serverCaps[ep.id] = caps;
-        _add(
-          TrackNote(
-            '✓ 已连接 ${ep.name}'
-            '${caps.serverVersion != null ? ' v${caps.serverVersion}' : ''}',
-            danger: false,
-          ),
-        );
-        final face = McpToolFace(
-          client: client,
-          serverId: ep.id,
-          opsLog: memoryStore, // N4 审计（remote 侧）
-          onProgress: (tool, progress, total, message) {
-            loopBox?.emitToolProgress(tool, progress, total, message);
-            _setPill(
-              total != null ? '$tool $progress/$total' : '$tool $progress',
-              CapsuleTone.l1,
-            );
-          },
-        );
-        await face.listTools();
-        faces[ep.id] = face;
-        clients[ep.id] = client;
-        connections[ep.id] = _startConnection(ep.id, client, face);
-        summaries[ep.id] =
-            '${caps.serverName ?? ep.name} ${caps.isTier1 ? 'Tier 1' : 'Tier 2'}';
-      }
-      // T-trans-4：本地插件自动挂载（系统托管，零配置）。每个插件 = 一个 Binder 传输的
-      // McpClient + McpToolFace，纳入同一 ToolRouter；onServerRequest(sampling) 由下方
-      // 统一循环接管（反向请求 e2e 闭环，§1.2.2 / §5）。
+      // 步 1（window-kernel-split）：装配段迁入 McpRuntime（内核）；本页收集
+      // 会话快照 + 实现端口。本地插件信任闸门是 UI（信任卡片）——窗口先裁再传，
+      // 内核只挂载（§7.1：不为此造第 10 个端口）。
+      final mountedLocals = <LocalPluginInfo>[];
       for (final info in locals) {
-        if (info.serverId.isEmpty || faces.containsKey(info.serverId)) continue;
+        if (info.serverId.isEmpty) continue;
         // §1.2.6 信任闸门：同签名私有生态零弹窗自动信任；第三方首次需信任卡片确认，
         // 确认后持久化入白名单，后续会话自动信任。
         if (!info.sameSignature) {
@@ -742,221 +676,107 @@ class _ChatPageState extends State<ChatPage> {
             }
           }
         }
-        try {
-          final client = localPluginDiscovery.createClient(info);
-          final caps = await client.negotiate();
-          serverCaps[info.serverId] = caps;
-          final face = McpToolFace(
-            client: client,
-            serverId: info.serverId,
-            opsLog: memoryStore,
-            onProgress: (tool, progress, total, message) {
-              loopBox?.emitToolProgress(tool, progress, total, message);
-              _setPill(
-                total != null ? '$tool $progress/$total' : '$tool $progress',
-                CapsuleTone.l1,
-              );
-            },
-          );
-          await face.listTools();
-          faces[info.serverId] = face;
-          clients[info.serverId] = client;
-          connections[info.serverId] = _startConnection(info.serverId, client, face);
-          summaries[info.serverId] =
-              '${caps.serverName ?? info.serverTitle} (本地) ${caps.isTier1 ? 'Tier 1' : 'Tier 2'}';
-          _add(
-            TrackNote(
-              '✓ 本地插件 ${info.serverTitle} ${caps.serverName ?? '?'} ｜ 自动挂载',
-              danger: false,
-            ),
-          );
-        } catch (e) {
-          _add(TrackNote('⚠ 本地插件 ${info.serverTitle} 挂载失败: $e', danger: true));
-        }
+        mountedLocals.add(info);
       }
-      // T6：路由注册表（实例随会话建）+ 默认激活全部已挂载（保单服务回归）。
-      // P1-4（§1.6）：tier 注入——private 端点进单一私有槽位模型，本地插件
-      // 系统托管 = public 常驻（缺省公共）。
-      final router = ToolRouter(
-        faces: faces,
-        privateServerIds: {
-          for (final ep in endpoints)
-            if (ep.tier == ServerPrivacyTier.private) ep.id,
-        },
-      );
-      router.activatedServers.addAll(
-        router.serverIds.where((id) => !router.privateServerIds.contains(id)),
-      );
-      // 会话绑定（v1）：本会话锁定的私有服务——未显式绑定则按默认回退
-      // （全局钉选 isDefault → 首个启用的 private → null）。每轮重建 router
-      // 时从此恢复，确保跨轮稳固锁定、免每轮重选。
-      router.activePrivateServerId = _resolveBinding(endpoints);
-      // 链路序（T6 设计）：Loop → Discovery → SkillActivation → MemoryTool →
-      // Hydration → Gateway → ToolRouter → faces。
-      final memoryTool = MemoryToolExecutor(inner: router, store: memoryStore);
-      final gateway = PermissionGateway(
-        inner: memoryTool,
-        delegate: _ChatGate(this),
-        onNotice: (n) {
-          _setPill(n.toolName, CapsuleTone.l1);
-          unawaited(HapticFeedback.selectionClick());
-        },
-      );
-      gateway.loadCatalog([
-        ...router.focusedSchemas(),
-        ...MemoryToolExecutor.toolSchemas(),
-      ]);
-      refStore = RefStore(
-        cacheDir: await getTemporaryDirectory(),
-        gcInterval: null, // 短会话，finally 即焚
-      );
-      final hydration = HydratingExecutor(
-        inner: gateway,
-        refStore: refStore,
-        targetResolver: router.serverFor,
-        crossSourceDelegate: (handle, from, to, preview) async {
-          // D5：恒 L2 弹卡、无豁免勾选；禁盲签由卡内兜底。点外部不关 =
-          // 显式裁决（误触外部不等于默拒）。
-          final r = await showDialog<bool>(
-            context: context,
-            barrierDismissible: false,
-            builder: (dialogCtx) => AlertDialog(
-              contentPadding: EdgeInsets.zero,
-              content: CrossSourceConsentCard(
-                handle: handle,
-                fromServer: from,
-                toServer: to,
-                preview: preview,
-                onDecision: (v) => Navigator.pop(dialogCtx, v),
-              ),
-            ),
-          );
-          return r == true;
-        },
-      );
-      final engine = await assembleDefaultHybridEngine(
-        controller: _degradation ??= DegradationController(),
-        piiFenceDelegate: _ChatFence(this), // D4 有人值守拦截卡
-      );
-      _add(TrackNote('✓ 引擎就绪：${engine.name}', danger: false));
       _watcher = StuckWatcher(onStuck: _markActiveCallStuck);
-      // T6：每个 client 接管自身采样反向请求（serverKey = serverId）。
-      for (final entry in clients.entries) {
-        final sampling = samplingRequestHandler(
-          engine: engine,
-          quota: _samplingQuota,
-          serverKey: entry.key,
-        );
-        entry.value.onServerRequest = (method, params) {
-          _watcher?.samplingBegin();
-          return sampling(
-            method,
-            params,
-          ).whenComplete(() => _watcher?.samplingEnd());
-        };
-      }
-      // 会话粒度 SkillRegistry（§15）：激活集跨 Run 保留（同页多轮共享）。
       final skills = _skills ??= SkillRegistry()..registerAll(builtinSkills());
-      // T6：逐 server CoW 同步（有 prompts 能力者）；skill 名保持 cow/<promptName>
-      // 撞名跳过（design 口径）。
-      for (final entry in clients.entries) {
-        final caps = serverCaps[entry.key]!;
-        if (!caps.hasPrompts) continue;
-        try {
-          final cow = CowSyncService(
-            store: CowOverridesStore(
-              dir: await getApplicationDocumentsDirectory(),
-            ),
-            onMajorJump: (name, from, to) async {
-              final r = await showDialog<bool>(
-                context: context,
-                builder: (dialogCtx) => AlertDialog(
-                  title: Text('模板大版本更新：$name'),
-                  content: Text(
-                    '服务端模板 $from → $to（大版本跃迁）。\n重置回服务端最新版，还是保留本地覆写？',
+      assembly = await const McpRuntime().assemble(
+        context: SessionContext(
+          activePrivateServerId: _activePrivateServerId,
+          conversationId: convId,
+          degradation: _degradation ??= DegradationController(),
+          transcript: _history,
+          wsStates: wsStates,
+        ),
+        endpoints: endpoints,
+        locals: mountedLocals,
+        apiKeyReader: epStore.apiKey,
+        memoryStore: memoryStore,
+        skills: skills,
+        delegates: RuntimeDelegates(
+          gateDelegate: _ChatGate(this),
+          fenceDelegate: _ChatFence(this), // D4 有人值守拦截卡
+          blockDelegate: _ChatBlock(this),
+          consentDelegate: (handle, from, to, preview) async {
+            // D5：恒 L2 弹卡、无豁免勾选；禁盲签由卡内兜底。点外部不关 =
+            // 显式裁决（误触外部不等于默拒）。
+            final r = await showDialog<bool>(
+              context: context,
+              barrierDismissible: false,
+              builder: (dialogCtx) => AlertDialog(
+                contentPadding: EdgeInsets.zero,
+                content: CrossSourceConsentCard(
+                  handle: handle,
+                  fromServer: from,
+                  toServer: to,
+                  preview: preview,
+                  onDecision: (v) => Navigator.pop(dialogCtx, v),
+                ),
+              ),
+            );
+            return r == true;
+          },
+          majorJumpDelegate: (name, from, to) async {
+            final r = await showDialog<bool>(
+              context: context,
+              builder: (dialogCtx) => AlertDialog(
+                title: Text('模板大版本更新：$name'),
+                content: Text(
+                  '服务端模板 $from → $to（大版本跃迁）。\n重置回服务端最新版，还是保留本地覆写？',
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(dialogCtx, false),
+                    child: const Text('保留本地'),
                   ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(dialogCtx, false),
-                      child: const Text('保留本地'),
-                    ),
-                    FilledButton(
-                      onPressed: () => Navigator.pop(dialogCtx, true),
-                      child: const Text('重置为服务端版'),
-                    ),
-                  ],
-                ),
-              );
-              return r == true;
-            },
-          );
-          for (final i in await cow.sync(entry.value, serverId: entry.key)) {
-            if (i.content == null) continue;
-            final skill = CowSyncService.toSkill(i, entry.key);
-            final existing = skills.byName(skill.name);
-            if (existing != null) {
-              // 撞名（cow/<promptName> 全局唯一）：先到先得，跳过后者并通告用户
-              // （design「撞名跳过 + 通告」——原为静默 continue，缺用户面通告）。
-              _add(
-                TrackNote(
-                  '⚠ CoW 模板「${i.promptName}」重名：已采用 '
-                  '${existing.serverId ?? '内置'} 版本，跳过 ${entry.key} 的同名模板',
-                  danger: false,
-                ),
-              );
-              continue;
-            }
-            try {
-              skills.register(skill);
-            } on ArgumentError catch (e) {
-              _add(
-                TrackNote(
-                  '⚠ CoW Skill 注册跳过: ${i.promptName} — $e',
+                  FilledButton(
+                    onPressed: () => Navigator.pop(dialogCtx, true),
+                    child: const Text('重置为服务端版'),
+                  ),
+                ],
+              ),
+            );
+            return r == true;
+          },
+          onNote: (message, {danger = false}) =>
+              _add(TrackNote(message, danger: danger)),
+          onProgress: (tool, progress, total, message) {
+            _setPill(
+              total != null ? '$tool $progress/$total' : '$tool $progress',
+              CapsuleTone.l1,
+            );
+          },
+          onNotice: (n) {
+            _setPill(n.toolName, CapsuleTone.l1);
+            unawaited(HapticFeedback.selectionClick());
+          },
+          connectionReport: (report) {
+            if (!mounted) return;
+            switch (report.kind) {
+              case ConnectionReportKind.disconnect:
+                _add(TrackNote(
+                  '⚠ 连接中断，在途 ${report.inFlightCancelled} 个请求已取消，不重放',
                   danger: true,
-                ),
-              );
+                ));
+              case ConnectionReportKind.backlog:
+                _add(TrackNote(
+                  '⚠ 连接中断，积压 ${report.droppedCount} 个请求已丢弃，不重放',
+                  danger: true,
+                ));
+              case ConnectionReportKind.resourceUpdated:
+                _add(TrackNote(
+                  '${McpConnection.resourceStaleMessage}（${report.uri}）',
+                  danger: false,
+                ));
             }
-          }
-        } on McpException catch (e) {
-          _add(TrackNote('CoW 同步失败（Polyfill 降级为无模板注入）：$e', danger: false));
-        }
-      }
-      final skillExecutor = SkillActivationExecutor(
-        inner: hydration,
-        registry: skills,
-        opsLog: memoryStore,
+          },
+        ),
+        quota: _samplingQuota,
+        onSamplingBegin: () => _watcher?.samplingBegin(),
+        onSamplingEnd: () => _watcher?.samplingEnd(),
       );
-      // T6-3 JIT 两级发现：DiscoveryExecutor 挂最外层（SkillActivation 之前），
-      // 拦截 get_connected_apps / activate_server_tools（L1 本地，不走确认卡）。
-      final discovery = DiscoveryExecutor(
-        router: router,
-        inner: skillExecutor,
-        serverSummaries: summaries,
-        onActivation: (id) =>
-            _add(TrackNote('✓ 已激活 $id 的工具', danger: false)),
-      );
-      // T4-5 收官：执行链经 _GuardedExecutor 路由——server 工具调用先过对应
-      // McpConnection.guardExecute（离线窗口整体丢弃、不重放），JIT/本地工具透传。
-      final guarded = _GuardedExecutor(connections, router, discovery);
-      final loop = AgentLoop(
-        engine: engine,
-        executor: guarded,
-        blockDelegate: _ChatBlock(this),
-        refStore: refStore,
-        refServerId: router.serverIds.isNotEmpty
-            ? router.serverIds.first
-            : 'goodshare',
-        serverResolver: router.serverFor,
-        toolsProvider: () => [
-          ...router.focusedSchemas(),
-          ...DiscoveryExecutor.staticSchemas(),
-          skills.activationToolSchema(),
-          ...MemoryToolExecutor.toolSchemas(),
-        ],
-      );
-      loopBox = loop;
-      _activeLoop = loop;
-      _activeFace = faces[router.serverIds.first]; // 主服务面（Abort 取消目标）
+      _activeAssembly = assembly;
+      final router = assembly.router;
       // M4-T2 记忆注入（D8 三层作用域）+ 超限可观测：作用域 = 全部已连服务。
       final memView = await memoryStore.memoryView(
         serverScopes: router.serverIds,
@@ -966,7 +786,7 @@ class _ChatPageState extends State<ChatPage> {
         serverScopes: router.serverIds,
       );
       // T6：静态首级摘要「## 已挂载服务」（自动生成，标注工具名前缀格式）。
-      final mountedSection = _mountedServicesSection(router, summaries);
+      final mountedSection = _mountedServicesSection(router, assembly.serverSummaries);
       _add(
         TrackNote(
           '✓ 已载入宿主记忆 ${memView.entries.length} 条'
@@ -975,7 +795,7 @@ class _ChatPageState extends State<ChatPage> {
         ),
       );
       _setPill('thinking', CapsuleTone.l1);
-      await for (final e in loop.run(
+      await for (final e in assembly.loop.run(
         // P1-3b（§8.1 断点 A）：静态角色+skills+mountedSection 为静态前缀
         // （挂 ephemeral 断点），记忆区走 systemTail 置尾——记忆增长不顶掉
         // 静态前缀缓存边界。P2-4（§3.2）：workspace_update 提取指令为固定
@@ -1076,52 +896,21 @@ class _ChatPageState extends State<ChatPage> {
     } finally {
       _watcher?.stop();
       _watcher = null;
-      _activeLoop = null;
-      _activeFace = null;
       _activeCallEntry = null;
       // P0 尾帧铁律（stream-perf §3）：快照与终态渲染前强制清空流控缓冲——
       // 覆盖正常收尾 / Abort / 异常三条路径，缓冲期内到达的尾帧不得丢失。
       _streamBuf.flush();
-      for (final c in connections.values) {
-        c.stop(); // T4-5 收官：停心跳/监听，无泄漏
-      }
-      await refStore?.expireAll(); // §9：Session 结束直清临时文件
-      refStore?.dispose();
+      // 资源释放内核化（谁持资源谁释放）：connections stop + client.close +
+      // refStore 焚，全部在内核 close() 内（幂等；失败 DEGRADE 不抛穿 finally）。
+      await assembly?.close();
+      _activeAssembly = null;
+      assembly = null;
       await _persistConversation(); // T3b：Run 收尾快照（含 Cancelled 终态）
       _elapsedTimer?.cancel();
       _elapsedTimer = null;
       _runStartedAt = null;
       if (mounted) setState(() => _running = false);
     }
-  }
-
-  /// T4-5 收官：为某 server 建韧性连接并接线断连/积压/资源变更三类回调 → 操作轨
-  /// TrackNote；心跳/重连由 [McpConnection.start] 接管。返回已 start 的连接。
-  McpConnection _startConnection(String serverId, McpClient client, McpToolFace face) {
-    final conn = McpConnection(client: client, face: face, serverId: serverId)
-      ..onDisconnectReport = (r) {
-        if (!mounted) return;
-        _add(TrackNote(
-          '⚠ 连接中断，在途 ${r.inFlightCancelled} 个请求已取消，不重放',
-          danger: true,
-        ));
-      }
-      ..onBacklogReport = (r) {
-        if (!mounted) return;
-        _add(TrackNote(
-          '⚠ 连接中断，积压 ${r.droppedCount} 个请求已丢弃，不重放',
-          danger: true,
-        ));
-      }
-      ..onResourceUpdated = (uri) {
-        if (!mounted) return;
-        _add(TrackNote(
-          '${McpConnection.resourceStaleMessage}（$uri）',
-          danger: false,
-        ));
-      };
-    conn.start();
-    return conn;
   }
 
   /// D4 判定触发：在途卡转 stuck（Amber 提示），不自动中止（§10）。
@@ -1138,8 +927,7 @@ class _ChatPageState extends State<ChatPage> {
     // §4.1：Abort → 重度确认震动
     unawaited(HapticFeedback.heavyImpact());
     _watcher?.stop();
-    _activeFace?.cancelActiveRequest(reason: 'user abort');
-    _activeLoop?.abort();
+    _activeAssembly?.abort(reason: 'user abort'); // 内核遍历全部 face 取消在途 + loop.abort
     final entry = _activeCallEntry;
     if (entry != null && entry.phase == CallCardPhase.running) {
       setState(() {
