@@ -10,10 +10,14 @@ class FakeApi implements GoodshareTaskApi {
   FakeApi({required this.claimResult});
 
   ClaimedTask claimResult;
+  int closeCount = 0;
   int touchCount = 0;
   Object? touchError;
   final applied = <ApplyPayload>[];
   Object? applyResult = {'id': 'i1'};
+
+  @override
+  void close() {} // P1-D：幂等释放通道（计数未用于断言，占位满足契约）
 
   @override
   Future<ClaimedTask> claim() async => claimResult;

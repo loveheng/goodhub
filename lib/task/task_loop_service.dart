@@ -84,6 +84,10 @@ class TaskLoopService {
 
   void _emit(TaskLoopEvent event) => onEvent?.call(event);
 
+  /// 释放底层 client（window-slim P1-D：buildApi 建的 McpClient 此前无任何
+  /// 释放通道，全类无 close；幂等语义由 McpClient.close 统一承诺）。
+  void close() => api.close();
+
   /// 单次闭环。返回是否实际处理了任务（false = idle）。
   /// 任何异常：先发 [LoopFailed] 通告（AI 入口的遥测依赖），再原样上抛。
   Future<bool> runOnce() async {

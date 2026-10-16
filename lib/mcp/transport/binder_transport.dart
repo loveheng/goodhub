@@ -82,6 +82,10 @@ class BinderTransport implements McpTransport {
   final StreamController<Map<String, Object?>> _eventBroadcast =
       StreamController<Map<String, Object?>>.broadcast(sync: false);
 
+  /// close 防重入守卫（window-slim P1-D）：二次 close 会让 broadcast
+  /// controller 抛 StateError——幂等语义对齐 McpAssembly.close 范式。
+  bool _closed = false;
+
   // ---- 请求体解析 ----
   static Object? _requestIdOf(String body) {
     try {
@@ -348,6 +352,8 @@ class BinderTransport implements McpTransport {
 
   @override
   void close() {
+    if (_closed) return; // 幂等：二次调用静默返回（守卫见字段注释）
+    _closed = true;
     _eventSub?.cancel();
     _eventBroadcast.close();
     _channel

@@ -116,6 +116,10 @@ class GoodshareTaskApi {
   GoodshareTaskApi(this._client);
   final McpClient _client;
 
+  /// 释放底层 client（window-slim P1-D：此前 client 只进本类私有字段，
+  /// 调用方无从关闭——TaskLoopService.close 透传至此）。
+  void close() => _client.close();
+
   static const serverPrefix = 'goodshare';
 
   /// MCP 工具调用走 `tools/call` 信封（method 固定，工具名在 params.name）。

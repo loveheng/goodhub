@@ -18,6 +18,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../core/security/flutter_secure_key_value.dart';
 import '../core/security/secure_key_value.dart';
+import '../core/storage/keyed_write_queue.dart';
 
 /// 隐私分层（chatmessage epic P1-1，SSOT §1.4）：外部服务仅有 `private` /
 /// `public` 两档——`host`（宿主内置能力）不进 [ServerEndpoint]，由客户端以
@@ -169,17 +170,21 @@ class ServerEndpointStore {
     }
   }
 
-  Future<void> save(List<ServerEndpoint> endpoints) async {
-    await file.parent.create(recursive: true);
-    final tmp = File('${file.path}.tmp');
-    await tmp.writeAsString(
-      const JsonEncoder.withIndent('  ').convert([
-        for (final e in endpoints) e.toJson(),
-      ]),
-      flush: true,
-    );
-    await tmp.rename(file.path);
-  }
+  Future<void> save(List<ServerEndpoint> endpoints) =>
+      // window-slim P1-D：裸 tmp→rename 在并发 save 下交错（A.tmp 写一半被 B
+      // rename）→ 接进程级 keyed 写队列串行化（P0-A 底座，键=配置文件绝对路径）。
+      KeyedWriteQueue.instance.enqueue(KeyedWriteQueue.keyForPath(file.path),
+          () async {
+        await file.parent.create(recursive: true);
+        final tmp = File('${file.path}.tmp');
+        await tmp.writeAsString(
+          const JsonEncoder.withIndent('  ').convert([
+            for (final e in endpoints) e.toJson(),
+          ]),
+          flush: true,
+        );
+        await tmp.rename(file.path);
+      });
 
   Future<String?> apiKey(String id) => _secure.read('$_keyPrefix$id');
 

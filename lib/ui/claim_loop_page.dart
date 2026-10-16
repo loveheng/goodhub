@@ -113,6 +113,7 @@ class _ClaimLoopPageState extends State<ClaimLoopPage> {
 
   @override
   void dispose() {
+    _service?.close(); // window-slim P1-D：释放 buildApi 建的底层 client
     _urlCtrl.dispose();
     _keyCtrl.dispose();
     super.dispose();

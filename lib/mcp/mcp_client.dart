@@ -516,5 +516,12 @@ class McpClient {
     }
   }
 
-  void close() => transport.close();
+  /// 幂等关闭（window-slim P1-D）：契约归 client 层统一承诺——transport 实现可能
+  /// 不防重入（binder 二次 close 曾抛 StateError），新 transport 不必各自实现守卫。
+  bool _closed = false;
+  void close() {
+    if (_closed) return;
+    _closed = true;
+    transport.close();
+  }
 }
