@@ -52,7 +52,16 @@ class LocalPluginsSection extends StatefulWidget {
   State<LocalPluginsSection> createState() => _LocalPluginsSectionState();
 }
 
-class _LocalPluginsSectionState extends State<LocalPluginsSection> {
+class _LocalPluginsSectionState extends State<LocalPluginsSection>
+    with AutomaticKeepAliveClientMixin {
+  /// ListView 懒构建会把滚出视口的 sliver child **销毁重建**——段内领域态
+  /// （表单输入/错误态/探活结果）随之丢失（拆分前这些态在页面层，天然跨滚动
+  /// 存活）。故段一律申请 keepAlive：拆段不得改变「滚动后回到面板仍是原样」
+  /// 的用户可见语义。
+  @override
+  bool get wantKeepAlive => true;
+
+
   var _plugins = const <LocalPluginInfo>[];
   var _trustedPackages = const <String>{}; // 已信任包名（同签名免确认仍显式标）
   StreamSubscription<void>? _changesSub;
@@ -144,6 +153,7 @@ class _LocalPluginsSectionState extends State<LocalPluginsSection> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final t = consoleTokens(context);
     return Card(
       margin: EdgeInsets.zero,

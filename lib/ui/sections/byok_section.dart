@@ -37,7 +37,16 @@ class ByokSection extends StatefulWidget {
   State<ByokSection> createState() => _ByokSectionState();
 }
 
-class _ByokSectionState extends State<ByokSection> {
+class _ByokSectionState extends State<ByokSection>
+    with AutomaticKeepAliveClientMixin {
+  /// ListView 懒构建会把滚出视口的 sliver child **销毁重建**——段内领域态
+  /// （表单输入/错误态/探活结果）随之丢失（拆分前这些态在页面层，天然跨滚动
+  /// 存活）。故段一律申请 keepAlive：拆段不得改变「滚动后回到面板仍是原样」
+  /// 的用户可见语义。
+  @override
+  bool get wantKeepAlive => true;
+
+
   var _profiles = const <ByokProfile>[];
   final _hasKey = <String>{}; // 安全存储已有密钥的 profileId（真值不入内存明文）
   String? _preferredId; // 生效 profile id（用户显式选择；未选=列表首位）
@@ -96,6 +105,7 @@ class _ByokSectionState extends State<ByokSection> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final t = consoleTokens(context);
     return Card(
       margin: EdgeInsets.zero,
