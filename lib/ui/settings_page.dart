@@ -1830,7 +1830,8 @@ class _SettingsPageState extends State<SettingsPage> {
       ),
       child: Row(
         children: [
-          // 已发现即可用（Binder 通道存在 = 自动挂载），绿色点表「已发现」。
+          // 已发现即接入（Binder 通道存在 = 自动挂载）；会话内是否可调用须由
+          // 上下文菜单锁定私有槽位决定（私有≠免隔离）。绿色点表「已发现」。
           Container(
             width: 10,
             height: 10,

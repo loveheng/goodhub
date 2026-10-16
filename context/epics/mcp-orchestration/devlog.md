@@ -59,3 +59,16 @@
   - `gateway_controller.dart`：共享 `faces` / `privateServerIds` 上提为 controller 字段（原地刷新）；`syncActivePrivate` 仅更新宿主默认（PC 不再被强制镜像，零污染）；`notifyToolsListChanged` 改为 controller 级（广播全部连接）。
 - **测试**：新增 `test/gateway/gateway_per_session_projection_test.dart`——两 `Mcp-Session-Id` 连接各自 `gateway__select_private('srv_a'/'srv_b')`，断言双方 `tools/list` 投影互异、防火墙按各自投影拦截越界私有调用、宿主模板 `activePrivateServerId` 保持 null（零污染）。更新 `gateway_server_test.dart` 的 tools/list 断言以容纳新增系统工具。`test/gateway/` 全量 42 例通过；`dart analyze` 0 error（仅既有 `mcp_gateway_handler_test.dart` 的 await info 提示，与本次无关）。
 - **行为变化**：PC 连接现可经 `gateway__select_private` 自选独立私有域，不再镜像宿主；宿主私有变更不再强制推送现存 PC 会话（仅作为新会话默认）。LAN 直连兜底仍由「私有不进共享面」保证。
+
+## 2026-10-16 · 本地插件私有化（B 方案：私有挂载≠免隔离）
+
+- **问题**：聊天界面（宿主/手机）自动挂载的本地插件被 UI 标为「私有」，但路由层（`mcp_runtime` 装配）按「公共常驻」处理——既不进 `privateServerIds`、又默认全激活，导致本地插件永远可用、且不可选、无隔离，与"私有"措辞矛盾，用户感知"没隔离"。
+- **裁决（用户拍板 B）**：私有是**权限维度**（单槽互斥），挂载方式（自动/手动）是**接入维度**，二者正交——本地插件同为私有 tier，必须受同一单槽隔离；**不选则隐藏、须选中才可用**。
+- **改动**：
+  - `mcp_runtime.dart`：`ToolRouter` 构造时把本地插件 `serverId` 一并并入 `privateServerIds`（原仅收 `endpoints` 中 `tier==private`）；因入私有集，自动激活的 `activatedServers` 不再包含它们 → 受单槽门控。本地插件**不进** `resolveBinding` 默认回退（须用户显式选定）。
+  - `session_context_sheet.dart`：本地插件块由「私有·始终挂载/无需绑定」改为可选中（`onBind(lp.serverId)` + 勾选态），文案改「私有·须选定后占用单槽；未选中则对本会话隐藏」；状态文案「未锁定手动私有服务」→「未锁定私有服务」。
+  - `chat_page.dart`：`_endpointName` 增加本地插件名解析（锁定标签显示插件标题）。
+  - `settings_page.dart`：本地插件卡文案「已发现即可用」→「已发现即接入；是否可调用须由上下文菜单锁定私有槽位决定（私有≠免隔离）」。
+- **测试**：新增 `test/coordinator/tool_router_test.dart`——钉住核心机制：私有 tier（含本地插件 id）未激活时不进 `focusedSchemas` 且 `execute` 被单槽门控拦截；仅激活的单一私有可见、其余私有被互斥隐藏。`mcp_runtime` 把本地插件 id 并入 `privateServerIds` 即依赖此机制。
+- **影响面**：仅宿主（手机）路由隔离生效；网关/PC 路径不受影响（网关本就不挂载本地插件，本地插件不进 `GatewayController.privateServerIds`）。`discovery_executor.use_server` 因 `privateServerIds` 现含本地插件 id，亦可绑定本地插件占用单槽。
+- **验证**：`flutter analyze` 全量 0 issue；`flutter test` 全量 637 例绿（新增 2 例）。

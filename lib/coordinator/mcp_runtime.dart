@@ -476,12 +476,19 @@ class McpRuntime {
     }
 
     // —— T6：路由注册表 + 默认激活全部已挂载（保单服务回归）；tier 注入——
-    // private 端点进单一私有槽位模型，本地插件系统托管 = public 常驻。
+    // private 端点进单一私有槽位模型。本地插件（自动挂载）同属「私有 tier」：
+    // 挂载方式（自动/手动）只是接入差异，权限隔离（单槽互斥）一视同仁——故一并
+    // 进 privateServerIds，不进 activatedServers 默认激活，须被单槽门控（MO：
+    // 私有≠免隔离）。
+    final localPrivateIds = <String>{
+      for (final lp in locals) if (lp.serverId.isNotEmpty) lp.serverId,
+    };
     final router = ToolRouter(
       faces: faces,
       privateServerIds: {
         for (final ep in endpoints)
           if (ep.tier == ServerPrivacyTier.private) ep.id,
+        ...localPrivateIds,
       },
     );
     router.activatedServers.addAll(

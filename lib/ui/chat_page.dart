@@ -22,6 +22,7 @@ import '../coordinator/conversation_archive.dart';
 import '../coordinator/degradation_controller.dart';
 import '../coordinator/fenced_cloud_engine.dart';
 import '../coordinator/mcp_runtime.dart';
+import '../llm/cloud/cloud_llm.dart';
 import '../coordinator/memory_kernel.dart';
 import '../coordinator/permission_gateway.dart';
 import '../coordinator/workspace_stream_filter.dart';
@@ -32,24 +33,40 @@ import '../mcp/connection_manager.dart';
 import '../mcp/local_plugin_discovery.dart';
 import '../mcp/trusted_plugins.dart';
 import '../mcp/server_endpoints.dart';
+import '../gateway/gateway_controller.dart';
 import '../sandbox/conversation_store.dart';
 import '../sandbox/memory_store.dart';
 import '../sandbox/workspace_state_store.dart';
 import 'components/call_card.dart';
 import 'components/cross_source_consent_card.dart';
+import 'components/conversation_drawer.dart';
 import 'components/dual_track_stream.dart';
+import 'components/session_context_sheet.dart';
 import 'components/status_capsule.dart';
+import 'components/status_strip.dart';
 import 'components/stream_text_buffer.dart';
 import 'tokens/console_tokens.dart';
 import 'components/stuck_watcher.dart';
 import 'settings_page.dart';
-import 'memory_board_page.dart';
 
 /// 连接配置持久化（T6-2）：改走 [ServerEndpointStore]（多端点 JSON + apiKey
 /// 走安全存储）；旧单端点 SharedPreferences 由该 store 在首次 load 时迁移。
 
 class ChatPage extends StatefulWidget {
-  const ChatPage({super.key});
+  const ChatPage({
+    super.key,
+    this.endpointStoreOverride,
+    this.engineOverride,
+  });
+
+  /// 测试注入位（window-kernel-split 移交 misc#17）：null = 生产路径
+  /// （应用支持目录/mcp_servers.json，与设置页 ⚙ 设置同一文件）；测试传假
+  /// store 免去文件系统依赖，修 chat_page_smoke_test 可测性债。
+  final ServerEndpointStore? endpointStoreOverride;
+
+  /// 测试注入位：null = 生产路径（[McpRuntime.assemble] 默认混合引擎
+  /// [assembleDefaultHybridEngine]）；测试传假引擎覆盖发送链路。
+  final CloudLlmEngine? engineOverride;
 
   @override
   State<ChatPage> createState() => _ChatPageState();
@@ -68,6 +85,13 @@ class _ChatPageState extends State<ChatPage> {
   // 连接配置：多端点持久化走 [ServerEndpointStore]（无单值内存镜像）；
   // [_send] 每次 Run 启动从 store 全量加载；增删改与探活/挂载全归设置页
   // （2026-10-16 合并：聊天页不再持有任何非会话 UI）。
+
+  // 端点 store 注入位（misc#17）：测试传 [endpointStoreOverride] 免去文件系统
+  // 依赖；生产路径经 [serverEndpointStore] 工厂（单一入口，见
+  // lib/app/service_directory.dart）。缓存到 [_epStore] 保证单一实例。
+  ServerEndpointStore? _epStore;
+  Future<ServerEndpointStore> _resolveEpStore() async =>
+      _epStore ??= widget.endpointStoreOverride ?? await serverEndpointStore();
 
   // 会话状态（页面 = 一个会话，§15）：活态收编进 ConversationSession
   // （window-kernel-split 步 3-T4——transcript/绑定写回走其契约方法，
@@ -126,7 +150,7 @@ class _ChatPageState extends State<ChatPage> {
   /// T6：从 [ServerEndpointStore] 加载（首次 load 自动迁移旧 SharedPreferences
   /// 单端点配置）；多端点管理在设置页（[SettingsPage]）编辑，本页不持单值镜像。
   Future<void> _loadConfig() async {
-    await (await serverEndpointStore()).load(); // 触发旧配置迁移
+    await (await _resolveEpStore()).load(); // 触发旧配置迁移
   }
 
   // ---------------------------------------------------------------------------
@@ -217,6 +241,8 @@ class _ChatPageState extends State<ChatPage> {
           ConversationStore.decodeMessages(snap.messages)); // 全量替换
       _track.addAll(TrackEntryCodec.decode(snap.track));
     });
+    // MO6 阶段一：切换会话 → 网关投影同步宿主当前激活私有域（PC 只读镜像）。
+    GatewayController.shared.syncActivePrivate(_session.activePrivateServerId);
     _pinToBottom();
   }
 
@@ -246,14 +272,6 @@ class _ChatPageState extends State<ChatPage> {
     await _archive?.delete(meta.id);
     if (_archive?.currentId == meta.id) _resetSessionState();
     await _refreshConversations();
-  }
-
-  static String _fmtTime(int epochMs) {
-    final d = DateTime.fromMillisecondsSinceEpoch(epochMs);
-    final now = DateTime.now();
-    return d.year == now.year && d.month == now.month && d.day == now.day
-        ? '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}'
-        : '${d.month}/${d.day} ${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
   }
 
   /// T6：静态首级摘要「## 已挂载服务」（自动生成，标注工具名前缀格式）。
@@ -352,7 +370,7 @@ class _ChatPageState extends State<ChatPage> {
   /// 同时完成「新会话默认锁定」（①）：未显式绑定时按默认回退锁定首个启用的
   /// private（已显式绑定/纯公共 '' 则沿用），确保状态带与菜单开屏即正确。
   Future<void> _loadEndpoints() async {
-    final all = await (await serverEndpointStore()).load();
+    final all = await (await _resolveEpStore()).load();
     // 本地插件零配置自动发现（系统托管、始终挂载；与 _send 装配同口径）。
     // 通道不可用（宿主未就绪）按空目录，不阻断 HTTP 端点装配。
     final locals = <LocalPluginInfo>[];
@@ -368,6 +386,8 @@ class _ChatPageState extends State<ChatPage> {
       _localPlugins = locals;
       _session.bindPrivateServer(bound);
     });
+    // MO6 阶段一：端点预热/默认锁定后 → 网关投影同步宿主当前激活私有域。
+    GatewayController.shared.syncActivePrivate(_session.activePrivateServerId);
   }
 
   /// 是否处于"已绑定某私有服务"的弱感知态（用于状态带胶囊）。
@@ -392,12 +412,14 @@ class _ChatPageState extends State<ChatPage> {
   /// 即时绑定（composer menu 调用）：写会话态（三态写回契约）+ 落会话元数据。
   void _bindSessionServer(String? serverId) {
     setState(() => _session.bindPrivateServer(serverId));
+    // MO6 阶段一：菜单即时绑定/清空 → 网关投影同步宿主当前激活私有域。
+    GatewayController.shared.syncActivePrivate(_session.activePrivateServerId);
     unawaited(_persistCurrent());
   }
 
   /// 全局默认钉选写回（单选）：更新 mcp_servers.json 并刷新缓存。
   Future<void> _setGlobalDefault(String serverId, bool on) async {
-    final epStore = await serverEndpointStore();
+    final epStore = await _resolveEpStore();
     final all = await epStore.load();
     var changed = false;
     final updated = <ServerEndpoint>[];
@@ -418,6 +440,11 @@ class _ChatPageState extends State<ChatPage> {
   String _endpointName(String id) {
     for (final e in _endpoints) {
       if (e.id == id) return e.name;
+    }
+    for (final lp in _localPlugins) {
+      if (lp.serverId == id) {
+        return lp.serverTitle.isNotEmpty ? lp.serverTitle : lp.serverId;
+      }
     }
     return id;
   }
@@ -442,108 +469,30 @@ class _ChatPageState extends State<ChatPage> {
       context: context,
       isScrollControlled: true,
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setSheet) {
-          final bound = _session.activePrivateServerId;
-          final priv = _endpoints
+        // live 快照每次 setSheet 重建重读；交互经回调回页面（步 4 Epic C 外提）
+        builder: (ctx, setSheet) => SessionContextSheetBody(
+          t: t,
+          bound: _session.activePrivateServerId,
+          privEndpoints: _endpoints
               .where((e) => e.enabled && e.tier == ServerPrivacyTier.private)
-              .toList();
-          final defaultId = _defaultId();
-          return Padding(
-            padding: EdgeInsets.only(
-              left: 16,
-              right: 16,
-              top: 16,
-              bottom: 16 + MediaQuery.of(ctx).viewInsets.bottom,
-            ),
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('本次会话上下文',
-                      style: TextStyle(
-                          fontSize: Fsz.telemetry, fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 4),
-                  Text(
-                    bound != null && bound.isNotEmpty
-                        ? '已锁定：${_endpointName(bound)}（$bound）'
-                        : (_localPlugins.isNotEmpty
-                            ? '本地插件自动挂载（${_localPlugins.length}）· 未锁定手动私有服务'
-                            : '纯公共模式（无私有域）'),
-                    style: TextStyle(
-                        fontSize: Fsz.note, color: t.terminalMuted),
-                  ),
-                  const Divider(height: 16),
-                  if (priv.isEmpty && _localPlugins.isEmpty)
-                    Text('无可用私有服务（私有端点请在侧边栏 → 设置页添加）',
-                        style: TextStyle(
-                            fontSize: Fsz.note, color: t.terminalMuted)),
-                  for (final e in priv)
-                    ListTile(
-                      leading: const Icon(Icons.lock_outline),
-                      title: Text(e.name),
-                      subtitle: Text(e.id),
-                      trailing: (bound != null && bound == e.id)
-                          ? const Icon(Icons.check, size: 18)
-                          : null,
-                      onTap: () {
-                        _bindSessionServer(e.id);
-                        setSheet(() {});
-                      },
-                    ),
-                  if (_localPlugins.isNotEmpty) ...[
-                    const Divider(height: 16),
-                    Text('本地私有插件（自动挂载 · 零配置）',
-                        style: TextStyle(
-                            fontSize: Fsz.telemetry,
-                            fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 4),
-                    Text('私有 · 系统托管，始终参与本次任务，无需绑定选择',
-                        style: TextStyle(
-                            fontSize: Fsz.note, color: t.terminalMuted)),
-                    for (final lp in _localPlugins)
-                      ListTile(
-                        leading: const Icon(Icons.lock_outline),
-                        title: Text(
-                            lp.serverTitle.isEmpty ? lp.serverId : lp.serverTitle),
-                        subtitle: Text(lp.packageName),
-                        trailing: Text('私有 · 始终挂载',
-                            style: TextStyle(
-                                fontSize: Fsz.note, color: t.l1Info)),
-                      ),
-                  ],
-                  if (bound != null && bound.isNotEmpty) ...[
-                    SwitchListTile(
-                      title: const Text('设为全局默认'),
-                      subtitle: const Text('新会话默认锁定此服务'),
-                      value: defaultId == bound,
-                      onChanged: (v) async {
-                        await _setGlobalDefault(bound, v);
-                        setSheet(() {});
-                      },
-                    ),
-                    ListTile(
-                      leading: const Icon(Icons.public),
-                      title: const Text('清空（纯公共）'),
-                      onTap: () {
-                        _bindSessionServer('');
-                        setSheet(() {});
-                      },
-                    ),
-                  ],
-                  const SizedBox(height: 8),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: FilledButton(
-                      onPressed: () => Navigator.pop(ctx),
-                      child: const Text('完成'),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
+              .toList(),
+          localPlugins: _localPlugins,
+          defaultId: _defaultId(),
+          endpointName: _endpointName,
+          onBind: (id) {
+            _bindSessionServer(id);
+            setSheet(() {});
+          },
+          onClear: () {
+            _bindSessionServer('');
+            setSheet(() {});
+          },
+          onSetDefault: (v) async {
+            await _setGlobalDefault(_session.activePrivateServerId!, v);
+            setSheet(() {});
+          },
+          onDone: () => Navigator.pop(ctx),
+        ),
       ),
     );
   }
@@ -557,7 +506,7 @@ class _ChatPageState extends State<ChatPage> {
     // 迁移）→ 每端点一个 McpClient + McpToolFace → ToolRouter（实例随会话建）——
     // （support 目录另供 WorkspaceStateStore / MemoryStore 落点。）
     final support = await getApplicationSupportDirectory();
-    final epStore = await serverEndpointStore(supportPath: support.path);
+    final epStore = await _resolveEpStore();
     final allEndpoints = await epStore.load();
     // T5 节点卡挂载位（ui-design §3.3）：enabled=false 的卸载节点不进连接池
     // （配置与令牌保留，大厅节点卡可重开）。
@@ -653,6 +602,7 @@ class _ChatPageState extends State<ChatPage> {
       _session.bindDegradation(
           _session.degradation ?? DegradationController());
       assembly = await const McpRuntime().assemble(
+        engine: widget.engineOverride,
         context: SessionContext(
           activePrivateServerId: _session.activePrivateServerId,
           conversationId: convId,
@@ -909,109 +859,18 @@ class _ChatPageState extends State<ChatPage> {
     _setPill('idle', CapsuleTone.idle);
   }
 
-  /// D13 侧边栏（会话维度）：会话历史列表 + 设置/记忆看板入口（服务区随 T6 预留）。
+  /// D13 侧边栏（会话维度）：布局体外提 ConversationDrawer（步 4 Epic C），
+  /// 运行守卫/删除确认/导航编排留窗口。
   Widget _buildDrawer() {
-    final t = consoleTokens(context);
-    return Drawer(
-      child: SafeArea(
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      '会话',
-                      style: TextStyle(
-                        fontFamily: t.monoFamily,
-                        fontSize: Fsz.body,
-                        color: t.terminalMuted,
-                      ),
-                    ),
-                  ),
-                  TextButton.icon(
-                    onPressed: () {
-                      if (!_guardRunning('新建会话')) return;
-                      _newConversation();
-                    },
-                    icon: const Icon(Icons.add, size: 18),
-                    label: const Text('新会话'),
-                  ),
-                ],
-              ),
-            ),
-            const Divider(height: 1),
-            Expanded(
-              child: _conversations.isEmpty
-                  ? Center(
-                      child: Text(
-                        '暂无历史会话\n（首次发送任务后自动保存）',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: Fsz.note,
-                          color: t.terminalMuted,
-                        ),
-                      ),
-                    )
-                  : ListView.builder(
-                      itemCount: _conversations.length,
-                      itemBuilder: (context, i) {
-                        final meta = _conversations[i];
-                        return ListTile(
-                          leading: Icon(
-                            Icons.chat_bubble_outline,
-                            size: 18,
-                            color: t.terminalMuted,
-                          ),
-                          title: Text(
-                            meta.title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          subtitle: Text(
-                            _fmtTime(meta.updatedAt),
-                            style: const TextStyle(fontSize: Fsz.micro),
-                          ),
-                          selected: meta.id == _archive?.currentId,
-                          onTap: () => _loadConversation(meta),
-                          trailing: IconButton(
-                            icon: const Icon(Icons.delete_outline, size: 18),
-                            tooltip: '删除会话',
-                            onPressed: () => unawaited(_deleteConversation(meta)),
-                          ),
-                        );
-                      },
-                    ),
-            ),
-            const Divider(height: 1),
-            ListTile(
-              leading: const Icon(Icons.settings_outlined),
-              title: const Text('设置'),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => const SettingsPage(),
-                  ),
-                );
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.inventory_2_outlined),
-              title: const Text('记忆看板'),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => const MemoryBoardPage(),
-                  ),
-                );
-              },
-            ),
-          ],
-        ),
-      ),
+    return ConversationDrawer(
+      conversations: _conversations,
+      currentId: _archive?.currentId,
+      onNew: () {
+        if (!_guardRunning('新建会话')) return;
+        _newConversation();
+      },
+      onLoad: _loadConversation,
+      onDelete: (meta) => unawaited(_deleteConversation(meta)),
     );
   }
 
@@ -1021,129 +880,20 @@ class _ChatPageState extends State<ChatPage> {
     return head.length > 120 ? '${head.substring(0, 120)}…' : head;
   }
 
-  /// 胶囊标签人话化：内部英文相位 → 用户可读中文；工具名等宽原名保持透传。
-  static String _pillText(String label) => switch (label) {
-    'idle' => '空闲',
-    'connecting' => '连接中',
-    'thinking' => '思考中',
-    'done' => '已完成',
-    'failed' => '失败',
-    'rejected' => '已拒绝',
-    'breaker' => '熔断排查',
-    'fence' => '围栏拦截',
-    _ => label,
-  };
-
-  /// 输入条内嵌状态带（§3.1：状态做在输入框本身上沿，不挤占文本区）。
-  /// idle 由调用处将高度收 0（AnimatedContainer 平滑），运行态展开为极简状态带：
-  /// 1px hairline 分隔 + 呼吸点 + 等宽相位；文本输入区始终全宽（D+B 改造）。
-  /// 已绑定私有服务时，状态带常驻显示上下文胶囊（药丸内弱感知）；
-  /// 公共态（有可绑定端点）显示「公共」胶囊。**胶囊可点 → 打开会话上下文菜单**，
-  /// 因此即便输入中「+」隐藏，也能随时切换绑定（解决输入一半想切服务的痛点）。
+  /// 输入条内嵌状态带：布局体外提 StatusStrip（步 4 Epic C），胶囊可点开菜单。
   Widget _statusStrip(ConsoleTokens t) {
-    final color = switch (_pillTone) {
-      CapsuleTone.idle => t.terminalMuted,
-      CapsuleTone.l1 => t.l1Info,
-      CapsuleTone.l2 => t.l2Warn,
-      CapsuleTone.danger => t.danger,
-    };
-    final ctxId = _session.activePrivateServerId;
-    final hasCtx = ctxId != null && ctxId.isNotEmpty;
-    final hasLocal = _localPlugins.isNotEmpty;
-    // 绑定私有端点 / 本地插件 均按「私有」呈现（锁形 + l1 色），不视作公有；
-    // 三者任一即显示上下文胶囊（均可点开菜单）。
-    final isPrivate = hasCtx || hasLocal;
-    final showChip = isPrivate || _endpoints.isNotEmpty;
-    Widget? chip;
-    if (showChip) {
-      final chipColor = isPrivate ? t.l1Info : t.terminalMuted;
-      final chipIcon = isPrivate ? Icons.lock_outline : Icons.public;
-      final chipText = hasCtx
-          ? _endpointName(ctxId)
-          : (hasLocal ? '本地×${_localPlugins.length}' : '公共');
-      chip = GestureDetector(
-        onTap: _openComposerMenu,
-        child: Container(
-          margin: const EdgeInsets.only(right: 8),
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(12),
-            color: chipColor.withValues(alpha: 0.16),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                chipIcon,
-                size: 11,
-                color: chipColor,
-              ),
-              const SizedBox(width: 4),
-              Text(
-                chipText,
-                style: TextStyle(
-                  fontFamily: t.monoFamily,
-                  fontSize: Fsz.micro,
-                  color: chipColor,
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-    return Container(
-      height: 30,
-      padding: const EdgeInsets.symmetric(horizontal: 14),
-      decoration: BoxDecoration(
-        border: Border(bottom: BorderSide(color: t.hairline, width: 1)),
-      ),
-      child: Row(
-        children: [
-          ? chip,
-          // §4.2 紧凑动效：状态点颜色随相位过渡（150~200ms，禁 Spring）。
-          AnimatedContainer(
-            width: 7,
-            height: 7,
-            duration: t.fastDuration,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              _pillText(_pillLabel),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontFamily: t.monoFamily,
-                fontSize: Fsz.micro,
-                color: color,
-              ),
-            ),
-          ),
-          if (_running && _runStartedAt != null)
-            Padding(
-              padding: const EdgeInsets.only(left: 8),
-              child: Text(
-                _fmtElapsed(_runStartedAt!),
-                style: TextStyle(
-                  fontFamily: t.monoFamily,
-                  fontSize: Fsz.micro,
-                  color: color,
-                ),
-              ),
-            ),
-        ],
-      ),
+    return StatusStrip(
+      t: t,
+      pillTone: _pillTone,
+      pillLabel: _pillLabel,
+      running: _running,
+      runStartedAt: _runStartedAt,
+      contextId: _session.activePrivateServerId,
+      localPluginCount: _localPlugins.length,
+      hasEndpoints: _endpoints.isNotEmpty,
+      endpointName: _endpointName,
+      onOpenMenu: _openComposerMenu,
     );
-  }
-
-  /// 状态带已耗时格式化（mm:ss），自 [_runStartedAt] 起算，供运行态计时显示。
-  static String _fmtElapsed(DateTime start) {
-    final s = DateTime.now().difference(start).inSeconds;
-    final m = s ~/ 60;
-    final sec = s % 60;
-    return '${m.toString().padLeft(2, '0')}:${sec.toString().padLeft(2, '0')}';
   }
 
   /// Run 进行中离开拦截(破坏性防护 P0):系统返回/手势先弹确认——确认则
