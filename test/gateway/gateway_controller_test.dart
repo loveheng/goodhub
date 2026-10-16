@@ -15,7 +15,7 @@ void main() {
   group('GatewayController', () {
     test('初始未起服，face 集为空（装配独立于会话生命周期）', () {
       expect(GatewayController.shared.running, isFalse);
-      expect(GatewayController.shared.handler.faces, isEmpty);
+      expect(GatewayController.shared.faces, isEmpty);
     });
 
     test('stop 在未起服时安全（幂等；C7 会话豁免复位不抛）', () async {

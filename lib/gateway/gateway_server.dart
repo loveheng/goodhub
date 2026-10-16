@@ -21,9 +21,14 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'mcp_gateway_handler.dart';
 
 class McpGatewayServer {
-  McpGatewayServer(this.handler);
+  McpGatewayServer(this.template);
 
-  final GatewayHandler handler;
+  /// 入站模板 handler：每 `Mcp-Session-Id` 经 [GatewayHandler.forSession] 派生
+  /// 独立投影上下文（阶段二 D-D 每连接隔离）；所有连接共享其 faces / privateServerIds。
+  final GatewayHandler template;
+
+  /// 每连接（Mcp-Session-Id）独立投影 handler（阶段二 D-D 隔离支点）。
+  final Map<String, GatewayHandler> _handlers = {};
 
   HttpServer? _server;
   var _port = 8766;
@@ -46,7 +51,7 @@ class McpGatewayServer {
     debugPrint('[gateway] listening on '
         '${address?.address ?? '0.0.0.0'}:$_port/mcp');
     _listChangedSub =
-        handler.onToolsListChanged.listen((_) => _broadcastListChanged());
+        template.onToolsListChanged.listen((_) => _broadcastListChanged());
     _heartbeat = Timer.periodic(const Duration(seconds: 15), (_) => _heartbeatPing());
     _server!.listen(_onRequest,
         onError: (Object e) => debugPrint('[DEGRADE] gateway: $e'));
@@ -63,6 +68,7 @@ class McpGatewayServer {
       } on Object catch (_) {}
     }
     _sseSubs.clear();
+    _handlers.clear();
     _sessions.clear();
     final s = _server;
     _server = null;
@@ -111,7 +117,8 @@ class McpGatewayServer {
       final sid =
           'gw-${DateTime.now().microsecondsSinceEpoch}-${_sessions.length}';
       _sessions.add(sid);
-      return _jsonRpcResult(req, id, handler.initialize(),
+      _handlers[sid] = template.forSession();
+      return _jsonRpcResult(req, id, template.initialize(),
           sessionId: sid, sse: sse);
     }
     // 其余请求须持有会话。
@@ -125,7 +132,7 @@ class McpGatewayServer {
           sessionId: sessionId, sse: sse);
     }
     if (method == 'tools/list') {
-      return _jsonRpcResult(req, id, {'tools': handler.toolsList()},
+      return _jsonRpcResult(req, id, {'tools': _handlers[sessionId]!.toolsList()},
           sessionId: sessionId, sse: sse);
     }
     if (method == 'tools/call') {
@@ -177,12 +184,13 @@ class McpGatewayServer {
       });
     }
 
-    final r = await handler.toolsCall(
+    final r = await _handlers[sessionId]!.toolsCall(
       name: name,
       arguments: args,
       onProgress: onProgress,
       traceId: traceId,
       hopCount: hopCount,
+      sessionId: sessionId,
     );
     final code = r.errorCode;
     if (code != null) {
@@ -230,6 +238,7 @@ class McpGatewayServer {
     resp.write(': gateway stream open\n\n');
     await resp.done; // 客户端断连 / stop() 关闭时完成
     _sseSubs.remove(sessionId);
+    _handlers.remove(sessionId); // 显式注销：释放该连接投影上下文（阶段二 D-D）
   }
 
   /// 工具目录变更 → 全体 SSE 订阅者下行（§9.2，PC 自动重拉 tools/list）。

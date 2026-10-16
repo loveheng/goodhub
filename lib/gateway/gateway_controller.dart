@@ -20,7 +20,9 @@ import 'package:path_provider/path_provider.dart';
 import '../app/service_directory.dart';
 import '../coordinator/hybrid_assembly.dart';
 import '../coordinator/mcp_runtime.dart';
+import '../coordinator/mcp_tool_face.dart';
 import '../mcp/local_plugin_discovery.dart';
+import '../mcp/server_endpoints.dart';
 import '../mcp/trusted_plugins.dart';
 import '../mcp/sampling.dart';
 import '../sandbox/memory_store.dart';
@@ -31,18 +33,48 @@ import 'mcp_gateway_handler.dart';
 
 class GatewayController {
   GatewayController._() {
-    handler = GatewayHandler(faces: {}, security: security);
-    server = McpGatewayServer(handler);
+    _templateHandler = GatewayHandler(
+      faces: faces,
+      privateServerIds: privateServerIds,
+      security: security,
+    );
+    server = McpGatewayServer(_templateHandler);
   }
 
   static final GatewayController shared = GatewayController._();
+
+  /// 共享已挂载 face 集（所有会话投影共享同一引用；_assemble 原地刷新）。
+  final Map<String, McpToolFace> faces = {};
+
+  /// 共享私有服务 id 集（所有会话投影共享；_assemble 原地刷新）。
+  final Set<String> privateServerIds = {};
+
+  /// 模板 handler：网关入站服务器以其为模板，按连接派生独立 [GatewayHandler]
+  /// （[GatewayHandler.forSession]）——阶段二 D-D 每连接投影隔离的支点。
+  late final GatewayHandler _templateHandler;
+
+  /// 宿主当前激活私有域（= 新 PC 会话默认投影）：chat_page 经 [syncActivePrivate]
+  /// 推入；网关未起服也缓存，起服 _assemble 时应用；在途订阅者经
+  /// [notifyToolsListChanged] 热同步。
+  String? _activePrivateServerId;
+
+  /// 宿主私有绑定变化 → 更新宿主默认投影（阶段二：PC 连接各自独立，不被强制镜像）。
+  /// 同时触发 tools/list_changed 下行，PC 重拉自身投影（其 activePrivateServerId
+  /// 不受影响 = 零污染）。
+  void syncActivePrivate(String? id) {
+    _activePrivateServerId = id;
+    _templateHandler.activePrivateServerId = id;
+    notifyToolsListChanged();
+  }
+
+  /// 目录变更热同步（§9.2）：广播到全部 SSE 订阅连接，PC 自动重拉 tools/list。
+  void notifyToolsListChanged() => _templateHandler.notifyToolsListChanged();
 
   /// 入站安全闭环（G3）：L2 确认卡（手机屏全屏醒目呼叫，TC12）+ PII 出站过滤 + ops.log 审计。
   final GatewaySecurity security = GatewaySecurity(
     delegate: const NativeConsentDelegate(),
   );
 
-  late final GatewayHandler handler;
   late final McpGatewayServer server;
   StreamSubscription<void>? _pkgSub;
   var _starting = false;
@@ -81,11 +113,11 @@ class GatewayController {
       server.requiredToken = (token == null || token.isEmpty) ? null : token;
       await server.start(address: address, port: port);
       await GatewayServiceChannel.start(); // G4：前台保活（失败 DEGRADE 不阻断）
-      handler.notifyToolsListChanged();
+      notifyToolsListChanged();
       _pkgSub ??= localPluginDiscovery.changes.listen((_) async {
         try {
           await _assemble();
-          handler.notifyToolsListChanged();
+          notifyToolsListChanged();
         } on Object catch (e) {
           debugPrint('[DEGRADE] gateway: rescan failed: $e');
         }
@@ -106,7 +138,7 @@ class GatewayController {
   /// 装配 face 集：本地插件扫描挂载 + 手填 HTTP 端点挂载 + sampling 反向接线。
   /// 单源挂载失败 [DEGRADE] 跳过不阻断其余源（网关宁缺勿炸）。
   Future<void> _assemble() async {
-    handler.faces.clear();
+    faces.clear();
     final support = (await getApplicationSupportDirectory()).path;
     final opsLog = MemoryStore.underSupportDir(support);
     security.opsLog = opsLog; // G3 入站审计与 face 级审计同汇
@@ -114,7 +146,7 @@ class GatewayController {
     // —— 本地插件（Binder，系统托管，零配置）——
     final trusted = await TrustedPlugins.instance;
     for (final info in await localPluginDiscovery.scan()) {
-      if (info.serverId.isEmpty || handler.faces.containsKey(info.serverId)) {
+      if (info.serverId.isEmpty || faces.containsKey(info.serverId)) {
         continue;
       }
       // §1.2.6 信任闸门：同签名私有生态默认自动信任；第三方非同签名且未入白名单
@@ -134,7 +166,7 @@ class GatewayController {
           client: client,
           opsLog: opsLog,
         );
-        handler.faces[info.serverId] = m.face;
+        faces[info.serverId] = m.face;
       } on Object catch (e) {
         debugPrint(
             '[DEGRADE] gateway: local plugin ${info.serverId} mount failed: $e');
@@ -145,8 +177,17 @@ class GatewayController {
     // —— 手填 HTTP 端点（用户托管，Streamable HTTP；经单一入口装配，
     // 步 0-T7：含旧 SharedPreferences 迁移——此前此处漏带 prefs，旧配置读不到）——
     final epStore = await serverEndpointStore(supportPath: support);
-    for (final ep in await epStore.load()) {
-      if (ep.endpoint.isEmpty || handler.faces.containsKey(ep.id)) continue;
+    final eps = await epStore.load();
+    // MO6 阶段一投影边界：私有端点（tier==private）进私有服务集——仅激活私有
+    // 域进 PC 投影；本地插件系统托管恒 public（不在此集，常驻曝光）。
+    privateServerIds.clear();
+    privateServerIds.addAll([
+      for (final ep in eps)
+        if (ep.tier == ServerPrivacyTier.private) ep.id,
+    ]);
+    _templateHandler.activePrivateServerId = _activePrivateServerId;
+    for (final ep in eps) {
+      if (ep.endpoint.isEmpty || faces.containsKey(ep.id)) continue;
       try {
         // 步 2-1：mountEndpoint 拥有它建的 client——失败自清理再上抛，
         // 此处只按 DEGRADE 口径收尾（宁缺勿炸，不阻断其余源）。
@@ -155,7 +196,7 @@ class GatewayController {
           opsLog: opsLog,
           apiKeyReader: epStore.apiKey,
         );
-        handler.faces[ep.id] = m.face;
+        faces[ep.id] = m.face;
       } on Object catch (e) {
         debugPrint('[DEGRADE] gateway: endpoint ${ep.id} mount failed: $e');
       }
@@ -165,7 +206,7 @@ class GatewayController {
     try {
       final engine = await assembleDefaultHybridEngine();
       final quota = SamplingQuota();
-      for (final entry in handler.faces.entries) {
+      for (final entry in faces.entries) {
         entry.value.client.onServerRequest = samplingRequestHandler(
           engine: engine,
           quota: quota,

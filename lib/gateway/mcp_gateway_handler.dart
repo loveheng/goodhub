@@ -19,27 +19,57 @@ import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../coordinator/mcp_tool_face.dart';
 import '../coordinator/pii_fence.dart' show redactSync;
+import '../coordinator/ref_store.dart' show parseRefHandle;
 import '../coordinator/tool_router.dart';
 import 'gateway_backpressure.dart' show PerServerBackpressure;
 import 'gateway_loop_guard.dart';
 import 'gateway_security.dart';
 
 class GatewayHandler {
-  GatewayHandler({required this.faces, this.security, GatewayLoopGuard? loopGuard})
-      : _loopGuard = loopGuard ?? GatewayLoopGuard();
+  GatewayHandler({
+    required this.faces,
+    this.security,
+    this.privateServerIds = const {},
+    this.activePrivateServerId,
+    this.onListChanged,
+    GatewayLoopGuard? loopGuard,
+  }) : _loopGuard = loopGuard ?? GatewayLoopGuard();
 
-  /// 已挂载 face 集（serverId → face；GatewayController 装配/重扫时原地刷新）。
+  /// 已挂载 face 集（serverId → face；GatewayController 装配/重扫时**原地**刷新，
+  /// 所有会话投影共享同一引用——改一地全连接可见）。
   final Map<String, McpToolFace> faces;
+
+  /// 私有服务 id 集（MO6 投影边界）：由 GatewayController 按端点
+  /// `ServerEndpoint.tier` 注入。命中集的 face 仅当等于**本连接**
+  /// [activePrivateServerId] 时才进该连接的 PC 投影（MO2 私有不进共享面 +
+  /// 阶段二每连接独立投影）。
+  Set<String> privateServerIds;
+
+  /// 本连接（会话）当前激活私有域（阶段二：每 `Mcp-Session-Id` 独立）。null/'' =
+  /// 无激活私有（仅 public 投影）。PC 调用非本域私有服务由 [toolsCall] 防火墙拒绝。
+  String? activePrivateServerId;
 
   /// 入站安全闭环（G3，null = 直通——仅限测试；生产由 controller 注入）。
   final GatewaySecurity? security;
 
+  /// 目录变更通知回调（本连接投影切换 → 通知 PC 重拉自身 tools/list）。
+  /// 由 GatewayController 注入为共享 `_listChanged` 的触发（所有连接同播）。
+  final void Function()? onListChanged;
+
   /// 入站环路防护（A2 止血：Trace-ID 在途集合 + hop_count 深度熔断）。
+  /// **每连接独立**（阶段二裁决 per-session loop guard）——单连接的调用链异常
+  /// 绝不应熔断另一正常连接。
   final GatewayLoopGuard _loopGuard;
 
   /// 入站背压（§9.6）：单 server 并发硬上限 4，超限排队（只包真实执行段，
-  /// L2 确认等待不占并发槽）。
+  /// L2 确认等待不占并发槽）。**每连接独立**（阶段二裁决 per-session
+  /// backpressure）——避免多客户端场景单连接饿死全局配额。
   final PerServerBackpressure _backpressure = PerServerBackpressure();
+
+  /// 网关级系统工具：连接投影切换（Connection Projection Switch）。
+  /// 命名空间 `gateway__` 明确标定其为网关系统工具，不污染业务 MCP 服务命名空间，
+  /// 且在网关入站路由层做专用拦截（绝不转交任何 face / 宿主槽位机）。
+  static const kGatewaySelectPrivate = 'gateway__select_private';
 
   /// 对 PC 暴露的协议版本（与宿主客户端 kMcpProtocolVersion 同源，§1）。
   static const _protocolVersion = '2025-06-18';
@@ -59,16 +89,87 @@ class GatewayHandler {
         'serverInfo': {'name': 'GoodHub Gateway', 'version': '0.1.0'},
       };
 
-  /// tools/list 聚合（G2）：全部已挂载 face 的缓存 Schema 前缀化（PC 单入口）。
+  /// 由模板 handler 派生「每连接」实例（阶段二 D-D 投影隔离支点）：
+  /// 共享 [faces] / [privateServerIds] 引用，复制当前宿主默认激活私有，持有
+  /// 独立 `_loopGuard` / `_backpressure` / `onListChanged`。`onListChanged` 统一
+  /// 指向模板的共享 `_listChanged`，确保任一连接的投影切换广播到全部连接。
+  GatewayHandler forSession() => GatewayHandler(
+        faces: faces,
+        privateServerIds: privateServerIds,
+        activePrivateServerId: activePrivateServerId,
+        security: security,
+        onListChanged: () => _listChanged.add(null),
+      );
+
+  /// 网关级系统工具 [kGatewaySelectPrivate] 处理：**仅改写本连接** [activePrivateServerId]，
+  /// 绝不触碰宿主 `discovery_executor` 槽位机或任何 face（连接级投影切换）。
+  /// 完成后经 `onListChanged` 通知 PC 重拉自身 tools/list。
+  GatewayToolResult _handleSelectPrivate(Map<String, Object?> arguments) {
+    final raw = arguments['server_id'];
+    if (raw is! String) {
+      return GatewayToolResult(
+        content: 'gateway__select_private 缺少 server_id 参数'
+            '（传私有服务 id；传 "all" 或空串清空为公共面）',
+        isError: true,
+      );
+    }
+    final target = raw.trim();
+    if (target.isEmpty || target == 'all' || target == 'public') {
+      activePrivateServerId = null;
+    } else if (!privateServerIds.contains(target)) {
+      return GatewayToolResult(
+        content: 'server_id=$target 不是私有服务（仅可在已配置的私有域中选择）',
+        isError: true,
+      );
+    } else if (!faces.containsKey(target)) {
+      return GatewayToolResult(
+        content: '私有服务 $target 当前未挂载（可能离线）',
+        isError: true,
+      );
+    } else {
+      activePrivateServerId = target;
+    }
+    onListChanged?.call();
+    return GatewayToolResult(
+      content: activePrivateServerId == null
+          ? '已切换本连接私有投影至公共面（无激活私有域）'
+          : '已切换本连接私有投影至私有域 $activePrivateServerId',
+      isError: false,
+    );
+  }
+
+  /// tools/list 聚合（G2 + MO6 投影）：仅回 **public 全量 + 本连接激活
+  /// private**（其余私有服务不进本连接投影——阶段二每连接独立私有面），
+  /// 并追加网关级系统工具 [kGatewaySelectPrivate]（连接投影切换）。
   List<Map<String, Object?>> toolsList() => [
         for (final entry in faces.entries)
-          for (final s in entry.value.cachedSchemas)
-            {
-              'name': ToolRouter.prefixed(entry.key, s.name),
-              'description': s.description,
-              'inputSchema': s.parametersSchema,
-              if (s.annotations != null) 'annotations': s.annotations,
+          if (!privateServerIds.contains(entry.key) ||
+              entry.key == activePrivateServerId)
+            for (final s in entry.value.cachedSchemas)
+              {
+                'name': ToolRouter.prefixed(entry.key, s.name),
+                'description': s.description,
+                'inputSchema': s.parametersSchema,
+                if (s.annotations != null) 'annotations': s.annotations,
+              },
+        // 网关级系统工具：连接私有投影切换（阶段二 D-D，命名空间 gateway__）。
+        {
+          'name': kGatewaySelectPrivate,
+          'description':
+              '网关级连接投影切换（Connection Projection Switch）：将本 MCP 连接的'
+              '私有域激活面切换至指定私有服务，不影响宿主或其他连接的私有选择。'
+              'server_id 传私有服务 id；传 "all" 或空串清空为公共面。',
+          'inputSchema': {
+            'type': 'object',
+            'properties': {
+              'server_id': {
+                'type': 'string',
+                'description': '目标私有服务 id；"all" 或空串 = 清空为公共面',
+              },
             },
+            'required': ['server_id'],
+          },
+        },
       ];
 
   /// tools/call 分发（G2）：剥前缀 → face.client 流式执行，进度经 [onProgress]
@@ -80,7 +181,13 @@ class GatewayHandler {
     required void Function(Map<String, Object?> progressParams) onProgress,
     String? traceId,
     int hopCount = 0,
+    String? sessionId,
   }) async {
+    // 网关级系统工具（阶段二 D-D）：连接投影切换。先于任何路由/防火墙拦截，
+    // 仅改写「本连接」activePrivateServerId，绝不触碰宿主槽位机或任何 face。
+    if (name == kGatewaySelectPrivate) {
+      return _handleSelectPrivate(arguments);
+    }
     final parsed = parsePrefixedToolName(name);
     if (parsed == null) {
       return GatewayToolResult(
@@ -98,6 +205,36 @@ class GatewayHandler {
         content: '环路防护拒绝：$blocked',
         isError: true,
         errorCode: kGatewayLoopBlockedCode,
+      );
+    }
+
+    // 防火墙（MO6 阶段一：PC 只读镜像）——私有服务仅放行「当前激活私有域」，
+    // 其余私有调用一律拒绝：不暴露、不可达，且 PC 无权经网关发起 use_server
+    // 动态换绑（防改写宿主 activePrivateServerId 造成跨会话状态踩踏）。
+    if (privateServerIds.contains(parsed.serverId) &&
+        parsed.serverId != activePrivateServerId) {
+      return GatewayToolResult(
+        content: '私有服务 ${parsed.serverId} 不在当前激活私有域——网关对 PC '
+            '为只读镜像，仅暴露宿主当前激活私有域；禁止经网关发起 use_server '
+            '动态换绑。',
+        isError: true,
+      );
+    }
+
+    // MO7 跨源 $ref 防火墙（仅网关入站 / 跨源边界，坚决不侵入本地同进程）：
+    // 入站 tools/call 携带指向「非目标服务」的 $ref 句柄 = 跨服务引用（PC / 外部
+    // MCP 持某服务私有句柄去调另一服务）——须持有效网关会话（Session Context /
+    // Mcp-Session-Id）否则拒绝。本地同进程调用（AgentLoop / ToolRouter）不走
+    // toolsCall，故守卫不污染 coordinator/；LAN 直连 goodhub 无网关投影面，靠
+    // 「私有不进共享面」兜底。守卫只做会话归属校验——网关是代理、按字面转发句柄，
+    // 不做注水（注水属宿主运行时路径，单私有槽已结构性安全），故不引入 RefStore
+    // 解析依赖（防过度设计）。
+    final crossRefs = _crossSourceRefHandles(arguments, parsed.serverId);
+    if (crossRefs.isNotEmpty && (sessionId == null || sessionId.isEmpty)) {
+      return GatewayToolResult(
+        content: '跨服务 \$ref 句柄 ${crossRefs.join(', ')} 须持有效网关会话'
+            '（Session Context）方可越服务引用；当前入站请求未携带会话，拒绝。',
+        isError: true,
       );
     }
 
@@ -179,6 +316,34 @@ class GatewayHandler {
       if (s.name == parsed.toolName) return s.annotations;
     }
     return null;
+  }
+
+  /// MO7 跨源 $ref 扫描：递归收集入参中「引用 serverId ≠ 目标 serverId」的
+  /// 句柄。整值匹配口径（与 `ref_hydrator` 一致）：仅当字符串 trim 后整值恰为
+  /// `$ref:<server>:<id>` 才计为句柄，描述文本内嵌子串不计（防误杀正常参数）。
+  static List<String> _crossSourceRefHandles(
+    Object? value,
+    String targetServerId,
+  ) {
+    final out = <String>[];
+    void walk(Object? v) {
+      if (v is String) {
+        final t = v.trim();
+        final p = parseRefHandle(t);
+        if (p != null && p.serverId != targetServerId) out.add(t);
+      } else if (v is Map<Object?, Object?>) {
+        for (final e in v.values) {
+          walk(e);
+        }
+      } else if (v is List<Object?>) {
+        for (final e in v) {
+          walk(e);
+        }
+      }
+    }
+
+    walk(value);
+    return out;
   }
 
   /// MCP tool result（{content:[{type:'text',text}...], isError}）→ 扁平结果

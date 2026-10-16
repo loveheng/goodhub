@@ -178,7 +178,10 @@ void main() {
       final b2 =
           jsonDecode(await r2.transform(utf8.decoder).join()) as Map;
       final tools = (b2['result'] as Map)['tools'] as List;
-      expect((tools.single as Map)['name'], 'demo__echo');
+      final names = [for (final t in tools) (t as Map)['name'] as String];
+      // 聚合前缀化 + 网关级系统工具 gateway__select_private 一并投影。
+      expect(names, contains('demo__echo'));
+      expect(names, contains(GatewayHandler.kGatewaySelectPrivate));
     } finally {
       c.close(force: true);
       await server.stop();
