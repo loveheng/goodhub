@@ -22,6 +22,10 @@ format: v1
 ## chatmessage（In-band 记忆提取）
 - [x] [2026-10-15] CM1 workspace_states（G3）物理实现偏离 SSOT §9.5：SQLite DDL → 文件型 KV（每会话一 JSON + SequentialFileWriter 原子重写，upsert/remove 同语义，零新依赖；全仓无 sqlite 依赖、MemoryStore 同栈）→ **已按默认建议确认接受（2026-10-15）：SSOT §9.5 已回填实现修正附注；键序范围查询诉求出现时再评估迁 sqlite3（API 不变）**
 
+## archive-memory-claim（SamplingQuota 落盘 · 2026-10-16 新增）
+
+- [x] [2026-10-16] **AM1 SamplingQuota 持久化的防篡改口径**（设计稿 §3 步 1 预留「时间戳 + 防篡改口径另记 ADR」）：a) **HMAC-SHA256 签名**（密钥入 SecureKeyValue，agent 默认——篡改可检出，重装即重置可接受）b) 明文时间戳不防篡改（诚实记录，实现最薄）c) 本轮不做落盘（维持「重启清零」，(风险) 待办继续挂）→ **已确认 a（2026-10-16 用户勾选）**：已实现——`conversation_archive.dart` saveQuota/loadQuota + HMAC 定长比较，篡改/换密钥检出按重置；命中记录恢复、配额参数为应用级常量不随落盘
+
 ## thirdconnect（网关角色，新增）
 - [x] [2026-10-12] TC5 GoodHub 是否新增「MCP 网关 Server」角色（对 PC 暴露聚合 HTTP/SSE :8766，内部经 Binder 调度本地 App）？→ 已确认：是（GoodHub 升为 Host+Gateway 双角色，复用 json_rpc/tool_router，新增 inbound 传输）
 - [x] [2026-10-12] TC6 本地 App 是否一律 Binder-only 插件（不再各自暴露 HTTP MCP 服务，仅 GoodHub 对外暴露）？→ 已确认：A（一律 Binder-only；release 绝对零端口监听，开发期走 ADB 转发/单测，不留运行时网络旁路）

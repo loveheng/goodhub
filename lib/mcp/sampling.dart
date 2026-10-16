@@ -30,6 +30,29 @@ class SamplingQuota {
     hits.add(now);
     return null;
   }
+
+  /// 命中记录快照（epoch 毫秒；超窗条目就地清出，防快照无限增长）——
+  /// ConversationArchive 落盘消费（archive-memory-claim 步 1，防杀进程刷新额度）。
+  Map<String, List<int>> snapshotHits(DateTime now) => {
+        for (final e in _hits.entries)
+          e.key: [
+            for (final t in e.value)
+              if (now.difference(t) <= window) t.millisecondsSinceEpoch,
+          ],
+      };
+
+  /// 恢复落盘的命中记录（进程重启语义；超窗条目由 tryConsume 惰性清除）。
+  void restoreHits(Map<String, List<int>> hits) {
+    _hits
+      ..clear()
+      ..addAll({
+        for (final e in hits.entries)
+          e.key: [
+            for (final ms in e.value)
+              DateTime.fromMillisecondsSinceEpoch(ms),
+          ],
+      });
+  }
 }
 
 /// 单次输出硬顶（D3：宿主 maxTokens clamp；云端预算默认口径）。

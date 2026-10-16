@@ -18,6 +18,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../app/service_directory.dart';
 import '../coordinator/agent_loop.dart';
+import '../coordinator/conversation_archive.dart';
 import '../coordinator/degradation_controller.dart';
 import '../coordinator/fenced_cloud_engine.dart';
 import '../coordinator/mcp_runtime.dart';
@@ -72,11 +73,10 @@ class _ChatPageState extends State<ChatPage> {
   // 配额/激活集/降级判据/事实库随会话实例生灭，切会话即重置）。
   ConversationSession _session = ConversationSession();
 
-  // 会话持久化（M4-T3b，D10/D13）：当前会话 id + 标题 + 侧边栏列表
-  ConversationStore? _convStore;
-  String? _conversationId;
+  // 会话持久化（archive-memory-claim 步 1）：落盘事实 owner = ConversationArchive
+  // 内核（懒建/快照组装/恢复/删除门面），窗口只持侧边栏列表投影。
+  ConversationArchive? _archive;
 
-  var _conversationTitle = '';
   var _conversations = <ConversationMeta>[];
   // 端点缓存（供 composer menu 与默认回退使用；_send 内刷新）。
   List<ServerEndpoint> _endpoints = <ServerEndpoint>[];
@@ -134,46 +134,41 @@ class _ChatPageState extends State<ChatPage> {
 
   Future<void> _initConversations() async {
     final support = await getApplicationSupportDirectory();
-    _convStore = ConversationStore.underSupportDir(support.path);
+    _archive = ConversationArchive.underSupportDir(support.path);
+    // SamplingQuota 恢复（杀进程重启不清零；切会话仍重置=行为变更①）。
+    final quota = await _archive!.loadQuota();
+    if (quota != null && mounted) {
+      setState(() => _session = ConversationSession(samplingQuota: quota));
+    }
     await _refreshConversations();
   }
 
   Future<void> _refreshConversations() async {
-    final store = _convStore;
-    if (store == null) return;
-    final list = await store.list();
+    final archive = _archive;
+    if (archive == null) return;
+    final list = await archive.list();
     if (!mounted) return;
     setState(() => _conversations = list);
   }
 
-  static String _titleFrom(String prompt) {
-    final line = prompt.trim().split('\n').first;
-    return line.length > 20 ? '${line.substring(0, 20)}…' : line;
-  }
-
-  /// Run 收尾快照（原子重写）；失败 DEGRADE 留痕不抛穿 finally。
-  Future<void> _persistConversation() async {
-    final cid = _conversationId;
-    final store = _convStore;
-    if (cid == null || store == null) return;
-    try {
-      await store.save(
-        id: cid,
-        title: _conversationTitle,
-        track: TrackEntryCodec.encode(_track),
-        messages: ConversationStore.encodeMessages(_session.transcript),
-        activePrivateServerId: _session.activePrivateServerId,
-      );
-      await _refreshConversations();
-    } on Object catch (e) {
-      debugPrint('[DEGRADE] chat: 会话快照保存失败 $cid: $e');
-      _add(TrackNote('⚠ 会话快照保存失败（见日志）', danger: true));
-    }
+  /// Run 收尾/绑定即存快照：save 组装与落盘在 Archive 内核；失败 DEGRADE
+  /// 留痕返 false，窗口出轨道提示（视图态可观测）。
+  Future<void> _persistCurrent() async {
+    final archive = _archive;
+    if (archive == null || !archive.hasCurrent) return;
+    final ok = await archive.saveCurrent(
+      trackJson: TrackEntryCodec.encode(_track),
+      session: _session,
+    );
+    if (!ok) _add(TrackNote('⚠ 会话快照保存失败（见日志）', danger: true));
+    // 配额落盘（AM1）：随 Run 收尾一并持久化，防杀进程刷新额度。
+    await archive.saveQuota(_session.samplingQuota);
+    await _refreshConversations();
   }
 
   /// 切换/删除前的当前会话保底。
   Future<void> _persistIfAny() async {
-    if (_conversationId != null) await _persistConversation();
+    if (_archive?.hasCurrent ?? false) await _persistCurrent();
   }
 
   /// 恢复/新建后重置会话态：激活集属会话（§15），跨会话必须重开。
@@ -184,8 +179,7 @@ class _ChatPageState extends State<ChatPage> {
     setState(() {
       _track.clear();
       _session = ConversationSession();
-      _conversationId = null;
-      _conversationTitle = '';
+      _archive?.resetCurrent();
       _activeCallEntry = null;
       _pillLabel = 'idle';
       _pillTone = CapsuleTone.idle;
@@ -203,7 +197,7 @@ class _ChatPageState extends State<ChatPage> {
 
   Future<void> _loadConversation(ConversationMeta meta) async {
     if (!_guardRunning('切换会话')) return;
-    final snap = await _convStore?.load(meta.id);
+    final snap = await _archive?.load(meta.id);
     if (!mounted) return;
     if (snap == null) {
       // 损坏会话不进任何轨道（避免串台写进当前会话快照），SnackBar 明示。
@@ -216,8 +210,7 @@ class _ChatPageState extends State<ChatPage> {
     _resetSessionState();
     _autoFollow = true;
     setState(() {
-      _conversationId = snap.id;
-      _conversationTitle = snap.title;
+      _archive?.adoptSnapshot(snap); // 当前 id/title 归 Archive 内核
       _session.bindPrivateServer(snap.activePrivateServerId);
       _session.replaceTranscript(
           ConversationStore.decodeMessages(snap.messages)); // 全量替换
@@ -249,8 +242,8 @@ class _ChatPageState extends State<ChatPage> {
       ),
     );
     if (confirmed != true) return;
-    await _convStore?.delete(meta.id);
-    if (_conversationId == meta.id) _resetSessionState();
+    await _archive?.delete(meta.id);
+    if (_archive?.currentId == meta.id) _resetSessionState();
     await _refreshConversations();
   }
 
@@ -398,7 +391,7 @@ class _ChatPageState extends State<ChatPage> {
   /// 即时绑定（composer menu 调用）：写会话态（三态写回契约）+ 落会话元数据。
   void _bindSessionServer(String? serverId) {
     setState(() => _session.bindPrivateServer(serverId));
-    unawaited(_persistConversation());
+    unawaited(_persistCurrent());
   }
 
   /// 全局默认钉选写回（单选）：更新 mcp_servers.json 并刷新缓存。
@@ -600,14 +593,11 @@ class _ChatPageState extends State<ChatPage> {
       _autoFollow = true; // 新任务：回到底部并恢复自动跟随
     });
     _add(TrackUser(prompt));
-    // T3b：会话懒建（首个任务起落盘；标题取首行截断）。
-    _conversationId ??= await _convStore!.create(title: _titleFrom(prompt));
-    _conversationTitle = _conversationTitle.isEmpty
-        ? _titleFrom(prompt)
-        : _conversationTitle;
+    // T3b：会话懒建（首个任务起落盘；标题截取策略在 Archive 内核）。
+    await _archive!.ensureCurrent(prompt: prompt);
     // P2-6（§3.6/G3）：会话级事实库懒建——In-band 捎带 session 域落点。
     _session.bindWsStates(WorkspaceStateStore.underSupportDir(support.path));
-    final convId = _conversationId!;
+    final convId = _archive!.currentId!;
     McpAssembly? assembly; // Run 级句柄：finally 统一释放（内核持资源谁释放）
     try {
       final memoryStore = MemoryStore.underSupportDir(support.path);
@@ -885,7 +875,7 @@ class _ChatPageState extends State<ChatPage> {
       await assembly?.close();
       _activeAssembly = null;
       assembly = null;
-      await _persistConversation(); // T3b：Run 收尾快照（含 Cancelled 终态）
+      await _persistCurrent(); // T3b：Run 收尾快照（含 Cancelled 终态）
       _elapsedTimer?.cancel();
       _elapsedTimer = null;
       _runStartedAt = null;
@@ -982,7 +972,7 @@ class _ChatPageState extends State<ChatPage> {
                             _fmtTime(meta.updatedAt),
                             style: const TextStyle(fontSize: Fsz.micro),
                           ),
-                          selected: meta.id == _conversationId,
+                          selected: meta.id == _archive?.currentId,
                           onTap: () => _loadConversation(meta),
                           trailing: IconButton(
                             icon: const Icon(Icons.delete_outline, size: 18),
@@ -1198,7 +1188,7 @@ class _ChatPageState extends State<ChatPage> {
         appBar: AppBar(
           // 会话标题进 AppBar（D13 多会话：切会话后知道自己所在会话）。
           title: Text(
-            _conversationTitle.isEmpty ? 'GoodHub' : _conversationTitle,
+            _archive?.currentTitle.isEmpty ?? true ? 'GoodHub' : _archive!.currentTitle,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
