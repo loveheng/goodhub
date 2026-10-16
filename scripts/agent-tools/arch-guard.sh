@@ -86,6 +86,29 @@ scan_all() {
   scan_pattern "R3-ui-methodchannel" "lib/ui" \
     "UI 层直连 MethodChannel，平台通道须收敛到抽象接口实现" \
     'MethodChannel\(' ""
+  # —— 2026-10-17 P0-C 补齐：依赖方向红灯（镜像 test/architecture/dependency_rules_test.dart
+  #    R1~R6；shell 秒级版供 pre-commit 钩子用，flutter test 版跑一次 ~12s 超 10s 预算）——
+  # R4 core 零出向（coding-standards §1.1：core 是叶层，只被依赖不依赖任何域）
+  scan_pattern "R4-core-outbound" "lib/core" \
+    "core 域出现出向 import（package:goodhub/ 或 ../），core 是叶层须零出向；跨域类型下沉 core 或改由上层注入" \
+    "import '(package:goodhub/|\.\./)" ""
+  # R5 mcp/sandbox ↛ coordinator（arch-hardening ② 已清零，防复燃）
+  scan_pattern "R5-lower-to-coordinator" "lib/mcp lib/sandbox" \
+    "mcp/sandbox 反向依赖 coordinator：应经 mcp/connection_face.dart 注入，共享类型下沉 core/tool_result.dart、审计走 core/audit_sink.dart" \
+    "import '[^']*coordinator/" ""
+  # R6 mcp/sandbox ↛ llm（arch-hardening ③/④ 已清零，防复燃）
+  scan_pattern "R6-lower-to-llm" "lib/mcp lib/sandbox" \
+    "mcp/sandbox 反向依赖 llm：sampling 走 SamplingEngine 端口（货币 core/chat_message_data.dart），codec 留在 llm/cloud" \
+    "import '[^']*llm/" ""
+  # R7 ui ↛ gateway_controller（arch-hardening ①：ui 应经 gateway_api 间接依赖）
+  scan_pattern "R7-ui-gateway-controller" "lib/ui" \
+    "ui 直 import gateway_controller，应经 lib/gateway_api/gateway_control 间接依赖" \
+    "import '[^']*gateway/gateway_controller" ""
+  # R8 禁引 lib/mcp/tool_router.dart（SA-Q6 拍板：海关过滤件保留待接线，不删不引）
+  # 白名单仅该文件自身（同域自引用不违规）
+  scan_pattern "R8-mcp-tool-router" "lib" \
+    "引用了 lib/mcp/tool_router.dart（海关过滤件，SA-Q6 不删不引）：生产路由只引 coordinator/tool_router.dart，防同名误导入" \
+    "import '[^']*mcp/tool_router\.dart" "lib/mcp/tool_router.dart"
   return 0
 }
 
@@ -108,7 +131,7 @@ report_json() {
     printf '{"status":"OK","severity":"info","message":"arch-guard: 架构硬约束全部通过"}\n'
     return 0
   fi
-  msg="arch-guard: $COUNT 处架构硬约束违规（R1 UI dart:io / R2 UI 平台分支 / R3 UI MethodChannel）"
+  msg="arch-guard: $COUNT 处架构硬约束违规（R1 UI dart:io / R2 UI 平台分支 / R3 UI MethodChannel / R4 core 零出向 / R5 mcp·sandbox 不依赖 coordinator / R6 mcp·sandbox 不依赖 llm / R7 ui 不直连 gateway_controller / R8 禁引 mcp/tool_router.dart）"
   remedy="裸跑 toolbox run arch-guard 看逐条明细；对照 docs/project/coding-standards.md §1/§2 修正，历史遗留加白名单并注明原因"
   printf '{"status":"FAIL","severity":"error","message":"%s","remedy":"%s"}\n' "$msg" "$remedy"
   return 1
@@ -119,22 +142,56 @@ self_test() {
   bad=$(mktemp -d); clean=$(mktemp -d)
   trap 'rm -rf "$bad" "$clean"' RETURN
 
-  mkdir -p "$bad/lib/ui" "$bad/lib/core"
+  mkdir -p "$bad/lib/ui" "$bad/lib/core" "$bad/lib/mcp" "$bad/lib/sandbox" "$bad/lib/coordinator"
   cat >"$bad/lib/ui/bad_page.dart" <<'EOF'
 import 'dart:io';
 if (Platform.isAndroid) {}
 MethodChannel('ch').invokeMethod('x');
 EOF
+  # R4 core 出向
+  cat >"$bad/lib/core/leak.dart" <<'EOF'
+import '../coordinator/agent_loop.dart';
+EOF
+  # R5 mcp/sandbox → coordinator（2 处）
+  cat >"$bad/lib/mcp/leak.dart" <<'EOF'
+import '../coordinator/tool_router.dart';
+EOF
+  cat >"$bad/lib/sandbox/leak.dart" <<'EOF'
+import 'package:goodhub/coordinator/memory_kernel.dart';
+EOF
+  # R6 mcp → llm
+  cat >"$bad/lib/mcp/leak_llm.dart" <<'EOF'
+import '../llm/cloud/cloud_llm.dart';
+EOF
+  # R7 ui → gateway_controller
+  cat >"$bad/lib/ui/gw.dart" <<'EOF'
+import '../gateway/gateway_controller.dart';
+EOF
+  # R8 引用海关过滤件
+  cat >"$bad/lib/coordinator/bad_router.dart" <<'EOF'
+import '../mcp/tool_router.dart';
+EOF
 
-  mkdir -p "$clean/lib/ui"
+  mkdir -p "$clean/lib/ui" "$clean/lib/core" "$clean/lib/mcp" "$clean/lib/sandbox"
   cat >"$clean/lib/ui/ok_widget.dart" <<'EOF'
 import 'package:goodhub/core/storage/abstract_store.dart';
 final s = await store.read();
 EOF
+  # 干净样本应放行：core 自域引用、mcp 内部引用、注释里提到的跨域路径
+  cat >"$clean/lib/core/ok.dart" <<'EOF'
+import 'secure_key_value.dart';
+EOF
+  cat >"$clean/lib/mcp/ok.dart" <<'EOF'
+import 'tool_router.dart';
+// 设计见 coordinator/tool_router.dart
+EOF
+  cat >"$clean/lib/sandbox/ok.dart" <<'EOF'
+import '../core/chat_message_data.dart';
+EOF
 
   ROOT="$bad"; scan_all
-  if [ "$COUNT" -lt 3 ]; then
-    echo "SELF-TEST FAIL: 坏样本只抓到 $COUNT 处（期望 >=3）" >&2
+  if [ "$COUNT" -lt 9 ]; then
+    echo "SELF-TEST FAIL: 坏样本只抓到 $COUNT 处（期望 >=9：R1-R8 各至少 1）" >&2
     printf '%b' "$HITS" >&2
     return 2
   fi

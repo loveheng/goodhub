@@ -68,7 +68,8 @@ description: goodhub（AI 宿主 App）的「功能 → 代码落点 + 文档落
 | Binder 联调评估与修复请求 | 本仓 `docs/design/goodhub-goodshare-binder-eval.md` + `goodshare-binder-poc-fix-request.md` | active（注意：文中引用的 `context/epics/goodhub-local-plugin/` **不存在**，结果回写改投 thirdconnect 域） |
 | 端侧 LLM 设计（LiteRT-LM / FoundationModels） | **本仓不存在**——goodshare 仓 `docs/design/on-device-llm.md`（跨仓只读） | 勿在本仓按此路径引用 |
 | Host 网关架构 · 访问性模型 · 记忆捎带提取（Provider×Tier 解耦 / 聚合反向代理 / In-band `<workspace_update>`） | 本仓 `docs/design/host-gateway-accessibility-memory.md` | active；绑定 epic = `chatmessage`（§3 记忆提取主战场，§1/§2 依赖项） |
-| 窗口解耦（内核 + 多投影：ServiceDirectory / McpRuntime / ConversationSession） | 本仓 `docs/design/window-kernel-split.md` | draft（架构裁决已拍板十二项 §8.1，冻结解除；epic `window-kernel-split` 已建，步 0 可开工） |
+| 窗口解耦（内核 + 多投影：ServiceDirectory / McpRuntime / ConversationSession） | 本仓 `docs/design/window-kernel-split.md` | 内容 SSOT（架构裁决十二项 §8.1、路线图 §7.5）；施工已由 arch-hardening 承接 |
+| 架构债修复施工稿（内核单入口 + 反向边斩断，步 0→3 勾稽） | 本仓 `docs/design/arch-hardening.md` | active；绑定 epic = `arch-hardening`；步 0→3 已完成（2026-10-16），剩余 = 真机冒烟验收 + #7 共享态债 |
 | 普通用户可用性加固（冷启动/错误自救/术语白话/危险权重/DEGRADE 可见性） | 本仓 `docs/design/ux-hardening.md` | active；epic `ux-hardening` 已收尾归档（2026-10-16 ::done，9 项全闭环；page-revamp 清零后的第二批） |
 
 ## 架构债与依赖违例登记（2026-10-16 架构盘点立 · 改相关代码前必读）
@@ -83,9 +84,14 @@ description: goodhub（AI 宿主 App）的「功能 → 代码落点 + 文档落
 | 4 | `mcp → coordinator/sandbox` 反向依赖 | `mcp/connection_face.dart`（face 注入）+ `core/tool_result.dart` + `core/audit_sink.dart` | ✅ 已清零（arch-hardening ②，2026-10-16） |
 | 5 | `mcp/sandbox → llm` 反向依赖 | `mcp/sampling.dart`（`SamplingEngine` 端口）/ `core/chat_message_data.dart` + `llm/cloud/chat_message_codec.dart` | ✅ 已清零（arch-hardening ③/④，2026-10-16） |
 | 6 | `ui ↔ gateway` 跨域环 | 弹层迁 `ui/gateway_consent_dialog.dart` | ✅ 已清零（arch-hardening ①，2026-10-16；gateway→ui 断环，ui→gateway 属窗口→窗口允许方向） |
-| 7 | `GatewayController.shared` 全局单例持会话态 | `gateway/gateway_controller.dart` | 阻塞 D-D PC 阶段二；随 ConversationSession 内迁 |
+| 7 | ~~`GatewayController.shared` 全局单例持会话态~~（阶段二 D-D 已落地） | `gateway/gateway_controller.dart` / `gateway/gateway_server.dart` | ✅ 已收口（2026-10-16 #7 接手）：① 阶段二 per-connection 投影隔离（`_handlers[sessionId]` + `forSession()` + `gateway__select_private` + 防火墙）已测（`gateway_per_session_projection_test.dart`）；② shared 单例 `_activePrivateServerId` 澄清为 **host-level 默认投影源**（重命名 `_hostDefaultPrivateServerId` + 注释，per-session 态已隔离在 server 层）；③ POST-only 连接投影上下文泄漏修复（`idleTimeout` + `_gcIdle` + `_lastActivity`）；`workspaceId` 接线见 #11 |
 | 8 | 会话态手工枚举（新增字段要改声明/reset/落盘 3 处，漏改即静默 bug） | `coordinator/mcp_runtime.dart`（ConversationSession） | ✅ 已清零（步 0/3，2026-10-16） |
 | 9 | 装配级 / chat_page 级测试基线缺失 | `test/coordinator/mcp_runtime_test.dart` 等 | ✅ 已清零（步 0/1 契约与装配测试，2026-10-16） |
+| 10 | ~~`memory_kernel_test` 2 例全仓并发失败（单跑 5/5、coordinator 目录 286 并发均过；全仓 706 并发时 wsStates 混入他测试键值 `dark`/`ui.lang`）~~ | ~~`test/coordinator/memory_kernel_test.dart`~~ | ✅ 已清零（2026-10-16 arch-hardening 断点移交项）：根因 = 固定 100ms 猜等写链排空，全量并发 CPU 饱和即 flaky；修法 = `SequentialFileWriter.settled` + `MemoryStore/WorkspaceStateStore.ioDrained` 确定性握手（`memory_governor_test` 同族一并修），706/706 全绿 |
+| 11 | 投影平面 `workspaceId` 接线（D-D 投影平面三元 `{activePrivateServerId, publicServerIds, workspaceId}` 缺 `workspaceId`） | `gateway/*`（ProjectionContext） | 待接：PC 连接不携带 workspaceId，记忆分区归属 chatmessage 域 per-conversation（`workspace_states`）；网关侧接线待 chatmessage 记忆分区工作，#7 本轮不接 |
+| 12 | **UI 侧 `dart:io` 存量违规清零**（`update_page.dart` 持 `File? _apk` / `error_copy.dart` 为识别 SocketException·HttpException 而 import dart:io） | `lib/ui/update_page.dart`（改持路径 `String`）+ `lib/ui/error_copy.dart`（判定下沉 `core/errors/transport_error_kind.dart`，UI 只消费 `TransportErrorKind` 枚举） | ✅ 已清零（2026-10-17 P0-C）：新依赖护栏立起后 arch-guard R1 实测命中 2 处，不清零会挡住所有提交；**处置=修而非加白名单**（白名单纪律只减不增）。R1 白名单仍为原 3 项（`services_hall_page`/`chat_page`/`memory_board_page`） |
+| 14 | **GatewayController 无装配注入位**（`localPluginDiscovery` / `serverEndpointStore` 为顶层全局直接引用）→ 重扫释放与起服失败回滚两条路径**无单测覆盖**，只能真机验收 | `lib/gateway/gateway_controller.dart` | 待接（2026-10-17 P0-B 登记）：释放接线已落地（`_mounted` 句柄表 + `_unmountAll` + 重扫/停服/起服失败三路回滚，`McpMount.close` 为唯一释放通道），但断言只到挂载原语层（见 `test/gateway/gateway_session_isolation_test.dart` 用例 5~7）。收敛条件=给 controller 加 `localPluginDiscovery` / `serverEndpointStore` 注入位后补网关级重扫与回滚断言；真机冒烟=插件安装触发重扫、停服后无残留连接 |
+| 13 | **CI 缺口**：无 `.github/` 无 `.gitlab-ci.yml`，`flutter test` 从无自动化触发入口 | 仓库根（待建 workflow）；现状兜底 = `scripts/agent-tools/pre-commit-gate.sh` | 待接（2026-10-17 P0-C 登记）：现状=pre-commit 默认跑秒级 `arch-guard`（R1~R8，含依赖方向 6 条中的域级 5 条 + URI 级 1 条），`flutter test` 版经 `ARCH_GATE_FULL=1` 显式开关跑 `arch-deps.sh`（单次 ~12s 超钩子 10s 预算故不进默认路径）。**收敛条件**：建 CI workflow 固定跑 `flutter analyze` + `flutter test --timeout 180s` + `arch-guard.sh --json`；存量教训=conversation_drawer_test 隔夜腐化（fixture 写死绝对日期）长期未暴露，根因正是从不跑测试 |
 
 ## 命令速查
 

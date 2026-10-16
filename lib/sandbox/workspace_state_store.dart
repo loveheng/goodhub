@@ -18,6 +18,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart' show debugPrint;
 
+import '../core/storage/keyed_write_queue.dart';
 import '../core/storage/sequential_file_writer.dart';
 
 /// 单条会话事实（key → value + 更新时间）。
@@ -45,14 +46,30 @@ class WorkspaceStateStore {
 
   final Map<String, SequentialFileWriter> _writers = {};
 
-  /// 操作串行链：所有「读-改-写」复合单元在此排队，杜绝同会话交错。
-  Future<void> _tail = Future<void>.value();
+  /// 复合单元互斥键（**按会话粒度**：同会话的一切实例共用一条链，不同会话
+  /// 仍可并行）。`underSupportDir` 是 factory 且 chat_page 每 Run new 一个实例
+  /// （:708），实例级链会让同会话的两个实例交错丢更新（2026-10-17 P0-A）。
+  String _lockKey(String conversationId) =>
+      '${KeyedWriteQueue.keyForPath(dir.path)}::$conversationId';
 
-  Future<T> _enqueue<T>(Future<T> Function() task) {
-    final result = _tail.then((_) => task());
-    // 吞错仅为续链（错误已透传 result），与 MemoryStore 同口径。
-    _tail = result.then<void>((_) {}, onError: (Object _) {});
-    return result;
+  /// 已入队尚未完成的复合单元键（供 [ioDrained] 精确排空）。
+  final Set<String> _pending = <String>{};
+
+  Future<T> _enqueue<T>(String key, Future<T> Function() task) {
+    _pending.add(key);
+    return KeyedWriteQueue.instance
+        .enqueue(key, task)
+        .whenComplete(() => _pending.remove(key));
+  }
+
+  /// 写链排空（确定性握手）：await 它 = 所有已入队 upsert/remove 复合单元与
+  /// 各会话 writer 队列完成。供测试替代「固定延迟猜等」——全量并发时 CPU
+  /// 饱和，延迟窗口不够即 flaky（2026-10-16 `memory_kernel_test`×2 存量失败教训）。
+  Future<void> get ioDrained async {
+    await Future.wait([
+      for (final k in _pending.toList()) KeyedWriteQueue.instance.settled(k),
+    ]);
+    await Future.wait([for (final w in _writers.values) w.settled]);
   }
 
   SequentialFileWriter _writerFor(String conversationId) => _writers
@@ -94,7 +111,7 @@ class WorkspaceStateStore {
 
   /// upsert（action = "upsert"）：同 key 整条覆盖（等价 `INSERT OR REPLACE`）。
   Future<void> upsert(String conversationId, String key, String value) =>
-      _enqueue(() async {
+      _enqueue(_lockKey(conversationId), () async {
         final states = await all(conversationId);
         states[key] = WorkspaceStateEntry(
           key: key,
@@ -106,7 +123,8 @@ class WorkspaceStateStore {
       });
 
   /// remove（action = "remove"）：按 key 删除（等价 `DELETE`；key 不存在为幂等）。
-  Future<void> remove(String conversationId, String key) => _enqueue(() async {
+  Future<void> remove(String conversationId, String key) =>
+      _enqueue(_lockKey(conversationId), () async {
         final states = await all(conversationId);
         if (!states.containsKey(key)) return;
         states.remove(key);

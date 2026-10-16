@@ -7,14 +7,12 @@
 /// 只给「下一步做什么」，不暴露引擎/端点/协议内部名词。
 library;
 
-import 'dart:async';
-import 'dart:io';
-
 import 'package:flutter/services.dart' show PlatformException;
 
 import '../core/errors/cloud_llm_error.dart';
 import '../core/errors/inference_error.dart';
 import '../core/errors/mcp_error.dart';
+import '../core/errors/transport_error_kind.dart';
 import '../coordinator/context_governor.dart';
 import '../coordinator/fenced_cloud_engine.dart';
 import '../coordinator/pii_fence.dart';
@@ -84,19 +82,22 @@ ErrorCopy humanizeError(Object error) {
       return const ErrorCopy(
           'MCP 服务通信失败', '到设置页检查服务端点状态，然后重试');
 
-    // —— 传输层（dart:async / dart:io / 平台通道）——
-    case TimeoutException():
-      return const ErrorCopy('等待响应超时', '检查网络后重试');
-    case SocketException():
-      return const ErrorCopy('网络不通', '检查网络连接后重试');
-    case HttpException():
-      return const ErrorCopy('网络请求失败', '检查网络后重试');
+    // —— 平台通道（flutter/services，非平台污染）——
     case PlatformException():
       return const ErrorCopy('系统功能调用失败', '重试；持续失败可重启应用');
 
+    // —— 传输层：dart:io 具名类型由 core 判定（UI 禁 dart:io），本层只认枚举 ——
     // —— 兜底：不猜，交给留痕的原始异常 ——
     default:
-      return const ErrorCopy(
-          '任务意外中断', '重试；若反复出现可反馈（错误详情可复制）');
+      return switch (classifyTransportError(error)) {
+        TransportErrorKind.timeout =>
+          const ErrorCopy('等待响应超时', '检查网络后重试'),
+        TransportErrorKind.socket =>
+          const ErrorCopy('网络不通', '检查网络连接后重试'),
+        TransportErrorKind.http =>
+          const ErrorCopy('网络请求失败', '检查网络后重试'),
+        _ => const ErrorCopy(
+            '任务意外中断', '重试；若反复出现可反馈（错误详情可复制）'),
+      };
   }
 }

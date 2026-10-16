@@ -54,16 +54,19 @@ class GatewayController {
   /// （[GatewayHandler.forSession]）——阶段二 D-D 每连接投影隔离的支点。
   late final GatewayHandler _templateHandler;
 
-  /// 宿主当前激活私有域（= 新 PC 会话默认投影）：chat_page 经 [syncActivePrivate]
-  /// 推入；网关未起服也缓存，起服 _assemble 时应用；在途订阅者经
-  /// [notifyToolsListChanged] 热同步。
-  String? _activePrivateServerId;
+  /// 宿主当前激活私有域（= 新 PC 会话**默认投影**源，host-level 而非 session 态）：
+  /// chat_page 经 [syncActivePrivate] 推入；网关未起服也缓存，起服 `_assemble` 时
+  /// 应用为模板 handler 的默认激活私有（新连接 [GatewayHandler.forSession] 复制此值），
+  /// 在途订阅者经 [notifyToolsListChanged] 热同步。每连接的独立投影态已隔离在
+  /// `McpGatewayServer._handlers`（阶段二 D-D），本字段**不持有任何会话态**——
+  /// 禁止在本单例上新增会话级字段（债 #7 收口约束）。
+  String? _hostDefaultPrivateServerId;
 
-  /// 宿主私有绑定变化 → 更新宿主默认投影（阶段二：PC 连接各自独立，不被强制镜像）。
-  /// 同时触发 tools/list_changed 下行，PC 重拉自身投影（其 activePrivateServerId
-  /// 不受影响 = 零污染）。
+  /// 宿主私有绑定变化 → 更新宿主默认投影（host-level；阶段二：PC 连接各自独立，
+  /// 不被强制镜像）。同时触发 tools/list_changed 下行，PC 重拉自身投影
+  /// （其 activePrivateServerId 不受影响 = 零污染）。
   void syncActivePrivate(String? id) {
-    _activePrivateServerId = id;
+    _hostDefaultPrivateServerId = id;
     _templateHandler.activePrivateServerId = id;
     notifyToolsListChanged();
   }
@@ -79,6 +82,14 @@ class GatewayController {
   late final McpGatewayServer server;
   StreamSubscription<void>? _pkgSub;
   var _starting = false;
+
+  /// 装配句柄表（serverId → [McpMount]；2026-10-17 P0-B）。
+  ///
+  /// `McpMount.close()` 是**唯一**的传输释放通道：此前挂载原语只回 face/caps/
+  /// schemas，句柄无处可取（且 `mountEndpoint` 内部建的 client 调用方根本拿不到
+  /// 引用），重扫时裸 `faces.clear()` → 旧 client 从不释放（每次插件安装广播
+  /// 触发重扫就累积一批），起服失败亦无回滚。
+  final Map<String, McpMount> _mounted = {};
 
   bool get running => server.running;
 
@@ -109,10 +120,13 @@ class GatewayController {
   }) async {
     if (running || _starting) return;
     _starting = true;
+    var started = false;
     try {
       await _assemble();
       server.requiredToken = (token == null || token.isEmpty) ? null : token;
       await server.start(address: address, port: port);
+      // 只有真正起服才算成功——此前绑端口失败会留下全套悬空 client（P0-B）
+      started = true;
       await GatewayServiceChannel.start(); // G4：前台保活（失败 DEGRADE 不阻断）
       notifyToolsListChanged();
       _pkgSub ??= localPluginDiscovery.changes.listen((_) async {
@@ -125,6 +139,8 @@ class GatewayController {
       });
     } finally {
       _starting = false;
+      // P0-B：起服失败零残留（装配成功但绑端口/后续步骤失败 → 回滚全部句柄）
+      if (!started) await _unmountAll();
     }
   }
 
@@ -132,14 +148,33 @@ class GatewayController {
     await _pkgSub?.cancel();
     _pkgSub = null;
     await server.stop();
+    await _unmountAll(); // P0-B：停服释放全部装配句柄（client / connection）
     await GatewayServiceChannel.stop(); // G4：停保活（失败 DEGRADE 不阻断）
     security.resetSessionGrants(); // C7：豁免不跨网关生命周期存活
+  }
+
+  /// 全量卸载：逐个 close 装配句柄（幂等）→ 清表 → 清 face 集。
+  ///
+  /// **先清 [faces] 再 close**：避免卸载期间新入站请求拿到正在关闭的 face。
+  /// 单源 close 失败 [DEGRADE] 留痕、不阻断其余（与装配同口径，宁缺勿炸）。
+  Future<void> _unmountAll() async {
+    final mounted = Map<String, McpMount>.of(_mounted);
+    _mounted.clear();
+    faces.clear();
+    for (final entry in mounted.entries) {
+      try {
+        entry.value.close(); // 同步释放（McpMount.close 为 void，传输 close 同步语义）
+      } on Object catch (e) {
+        debugPrint('[DEGRADE] gateway: unmount ${entry.key} close failed: $e');
+      }
+    }
   }
 
   /// 装配 face 集：本地插件扫描挂载 + 手填 HTTP 端点挂载 + sampling 反向接线。
   /// 单源挂载失败 [DEGRADE] 跳过不阻断其余源（网关宁缺勿炸）。
   Future<void> _assemble() async {
-    faces.clear();
+    // P0-B：重扫前先释放上一批句柄——此前裸 faces.clear() 会丢掉全部旧 client
+    await _unmountAll();
     final support = (await getApplicationSupportDirectory()).path;
     final opsLog = MemoryStore.underSupportDir(support);
     security.opsLog = opsLog; // G3 入站审计与 face 级审计同汇
@@ -166,8 +201,11 @@ class GatewayController {
           serverId: info.serverId,
           client: client,
           opsLog: opsLog,
+          // P0-B：client 由本方创建 → 交回释放能力，否则句柄表无从关闭
+          release: () => client.close(),
         );
         faces[info.serverId] = m.face;
+        _mounted[info.serverId] = m; // P0-B：句柄入表，供重扫/停服释放
       } on Object catch (e) {
         debugPrint(
             '[DEGRADE] gateway: local plugin ${info.serverId} mount failed: $e');
@@ -186,7 +224,7 @@ class GatewayController {
       for (final ep in eps)
         if (ep.tier == ServerPrivacyTier.private) ep.id,
     ]);
-    _templateHandler.activePrivateServerId = _activePrivateServerId;
+    _templateHandler.activePrivateServerId = _hostDefaultPrivateServerId;
     for (final ep in eps) {
       if (ep.endpoint.isEmpty || faces.containsKey(ep.id)) continue;
       try {
@@ -198,6 +236,7 @@ class GatewayController {
           apiKeyReader: epStore.apiKey,
         );
         faces[ep.id] = m.face;
+        _mounted[ep.id] = m; // P0-B：同上
       } on Object catch (e) {
         debugPrint('[DEGRADE] gateway: endpoint ${ep.id} mount failed: $e');
       }

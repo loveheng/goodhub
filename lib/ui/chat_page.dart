@@ -13,31 +13,34 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'trust_plugin_dialog.dart';
+import 'components/chat_composer.dart';
+import 'components/chat_gate_delegates.dart';
 
 import 'package:path_provider/path_provider.dart';
 
 import '../app/service_directory.dart';
 import '../coordinator/agent_loop.dart';
 import '../coordinator/conversation_archive.dart';
+import '../coordinator/chat_session_service.dart';
 import '../coordinator/degradation_controller.dart';
-import '../coordinator/fenced_cloud_engine.dart';
+
 import '../coordinator/mcp_runtime.dart';
 import '../llm/cloud/cloud_llm.dart';
 import '../coordinator/memory_kernel.dart';
 import '../coordinator/memory_governor.dart';
 import '../coordinator/context_governor.dart' show estimateTokens;
-import '../coordinator/permission_gateway.dart';
+
 import '../coordinator/workspace_stream_filter.dart';
 import '../coordinator/skill_registry.dart';
-import '../coordinator/tool_breaker.dart';
+
 import '../coordinator/tool_router.dart';
-import '../llm/cloud/chat_message_codec.dart';
+
 import '../mcp/connection_manager.dart';
 import '../mcp/local_plugin_discovery.dart';
 import '../mcp/trusted_plugins.dart';
 import '../mcp/server_endpoints.dart';
 import '../mcp/default_private_server.dart';
-import '../gateway/gateway_controller.dart';
+import '../gateway_api/gateway_control.dart';
 import '../sandbox/conversation_store.dart';
 import '../sandbox/memory_store.dart';
 import '../sandbox/workspace_state_store.dart';
@@ -48,7 +51,7 @@ import 'components/dual_track_stream.dart';
 import 'components/session_context_sheet.dart';
 import 'error_copy.dart';
 import 'components/status_capsule.dart';
-import 'components/status_strip.dart';
+
 import 'components/stream_text_buffer.dart';
 import 'tokens/console_tokens.dart';
 import 'components/stuck_watcher.dart';
@@ -77,7 +80,11 @@ class ChatPage extends StatefulWidget {
   State<ChatPage> createState() => _ChatPageState();
 }
 
-class _ChatPageState extends State<ChatPage> {
+class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
+  @override
+  void addTrack(TrackEntry entry) => _add(entry);
+  @override
+  void setPill(String label, CapsuleTone tone) => _setPill(label, tone);
   static const _systemPrompt =
       '你是 GoodHub 宿主助手，调度已挂载服务与宿主能力完成用户任务。'
       '只读工具会静默执行，写操作需用户在确认卡批准；用户偏好可写入宿主记忆'
@@ -98,10 +105,16 @@ class _ChatPageState extends State<ChatPage> {
   Future<ServerEndpointStore> _resolveEpStore() async =>
       _epStore ??= widget.endpointStoreOverride ?? await serverEndpointStore();
 
-  // 会话状态（页面 = 一个会话，§15）：活态收编进 ConversationSession
-  // （window-kernel-split 步 3-T4——transcript/绑定写回走其契约方法，
-  // 配额/激活集/降级判据/事实库随会话实例生灭，切会话即重置）。
-  ConversationSession _session = ConversationSession();
+  /// 会话服务（断点③ step1：会话内核状态下沉 coordinator/chat_session_service，
+  /// 窗口只持句柄 + UI 态；轨道卡编解码在边界完成——见 service 文件头注释）。
+  final ChatSessionService _sessionSvc = ChatSessionService();
+
+  /// 活态会话（getter 委托到服务，读取引用零改写；赋值走服务方法）。
+  ConversationSession get _session => _sessionSvc.session;
+  /// 落盘内核（getter 委托；读取引用零改写）。
+  ConversationArchive? get _archive => _sessionSvc.archive;
+  /// 侧边栏列表投影（getter 委托）。
+  List<ConversationMeta> get _conversations => _sessionSvc.conversations;
 
   /// 记忆治理器（context-stepped-pruning §6，内核层）：journal/TTL/Tick 判定
   /// 全在 MemoryGovernor（window-kernel-split 落点纪律）；窗口只测量 transcript
@@ -109,10 +122,8 @@ class _ChatPageState extends State<ChatPage> {
   final MemoryGovernor _memGovernor = MemoryGovernor();
 
   // 会话持久化（archive-memory-claim 步 1）：落盘事实 owner = ConversationArchive
-  // 内核（懒建/快照组装/恢复/删除门面），窗口只持侧边栏列表投影。
-  ConversationArchive? _archive;
-
-  var _conversations = <ConversationMeta>[];
+  // 内核（懒建/快照组装/恢复/删除门面），窗口只持侧边栏列表投影（已下沉
+  // _sessionSvc.archive，见上方 getter）。
   // 端点缓存（供 composer menu 与默认回退使用；_send 内刷新）。
   List<ServerEndpoint> _endpoints = <ServerEndpoint>[];
   // 本地插件缓存（零配置自动发现；系统托管、始终挂载；供状态带/菜单展示）。
@@ -174,52 +185,43 @@ class _ChatPageState extends State<ChatPage> {
   // ---------------------------------------------------------------------------
 
   Future<void> _initConversations() async {
-    final support = await getApplicationSupportDirectory();
-    _archive = ConversationArchive.underSupportDir(support.path);
-    // SamplingQuota 恢复（杀进程重启不清零；切会话仍重置=行为变更①）。
-    final quota = await _archive!.loadQuota();
+    await _sessionSvc.init();
     // P2-1：配额损坏/签名不符不再静默清零——原文件已备份，用户可见提示
     // （旧行为：用户对额度重置毫无知觉）。
-    if (_archive!.lastQuotaError != null) {
+    if (_sessionSvc.archive?.lastQuotaError != null) {
       _add(TrackNote('⚠ 用量配额记录损坏，已按全新额度计算（原文件已备份）',
           danger: true));
     }
-    if (quota != null && mounted) {
-      setState(() => _session = ConversationSession(samplingQuota: quota));
-    }
-    await _refreshConversations();
+    if (mounted) setState(() {}); // 配额/会话已从服务恢复
   }
 
   Future<void> _refreshConversations() async {
-    final archive = _archive;
-    if (archive == null) return;
-    final list = await archive.list();
+    await _sessionSvc.refresh();
     if (!mounted) return;
-    setState(() => _conversations = list);
+    setState(() {});
   }
 
   /// Run 收尾/绑定即存快照：save 组装与落盘在 Archive 内核；失败 DEGRADE
-  /// 留痕返 false，窗口出轨道提示（视图态可观测）。
+  /// 留痕返 false，窗口出轨道提示（视图态可观测）。轨道卡编码在边界完成
+  /// （TrackEntryCodec 属 ui 层，service 不依赖 ui 类型）。
   Future<void> _persistCurrent() async {
-    final archive = _archive;
-    if (archive == null || !archive.hasCurrent) return;
-    final ok = await archive.saveCurrent(
+    final ok = await _sessionSvc.persistCurrent(
       // ux-hardening P0-1：引导卡瞬态（动作回调不可序列化）——持久化前
       // 过滤，恢复会话不出现；未配置状态由 _loadEndpoints 重插。
       trackJson: TrackEntryCodec.encode(
         _track.where((e) => e is! TrackGuide).toList(),
       ),
-      session: _session,
     );
     if (!ok) _add(TrackNote('⚠ 会话快照保存失败（见日志）', danger: true));
-    // 配额落盘（AM1）：随 Run 收尾一并持久化，防杀进程刷新额度。
-    await archive.saveQuota(_session.samplingQuota);
-    await _refreshConversations();
   }
 
   /// 切换/删除前的当前会话保底。
   Future<void> _persistIfAny() async {
-    if (_archive?.hasCurrent ?? false) await _persistCurrent();
+    await _sessionSvc.persistIfAny(
+      trackJson: TrackEntryCodec.encode(
+        _track.where((e) => e is! TrackGuide).toList(),
+      ),
+    );
   }
 
   /// 恢复/新建后重置会话态：激活集属会话（§15），跨会话必须重开。
@@ -229,14 +231,13 @@ class _ChatPageState extends State<ChatPage> {
   void _resetSessionState() {
     setState(() {
       _track.clear();
-      _session = ConversationSession();
-      _archive?.resetCurrent();
       _activeCallEntry = null;
       _pillLabel = 'idle';
       // 记忆治理器随会话生灭（§6.2：传输态切会话即弃，重置周期锚点）。
       _memGovernor.reset();
       _pillTone = CapsuleTone.idle;
     });
+    _sessionSvc.resetSession(); // 内核态重置（会话实例 + 归档当前指针）
   }
 
   Future<void> _newConversation() async {
@@ -250,7 +251,7 @@ class _ChatPageState extends State<ChatPage> {
 
   Future<void> _loadConversation(ConversationMeta meta) async {
     if (!_guardRunning('切换会话')) return;
-    final snap = await _archive?.load(meta.id);
+    final snap = await _sessionSvc.loadSnapshot(meta.id);
     if (!mounted) return;
     if (snap == null) {
       // 损坏会话不进任何轨道（避免串台写进当前会话快照），SnackBar 明示。
@@ -262,15 +263,12 @@ class _ChatPageState extends State<ChatPage> {
     Navigator.pop(context);
     _resetSessionState();
     _autoFollow = true;
+    await _sessionSvc.adoptSnapshot(snap); // 内核态恢复（id/title/绑定/transcript）
     setState(() {
-      _archive?.adoptSnapshot(snap); // 当前 id/title 归 Archive 内核
-      _session.bindPrivateServer(snap.activePrivateServerId);
-      _session.replaceTranscript(
-          ChatMessageCodec.decodeCloud(snap.messages)); // 全量替换
-      _track.addAll(TrackEntryCodec.decode(snap.track));
+      _track.addAll(TrackEntryCodec.decode(snap.track)); // 轨道卡解码在 UI 层
     });
     // MO6 阶段一：切换会话 → 网关投影同步宿主当前激活私有域（PC 只读镜像）。
-    GatewayController.shared.syncActivePrivate(_session.activePrivateServerId);
+    syncGatewayActivePrivate(_session.activePrivateServerId);
     _pinToBottom();
   }
 
@@ -297,9 +295,9 @@ class _ChatPageState extends State<ChatPage> {
       ),
     );
     if (confirmed != true) return;
-    await _archive?.delete(meta.id);
-    if (_archive?.currentId == meta.id) _resetSessionState();
-    await _refreshConversations();
+    await _sessionSvc.delete(meta.id);
+    if (_sessionSvc.archive?.currentId == meta.id) _resetSessionState();
+    if (mounted) setState(() {}); // 侧边栏列表随服务刷新
   }
 
   /// T6：静态首级摘要「## 已挂载服务」（自动生成，标注工具名前缀格式）。
@@ -518,7 +516,7 @@ class _ChatPageState extends State<ChatPage> {
     final bound = _session.activePrivateServerId ?? _resolveBinding(all);
     setState(() => _session.bindPrivateServer(bound));
     // MO6 阶段一：端点预热/默认锁定后 → 网关投影同步宿主当前激活私有域。
-    GatewayController.shared.syncActivePrivate(_session.activePrivateServerId);
+    syncGatewayActivePrivate(_session.activePrivateServerId);
     // ux-hardening P0-1：未配置（无启用端点且无本地插件）→ 轨道内引导卡
     // 替代历史上的整页跳转；幂等入轨，瞬态不持久化。
     _ensureGuide();
@@ -596,7 +594,7 @@ class _ChatPageState extends State<ChatPage> {
   void _bindSessionServer(String? serverId) {
     setState(() => _session.bindPrivateServer(serverId));
     // MO6 阶段一：菜单即时绑定/清空 → 网关投影同步宿主当前激活私有域。
-    GatewayController.shared.syncActivePrivate(_session.activePrivateServerId);
+    syncGatewayActivePrivate(_session.activePrivateServerId);
     unawaited(_persistCurrent());
   }
 
@@ -789,9 +787,9 @@ class _ChatPageState extends State<ChatPage> {
         memoryStore: memoryStore,
         skills: _session.skills!,
         delegates: RuntimeDelegates(
-          gateDelegate: _ChatGate(this),
-          fenceDelegate: _ChatFence(this), // D4 有人值守拦截卡
-          blockDelegate: _ChatBlock(this),
+          gateDelegate: ChatGateDelegate(this),
+          fenceDelegate: ChatFenceDelegate(this), // D4 有人值守拦截卡
+          blockDelegate: ChatBlockDelegate(this),
           consentDelegate: (handle, from, to, preview) async {
             // D5：恒 L2 弹卡、无豁免勾选；禁盲签由卡内兜底。点外部不关 =
             // 显式裁决（误触外部不等于默拒）。
@@ -1110,22 +1108,6 @@ class _ChatPageState extends State<ChatPage> {
     return head.length > 120 ? '${head.substring(0, 120)}…' : head;
   }
 
-  /// 输入条内嵌状态带：布局体外提 StatusStrip（步 4 Epic C），胶囊可点开菜单。
-  Widget _statusStrip(ConsoleTokens t) {
-    return StatusStrip(
-      t: t,
-      pillTone: _pillTone,
-      pillLabel: _pillLabel,
-      running: _running,
-      runStartedAt: _runStartedAt,
-      contextId: _session.activePrivateServerId,
-      localPluginCount: _localPlugins.length,
-      hasEndpoints: _endpoints.isNotEmpty,
-      endpointName: _endpointName,
-      onOpenMenu: _openComposerMenu,
-    );
-  }
-
   /// Run 进行中离开拦截(破坏性防护 P0):系统返回/手势先弹确认——确认则
   /// abort 后退出,否则留在页内。非运行态不拦截(零摩擦)。
   Future<bool> _confirmLeaveWhileRunning() async {
@@ -1232,104 +1214,27 @@ class _ChatPageState extends State<ChatPage> {
                   constraints: const BoxConstraints(maxWidth: 720),
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
-                    // 底部控制集群：药丸输入条（状态带 + 相位 + 输入 + 主操作钮）；
-                    // 运行态发送钮形变复用为「中止」键（§3.1：单一主操作槽切换
-                    // 发送↔中止，避免右侧另起红键挤占输入区，省一条常驻空行）。
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        Expanded(
-                          child: Container(
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(24),
-                              border: Border.all(color: t.hairline),
-                              color: Theme.of(context).cardColor,
-                            ),
-                            clipBehavior: Clip.antiAlias,
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                // §3.1 状态做在输入框本身上沿（框内顶部状态带），idle
-                                // 高度收 0，运行态平滑展开；文本输入区始终全宽（D+B 改造）。
-                                AnimatedContainer(
-                                  duration: t.fastDuration,
-                                  curve: Curves.easeOut,
-                                  height: (_running || _hasContext || _endpoints.isNotEmpty)
-                                      ? 30
-                                      : 0,
-                                  clipBehavior: Clip.antiAlias,
-                                  decoration: const BoxDecoration(
-                                    borderRadius: BorderRadius.vertical(
-                                      top: Radius.circular(24),
-                                    ),
-                                  ),
-                                  child: _statusStrip(t),
-                                ),
-                                Row(
-                                  children: [
-                                      IconButton(
-                                        icon: const Icon(Icons.add),
-                                        tooltip: '会话上下文（绑定 MCP 服务）',
-                                        onPressed: _openComposerMenu,
-                                        padding: EdgeInsets.zero,
-                                        constraints: const BoxConstraints(
-                                            minWidth: 36, minHeight: 36),
-                                      ),
-                                    Expanded(
-                                      child: TextField(
-                                        controller: _inputCtrl,
-                                        // 运行中保持可预输入（发送由按钮/_guard 挡 running）。
-                                        minLines: 1,
-                                        maxLines: 4,
-                                        textInputAction: TextInputAction.send,
-                                        decoration: InputDecoration(
-                                          hintText: _running
-                                              ? '生成中…可先预输入下一轮'
-                                              : '描述任务…（Enter 发送；如：列出今天的待办）',
-                                          border: InputBorder.none,
-                                          contentPadding: const EdgeInsets.fromLTRB(14, 12, 6, 12),
-                                        ),
-                                        onSubmitted: (_) {
-                                          // SSOT §1：运行中触发发送等动作
-                                          // 须给 SnackBar 说明（禁止静默禁用）——
-                                          // 回车不是「键盘坏了」，是「在忙」；
-                                          // 复用 _guardRunning 共用话术。
-                                          if (!_guardRunning('发送')) return;
-                                          _send();
-                                        },
-                                      ),
-                                    ),
-                                    const SizedBox(width: 4),
-                                    // §3.1 复用发送钮：运行态形变为主操作「中止」键，
-                                    // 单一槽位内切换 发送↔中止，避免右侧另起红键挤占输入区。
-                                    // P1-4（§1 高反差拍板）：Crimson 实底 + 白图标 +
-                                    // 40×40——filledTonal 的 tonal 底在运行态不足以让
-                                    // 普通用户一眼找到「停止」。
-                                    IconButton.filledTonal(
-                                      style: IconButton.styleFrom(
-                                        minimumSize: const Size(40, 40),
-                                        padding: EdgeInsets.zero,
-                                        foregroundColor:
-                                            _running ? Colors.white : null,
-                                        backgroundColor:
-                                            _running ? t.dangerDeep : null,
-                                      ),
-                                      onPressed: _running ? _abort : _send,
-                                      tooltip: _running ? '中止' : '发送',
-                                      icon: Icon(
-                                        _running
-                                            ? Icons.stop
-                                            : Icons.arrow_upward,
-                                        size: 20,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
+                    // 底部控制集群已抽 lib/ui/components/chat_composer.dart
+                    // （断点③ step2：传数据 + 回调，零依赖本页私有态）。
+                    child: ChatComposer(
+                      inputCtrl: _inputCtrl,
+                      running: _running,
+                      hasContext: _hasContext,
+                      contextId: _session.activePrivateServerId,
+                      endpointName: _endpointName,
+                      hasEndpoints: _endpoints.isNotEmpty,
+                      localPluginCount: _localPlugins.length,
+                      pillTone: _pillTone,
+                      pillLabel: _pillLabel,
+                      runStartedAt: _runStartedAt,
+                      onOpenMenu: _openComposerMenu,
+                      // 回车与发送钮统一走 guard（非 running 时 guard 通过→等价原
+                      // 按钮直发；running 时按钮已变中止键，此处拦下并给 SnackBar）。
+                      onSend: () {
+                        if (!_guardRunning('发送')) return;
+                        _send();
+                      },
+                      onAbort: _abort,
                     ),
                   ),
                 ),
@@ -1342,53 +1247,4 @@ class _ChatPageState extends State<ChatPage> {
   }
 }
 
-/// L2 确认卡委托：轨道插待决卡并 await 用户操作（§10 结算流）。
-class _ChatGate implements GateDelegate {
-  _ChatGate(this._state);
 
-  final _ChatPageState _state;
-
-  @override
-  Future<GateDecision> confirm(ToolPendingConfirmation pending) {
-    final entry = TrackConfirm(pending: pending);
-    _state._add(entry);
-    return entry.completer.future;
-  }
-}
-
-/// 熔断/步数墙排查卡委托。
-class _ChatBlock implements BlockDelegate {
-  _ChatBlock(this._state);
-
-  final _ChatPageState _state;
-
-  @override
-  Future<BreakerResolution> onBreakerTripped(BreakerReport report) {
-    _state._setPill('breaker', CapsuleTone.danger);
-    final entry = TrackBreaker.breaker(report);
-    _state._add(entry);
-    return entry.completer.future.then((value) => value as BreakerResolution);
-  }
-
-  @override
-  Future<bool> onStepWallReached(StepWallReport report) {
-    final entry = TrackBreaker.wall(report);
-    _state._add(entry);
-    return entry.completer.future.then((value) => value as bool);
-  }
-}
-
-/// N7 围栏拦截确认委托（D4 有人值守面）。
-class _ChatFence implements PiiFenceDelegate {
-  _ChatFence(this._state);
-
-  final _ChatPageState _state;
-
-  @override
-  Future<bool> onMaskBlocked(PiiMaskBlockInfo info) {
-    _state._setPill('fence', CapsuleTone.danger);
-    final entry = TrackFence(info);
-    _state._add(entry);
-    return entry.completer.future;
-  }
-}

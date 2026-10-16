@@ -35,6 +35,7 @@ void main() {
     var ran = 0;
     final sec = GatewaySecurity(delegate: delegate);
     final r = await sec.guard(
+      serverId: 'demo',
       tool: 'demo__read',
       annotations: {'readOnlyHint': true},
       argumentsJson: '{}',
@@ -52,6 +53,7 @@ void main() {
     var ran = 0;
     final sec = GatewaySecurity(delegate: null);
     final r = await sec.guard(
+      serverId: 'demo',
       tool: 'demo__write',
       annotations: null, // 双缺从严
       argumentsJson: '{}',
@@ -71,6 +73,7 @@ void main() {
     var ran = 0;
     final sec = GatewaySecurity(delegate: delegate);
     Future<GatewayToolResult> call() => sec.guard(
+          serverId: 'demo',
           tool: 'demo__write',
           annotations: null,
           argumentsJson: '{}',
@@ -99,6 +102,7 @@ void main() {
       consentTimeout: const Duration(milliseconds: 50),
     );
     final r = await sec.guard(
+      serverId: 'demo',
       tool: 'demo__write',
       annotations: null,
       argumentsJson: '{}',
@@ -115,6 +119,7 @@ void main() {
   test('PII 出站过滤：手机号遮蔽为占位符', () async {
     final sec = GatewaySecurity();
     final r = await sec.guard(
+      serverId: 'demo',
       tool: 'demo__read',
       annotations: {'readOnlyHint': true},
       argumentsJson: '{}',
@@ -133,12 +138,14 @@ void main() {
         (_) async => const GateDecision(approved: false, reason: '不要'));
     final sec = GatewaySecurity(delegate: delegate, opsLog: store);
     await sec.guard(
+      serverId: 'demo',
       tool: 'demo__write',
       annotations: null,
       argumentsJson: '{}',
       run: () async => const GatewayToolResult(content: 'x', isError: false),
     );
     await sec.guard(
+      serverId: 'demo',
       tool: 'demo__read',
       annotations: {'readOnlyHint': true},
       argumentsJson: '{}',

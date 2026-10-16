@@ -313,4 +313,39 @@ void main() {
       await server.stop();
     }
   });
+
+  test('POST-only 连接投影上下文 idle GC（#7 泄漏修复）', () async {
+    // 纯 POST 客户端不维持 SSE 订阅通道，断连时无法经 _handleGet 的 done 清理，
+    // 须由 idle GC 按 idleTimeout 回收其 handler/session 条目（否则长期运行网关累积泄漏）。
+    final face = McpToolFace(client: McpClient(_FakeTransport()), serverId: 'demo');
+    await face.listTools();
+    final server = McpGatewayServer(
+      GatewayHandler(faces: {'demo': face}),
+      idleTimeout: const Duration(milliseconds: 100),
+    );
+    await server.start(address: InternetAddress.loopbackIPv4, port: 0);
+    final base = 'http://127.0.0.1:${server.port}/mcp';
+    final c = HttpClient();
+    try {
+      // 纯 POST 初始化（不订阅 SSE）。
+      final r0 = await _post(c, base,
+          jsonEncode({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize'}));
+      final sid = r0.headers.value('mcp-session-id')!;
+      // 会话立即可用。
+      final rList = await _post(c, base,
+          jsonEncode({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'}),
+          sessionId: sid);
+      expect(rList.statusCode, 200);
+      // 超过 idleTimeout 无活动 → idle GC 回收纯 POST 连接。
+      await Future.delayed(const Duration(milliseconds: 350));
+      final rStale = await _post(c, base,
+          jsonEncode({'jsonrpc': '2.0', 'id': 3, 'method': 'tools/list'}),
+          sessionId: sid);
+      expect(rStale.statusCode, 400,
+          reason: 'idle GC 应已回收纯 POST 连接，旧 sid 应不可知');
+    } finally {
+      c.close(force: true);
+      await server.stop();
+    }
+  });
 }

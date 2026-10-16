@@ -10,17 +10,25 @@ import 'package:goodhub/ui/tokens/console_tokens.dart';
 
 void main() {
   // DateTime 构造非 const——列表元素去 const（值仍不可变）。
+  //
+  // **相对「今天」构造，禁止硬编码绝对日期**：被测件 fmtTime 拿真实
+  // DateTime.now() 比日历日（components/conversation_drawer.dart），写死日期的
+  // fixture 隔夜即腐——2026-10-17 实测：原写死 2026-10-16 的样本在次日全红，
+  // 而本仓长期不跑测试故一直没暴露。跨天样本用 `day - 2`（DateTime 自动跨月规范化）。
+  final now = DateTime.now();
   final metas = <ConversationMeta>[
     ConversationMeta(
       id: 'conv_1',
       title: '列出今天的待办',
-      updatedAt: DateTime(2026, 10, 16, 9, 30).millisecondsSinceEpoch,
+      updatedAt: DateTime(now.year, now.month, now.day, 9, 30)
+          .millisecondsSinceEpoch,
       messageCount: 6,
     ),
     ConversationMeta(
       id: 'conv_2',
       title: '周报摘要',
-      updatedAt: DateTime(2026, 10, 15, 20, 5).millisecondsSinceEpoch,
+      updatedAt: DateTime(now.year, now.month, now.day - 2, 20, 5)
+          .millisecondsSinceEpoch,
       messageCount: 0, // 旧数据缺省 0：只显时间不显条数
     ),
   ];
@@ -54,8 +62,15 @@ void main() {
     expect(find.text('列出今天的待办'), findsOneWidget);
     expect(find.text('09:30 · 6 条'), findsOneWidget);
     expect(find.text('周报摘要'), findsOneWidget);
-    // 0 条：只显时间（跨天 → M/d HH:mm），不编造条数。
-    expect(find.text('10/15 20:05'), findsOneWidget);
+    // 0 条：只显时间（跨天 → M/d HH:mm），不编造条数（期望值随 fixture 推导，
+    // 不写死日期——否则与上面「相对今天」的构造脱钩，隔夜再腐）。
+    final crossDay = DateTime.fromMillisecondsSinceEpoch(metas[1].updatedAt);
+    expect(
+      find.text('${crossDay.month}/${crossDay.day} '
+          '${crossDay.hour.toString().padLeft(2, '0')}:'
+          '${crossDay.minute.toString().padLeft(2, '0')}'),
+      findsOneWidget,
+    );
     expect(find.textContaining('0 条'), findsNothing);
   });
 

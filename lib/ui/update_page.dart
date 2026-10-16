@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -29,7 +27,8 @@ class _UpdatePageState extends State<UpdatePage> {
   String? _message;
   _MsgTone _messageTone = _MsgTone.info;
   UpdateManifest? _manifest;
-  File? _apk;
+  /// 已下载 APK 的**路径**（非 File 句柄——UI 层禁 dart:io，文件对象留在 update 域）。
+  String? _apkPath;
   int _received = 0;
   int? _total;
   PackageInfo? _info;
@@ -99,7 +98,7 @@ class _UpdatePageState extends State<UpdatePage> {
     setState(() {
       _phase = _Phase.checking;
       _message = null;
-      _apk = null;
+      _apkPath = null;
     });
     try {
       final manifest = await _service.check();
@@ -147,7 +146,7 @@ class _UpdatePageState extends State<UpdatePage> {
       );
       if (!mounted) return;
       setState(() {
-        _apk = apk;
+        _apkPath = apk.path;
         _phase = _Phase.readyToInstall;
       });
       _say('下载完成并已通过完整性校验，点击安装', _MsgTone.success);
@@ -163,9 +162,9 @@ class _UpdatePageState extends State<UpdatePage> {
   }
 
   Future<void> _install() async {
-    final apk = _apk;
+    final apkPath = _apkPath;
     final manifest = _manifest;
-    if (apk == null || manifest == null) return;
+    if (apkPath == null || manifest == null) return;
     // 纵深防御：安装前再比对一次清单包名与本机包名，不一致直接拒装。
     // 正常流程在 check() 已拦截，此处防将来新增入口绕过检查直接安装。
     final currentId = _info?.packageName;
@@ -202,7 +201,7 @@ class _UpdatePageState extends State<UpdatePage> {
     );
     if (confirmed != true) return;
     try {
-      await installApk(apk.path);
+      await installApk(apkPath);
     } catch (e) {
       _say('$e（首次安装需在系统弹窗中允许「安装未知应用」）', _MsgTone.error);
     }

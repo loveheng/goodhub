@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-13
+updated: 2026-10-17
 ---
 # docs
 
@@ -29,3 +29,6 @@ updated: 2026-10-13
   - [design/host-gateway-accessibility-memory.md](design/host-gateway-accessibility-memory.md) — Host 网关架构 · 访问性模型 · 记忆 In-band 捎带提取（Provider×Tier 解耦 / 聚合反向代理 / `<workspace_update>`），chatmessage epic 的设计 SSOT
   - [design/context-stepped-pruning.md](design/context-stepped-pruning.md) — 上下文阶梯截断与归档摘要（高低水位双缓冲 6~12 轮 / 端侧摘要归档 / 前缀缓存保命中，draft）
   - [design/ux-hardening.md](design/ux-hardening.md) — 普通用户可用性加固：冷启动/错误自救/术语白话/危险操作权重/DEGRADE 用户可见性（page-revamp 已清零后的第二批）
+  - [design/arch-hardening.md](design/arch-hardening.md) — 架构债修复施工稿：内核单入口 + 四条反向边斩断（承接 window-kernel-split 步 0→3 的勾稽表）
+  - [design/archive-memory-claim.md](design/archive-memory-claim.md) — 会话归档与记忆认领设计（Archive 生命周期与配额）
+  - [design/p0-security-correctness.md](design/p0-security-correctness.md) — P0 缺陷修复施工稿：文件级写互斥 / 网关 per-session 安全上下文与装配句柄释放 / 依赖护栏与门禁加固

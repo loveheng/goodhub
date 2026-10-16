@@ -28,6 +28,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../core/audit_sink.dart';
+import '../core/storage/keyed_write_queue.dart';
 import '../core/storage/sequential_file_writer.dart';
 import '../core/tokens.dart';
 
@@ -142,14 +143,38 @@ class MemoryStore implements AuditSink {
   late final SequentialFileWriter _lessonsWriter;
   late final SequentialFileWriter _opsWriter;
 
-  /// 操作串行链：所有「读-改-写」复合单元与轮转在此排队，杜绝交错。
-  Future<void> _tail = Future<void>.value();
+  /// 复合单元互斥键（沙盒目录规范路径）：**同目录的一切 MemoryStore 实例**
+  /// 共用一条链——`underSupportDir` 是 factory，各装配点（main / gateway 每次
+  /// 重扫 / chat_page 每 Run / 记忆看板）new 出的实例必须串行，否则「读-改-写」
+  /// 复合单元交错即**静默丢失更新**（2026-10-17 P0-A）。
+  String get _lockKey => KeyedWriteQueue.keyForPath(dir.path);
+
+  /// 已入队尚未完成的复合单元键（供 [ioDrained] 精确排空）。
+  final Set<String> _pending = <String>{};
 
   Future<T> _enqueue<T>(Future<T> Function() task) {
-    final result = _tail.then((_) => task());
-    // 吞错仅为续链（错误已透传 result），与 SequentialFileWriter 同口径。
-    _tail = result.then<void>((_) {}, onError: (Object _) {});
-    return result;
+    _pending.add(_lockKey);
+    return KeyedWriteQueue.instance
+        .enqueue(_lockKey, task)
+        .whenComplete(() => _pending.remove(_lockKey));
+  }
+
+  /// 写链排空（确定性握手）：await 它 = 所有已入队读-改-写复合单元与三个
+  /// writer 队列完成。供测试替代「固定延迟猜等」——全量并发时 CPU 饱和，
+  /// 延迟窗口不够即 flaky（2026-10-16 `memory_kernel_test`×2 存量失败教训）。
+  ///
+  /// 分两段：复合单元完成后其内部的 writer 写**已入队但未必落盘**，故链与
+  /// writer 都要排空；[KeyedWriteQueue.settled] 自带收敛循环（await 期间新
+  /// 入队的任务一并等），无需调用方再做 identical 轮询。
+  Future<void> get ioDrained async {
+    await Future.wait([
+      for (final k in _pending.toList()) KeyedWriteQueue.instance.settled(k),
+    ]);
+    await Future.wait([
+      _memoryWriter.settled,
+      _lessonsWriter.settled,
+      _opsWriter.settled,
+    ]);
   }
 
   // ---------------------------------------------------------------------------

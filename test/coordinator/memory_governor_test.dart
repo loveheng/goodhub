@@ -63,8 +63,9 @@ void main() {
     expect(base1, '', reason: '空 store 渲染空串');
     // 写入记忆 → 本 Run 内 record（onCapsule 只写 pending 池）。
     await store.upsertFacts('env.os', 'mac', scope: 'user');
-    // 落盘走 discarded_futures（真实文件 IO），等队列排空再让 Tick 压实读盘。
-    await Future<void>.delayed(const Duration(milliseconds: 100));
+    // 落盘走 discarded_futures（真实文件 IO），确定性等写链排空再让 Tick 压实读盘——
+    // 禁用固定延迟猜等（全量并发 CPU 饱和时窗口不够即 flaky）。
+    await store.ioDrained;
     g.record(action: 'upsert', scope: 'user', key: 'env.os', value: 'mac');
     // 非 Tick 二次装配：快照不变（字节冻结）、footer 携带 delta。
     final base2 = await g.assembleSystemTail(

@@ -36,8 +36,10 @@ void main() {
     journalDeltas.clear();
   });
 
-  /// 落盘走 discarded_futures（真实文件 IO），显式等队列排空再断言。
-  Future<void> settle() => Future<void>.delayed(const Duration(milliseconds: 100));
+  /// 落盘走 discarded_futures（真实文件 IO），确定性等写链排空再断言——
+  /// 禁用固定延迟猜等（全量并发 CPU 饱和时窗口不够即 flaky）。
+  Future<void> settle() =>
+      Future.wait([wsStates.ioDrained, kernel.memoryStore.ioDrained]);
 
   WorkspaceStreamFilter filter() => kernel.buildFilter(
         wsStates: wsStates,

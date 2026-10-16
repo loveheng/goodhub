@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-16
+updated: 2026-10-17
 ---
 
 > **名词映射（2026-10-16）**：本文件中的「服务大厅」= 现**设置页**（`lib/ui/settings_page.dart`）——聊天页 ⚙ 设置弹层已并入服务大厅并统一改名「设置」。历史决策/施工原文**保留不替换**，代码与现行文档以新名为准（合并记录见 [page-revamp.md](page-revamp.md)）。
@@ -63,6 +63,13 @@ lib/
 3. **生命周期单向依赖**：应用级 ← 会话级 ← Run 级，**严禁反向依赖**；短周期消亡不得拉扯长周期实例销毁；长周期变更经**快照 + 端口**下传。**不引事件总线**——总线会把 Run 级生命周期拉成应用级，必然泄漏。
 4. **视图态不下沉、领域态不上浮**：双轨渲染模型 / 流控 / 滚动跟随 / CallCard 相位**永远留在窗口**；transcript / 技能激活集 / 降级判据 / 私有域绑定**永远留在内核**。二者同居一个 `State` 是「新增字段要改 3 处、漏改即静默 bug」的根源。
 5. **内核命名须登记**：新增内核前先在设计稿 §3.1 内核清单登记，**禁止自造同义名**（已裁决用 `McpRuntime`，不得另写 `ServiceRuntime` / `ServiceManager`）。
+6. **跨域协作走端口，禁反向 import（2026-10-16 新增，arch-hardening 四边清零配套）**：域间能力需求一律落**最小抽象端口 + 注入**，红灯清单（`goodhub-workflow` skill「架构依赖纪律与修复施工规范」节）中的反向边**已于 2026-10-16 清零，此后任何命中即新违例**。既有范式（新代码照此，勿另造）：
+   - **能力端口**：消费方域内定义 `abstract interface class` 最小能力集，实现方 `implements`（实现方依赖消费方 = 合法方向）。范式：`mcp/connection_face.dart`（`ConnectionFace`，face/faceFactory 二选一注入、双缺快速失败）、`mcp/sampling.dart` 的 `SamplingEngine`、`core/audit_sink.dart`（`AuditSink`，替代直接 import `sandbox/memory_store`）。
+   - **跨域消息货币落 core**：多域共用的数据模型一律放 `core/`（纯数据无依赖）——`core/tool_result.dart`（`ToolExecutionResult`）、`core/chat_message_data.dart`（`ChatMessageData`）；**禁止把 A 域具体类型经端口签名漏进 B 域**（反例教训：face 接口若暴露 `CloudToolSchema` 即把 llm 拖进 mcp，故 `ConnectionFace` 只暴露 `listToolNames()`）。
+   - **编解码归模型所有方**：transcript/协议 codec 住在模型域（`llm/cloud/chat_message_codec.dart`），存储层只认 core DTO + JSON Map，**禁止在存储层 import 模型域类型**。
+   - **无 UI 裁决 fail-closed**：服务域触达 Human-In-The-Loop 能力（确认卡/弹层）时，UI 实现住窗口层、经端口注入；**桥缺位/超时/异常三路必须恒 `approved: false` 快速拒绝**（范式：`gateway_security.dart` + `ui/gateway_consent_dialog.dart`，reason 前缀 `headless_no_ui_prompt`），严禁悬挂 Completer 或静默放行。
+   - **生命周期 Owner 随端口声明**：注入对象「谁创建谁销毁、有无独立 dispose」必须写进端口文件头注释（范式：`connection_face.dart`——face 无独立 dispose，释放唯一入口 = owner 调 `client.close()`）。
+   - **海关过滤保留待接线（SA-Q6 拍板，2026-10-17 立法）**：`lib/mcp/tool_router.dart` 的 F1.2 命名空间隔离 + F1.9 海关门控当前**保留待接线**——**严禁误启用**：现网 MCP server 普遍不下发 `x-mcp-export-to-shared`/`readOnlyHint` annotations，启用即把全部未打标工具过滤掉、生产功能归零（SA-Q6-c 已判不可行）。`lib/mcp/tool_router.dart` **不删不引**（arch-hardening 施工纪律）：保留为海关过滤原始实现参考，待 SDK 发 annotations 后按 #9 补强合并进 `coordinator/tool_router.dart` 接线。**三项启用前置条件**（全部满足方可接线启用，任一缺失即红线违例）：① 现网主流 MCP server 普遍下发 `x-mcp-export-to-shared`/`readOnlyHint`（或网关侧已注入兜底标注）；② 接线后默认开关**必须 fail-closed**（默认不激活海关过滤，仅显式开启 + 双 annotations 命中才过滤）；③ 接线落地须带等价性单测 + 全量工具可见性回归，证明不降低生产工具集。
 
 ### 1.2 core/network 与 mcp_bus 的边界纪律`core/network` 只放**纯传输底座**（HTTP client、指数退避算法等通用件）；**JSON-RPC/SSE 协议语义必须住在 `features/mcp_bus`**——重连期间「积压队列整体丢弃并回告模型、不静默重放」（F1.12）是总线策略，漏到 core 即围栏旁路。
 
@@ -128,28 +135,37 @@ class ActionCardFailed extends ActionCardState { final String error; /* ... */ }
 
 ```dart
 class SequentialFileWriter {
-  final File file;
-  Future<void> _lastWrite = Future.value();
-
   SequentialFileWriter(this.file);
 
-  Future<void> write(String content) => _enqueue(() async {
+  final File file;
+
+  /// 互斥键 = 文件的规范绝对路径（**不是本对象**）
+  String get _key => KeyedWriteQueue.keyForPath(file.path);
+
+  Future<void> write(String content) =>
+      KeyedWriteQueue.instance.enqueue(_key, () async {
         final temp = File('${file.path}.tmp');
         await temp.writeAsString(content, flush: true);
         await temp.rename(file.path); // 原子替换
       });
 
-  Future<void> append(String content) => _enqueue(() async {
+  Future<void> append(String content) =>
+      KeyedWriteQueue.instance.enqueue(_key, () async {
         await File(file.path).writeAsString(content,
             mode: FileMode.append, flush: true);
       });
 
-  Future<void> _enqueue(Future<void> Function() task) {
-    _lastWrite = _lastWrite.then((_) => task());
-    return _lastWrite;
-  }
+  /// 链尾快照（确定性握手；同路径的其他实例也在同一条链上，故跨实例可见）
+  Future<void> get settled => KeyedWriteQueue.instance.settled(_key);
 }
 ```
+
+**互斥粒度必须是「文件路径」，不是「writer 对象」**（2026-10-17 P0-A 修订——上面草案里的 `_lastWrite` 实例字段是缺陷写法，勿照抄）：
+
+- `MemoryStore` / `WorkspaceStateStore` / `ConversationStore` 的 `underSupportDir` 均为 factory，同路径会被 new 出多个实例（生产装配点 5 处：main / 网关每次重扫 / chat_page 每 Run / 记忆看板）。若链随实例走，同路径的多条链交错即**静默丢失更新**（实测 100 行 append 只剩 50 行）；
+- 一切写路径经 `core/storage/keyed_write_queue.dart` 的**进程级按路径键注册表**排队（链排空且无后继即惰性除名，防无界增长）；单次失败向调用方透传异常但不毒化队列（续链与透传分离）；
+- **复合「读-改-写」单元同样必须接入**：只串行化底层 `write` 不够——两个实例仍会各自读到同一份旧内容、后写覆盖前写。键粒度：MemoryStore 取沙盒目录（三件套共锁），WorkspaceStateStore 取目录 + 会话 id（不同会话仍可并行）；
+- 排空握手一律用 `settled` / `ioDrained`，**禁止用固定 `Future.delayed` 猜等**（全量并发 CPU 饱和即 flaky，2026-10-16 存量教训）。
 
 - ops.log 轮转（10MB 上限 + `.1` 单代滚动 + 启动清理）由调用方在 append 链路上检查触发，**轮转本身也必须入队串行执行**。
 - 禁止并发裸写磁盘；禁止绕过 writer 直接 `File.writeAsString`。

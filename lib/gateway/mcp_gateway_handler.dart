@@ -97,9 +97,15 @@ class GatewayHandler {
         faces: faces,
         privateServerIds: privateServerIds,
         activePrivateServerId: activePrivateServerId,
-        security: security,
+        // 2026-10-17 P0-B：安全上下文**随连接派生**（此前是同一引用，导致
+        // PC-A 的「本会话记住」给 PC-B 同工具免 L2 确认 = 跨会话提权）。
+        security: security?.forSession(),
         onListChanged: () => _listChanged.add(null),
       );
+
+  /// 连接回收时释放本连接的安全上下文（P0-B）：per-session 豁免集随连接销毁，
+  /// 不留内存态。幂等，可在 stop / idle GC 等任意回收路径调用。
+  void disposeSession() => security?.resetSessionGrants();
 
   /// 网关级系统工具 [kGatewaySelectPrivate] 处理：**仅改写本连接** [activePrivateServerId]，
   /// 绝不触碰宿主 `discovery_executor` 槽位机或任何 face（连接级投影切换）。
@@ -297,6 +303,7 @@ class GatewayHandler {
       final sec = security;
       if (sec == null) return await run();
       return await sec.guard(
+        serverId: parsed.serverId,
         tool: name,
         annotations: _annotationsFor(parsed, face),
         argumentsJson: jsonEncode(arguments),

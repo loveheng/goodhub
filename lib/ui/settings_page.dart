@@ -48,7 +48,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../app/service_directory.dart';
 import '../coordinator/cow_sync.dart';
-import '../gateway/gateway_controller.dart';
+import '../gateway_api/gateway_control.dart';
 import '../llm/cloud/byok_store.dart';
 import '../llm/cloud/cloud_llm.dart';
 import '../mcp/server_endpoints.dart';
@@ -290,9 +290,9 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _reloadGateway() async {
-    final running = GatewayController.shared.running;
+    final running = gatewayRunning;
     final addrs = running
-        ? await GatewayController.lanAddresses()
+        ? await gatewayLanAddresses()
         : const <String>[];
     if (!mounted) return;
     setState(() {
@@ -312,9 +312,9 @@ class _SettingsPageState extends State<SettingsPage> {
         await SharedPreferences.getInstance().then(
           (sp) => sp.setString('gateway.token', token),
         );
-        await GatewayController.shared.start(port: 8766, token: token);
+        await startGateway(port: 8766, token: token);
       } else {
-        await GatewayController.shared.stop();
+        await stopGateway();
       }
     } on Object catch (e) {
       if (mounted) _flash('⚠ 网关${value ? '起服' : '停服'}失败: $e');

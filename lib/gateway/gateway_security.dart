@@ -54,12 +54,36 @@ class GatewaySecurity {
   static final PermissionGateway _classifier =
       PermissionGateway(inner: _NeverExecutor());
 
-  /// 会话豁免集（C7：网关生命周期内「记住」的 L2 工具；停服/重扫清空）。
+  /// 会话豁免集（C7：本**连接**生命周期内「记住」的 L2 工具）。
+  ///
+  /// 键为 [grantKey]（强制带服务维度）。逐连接独立——[forSession] 派生新实例，
+  /// 绝不在多个 PC 会话间共享（2026-10-17 P0-B）。
   final Set<String> _sessionGrants = {};
   void resetSessionGrants() => _sessionGrants.clear();
 
+  /// 豁免键：`<serverId>::<toolName>`。
+  ///
+  /// 只按 tool 名记录会让「A 服务获批」替「B 服务同名工具」开后门（不同服务的
+  /// 同名工具语义与权限未必相同），故 serverId 是键的**强制**组成部分；无前缀
+  /// 的本地/元工具归 `local` 命名空间。
+  static String grantKey(String serverId, String tool) =>
+      '${serverId.isEmpty ? 'local' : serverId}::$tool';
+
+  /// 派生**每连接**安全上下文（阶段二 D-D 投影隔离的补完）。
+  ///
+  /// 共享的是**无状态**部分：裁决矩阵 `_classifier` 为 static、审计汇 `opsLog`
+  /// 无状态——复用无安全风险；会话豁免集既是会话态，必须随连接独立。
+  GatewaySecurity forSession() => GatewaySecurity(
+        delegate: delegate,
+        opsLog: opsLog,
+        consentTimeout: consentTimeout,
+      );
+
   /// 安全管线：裁决 → 执行 → PII 过滤 → 审计。[run] 为真实工具执行。
+  ///
+  /// [serverId] 是豁免键的强制维度（见 [grantKey]），由调用方从工具前缀解析。
   Future<GatewayToolResult> guard({
+    required String serverId,
     required String tool,
     required Map<String, Object?>? annotations,
     required String argumentsJson,
@@ -67,7 +91,8 @@ class GatewaySecurity {
   }) async {
     final sw = Stopwatch()..start();
     final level = _classifier.classify(tool, annotations);
-    if (level == GatewayLevel.l1ReadOnly || _sessionGrants.contains(tool)) {
+    final key = grantKey(serverId, tool);
+    if (level == GatewayLevel.l1ReadOnly || _sessionGrants.contains(key)) {
       return _finish(await run(), sw, tool);
     }
     final gate = delegate;
@@ -99,7 +124,7 @@ class GatewaySecurity {
     if (!decision.approved) {
       return _finish(_rejected(decision.reason), sw, tool, rejected: true);
     }
-    if (decision.rememberSession) _sessionGrants.add(tool);
+    if (decision.rememberSession) _sessionGrants.add(key);
     return _finish(await run(), sw, tool);
   }
 

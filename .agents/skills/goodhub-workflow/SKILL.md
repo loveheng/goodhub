@@ -26,13 +26,17 @@ lib/
   app/         # 装配容器域：service_directory（ServerEndpointStore 单入口 seed，
                #   目标拓扑唯一先行 seed，禁止在此之外新增前缀）
   llm/         # 引擎域：端侧 ChannelLlmEngine（android LlmBridge.kt）+ cloud/（BYOK
-               #   双协议 + SSE 解析）。（端侧模型管理链已归档 archive/local_model/）
+               #   双协议 + SSE 解析 + sampling_engine（云 SamplingEngine 适配）+
+               #   chat_message_codec（transcript 编解码，自 sandbox 迁出））。
+               #   （端侧模型管理链已归档 archive/local_model/）
   coordinator/ # 编排域：agent_loop、tool_router（前缀隔离）、discovery_executor（JIT
                #   元工具）、permission_gateway（L1/L2）、pii_fence（N7 围栏）、
                #   tool_breaker（熔断+步数墙）、context_governor、ref_store（$ref）、
-               #   mcp_tool_face、memory_tool_executor、mcp_runtime（McpRuntime 装配核，
-               #   步 0 起 MCP 侧 Run 级装配唯一入口）、hybrid_assembly（云端引擎装配）
-  sandbox/     # 记忆沙盒域：memory_store（memory.md/lessons.md/ops.log）、conversation_store
+               #   mcp_tool_face、memory_tool_executor、memory_kernel、
+               #   conversation_archive、mcp_runtime（McpRuntime 装配核 + ConversationSession，
+               #   MCP 侧 Run 级装配唯一入口）、hybrid_assembly（云端引擎装配）
+  sandbox/     # 记忆沙盒域：memory_store（memory.md/lessons.md/ops.log）、
+               #   conversation_store（纯 JSON + core DTO；编解码已迁 llm/cloud，禁回流）
   gateway/     # 聚合网关域（Server 角色，2026-10-12 解冻）：gateway_server（Streamable
                #   HTTP/SSE）、mcp_gateway_handler（聚合分发）、gateway_controller（装配）、
                #   gateway_security（入站安全闭环）、gateway_backpressure、
@@ -41,18 +45,21 @@ lib/
                #   update_page、gateway_loop_debug_page（网关联调/spike）、
                #   claim_loop_page、grammar_spike_page、navigator_key
                #   （appNavigatorKey 后台弹层入口：网关 L2 卡）、
-               #   components/（双轨流/卡片/流式渲染）、tokens/
+               #   gateway_consent_dialog（DialogGateDelegate：网关 L2 远程确认卡）
+               #   error_copy、components/（双轨流/卡片/流式渲染）、tokens/
   core/        # 基础设施：storage/sequential_file_writer、security/（SecureKeyValue）、
-               #   tokens、errors
+               #   tokens、errors（cloud_llm_error/inference_error/mcp_error）、
+               #   audit_sink（审计端口）、chat_message_data/tool_result（跨域 DTO）、
+               #   network/backoff（T4 退避底座）
   task/        # 任务循环域（M1 骨架，现为 debug 入口）
   update/      # 自更新域：manifest / service / installer
 android/       # LlmBridge.kt、GatewayForegroundService、Binder 服务、plugin-core SDK
 archive/       # 待复活资产（当前：local_model/）——已被 analysis_options 排除
 ```
 
-## 架构依赖纪律与修复施工规范（2026-10-16 架构盘点立）
+## 架构依赖纪律与修复施工规范（2026-10-16 盘点立 · 同轮存量清零）
 
-> 规则 SSOT 链：设计 `docs/design/window-kernel-split.md` §5 四条铁律 → 编码基准 `docs/project/coding-standards.md` §1.1（五条判据）。**本节只登记当前依赖违例黑名单 + 修复施工纪律**，规则正文一律查上游，不复制（防双源漂移）。
+> 规则 SSOT 链：设计 `docs/design/window-kernel-split.md` §5 四条铁律 → 编码基准 `docs/project/coding-standards.md` §1.1（五条判据）。**本节登记依赖红灯 + 防复发纪律 + 施工记录**，规则正文一律查上游，不复制（防双源漂移）。
 
 ### 依赖方向（红灯清单）
 
@@ -66,19 +73,19 @@ archive/       # 待复活资产（当前：local_model/）——已被 analysis
 
 **施工红线**：修复期禁止新增任何反向边；上表存量违例已于 2026-10-16（arch-hardening epic）清零——此后任何命中上表的 import 即为新违例，改相关代码前先查 `goodhub-index` 索引行。
 
-### 共享态与装配纪律（当前违例黑名单）
+### 共享态与装配纪律（存量已清零 · 两项禁令保留）
 
-- **服务目录禁三拼**：`ServerEndpointStore` 唯一 owner = 装配容器单例（单入口已立 `lib/app/service_directory.dart`）。当前 3 处手拼（`ui/chat_page.dart:303`、`ui/settings_page.dart:268`、`gateway/gateway_controller.dart:148`），gateway 处**漏带旧 SharedPreferences 迁移 = 活 bug**，步 0 优先修。
-- **会话级态禁挂全局单例**：`GatewayController.shared` 持 `activePrivateServerId`/`workspaceId`（本质会话态），阻塞 D-D「投影平面按工作区隔离」（PC 阶段二），步 0 后随 ConversationSession 内迁。
+- ~~服务目录禁三拼~~ → ✅ **已修（arch-hardening 步 0）**：唯一 owner = `lib/app/service_directory.dart` 单入口，gateway 漏 prefs 迁移活 bug 已修。**禁令保留**：新消费点一律取装配容器单例，禁止就地拼路径。
+- **会话级态禁挂全局单例（#7 已收口）**：`GatewayController.shared` 的 `_hostDefaultPrivateServerId` 已澄清为 **host-level 默认投影源**（新连接 `forSession()` 复制），非会话态；per-connection 投影隔离已在 `McpGatewayServer._handlers` 落地并测试（阶段二 D-D）。**禁令保留**：禁止在 shared 上加新会话级字段；`workspaceId` 投影平面接线见 `goodhub-index` 债 #11（待 chatmessage 记忆分区）。
 - **双 ToolRouter 边界**：生产路由只引 `lib/coordinator/tool_router.dart`；`lib/mcp/tool_router.dart` = F1.9 海关过滤唯一实现，SA-Q6 拍板「保留待接线」——**不删、不引**，防同名误导入。
-- **装配下沉方向**：MCP 侧 Run 级装配统一走 `lib/coordinator/mcp_runtime.dart`（`assemble()/close()` 契约 + `clientFactory` 注入位）；云端侧已有 `hybrid_assembly.dart`（一次装配 = 一次 Run）。**禁止窗口层再内联建 client/face/router**——`chat_page._send` 658-970 与 `gateway_loop_debug_page` 294-360 随步 1/2 收敛。
-- **联调/spike 页不算生产路径**：`grammar_spike_page` / `gateway_loop_debug_page` / `claim_loop_page` 可简化，但不得复制装配胶水（复用挂载原语 + 经 `clientFactory` 注入 fake 传输）。
+- ~~装配下沉方向~~ → ✅ **已完成（步 1/2）**：MCP 侧 Run 级装配唯一入口 = `lib/coordinator/mcp_runtime.dart`（`assemble/close` + `clientFactory` 注入位）；chat / gateway_controller / gateway_loop_debug_page / task_loop 四调用点已收敛。**禁令保留**：窗口层禁止再内联建 client/face/router。
+- **联调/spike 页不算生产路径**：可简化，但不得复制装配胶水（复用挂载原语 + 经 `clientFactory` 注入 fake 传输）——步 2 已按此收敛，保持。
 
 ### 施工验收（联动 coding-standards §6.1）
 
 - 每收敛一个调用点：补**装配产物等价性**单测 + **资源释放**断言（经注入 fake client 计数），不得只靠真机冒烟；
-- 步级基线：`flutter analyze` 0 新增（存量 1 info：`gateway_loop_debug_page.dart` `value` deprecated）、`flutter test --timeout 120s` 全绿（当前记录基线 491 例，以实时运行为准）；
-- 修复推进顺序与端口契约一律以 window-kernel-split §7.5（步 0→3）为准，本表只做入口摘要。
+- 当前基线（2026-10-16 arch-hardening 收官记录）：`flutter analyze` 0 issue；`flutter test --timeout 180s` **707/707 全绿**（#7 修复后全仓无回归，含新增 idle GC 回归 1 例；原存量 `memory_kernel_test`×2 flaky 已修：固定延迟猜等 → 写链确定性排空，见 lib 三件 `settled`/`ioDrained` API）；
+- 修复推进顺序与端口契约以 `docs/design/arch-hardening.md`（施工态勾稽）+ window-kernel-split §7.5（内容 SSOT）为准，本表只做入口摘要。
 
 ## 常用命令（每条命令显式 export PATH/ANDROID_HOME）
 
@@ -90,7 +97,7 @@ flutter test --timeout 60s      # 单测 → 全过为交付线（⚠️ 务必�
 flutter build apk --debug       # 构建
 ```
 
-> ✅ 命令实测状态（2026-10-15 更新）：`pub get` / `analyze` / `test --timeout 120s` 均跑通——**analyze 仅剩 1 条存量 info**（`lib/ui/gateway_loop_debug_page.dart:670` `value` deprecated，Flutter 3.33 弃用，非阻断）；**测试 491 例全绿**（2026-10-15 B3 补测后；网关/自更新/端侧引擎/chat_page 冒烟均已入网）。构建已实测：`release-r2.sh` 出包并推 R2（v1.0.1+2003，42.7MB），`flutter build apk` 通道可用；真机侧载/ADB 联调为唯一 UI 验证路径（无模拟器）。
+> ✅ 命令实测状态（2026-10-16 更新）：`pub get` / `analyze` / `test --timeout 180s` 均跑通——**analyze 0 issue**（存量 1 info `gateway_loop_debug_page.dart:670` `value` deprecated 已清）；**测试 706/706 全绿**（2026-10-16 arch-hardening：原存量 `memory_kernel_test`×2 flaky 已修，写链确定性排空 API 见 lib）。构建已实测：`release-r2.sh` 出包并推 R2（v1.0.1+2003，42.7MB）；真机侧载/ADB 联调为唯一 UI 验证路径（无模拟器）。
 
 ## 环境硬约束
 

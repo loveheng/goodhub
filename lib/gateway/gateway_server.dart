@@ -21,11 +21,17 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'mcp_gateway_handler.dart';
 
 class McpGatewayServer {
-  McpGatewayServer(this.template);
+  McpGatewayServer(this.template,
+      {this.idleTimeout = const Duration(minutes: 10)});
 
   /// 入站模板 handler：每 `Mcp-Session-Id` 经 [GatewayHandler.forSession] 派生
   /// 独立投影上下文（阶段二 D-D 每连接隔离）；所有连接共享其 faces / privateServerIds。
   final GatewayHandler template;
+
+  /// 投影上下文空闲回收阈值：无 SSE 订阅且超过此时长无 POST 活动的连接视为泄漏
+  /// （纯 POST 客户端不维持 SSE 下行通道），由 [_gcIdle] 定期回收其 handler/session
+  /// 条目。维持 SSE 的长连接（即便静默）永不被回收。
+  final Duration idleTimeout;
 
   /// 每连接（Mcp-Session-Id）独立投影 handler（阶段二 D-D 隔离支点）。
   final Map<String, GatewayHandler> _handlers = {};
@@ -34,8 +40,10 @@ class McpGatewayServer {
   var _port = 8766;
   final Set<String> _sessions = {};
   final Map<String, HttpResponse> _sseSubs = {};
+  final Map<String, DateTime> _lastActivity = {};
   StreamSubscription<void>? _listChangedSub;
   Timer? _heartbeat;
+  Timer? _idleGc;
 
   /// 非空时强制 Bearer Token 校验（G3 最小鉴权；空 = 开放，仅建议 ADB/调试）。
   String? requiredToken;
@@ -53,6 +61,7 @@ class McpGatewayServer {
     _listChangedSub =
         template.onToolsListChanged.listen((_) => _broadcastListChanged());
     _heartbeat = Timer.periodic(const Duration(seconds: 15), (_) => _heartbeatPing());
+    _idleGc = Timer.periodic(idleTimeout, (_) => _gcIdle());
     _server!.listen(_onRequest,
         onError: (Object e) => debugPrint('[DEGRADE] gateway: $e'));
   }
@@ -60,6 +69,8 @@ class McpGatewayServer {
   Future<void> stop() async {
     _heartbeat?.cancel();
     _heartbeat = null;
+    _idleGc?.cancel();
+    _idleGc = null;
     await _listChangedSub?.cancel();
     _listChangedSub = null;
     for (final resp in _sseSubs.values) {
@@ -68,6 +79,9 @@ class McpGatewayServer {
       } on Object catch (_) {}
     }
     _sseSubs.clear();
+    for (final h in _handlers.values) {
+      h.disposeSession(); // P0-B：停服清空全部连接的会话豁免
+    }
     _handlers.clear();
     _sessions.clear();
     final s = _server;
@@ -125,6 +139,7 @@ class McpGatewayServer {
     if (sessionId == null || !_sessions.contains(sessionId)) {
       return _plain(req, 400, 'missing or unknown Mcp-Session-Id');
     }
+    _lastActivity[sessionId] = DateTime.now(); // 刷新活跃时间（idle GC 判定源）
     // 通知帧（无 id）：202 空体（notifications/initialized 等）。
     if (id == null) return _plain(req, 202, '');
     if (method == 'ping') {
@@ -239,6 +254,25 @@ class McpGatewayServer {
     await resp.done; // 客户端断连 / stop() 关闭时完成
     _sseSubs.remove(sessionId);
     _handlers.remove(sessionId); // 显式注销：释放该连接投影上下文（阶段二 D-D）
+    _sessions.remove(sessionId);
+    _lastActivity.remove(sessionId);
+  }
+
+  /// 投影上下文空闲回收（#7 剩余泄漏修复）：纯 POST 客户端不维持 SSE 订阅，
+  /// 断连时无法经 [_handleGet] 的 done 清理，故按 [idleTimeout] 周期回收其条目。
+  /// 维持 SSE 收下行通道的长连接（即便静默）不入回收范围。
+  void _gcIdle() {
+    final now = DateTime.now();
+    for (final sid in _handlers.keys.toList()) {
+      if (_sseSubs.containsKey(sid)) continue; // 维持 SSE 的长连接不踢
+      final last = _lastActivity[sid];
+      if (last == null || now.difference(last) > idleTimeout) {
+        _handlers[sid]?.disposeSession(); // P0-B：连接回收即丢该连接的豁免集
+        _handlers.remove(sid);
+        _sessions.remove(sid);
+        _lastActivity.remove(sid);
+      }
+    }
   }
 
   /// 工具目录变更 → 全体 SSE 订阅者下行（§9.2，PC 自动重拉 tools/list）。

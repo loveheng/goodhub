@@ -26,6 +26,10 @@ usage() {
   --json         只输出一行 JSON 结论（供 AI/钩子判定，不打印明细）
   --self-test    金丝雀自测：证明能抓到坏样本
   -h | --help    显示本帮助
+环境变量:
+  ARCH_GATE_FULL=1  追加跑 arch-deps（flutter test 全套依赖护栏，~12s）；
+                    默认只跑秒级 arch-guard（R1~R8，含依赖方向五条），
+                    因 pre-commit 钩子有 10s 预算而 flutter test 单次 ~12s
 退出码: 0=通过 1=检查未通过 2=自身故障
 EOF
   exit 0
@@ -62,6 +66,17 @@ run() {
       bash "$SCRIPT_DIR/arch-guard.sh" --root "$ROOT" || { rc=1; agg=$((agg+1)); }
     else
       echo "⚠ arch-guard.sh 缺失，跳过（fail-open）"
+    fi
+  fi
+  # 2026-10-17 P0-C：默认门禁跑秒级 shell 护栏（arch-guard R4~R8 已含依赖方向五条）；
+  # flutter test 版（arch-deps，~12s 超 pre-commit 10s 预算）走显式开关：
+  #   ARCH_GATE_FULL=1 git commit ...  或  toolbox run pre-commit-gate 前 export 之
+  if [ "${ARCH_GATE_FULL:-0}" = "1" ] && [ "$LIB_TOUCHED" -gt 0 ]; then
+    echo "==> pre-commit-gate: ARCH_GATE_FULL=1，追加跑 arch-deps（flutter test 全套依赖护栏）"
+    if [ -f "$SCRIPT_DIR/arch-deps.sh" ]; then
+      bash "$SCRIPT_DIR/arch-deps.sh" --root "$ROOT" || { rc=1; agg=$((agg+1)); }
+    else
+      echo "⚠ arch-deps.sh 缺失，跳过（fail-open）"
     fi
   fi
   if [ "$DOC_TOUCHED" -gt 0 ]; then

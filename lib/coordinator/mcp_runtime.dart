@@ -294,6 +294,21 @@ class GuardedExecutor implements ToolExecutor {
   }
 }
 
+/// 挂载原语出参句柄（步 2 装配原语；类型别名须在顶层，不可嵌套类内）。
+///
+/// **2026-10-17 P0-B 增 [close]**：此前两个挂载原语只回 `face/caps/schemas`，
+/// **没有任何释放通道**——`mountEndpoint` 内部建的 client 调用方拿不到引用，
+/// 网关重扫/停服无从关闭，每次包变更广播触发重扫就泄漏一批（Binder
+/// EventChannel / HTTP 连接池）。挂载原语自此必须交出释放能力。
+typedef McpMount = ({
+  McpToolFace face,
+  ServerCapabilities caps,
+  List<CloudToolSchema> schemas,
+
+  /// 释放本次挂载占用的传输资源（幂等；失败由调用方按 DEGRADE 口径收尾）。
+  void Function() close,
+});
+
 /// MCP 侧 Run 级装配（§3.3 命名裁决：McpRuntime，不用 ServiceRuntime——云端
 /// 引擎侧 Run 级装配已由 `hybrid_assembly.dart` 承载）。
 class McpRuntime {
@@ -655,14 +670,15 @@ class McpRuntime {
   /// （内部同一套链路）；gateway / 联调页直接复用本原语，**不开特权分支**
   /// （§8.1-11）。negotiate 有 client 实例缓存，重复取不增 RPC。
   ///
-  /// client 由调用方创建并持有失败清理权（本原语不 close——gateway 单源挂载
-  /// 失败需按自身 DEGRADE 口径收尾）。
-  Future<({McpToolFace face, ServerCapabilities caps, List<CloudToolSchema> schemas})>
-      mount({
+  /// client 由调用方创建并持有：调用方须经 [release] 把「关掉这个 client」的
+  /// 能力一并交回（否则句柄表拿不到释放通道——P0-B 泄漏根因）。本原语自身
+  /// 不 close（gateway 单源挂载失败需按自身 DEGRADE 口径收尾）。
+  Future<McpMount> mount({
     required String serverId,
     required McpClient client,
     MemoryStore? opsLog,
     ToolProgressCallback? onProgress,
+    void Function()? release,
   }) async {
     final caps = await client.negotiate();
     final face = McpToolFace(
@@ -672,8 +688,15 @@ class McpRuntime {
       onProgress: onProgress,
     );
     final schemas = await face.listTools();
-    return (face: face, caps: caps, schemas: schemas);
+    return (
+      face: face,
+      caps: caps,
+      schemas: schemas,
+      close: release ?? _noopRelease,
+    );
   }
+
+  static void _noopRelease() {}
 
   /// 端点挂载原语（§7.5 步 2-3）：按 [ServerEndpoint] 建 HTTP client 并挂载。
   /// 本原语**拥有**它创建的 client：挂载失败即 close 再上抛（调用方无须也无从
@@ -682,8 +705,7 @@ class McpRuntime {
   /// - 手填端点：key 经 [apiKeyReader]（Directory 安全存储）读取；
   /// - ephemeral 端点（任务侧，§8.1-9）：key 走 [ServerEndpoint.ephemeralKey]
   ///   内存传递，不进 Directory 列表、不参与 `store.save()`。
-  Future<({McpToolFace face, ServerCapabilities caps, List<CloudToolSchema> schemas})>
-      mountEndpoint(
+  Future<McpMount> mountEndpoint(
     ServerEndpoint ep, {
     MemoryStore? opsLog,
     ToolProgressCallback? onProgress,
@@ -696,8 +718,10 @@ class McpRuntime {
         (clientFactory ?? (u, k) => McpClient.http(baseUrl: u, apiKey: k))(
             ep.endpoint, key);
     try {
-      return await mount(
+      final m = await mount(
           serverId: ep.id, client: client, opsLog: opsLog, onProgress: onProgress);
+      // 本原语拥有 client → 交出释放闭包（P0-B：否则调用方无从关闭）
+      return (face: m.face, caps: m.caps, schemas: m.schemas, close: client.close);
     } on Object {
       try {
         client.close();
