@@ -23,6 +23,7 @@ import 'package:crypto/crypto.dart';
 
 import '../core/security/flutter_secure_key_value.dart';
 import '../core/security/secure_key_value.dart';
+import '../llm/cloud/chat_message_codec.dart';
 import '../mcp/sampling.dart';
 import '../sandbox/conversation_store.dart';
 import 'mcp_runtime.dart';
@@ -198,7 +199,7 @@ class ConversationArchive {
         id: id,
         title: _currentTitle,
         track: trackJson,
-        messages: ConversationStore.encodeMessages(session.transcript),
+        messages: ChatMessageCodec.encodeCloud(session.transcript),
         activePrivateServerId: session.activePrivateServerId,
       );
       return true;

@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/llm/cloud/cloud_llm.dart';
+import 'package:goodhub/llm/cloud/chat_message_codec.dart';
 import 'package:goodhub/sandbox/conversation_store.dart';
 
 void main() {
@@ -199,7 +200,7 @@ void main() {
       ];
 
       final decoded =
-          ConversationStore.decodeMessages(ConversationStore.encodeMessages(original));
+          ChatMessageCodec.decodeCloud(ChatMessageCodec.encodeCloud(original));
 
       expect(decoded, hasLength(original.length));
       final assistant = decoded[1] as AssistantMessage;
@@ -212,7 +213,7 @@ void main() {
     });
 
     test('未知类型/缺字段跳过不抛（DEGRADE 口径）；system 不入恢复序列', () {
-      final decoded = ConversationStore.decodeMessages([
+      final decoded = ChatMessageCodec.decodeCloud([
         {'type': 'user', 'content': 'ok'},
         {'type': 'mystery'},
         {'type': 'system'},
@@ -224,7 +225,7 @@ void main() {
     });
 
     test('JSON 编码层稳定（save 落盘形状抽查）', () {
-      final encoded = ConversationStore.encodeMessages([
+      final encoded = ChatMessageCodec.encodeCloud([
         const UserMessage('hi'),
       ]);
       expect(jsonEncode(encoded), contains('"type":"user"'));

@@ -76,6 +76,7 @@ void main() {
         {'name': 'c'},
       ]);
       final conn = McpConnection(
+        faceFactory: (c) => McpToolFace(client: c),
         client: clientFor(tools),
         backoff: noBackoff,
       );
@@ -108,6 +109,7 @@ void main() {
         {'name': 'b'},
       ]);
       final conn = McpConnection(
+        faceFactory: (c) => McpToolFace(client: c),
         client: clientFor(tools),
         backoff: noBackoff,
       );
@@ -129,6 +131,7 @@ void main() {
         {'name': 'b'},
       ]);
       final conn = McpConnection(
+        faceFactory: (c) => McpToolFace(client: c),
         client: clientFor(tools),
         backoff: noBackoff,
       );
@@ -144,6 +147,7 @@ void main() {
         {'name': 'b'},
       ]);
       final conn = McpConnection(
+        faceFactory: (c) => McpToolFace(client: c),
         client: McpClient.http(
           baseUrl: 'http://10.0.0.5:8765/mcp',
           httpClient: MockClient((req) async {
@@ -178,6 +182,7 @@ void main() {
           McpClient.http(baseUrl: 'http://10.0.0.5:8765/mcp');
       final face = _FakeFace(fakeClient, inFlight: 2);
       final conn = McpConnection(
+        faceFactory: (c) => McpToolFace(client: c),
         client: fakeClient,
         face: face,
         backoff: noBackoff,
@@ -199,6 +204,7 @@ void main() {
       ]);
       var listCalls = 0;
       final conn = McpConnection(
+        faceFactory: (c) => McpToolFace(client: c),
         client: clientFor(tools, onList: () => listCalls++),
         backoff: noBackoff,
       );
@@ -218,6 +224,7 @@ void main() {
         {'name': 'c'},
       ]);
       final conn = McpConnection(
+        faceFactory: (c) => McpToolFace(client: c),
         client: clientFor(tools),
         backoff: noBackoff,
       );
@@ -246,6 +253,7 @@ void main() {
     test('连续重连失败可控：每 offline→online 触发一次重连、失败返回 false 不抛', () async {
       // 每次重连协商都失败 → reconnect 返回 false；多次断连周期可重试、不卡死。
       final conn = McpConnection(
+        faceFactory: (c) => McpToolFace(client: c),
         client: McpClient.http(
           baseUrl: 'http://10.0.0.5:8765/mcp',
           httpClient: MockClient((req) async {
@@ -282,6 +290,7 @@ void main() {
     test('offline 窗口 guardExecute 丢弃积压 + 计数，不执行 run', () async {
       final fakeClient = McpClient.http(baseUrl: 'http://x/mcp');
       final conn = McpConnection(
+        faceFactory: (c) => McpToolFace(client: c),
         client: fakeClient,
         face: _FakeFace(fakeClient),
         backoff: noBackoff,
@@ -303,6 +312,7 @@ void main() {
     test('online 窗口 guardExecute 透传 run', () async {
       final fakeClient = McpClient.http(baseUrl: 'http://x/mcp');
       final conn = McpConnection(
+        faceFactory: (c) => McpToolFace(client: c),
         client: fakeClient,
         face: _FakeFace(fakeClient),
         backoff: noBackoff,
@@ -321,7 +331,11 @@ void main() {
       final tools = _ToolsBox([
         {'name': 'a'},
       ]);
-      final conn = McpConnection(client: clientFor(tools), backoff: noBackoff);
+      final conn = McpConnection(
+          client: clientFor(tools),
+          backoff: noBackoff,
+          faceFactory: (c) => McpToolFace(client: c),
+        );
 
       await conn.handleHealthState(ConnectionState.offline);
       conn.noteBacklogDropped(n: 3);
@@ -339,7 +353,11 @@ void main() {
       final tools = _ToolsBox([
         {'name': 'a'},
       ]);
-      final conn = McpConnection(client: clientFor(tools), backoff: noBackoff);
+      final conn = McpConnection(
+          client: clientFor(tools),
+          backoff: noBackoff,
+          faceFactory: (c) => McpToolFace(client: c),
+        );
       await conn.handleHealthState(ConnectionState.offline);
       // 无 noteBacklogDropped
 
@@ -351,6 +369,7 @@ void main() {
 
     test('重连失败不回告、积压跨窗口累计保留', () async {
       final conn = McpConnection(
+        faceFactory: (c) => McpToolFace(client: c),
         client: failingClient(),
         backoff: const ExponentialBackoff(jitter: 0, maxAttempts: 3),
       );

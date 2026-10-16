@@ -19,10 +19,9 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart' show debugPrint;
 
-import '../coordinator/agent_loop.dart';
-import '../coordinator/mcp_tool_face.dart';
 import '../core/network/backoff.dart';
-import '../sandbox/memory_store.dart';
+import '../core/tool_result.dart';
+import 'connection_face.dart';
 import 'connection_health.dart';
 import 'mcp_client.dart';
 
@@ -73,26 +72,26 @@ class BacklogReport {
 
 /// 单 Server 连接韧性管理器（T4-3 / T4-4 / T4-5）。
 ///
-/// 持有 [McpClient] 与其派生 [McpToolFace]，是会话级连接生命周期的 owner：
+/// 持有 [McpClient] 与注入的 [ConnectionFace]，是会话级连接生命周期的 owner：
 /// 一个实例 = 一条 server 连接（与 architecture §15「一个 client 实例 = 一条
-/// server 连接」对齐）。[ToolRouter] / [GatewayHandler] 仍按既有形态持有
-/// [McpToolFace]（经 [face] 取用），重连编排对本仓其余代码透明。
+/// server 连接」对齐）。face 具体实现（coordinator 侧 McpToolFace）由装配方
+/// 注入（face / faceFactory 二选一，双缺快速失败），本层不感知其类型；
+/// 重连编排对本仓其余代码透明。
 class McpConnection {
   McpConnection({
     required this.client,
-    McpToolFace? face,
+    ConnectionFace? face,
+    ConnectionFace Function(McpClient client)? faceFactory,
     ExponentialBackoff? backoff,
     ConnectionHealth? health,
     this.serverId = 'goodshare',
-    this.onProgress,
-    this.opsLog,
   })  : _face = face ??
-            McpToolFace(
-              client: client,
-              serverId: serverId,
-              onProgress: onProgress,
-              opsLog: opsLog,
-            ),
+            (faceFactory != null
+                ? faceFactory(client)
+                : throw ArgumentError(
+                    'McpConnection: face 或 faceFactory 必须注入其一'
+                    '（生命周期 Owner 契约，见 connection_face.dart；'
+                    '禁止隐式回退到 coordinator 具体类型）')),
         backoff = backoff ?? const ExponentialBackoff(),
         health = health ?? ConnectionHealth(client) {
     // T4-5：server→client 资源变更通知转发到本连接的 D19 回告回调。
@@ -102,18 +101,14 @@ class McpConnection {
   /// 底层传输与协议客户端（同一实例在 [reconnect] 中被重握手）。
   final McpClient client;
 
-  /// 来源/目标 Server 标识（透传给 [McpToolFace]）。
+  /// 来源/目标 Server 标识（透传给 [ConnectionFace] 实现）。
   final String serverId;
 
-  /// progress 通告回调（透传 [McpToolFace]）。
-  final ToolProgressCallback? onProgress;
-
-  /// ops.log 审计汇（透传 [McpToolFace]）。
-  final MemoryStore? opsLog;
-
-  /// 协议层工具面（既有形态，供 [ToolRouter]/[GatewayHandler] 装配）。
-  McpToolFace get face => _face;
-  final McpToolFace _face;
+  /// 协议层工具面（注入的最小能力集；具体实现 = coordinator 侧 McpToolFace，
+  /// 经 [face] 取用供 [ToolRouter]/[GatewayHandler] 装配——调用方自行 import，
+  /// 本层不感知）。
+  ConnectionFace get face => _face;
+  final ConnectionFace _face;
 
   /// 指数退避（T4-1 底座）：重连失败后按 attempt 递增退避，避免惊群。
   final ExponentialBackoff backoff;
@@ -290,8 +285,7 @@ class McpConnection {
     try {
       client.resetNegotiation(); // 旧 session 失效，强制重握手（D17 重 negotiate）
       await client.negotiate();
-      final schemas = await _face.listTools(); // 重 listTools（刷新 cachedSchemas）
-      final newNames = schemas.map((s) => s.name).toSet();
+      final newNames = (await _face.listToolNames()).toSet(); // 重 listTools（刷新 face 缓存）
       final dropped = _activatedToolNames
           .where((n) => !newNames.contains(n))
           .toList(growable: false);

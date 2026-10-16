@@ -20,12 +20,15 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../core/errors/inference_error.dart';
+import '../core/tool_result.dart';
 import '../llm/cloud/cloud_llm.dart';
 import '../llm/cloud/tool_call_accumulator.dart';
 import 'context_governor.dart';
 import 'ref_store.dart';
 import 'tool_breaker.dart';
 import 'workspace_stream_filter.dart';
+
+export '../core/tool_result.dart';
 
 /// Agent Loop 事件（UI 双轨/遥测消费）。
 sealed class AgentLoopEvent {
@@ -91,13 +94,8 @@ class LoopFinished extends AgentLoopEvent {
   final List<CloudChatMessage> transcript;
 }
 
-/// 工具执行结果。
-class ToolExecutionResult {
-  const ToolExecutionResult({required this.content, this.isError = false});
-
-  final String content;
-  final bool isError;
-}
+/// 工具执行结果（已下沉 `core/tool_result.dart`，arch-hardening ②；本文件
+/// 顶部 re-export 保既有引用稳定——Expand-Contract 收口时统一切 import）。
 
 /// 工具执行环接口（MCP 实现 mcp_tool_face.dart；L1/L2 网关装饰在其前）。
 abstract interface class ToolExecutor {

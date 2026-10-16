@@ -77,15 +77,15 @@ description: goodhub（AI 宿主 App）的「功能 → 代码落点 + 文档落
 
 | # | 债 | 落点 | 状态 |
 |---|---|---|---|
-| 1 | **服务目录三拼且不一致**（gateway 处漏 prefs 迁移 = 活 bug，正确性缺陷） | `ui/chat_page.dart` / `ui/settings_page.dart` / `gateway/gateway_controller.dart` | 待修（window-kernel-split 步 0，最高优先） |
-| 2 | chat_page 装配越权（`_send` 内联 client/face/router/装饰器链） | `ui/chat_page.dart` | 待迁（步 1 → `coordinator/mcp_runtime.dart`） |
-| 3 | 装配第二/第三副本（无装饰器链版 / 联调简化版） | `gateway/gateway_controller.dart` / `ui/gateway_loop_debug_page.dart` | 待收敛（步 2，其中 gateway 点带债 #1 优先） |
-| 4 | `mcp → coordinator/sandbox` 反向依赖 | `mcp/connection_manager.dart` | 待斩（步 1/2 搬迁一并处理） |
-| 5 | `mcp/sandbox → llm` 反向依赖 | `mcp/sampling.dart` / `sandbox/conversation_store.dart` | 待斩（类型下沉 core 或入参注入） |
-| 6 | `ui ↔ gateway` 跨域环 | `ui/chat_page.dart` / `ui/settings_page.dart` ↔ `gateway/gateway_security.dart` | 待斩（gateway→ui 改端口注入，经 `appNavigatorKey` 现状收敛；ui→gateway 收敛为快照消费） |
+| 1 | **服务目录三拼且不一致**（gateway 处漏 prefs 迁移 = 活 bug，正确性缺陷） | `lib/app/service_directory.dart`（唯一 owner） | ✅ 已清零（步 0 三拼收敛 + 活 bug 修复，2026-10-16） |
+| 2 | chat_page 装配越权（`_send` 内联 client/face/router/装饰器链） | `lib/coordinator/mcp_runtime.dart` | ✅ 已清零（步 1 搬迁 + 步 3 接线，2026-10-16） |
+| 3 | 装配第二/第三副本（无装饰器链版 / 联调简化版） | `McpRuntime.mount/mountEndpoint` 挂载原语 | ✅ 已清零（步 2 三调用点收敛，2026-10-16） |
+| 4 | `mcp → coordinator/sandbox` 反向依赖 | `mcp/connection_face.dart`（face 注入）+ `core/tool_result.dart` + `core/audit_sink.dart` | ✅ 已清零（arch-hardening ②，2026-10-16） |
+| 5 | `mcp/sandbox → llm` 反向依赖 | `mcp/sampling.dart`（`SamplingEngine` 端口）/ `core/chat_message_data.dart` + `llm/cloud/chat_message_codec.dart` | ✅ 已清零（arch-hardening ③/④，2026-10-16） |
+| 6 | `ui ↔ gateway` 跨域环 | 弹层迁 `ui/gateway_consent_dialog.dart` | ✅ 已清零（arch-hardening ①，2026-10-16；gateway→ui 断环，ui→gateway 属窗口→窗口允许方向） |
 | 7 | `GatewayController.shared` 全局单例持会话态 | `gateway/gateway_controller.dart` | 阻塞 D-D PC 阶段二；随 ConversationSession 内迁 |
-| 8 | 会话态手工枚举（新增字段要改声明/reset/落盘 3 处，漏改即静默 bug） | `ui/chat_page.dart` | 待迁 ConversationSession（步 3） |
-| 9 | 装配级 / chat_page 级测试基线缺失 | `test/` | 步 0 先行补（coding-standards §6.1 注入位范式） |
+| 8 | 会话态手工枚举（新增字段要改声明/reset/落盘 3 处，漏改即静默 bug） | `coordinator/mcp_runtime.dart`（ConversationSession） | ✅ 已清零（步 0/3，2026-10-16） |
+| 9 | 装配级 / chat_page 级测试基线缺失 | `test/coordinator/mcp_runtime_test.dart` 等 | ✅ 已清零（步 0/1 契约与装配测试，2026-10-16） |
 
 ## 命令速查
 

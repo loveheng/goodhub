@@ -4,27 +4,28 @@ library;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/core/errors/mcp_error.dart';
-import 'package:goodhub/llm/cloud/cloud_llm.dart';
+import 'package:goodhub/core/chat_message_data.dart';
 import 'package:goodhub/mcp/sampling.dart';
 
 /// 确定性引擎：聚合输入断言用（记录最后请求）+ 固定回复。
-class _FakeEngine implements CloudLlmEngine {
+class _FakeEngine implements SamplingEngine {
   _FakeEngine(this.reply);
 
   final String reply;
-  CloudChatRequest? lastRequest;
+  List<ChatMessageData>? lastMessages;
+  int? lastMaxTokens;
 
   @override
   String get name => 'fake-engine';
 
   @override
-  Stream<CloudStreamEvent> send(
-    CloudChatRequest request, {
-    void Function()? onActivity,
+  Stream<String> sendText({
+    required List<ChatMessageData> messages,
+    required int maxTokens,
   }) async* {
-    lastRequest = request;
-    yield CloudTextDelta(reply);
-    yield const CloudDone(finishReason: CloudFinishReason.stop);
+    lastMessages = messages;
+    lastMaxTokens = maxTokens;
+    yield reply;
   }
 }
 
@@ -79,10 +80,10 @@ void main() {
       expect(result!['role'], 'assistant');
       expect(result['model'], 'fake-engine');
       expect((result['content'] as Map)['text'], '["标签A"]');
-      final req = engine.lastRequest!;
-      expect(req.maxTokens, 256);
-      expect(req.messages.first, isA<SystemMessage>());
-      expect(req.messages.last, isA<UserMessage>());
+      final msgs = engine.lastMessages!;
+      expect(engine.lastMaxTokens, 256);
+      expect(msgs.first, isA<SystemChatMessage>());
+      expect(msgs.last, isA<UserChatMessage>());
     });
 
     test('maxTokens 超硬顶 → 宿主 clamp 到 kSamplingMaxTokensCap（D3）', () async {
@@ -95,7 +96,7 @@ void main() {
           {'role': 'user', 'content': {'type': 'text', 'text': 'hi'}},
         ],
       });
-      expect(engine.lastRequest!.maxTokens, kSamplingMaxTokensCap);
+      expect(engine.lastMaxTokens, kSamplingMaxTokensCap);
     });
 
     test('配额超限 → McpRpcException -32000 带 retry hint（结构化拒绝）', () async {

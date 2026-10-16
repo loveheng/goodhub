@@ -60,11 +60,11 @@ archive/       # 待复活资产（当前：local_model/）——已被 analysis
 |---|---|
 | 窗口（`ui/` + headless `gateway_controller`）→ 内核 | ✅ 允许：读快照 + 端口，禁持领域态 |
 | `core` ← 任何域 | ✅ `core` 零出向，叶层不得反向 |
-| `mcp` / `sandbox` → `coordinator` | ❌ 传输/存储反向依赖编排。违例：`mcp/connection_manager.dart:22-25`、`sandbox/conversation_store.dart:22`、`mcp/sampling.dart:10` |
-| `gateway` → `ui` | ❌ 服务端域反向依展示层（经 `ui/navigator_key.dart` 旁路）。违例：`gateway/gateway_security.dart:26` |
-| `ui` ↔ `gateway` | ❌ 跨域环：`ui/chat_page.dart:39`、`ui/settings_page.dart:51` 引 `gateway_controller`，与上一条合成双向 |
+| `mcp` / `sandbox` → `coordinator` | ✅ 已清零（arch-hardening ②，2026-10-16）：face 经 `mcp/connection_face.dart` 注入，`ToolExecutionResult` 下沉 `core/tool_result.dart`，opsLog 走 `core/audit_sink.dart` 端口；**新增此类 import = 违例** |
+| `gateway` → `ui` | ✅ 已清零（arch-hardening ①，2026-10-16）：Flutter 弹层迁 `ui/gateway_consent_dialog.dart`，gateway 域只留 `GateDelegate` 接口 + fail-closed（桥缺位恒拒 `headless_no_ui_prompt`）；**新增此类 import = 违例** |
+| `mcp` / `sandbox` → `llm` | ✅ 已清零（arch-hardening ③/④，2026-10-16）：sampling 走 `SamplingEngine` 端口（core 消息货币 `ChatMessageData`，云适配 `llm/cloud/sampling_engine.dart`）；transcript codec 迁 `llm/cloud/chat_message_codec.dart`，存储层只认 JSON Map + core DTO；**新增此类 import = 违例** |
 
-**施工红线**：修复期禁止新增任何反向边；存量违例随 window-kernel-split 步 1/2 清零，每清一条同步更新本表与 `goodhub-index` 索引行。
+**施工红线**：修复期禁止新增任何反向边；上表存量违例已于 2026-10-16（arch-hardening epic）清零——此后任何命中上表的 import 即为新违例，改相关代码前先查 `goodhub-index` 索引行。
 
 ### 共享态与装配纪律（当前违例黑名单）
 

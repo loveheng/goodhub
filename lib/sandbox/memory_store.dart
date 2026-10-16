@@ -27,6 +27,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart' show debugPrint;
 
+import '../core/audit_sink.dart';
 import '../core/storage/sequential_file_writer.dart';
 import '../core/tokens.dart';
 
@@ -103,7 +104,7 @@ class MemoryView {
 }
 
 /// 记忆沙盒（三件套持久化 + 预算视图 + 审计 + 启动清扫）。
-class MemoryStore {
+class MemoryStore implements AuditSink {
   MemoryStore({
     required this.dir,
     this.memoryBudgetTokens = 2000,
@@ -422,6 +423,7 @@ class MemoryStore {
   // ---------------------------------------------------------------------------
 
   /// 追加一条 Tool Call 审计记录（JSONL，D7）。轮转检查同单元串行执行。
+  @override
   Future<void> audit({
     required String server,
     required String tool,

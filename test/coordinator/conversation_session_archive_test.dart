@@ -16,6 +16,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/coordinator/mcp_runtime.dart';
 import 'package:goodhub/llm/cloud/cloud_llm.dart';
+import 'package:goodhub/llm/cloud/chat_message_codec.dart';
 import 'package:goodhub/sandbox/conversation_store.dart';
 
 void main() {
@@ -48,7 +49,7 @@ void main() {
         id: id,
         title: '等价性',
         track: const [],
-        messages: ConversationStore.encodeMessages(session.transcript),
+        messages: ChatMessageCodec.encodeCloud(session.transcript),
         activePrivateServerId: session.activePrivateServerId,
       );
 
@@ -58,7 +59,7 @@ void main() {
       expect(snap, isNotNull);
       restored
         ..bindPrivateServer(snap!.activePrivateServerId)
-        ..replaceTranscript(ConversationStore.decodeMessages(snap.messages));
+        ..replaceTranscript(ChatMessageCodec.decodeCloud(snap.messages));
 
       // 等价断言：绑定三态值一致
       expect(restored.activePrivateServerId, session.activePrivateServerId);
@@ -93,7 +94,7 @@ void main() {
           id: id,
           title: '三态·session',
           track: const [],
-          messages: ConversationStore.encodeMessages(session.transcript),
+          messages: ChatMessageCodec.encodeCloud(session.transcript),
           activePrivateServerId: session.activePrivateServerId,
         );
         final snap = await ConversationStore(dir: store.dir).load(id);
@@ -114,7 +115,7 @@ void main() {
         id: id,
         title: '空会话',
         track: const [],
-        messages: ConversationStore.encodeMessages(session.transcript),
+        messages: ChatMessageCodec.encodeCloud(session.transcript),
         activePrivateServerId: session.activePrivateServerId,
       );
 
@@ -123,13 +124,13 @@ void main() {
       expect(snap, isNotNull);
       restored
         ..bindPrivateServer(snap!.activePrivateServerId)
-        ..replaceTranscript(ConversationStore.decodeMessages(snap.messages));
+        ..replaceTranscript(ChatMessageCodec.decodeCloud(snap.messages));
       expect(restored.transcript, isEmpty);
       expect(restored.activePrivateServerId, isNull);
     });
 
     test('恢复侧跳过 system/未知类型（防御编码口径），不破坏配对恢复', () async {
-      final decoded = ConversationStore.decodeMessages([
+      final decoded = ChatMessageCodec.decodeCloud([
         {'type': 'system'},
         {'type': 'user', 'content': '问'},
         {'type': 'assistant', 'toolCalls': [

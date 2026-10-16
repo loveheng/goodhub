@@ -4,10 +4,16 @@
 /// 临时会话语义（architecture §15）：推理只用请求自带 messages + systemPrompt，
 /// 无记忆沙盒注入、无 UI 轨迹；N7 出站围栏挂云引擎装饰器单咽喉——sampling 与
 /// 常规 send 走同一引擎实例，遮蔽语义自然覆盖，无需旁挂。
+///
+/// 引擎解耦（arch-hardening ③）：本域不 import llm——引擎经 [SamplingEngine]
+/// 最小端口注入，消息货币为 core [ChatMessageData]；云引擎适配见
+/// `llm/cloud/sampling_engine.dart`。
 library;
 
+import 'dart:async';
+
+import '../core/chat_message_data.dart';
 import '../core/errors/mcp_error.dart';
-import '../llm/cloud/cloud_llm.dart';
 
 /// D3 拍板配额：per-server 滑动窗口次数制——默认 20 次 / 60min；内存态不落盘
 /// （重启清零，定位防滥用非计费）。超限抛 -32000（data 带 retry hint）。
@@ -58,13 +64,25 @@ class SamplingQuota {
 /// 单次输出硬顶（D3：宿主 maxTokens clamp；云端预算默认口径）。
 const kSamplingMaxTokensCap = 1024;
 
+/// sampling 反向推理引擎最小端口（arch-hardening ③）：单发文本推理 + 引擎名。
+/// 生产实现 = 云引擎适配（`llm/cloud/sampling_engine.dart`）。
+abstract interface class SamplingEngine {
+  String get name;
+
+  /// 单发推理：流式产出正文增量（临时会话语义由实现保证——无历史、无记忆注入）。
+  Stream<String> sendText({
+    required List<ChatMessageData> messages,
+    required int maxTokens,
+  });
+}
+
 /// McpClient.onServerRequest 处理器工厂：sampling/createMessage → 引擎单发
 /// 推理 → MCP createMessage result 形状。配额超限抛 McpRpcException(-32000，
 /// data 带 retry hint)；参数违规 -32602；未知反向请求 -32601。推理异常原样
 /// 上抛——由 client 回程层统一转 -32603 error 帧。
 Future<Map<String, Object?>?> Function(String method, Object? params)
     samplingRequestHandler({
-  required CloudLlmEngine engine,
+  required SamplingEngine engine,
   required SamplingQuota quota,
   required String serverKey,
 }) {
@@ -89,10 +107,10 @@ Future<Map<String, Object?>?> Function(String method, Object? params)
     final maxTokens = rawMax is num && rawMax.toInt() > 0
         ? (rawMax.toInt() > kSamplingMaxTokensCap ? kSamplingMaxTokensCap : rawMax.toInt())
         : kSamplingMaxTokensCap;
-    final messages = <CloudChatMessage>[];
+    final messages = <ChatMessageData>[];
     final systemPrompt = p['systemPrompt'];
     if (systemPrompt is String && systemPrompt.isNotEmpty) {
-      messages.add(SystemMessage(systemPrompt));
+      messages.add(SystemChatMessage(systemPrompt));
     }
     final rawMessages = p['messages'];
     if (rawMessages is! List || rawMessages.isEmpty) {
@@ -107,13 +125,13 @@ Future<Map<String, Object?>?> Function(String method, Object? params)
         throw const McpRpcException(-32602, 'sampling message 缺少 text 内容');
       }
       messages.add(
-          m['role'] == 'assistant' ? AssistantMessage(content: text) : UserMessage(text));
+          m['role'] == 'assistant' ? AssistantChatMessage(content: text) : UserChatMessage(text));
     }
     // 单发推理：流式聚合正文（临时会话——无历史、无记忆注入，§15）。
     final buf = StringBuffer();
-    await for (final ev
-        in engine.send(CloudChatRequest(messages: messages, maxTokens: maxTokens))) {
-      if (ev is CloudTextDelta) buf.write(ev.text);
+    await for (final chunk
+        in engine.sendText(messages: messages, maxTokens: maxTokens)) {
+      buf.write(chunk);
     }
     return {
       'role': 'assistant',

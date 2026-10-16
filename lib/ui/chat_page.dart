@@ -31,6 +31,7 @@ import '../coordinator/workspace_stream_filter.dart';
 import '../coordinator/skill_registry.dart';
 import '../coordinator/tool_breaker.dart';
 import '../coordinator/tool_router.dart';
+import '../llm/cloud/chat_message_codec.dart';
 import '../mcp/connection_manager.dart';
 import '../mcp/local_plugin_discovery.dart';
 import '../mcp/trusted_plugins.dart';
@@ -265,7 +266,7 @@ class _ChatPageState extends State<ChatPage> {
       _archive?.adoptSnapshot(snap); // 当前 id/title 归 Archive 内核
       _session.bindPrivateServer(snap.activePrivateServerId);
       _session.replaceTranscript(
-          ConversationStore.decodeMessages(snap.messages)); // 全量替换
+          ChatMessageCodec.decodeCloud(snap.messages)); // 全量替换
       _track.addAll(TrackEntryCodec.decode(snap.track));
     });
     // MO6 阶段一：切换会话 → 网关投影同步宿主当前激活私有域（PC 只读镜像）。

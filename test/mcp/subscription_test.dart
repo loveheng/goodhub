@@ -6,6 +6,7 @@ import 'package:goodhub/core/errors/mcp_error.dart';
 import 'package:goodhub/core/network/backoff.dart';
 import 'package:goodhub/mcp/connection_health.dart';
 import 'package:goodhub/mcp/connection_manager.dart';
+import 'package:goodhub/coordinator/mcp_tool_face.dart';
 import 'package:goodhub/mcp/mcp_client.dart';
 import 'package:goodhub/mcp/transport/mcp_transport.dart';
 import 'package:http/http.dart' as http;
@@ -241,7 +242,11 @@ void main() {
       });
       final client = McpClient(transport);
       await client.negotiate();
-      final conn = McpConnection(client: client, backoff: noBackoff);
+      final conn = McpConnection(
+          client: client,
+          backoff: noBackoff,
+          faceFactory: (c) => McpToolFace(client: c),
+        );
 
       String? got;
       conn.onResourceUpdated = (uri) => got = uri;
@@ -278,7 +283,11 @@ void main() {
       });
       final client = McpClient(transport);
       await client.negotiate();
-      final conn = McpConnection(client: client, backoff: noBackoff);
+      final conn = McpConnection(
+          client: client,
+          backoff: noBackoff,
+          faceFactory: (c) => McpToolFace(client: c),
+        );
 
       await conn.subscribe('res://a'); // 首次订阅：1 次 resources/subscribe
       expect(rec.where((m) => m == 'resources/subscribe').length, 1);

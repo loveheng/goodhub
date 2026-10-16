@@ -37,6 +37,7 @@ import '../llm/cloud/cloud_llm.dart'
 import '../mcp/connection_manager.dart';
 import '../mcp/local_plugin_discovery.dart';
 import '../mcp/mcp_client.dart';
+import '../llm/cloud/sampling_engine.dart';
 import '../mcp/sampling.dart' show SamplingQuota, samplingRequestHandler;
 import '../mcp/server_capabilities.dart';
 import '../mcp/server_endpoints.dart';
@@ -534,8 +535,10 @@ class McpRuntime {
     // stuck 判定钩子由窗口注入，顺延判定语义见 StuckWatcher）——
     final effectiveQuota = quota ?? SamplingQuota();
     for (final entry in clients.entries) {
-      final sampling =
-          samplingRequestHandler(engine: effectiveEngine, quota: effectiveQuota, serverKey: entry.key);
+      final sampling = samplingRequestHandler(
+          engine: CloudSamplingEngine(effectiveEngine),
+          quota: effectiveQuota,
+          serverKey: entry.key);
       entry.value.onServerRequest = (method, params) {
         onSamplingBegin?.call();
         return sampling(method, params).whenComplete(() => onSamplingEnd?.call());

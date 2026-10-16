@@ -21,6 +21,7 @@ import '../app/service_directory.dart';
 import '../coordinator/hybrid_assembly.dart';
 import '../coordinator/mcp_runtime.dart';
 import '../coordinator/mcp_tool_face.dart';
+import '../llm/cloud/sampling_engine.dart';
 import '../mcp/local_plugin_discovery.dart';
 import '../mcp/server_endpoints.dart';
 import '../mcp/trusted_plugins.dart';
@@ -208,7 +209,7 @@ class GatewayController {
       final quota = SamplingQuota();
       for (final entry in faces.entries) {
         entry.value.client.onServerRequest = samplingRequestHandler(
-          engine: engine,
+          engine: CloudSamplingEngine(engine),
           quota: quota,
           serverKey: entry.key,
         );

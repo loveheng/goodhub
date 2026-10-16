@@ -14,6 +14,7 @@ import 'package:goodhub/coordinator/conversation_archive.dart';
 import 'package:goodhub/coordinator/mcp_runtime.dart';
 import 'package:goodhub/core/security/secure_key_value.dart';
 import 'package:goodhub/llm/cloud/cloud_llm.dart';
+import 'package:goodhub/llm/cloud/chat_message_codec.dart';
 import 'package:goodhub/mcp/sampling.dart';
 import 'package:goodhub/sandbox/conversation_store.dart';
 
@@ -146,7 +147,7 @@ void main() {
       expect(snap!.title, '等价性');
       expect(snap.activePrivateServerId, 'srv_a');
       expect(snap.track, hasLength(1));
-      final messages = ConversationStore.decodeMessages(snap.messages);
+      final messages = ChatMessageCodec.decodeCloud(snap.messages);
       expect(messages, hasLength(3));
       expect(messages.first, isA<UserMessage>());
     });

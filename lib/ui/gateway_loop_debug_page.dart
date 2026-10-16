@@ -29,6 +29,7 @@ import 'package:goodhub/coordinator/skill_registry.dart';
 import 'package:goodhub/coordinator/tool_breaker.dart';
 import 'package:goodhub/core/errors/mcp_error.dart';
 import 'package:goodhub/llm/cloud/byok_store.dart';
+import 'package:goodhub/llm/cloud/sampling_engine.dart';
 import 'package:goodhub/llm/cloud/cloud_llm.dart';
 import 'package:goodhub/llm/llm.dart';
 import 'package:goodhub/mcp/local_plugin_discovery.dart';
@@ -423,7 +424,7 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
       // 处理器——配额 D3 滑动窗口（serverKey = face.serverId），推理走本 Run
       // 同一引擎实例（N7 围栏单咽喉自然覆盖，临时会话语义见 sampling.dart）。
       final sampling = samplingRequestHandler(
-        engine: engine,
+        engine: CloudSamplingEngine(engine),
         quota: _samplingQuota,
         serverKey: face.serverId,
       );

@@ -23,8 +23,7 @@ import '../coordinator/permission_gateway.dart';
 import '../coordinator/pii_fence.dart' show PiiMaskException, PiiRedactionSession;
 import '../llm/cloud/cloud_llm.dart' show AssembledToolCall;
 import '../sandbox/memory_store.dart';
-import '../ui/navigator_key.dart';
-import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/services.dart';
 
 import 'mcp_gateway_handler.dart' show GatewayToolResult;
@@ -39,8 +38,10 @@ class GatewaySecurity {
     this.consentTimeout = kGatewayConsentTimeout,
   });
 
-  /// 确认卡委托（生产 = [DialogGateDelegate]；测试注入假件）。
-  /// null = 无确认界面（无人值守），L2 一律拒绝——保守缺省，严禁静默放行。
+  /// 确认卡委托（生产 = [NativeConsentDelegate]；Flutter 弹层实现
+  /// [DialogGateDelegate] 已迁 `ui/gateway_consent_dialog.dart`；测试注入假件）。
+  /// null = 无确认界面（无人值守），L2 一律拒绝——保守缺省，严禁静默放行、
+  /// 严禁悬挂等待（fail-closed 契约：桥缺位/超时/异常三路均恒 `approved: false`）。
   GateDelegate? delegate;
 
   /// ops.log 审计汇（GatewayController 装配期注入；审计失败 DEGRADE 不阻断）。
@@ -72,7 +73,7 @@ class GatewaySecurity {
     final gate = delegate;
     if (gate == null) {
       return _finish(
-        _rejected('PC 触发写操作需手机屏人工确认；无确认界面（无人值守）一律拒绝'),
+        _rejected('headless_no_ui_prompt：PC 触发写操作需手机屏人工确认；无确认界面（无人值守）一律拒绝'),
         sw,
         tool,
         rejected: true,
@@ -150,84 +151,6 @@ class GatewaySecurity {
   static const _clipLen = 200;
   String _clip(String text) =>
       text.length <= _clipLen ? text : '${text.substring(0, _clipLen)}…';
-}
-
-/// 手机屏 L2 确认卡（TC12：45s 超时自动弹回拒绝；安全层另有同限超时兜底，
-/// 双保险——delegate 超时负责收 UI，guard 超时负责回包）。
-class DialogGateDelegate implements GateDelegate {
-  const DialogGateDelegate({this.timeout = kGatewayConsentTimeout});
-
-  final Duration timeout;
-
-  @override
-  Future<GateDecision> confirm(ToolPendingConfirmation pending) async {
-    final nav = appNavigatorKey.currentState;
-    if (nav == null) {
-      return const GateDecision(approved: false, reason: '应用不在前台，无确认界面');
-    }
-    var settled = false;
-    var remember = false;
-    final dialog = showDialog<GateDecision>(
-      context: nav.context,
-      barrierDismissible: false,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialog) => AlertDialog(
-          title: const Text('PC 远程调用确认（L2 写操作）'),
-          content: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  '工具：${pending.toolName}',
-                  style: const TextStyle(
-                      fontFamily: 'monospace', fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 8),
-                const Text('参数：'),
-                Text(
-                  pending.argumentsJson,
-                  style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-                ),
-                CheckboxListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('本网关会话记住该工具'),
-                  value: remember,
-                  onChanged: (v) => setDialog(() => remember = v ?? false),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () =>
-                  nav.pop(const GateDecision(approved: false, reason: '用户拒绝')),
-              child: const Text('拒绝'),
-            ),
-            FilledButton(
-              onPressed: () => nav.pop(
-                  GateDecision(approved: true, rememberSession: remember)),
-              child: const Text('批准'),
-            ),
-          ],
-        ),
-      ),
-    );
-    unawaited(dialog.whenComplete(() => settled = true));
-    final timer = Timer(timeout, () {
-      if (!settled) {
-        settled = true;
-        nav.pop(const GateDecision(approved: false, reason: '确认超时（45s）'));
-      }
-    });
-    try {
-      final decision = await dialog;
-      return decision ?? const GateDecision(approved: false, reason: '用户拒绝');
-    } finally {
-      settled = true;
-      timer.cancel();
-    }
-  }
 }
 
 /// [GatewaySecurity._classifier] 占位执行环（仅复用 classify，永不触达）。

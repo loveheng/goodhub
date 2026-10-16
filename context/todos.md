@@ -6,6 +6,7 @@ format: v2
 # 待办列表
 
 ## misc
+- [ ] [2026-10-16] (风险) [long] HEAD 存量测试失败移交：memory_kernel_test 2 例（session 域路由 wsStates upsert 断言 'dark' 得 null / undo 回滚残留 ui.lang），本轮四边改造未触碰 memory_kernel/workspace_state_store（git log 佐证），疑与并发窗口 memory_governor_test 失败同族；收敛条件：chatmessage/memory 域窗口下轮跑 test/coordinator/memory_kernel_test.dart 定位根因修复 (src: ai, arch-hardening 验收移交)
 - [ ] [2026-10-16] (风险) (层:L2) (重:轻) ux-hardening 归档转办·6 处 DEGRADE 标记清算台账（均为有意降级且已补用户可见/收紧方向，不删标，逐条留痕）：① hybrid_cloud_engine.dart:59 探测失败视作在线（朝向更丰富路径，其失败经 P0-2 错误卡可见）；② hybrid_cloud_engine.dart:77 门禁探测异常 fail-closed 关闸（P2-1 已收紧，原放行方向偏危险）；③ cow_sync.dart:74 覆写损坏→先备份再空库起步（P2-1 ③，corruptBackupPath 供面板警示+人工找回）；④ conversation_archive.dart:122 配额损坏/签名不符→备份后按无记录（P2-1 ④，lastQuotaError 轨道通告不再静默清零）；⑤ hybrid_assembly.dart:64 BYOK 读取失败→端侧路径 + note 上轨告知（P2-1 ①）；⑥ conversation_store rename 站点（P1-5：原子重写缺失/损坏返 false 不抛穿，UI toast 反馈）——收敛条件：出现真实用户受损案例或兜底方向需再裁决时复核 (src: ai, ux-hardening ::done 标记结算)
 - [ ] [2026-10-16] (功能) (层:L4) (重:中) 更新页安装失败提示「去系统设置允许安装未知应用」但无跳转：需 ACTION_MANAGE_UNKNOWN_APP_SOURCES 平台通道（或 app_settings 依赖——新依赖须先确认）；当前仅文案提示，用户须自己找系统设置 (src: ai, ux-hardening P0-3 收尾)
 - [ ] [2026-10-16] (风险) (层:L1) (重:中) 本地插件发现通道（goodhub/binder_mcp discover）无响应时 chat_page _loadEndpoints 无限挂起：MethodChannel.invokeMethod 无超时，抛异常有 catch 兜底、挂起没有——宿主 Binder 服务假死（不崩也不回）时端点缓存/默认绑定/网关同步/引导卡全部不初始化，页面表现=永久空态无报错。收敛方向：scan() 或 _loadEndpoints 加超时兜底（超时按空目录继续） (src: ai, ux-hardening P0-1 实施发现)

@@ -8,8 +8,9 @@
 /// - 介质口径同记忆沙盒：SequentialFileWriter 全量重写（temp+rename 原子
 ///   替换）；列表 = 扫目录逐文件解析（会话数小，读放大可忽略）；
 /// - 轨道条目编解码住 UI 层（dual_track_stream 静态方法）——TrackEntry 是
-///   UI 模型，沙盒层只存 JSON（层级纪律：④ 不 import ⑤）；消息编解码在此
-///   （CloudChatMessage 为核心纯模型）；
+///   UI 模型，沙盒层只存 JSON（层级纪律：④ 不 import ⑤）；消息编解码已迁
+///   llm 域（`llm/cloud/chat_message_codec.dart`，arch-hardening ④）——存储
+///   层只认 JSON Map 与 core 领域消息 DTO，不感知任何 LLM 类型；
 /// - 损坏文件不抛穿：list 跳过 + load 返 null，[DEGRADE] 留痕（恢复失败
 ///   禁静默吞会话——至少日志可查）。
 library;
@@ -19,7 +20,6 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart' show debugPrint;
 
-import '../llm/cloud/cloud_llm.dart';
 import '../core/storage/sequential_file_writer.dart';
 
 /// 会话列表项（侧边栏消费）。
@@ -204,87 +204,5 @@ class ConversationStore {
       debugPrint('[DEGRADE] conversation-store: rename failed $id: $e');
       return false;
     }
-  }
-
-  // ---------------------------------------------------------------------------
-  // CloudChatMessage 编解码（transcript 忠实序列化；System 不入 transcript）
-  // ---------------------------------------------------------------------------
-
-  static List<Map<String, Object?>> encodeMessages(
-          List<CloudChatMessage> messages) =>
-      [
-        for (final m in messages)
-          switch (m) {
-            UserMessage(:final content) =>
-              <String, Object?>{'type': 'user', 'content': content},
-            AssistantMessage(:final content, :final toolCalls) =>
-              <String, Object?>{
-                'type': 'assistant',
-                'content': ?content,
-                'toolCalls': [
-                  for (final c in toolCalls)
-                    <String, Object?>{
-                      'id': c.id,
-                      'name': c.name,
-                      'argumentsJson': c.argumentsJson,
-                    },
-                ],
-              },
-            ToolResultMessage(:final toolCallId, :final content, :final isError) =>
-              <String, Object?>{
-                'type': 'toolResult',
-                'toolCallId': toolCallId,
-                'content': content,
-                'isError': isError,
-              },
-            SystemMessage() => const <String, Object?>{
-                'type': 'system',
-              }, // transcript 口径不含 System——防御编码，恢复侧跳过
-          },
-      ];
-
-  /// 恢复消息序列：未知类型/缺字段跳过并 DEGRADE 留痕（禁静默吞——计数可观测
-  /// 由调用方对账）；恢复后 assistant/toolCalls 配对由 AgentLoop 出口保证，
-  /// 此处不重排。
-  static List<CloudChatMessage> decodeMessages(List<Map<String, Object?>> raw) {
-    final out = <CloudChatMessage>[];
-    var skipped = 0;
-    for (final m in raw) {
-      try {
-        switch (m['type']) {
-          case 'user':
-            out.add(UserMessage(m['content'] as String? ?? ''));
-          case 'assistant':
-            out.add(AssistantMessage(
-              content: m['content'] as String?,
-              toolCalls: [
-                for (final c in m['toolCalls'] as List? ?? const [])
-                  if (c is Map)
-                    AssembledToolCall(
-                      id: c['id'] as String? ?? '',
-                      name: c['name'] as String? ?? '',
-                      argumentsJson: c['argumentsJson'] as String? ?? '{}',
-                    ),
-              ],
-            ));
-          case 'toolResult':
-            out.add(ToolResultMessage(
-              toolCallId: m['toolCallId'] as String? ?? '',
-              content: m['content'] as String? ?? '',
-              isError: m['isError'] as bool? ?? false,
-            ));
-          case 'system':
-            break; // transcript 口径不含 System
-          default:
-            skipped++;
-        }
-      } on Object {
-        skipped++;
-      }
-    }
-    if (skipped > 0) {
-      debugPrint('[DEGRADE] conversation-store: 消息恢复跳过 $skipped 条（类型未知/缺字段）');
-    }
-    return out;
   }
 }

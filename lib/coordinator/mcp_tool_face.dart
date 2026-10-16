@@ -11,20 +11,14 @@ import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../core/errors/mcp_error.dart';
 import '../llm/cloud/cloud_llm.dart';
+import '../mcp/connection_face.dart';
 import '../mcp/mcp_client.dart';
 import '../sandbox/memory_store.dart';
 import 'agent_loop.dart';
 
-/// 工具执行进度通告（M2.5-T7）：progress/total 为 server 声明的绝对值
-/// （起始帧 0/1）；message 可空。
-typedef ToolProgressCallback = void Function(
-  String toolName,
-  num progress,
-  num? total,
-  String? message,
-);
+export '../mcp/connection_face.dart' show ToolProgressCallback;
 
-class McpToolFace implements ToolExecutor {
+class McpToolFace implements ToolExecutor, ConnectionFace {
   McpToolFace({
     required this.client,
     this.serverId = 'goodshare',
@@ -54,6 +48,7 @@ class McpToolFace implements ToolExecutor {
   /// 在途执行计数（T4-3 D18）：[execute] 进入即 +1、结束 -1——含非流式 POST 在途，
   /// 是断连时「在途 N 个已取消」的 N 来源（cancelActiveRequest 取消其中可取消的流式项）。
   int _activeCalls = 0;
+  @override
   int get inFlightCount => _activeCalls;
 
   /// 在途流式请求 id 集合（M3-T2）：[cancelActiveRequest] 的取消目标。
@@ -95,6 +90,12 @@ class McpToolFace implements ToolExecutor {
     _lastSchemas = List.of(out);
     return out;
   }
+
+  /// [ConnectionFace.listToolNames]：重连差分清洗（D17）只需工具名，
+  /// 不暴露 llm 域 schema 类型给 mcp 传输层。
+  @override
+  Future<List<String>> listToolNames() async =>
+      (await listTools()).map((s) => s.name).toList(growable: false);
 
   List<CloudToolSchema> _lastSchemas = const [];
 
@@ -200,6 +201,7 @@ class McpToolFace implements ToolExecutor {
   /// `notifications/cancelled` 通知（不只断 SSE）；无在途请求为 no-op。
   /// 取消目标 = 全部在途流式请求 id（T4-3 支持多并发在途取消）。
   /// 下发失败 [DEGRADE] 留痕禁静默（server 侧按 90s 超时兜底，不悬挂）。
+  @override
   void cancelActiveRequest({String? reason}) {
     if (_streamingIds.isEmpty) return;
     for (final id in List.of(_streamingIds)) {
