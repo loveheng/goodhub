@@ -22,6 +22,7 @@ import '../coordinator/conversation_archive.dart';
 import '../coordinator/degradation_controller.dart';
 import '../coordinator/fenced_cloud_engine.dart';
 import '../coordinator/mcp_runtime.dart';
+import '../coordinator/memory_kernel.dart';
 import '../coordinator/permission_gateway.dart';
 import '../coordinator/workspace_stream_filter.dart';
 import '../coordinator/skill_registry.dart';
@@ -601,12 +602,12 @@ class _ChatPageState extends State<ChatPage> {
     McpAssembly? assembly; // Run 级句柄：finally 统一释放（内核持资源谁释放）
     try {
       final memoryStore = MemoryStore.underSupportDir(support.path);
-      // 步 3-T3（window-kernel-split）：In-band 提取面（构造+落盘）剥离至
-      // ConversationSession.memoryFilter——session 域落 workspace_states，
+      // 步 2（archive-memory-claim）：In-band 提取面认领进 Memory 内核——
+      // session 域落 workspace_states（所有权仍在 Session，按调用传入），
       // user/srv 域走 MemoryStore keyed 映射（G1）；UI 胶囊经 onCapsule 回传
       // 窗口（渲染与撤销挂载留窗口，undo 已含落盘回滚）。
-      final workspaceFilter = _session.memoryFilter(
-        memoryStore,
+      final workspaceFilter = MemoryKernel(memoryStore).buildFilter(
+        wsStates: _session.wsStates,
         conversationId: convId,
         onCapsule: (key, value, undo) {
           final capsule = TrackMemoryCapsule(key: key, value: value);
