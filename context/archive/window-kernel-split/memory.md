@@ -51,4 +51,4 @@ last-merge: none
 - 后续新增议题进 §8.1 台账或 §8.3（不入本轮），本表不再累积。
 
 ## 断点
-- [断点] 下一步：步 2 代码收敛完成（601 全绿）；gateway 生产路径真机冒烟挂起。下一步：步 3 ChatPage 接线与瘦身验收（_samplingQuota 剥离 → ConversationSession / 记忆 In-band 提取面剥离 / 会话五字段收编，三项行为变更显式验收；DoD 需真机端到端回归）——待用户真机验证步 1/2 后开工
+- [断点] 下一步：三项行为变更验收全部代码级闭环（①配额重置单测 ②headless 已覆盖 ③transcript 单测）；下一步：真机端到端常规冒烟（正常聊天/私有绑定/abort-close）→ ::done 收尾（UNCERTAIN/DEGRADE 清零结算）

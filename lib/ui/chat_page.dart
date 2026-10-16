@@ -27,10 +27,8 @@ import '../coordinator/skill_registry.dart';
 import '../coordinator/tool_breaker.dart';
 import '../coordinator/tool_router.dart';
 import '../mcp/connection_manager.dart';
-import '../llm/cloud/cloud_llm.dart';
 import '../mcp/local_plugin_discovery.dart';
 import '../mcp/trusted_plugins.dart';
-import '../mcp/sampling.dart';
 import '../mcp/server_endpoints.dart';
 import '../sandbox/conversation_store.dart';
 import '../sandbox/memory_store.dart';
@@ -69,22 +67,17 @@ class _ChatPageState extends State<ChatPage> {
   // [_send] 每次 Run 启动从 store 全量加载；增删改与探活/挂载全归设置页
   // （2026-10-16 合并：聊天页不再持有任何非会话 UI）。
 
-  // 会话状态（页面 = 一个会话，§15）
-  final List<CloudChatMessage> _history = [];
-  SkillRegistry? _skills;
-  DegradationController? _degradation;
-  final SamplingQuota _samplingQuota = SamplingQuota(); // D3：重启清零
+  // 会话状态（页面 = 一个会话，§15）：活态收编进 ConversationSession
+  // （window-kernel-split 步 3-T4——transcript/绑定写回走其契约方法，
+  // 配额/激活集/降级判据/事实库随会话实例生灭，切会话即重置）。
+  ConversationSession _session = ConversationSession();
 
   // 会话持久化（M4-T3b，D10/D13）：当前会话 id + 标题 + 侧边栏列表
   ConversationStore? _convStore;
   String? _conversationId;
 
-  /// P2-6（G3）：会话级事实库懒建（首个任务轮起与 ConversationStore 同期装配）。
-  WorkspaceStateStore? _wsStates;
   var _conversationTitle = '';
   var _conversations = <ConversationMeta>[];
-  // 会话级 MCP 绑定（v1）：null=未设定（按默认回退）/ ''=显式纯公共 / 否则 serverId。
-  String? _activePrivateServerId;
   // 端点缓存（供 composer menu 与默认回退使用；_send 内刷新）。
   List<ServerEndpoint> _endpoints = <ServerEndpoint>[];
   // 本地插件缓存（零配置自动发现；系统托管、始终挂载；供状态带/菜单展示）。
@@ -168,8 +161,8 @@ class _ChatPageState extends State<ChatPage> {
         id: cid,
         title: _conversationTitle,
         track: TrackEntryCodec.encode(_track),
-        messages: ConversationStore.encodeMessages(_history),
-        activePrivateServerId: _activePrivateServerId,
+        messages: ConversationStore.encodeMessages(_session.transcript),
+        activePrivateServerId: _session.activePrivateServerId,
       );
       await _refreshConversations();
     } on Object catch (e) {
@@ -184,11 +177,13 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   /// 恢复/新建后重置会话态：激活集属会话（§15），跨会话必须重开。
+  /// 步 3-T4：五字段手工枚举消失——新会话 = 新 [ConversationSession] 实例
+  /// （transcript/绑定/激活集/降级/事实库/配额随之全部归零，
+  /// **切会话即重置配额** = 行为变更①，原为页面级「重启清零」）。
   void _resetSessionState() {
     setState(() {
       _track.clear();
-      _history.clear();
-      _skills = null;
+      _session = ConversationSession();
       _conversationId = null;
       _conversationTitle = '';
       _activeCallEntry = null;
@@ -223,8 +218,9 @@ class _ChatPageState extends State<ChatPage> {
     setState(() {
       _conversationId = snap.id;
       _conversationTitle = snap.title;
-      _activePrivateServerId = snap.activePrivateServerId;
-      _history.addAll(ConversationStore.decodeMessages(snap.messages));
+      _session.bindPrivateServer(snap.activePrivateServerId);
+      _session.replaceTranscript(
+          ConversationStore.decodeMessages(snap.messages)); // 全量替换
       _track.addAll(TrackEntryCodec.decode(snap.track));
     });
     _pinToBottom();
@@ -372,22 +368,23 @@ class _ChatPageState extends State<ChatPage> {
       // 发现通道不可用：视为无本地插件。
     }
     if (!mounted) return;
-    final bound = _activePrivateServerId ?? _resolveBinding(all);
+    final bound = _session.activePrivateServerId ?? _resolveBinding(all);
     setState(() {
       _endpoints = all;
       _localPlugins = locals;
-      _activePrivateServerId = bound;
+      _session.bindPrivateServer(bound);
     });
   }
 
   /// 是否处于"已绑定某私有服务"的弱感知态（用于状态带胶囊）。
   bool get _hasContext =>
-      _activePrivateServerId != null && _activePrivateServerId!.isNotEmpty;
+      _session.activePrivateServerId != null &&
+      _session.activePrivateServerId!.isNotEmpty;
 
   /// 会话绑定默认回退：未显式绑定时 → 全局钉选 isDefault → 首个启用的 private
   /// → null（纯公共）。已显式绑定（含 '' 显式公共）则直接用。
   String? _resolveBinding(List<ServerEndpoint> eps) {
-    final bound = _activePrivateServerId;
+    final bound = _session.activePrivateServerId;
     if (bound != null) return bound.isEmpty ? null : bound;
     String? firstPrivate;
     for (final e in eps) {
@@ -398,9 +395,9 @@ class _ChatPageState extends State<ChatPage> {
     return firstPrivate;
   }
 
-  /// 即时绑定（composer menu 调用）：写页面态 + 落会话元数据（对话未建则安全早退）。
+  /// 即时绑定（composer menu 调用）：写会话态（三态写回契约）+ 落会话元数据。
   void _bindSessionServer(String? serverId) {
-    setState(() => _activePrivateServerId = serverId);
+    setState(() => _session.bindPrivateServer(serverId));
     unawaited(_persistConversation());
   }
 
@@ -452,7 +449,7 @@ class _ChatPageState extends State<ChatPage> {
       isScrollControlled: true,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setSheet) {
-          final bound = _activePrivateServerId;
+          final bound = _session.activePrivateServerId;
           final priv = _endpoints
               .where((e) => e.enabled && e.tier == ServerPrivacyTier.private)
               .toList();
@@ -609,50 +606,30 @@ class _ChatPageState extends State<ChatPage> {
         ? _titleFrom(prompt)
         : _conversationTitle;
     // P2-6（§3.6/G3）：会话级事实库懒建——In-band 捎带 session 域落点。
-    final wsStates =
-        _wsStates ??= WorkspaceStateStore.underSupportDir(support.path);
+    _session.bindWsStates(WorkspaceStateStore.underSupportDir(support.path));
     final convId = _conversationId!;
     McpAssembly? assembly; // Run 级句柄：finally 统一释放（内核持资源谁释放）
     try {
       final memoryStore = MemoryStore.underSupportDir(support.path);
-      // P2-6/P2-1b：In-band 提取分流——session 域落 workspace_states，
-      // user/srv 域走 MemoryStore keyed 映射（G1）；胶囊撤销 = 对应 remove。
-      final workspaceFilter = WorkspaceStreamFilter(
-        onExtracted: (facts) {
-          for (final f in facts) {
-            final scope = f.normalizedScope;
-            if (scope == null) continue; // 幻觉 scope 丢弃（G4）
-            if (scope == 'session') {
-              if (f.action == 'remove') {
-                unawaited(wsStates.remove(convId, f.key));
-              } else {
-                unawaited(wsStates.upsert(convId, f.key, f.value));
-              }
-            } else {
-              // P2-1b（G1）：user/srv 域走 MemoryStore keyed 映射——同 key
-              // 覆盖不追加；remove 幂等。
-              if (f.action == 'remove') {
-                unawaited(memoryStore.removeFacts(f.key, scope: scope));
-              } else {
-                unawaited(memoryStore.upsertFacts(f.key, f.value, scope: scope));
-              }
-            }
-            final capsule = TrackMemoryCapsule(key: f.key, value: f.value);
-            capsule.onUndo = () {
-              if (scope == 'session') {
-                unawaited(wsStates.remove(convId, f.key));
-              } else {
-                unawaited(memoryStore.removeFacts(f.key, scope: scope));
-              }
-              if (!mounted) return;
-              setState(() {
-                capsule
-                  ..undone = true
-                  ..onUndo = null;
-              });
-            };
-            _add(capsule);
-          }
+      // 步 3-T3（window-kernel-split）：In-band 提取面（构造+落盘）剥离至
+      // ConversationSession.memoryFilter——session 域落 workspace_states，
+      // user/srv 域走 MemoryStore keyed 映射（G1）；UI 胶囊经 onCapsule 回传
+      // 窗口（渲染与撤销挂载留窗口，undo 已含落盘回滚）。
+      final workspaceFilter = _session.memoryFilter(
+        memoryStore,
+        conversationId: convId,
+        onCapsule: (key, value, undo) {
+          final capsule = TrackMemoryCapsule(key: key, value: value);
+          capsule.onUndo = () {
+            undo(); // 落盘回滚（内核侧闭包）
+            if (!mounted) return;
+            setState(() {
+              capsule
+                ..undone = true
+                ..onUndo = null;
+            });
+          };
+          _add(capsule);
         },
       );
       // 步 1（window-kernel-split）：装配段迁入 McpRuntime（内核）；本页收集
@@ -679,20 +656,24 @@ class _ChatPageState extends State<ChatPage> {
         mountedLocals.add(info);
       }
       _watcher = StuckWatcher(onStuck: _markActiveCallStuck);
-      final skills = _skills ??= SkillRegistry()..registerAll(builtinSkills());
+      // 步 3-T4：激活集/降级判据懒建收编进 session（新会话 = 新实例 = 重开）。
+      _session.bindSkills(
+          _session.skills ?? (SkillRegistry()..registerAll(builtinSkills())));
+      _session.bindDegradation(
+          _session.degradation ?? DegradationController());
       assembly = await const McpRuntime().assemble(
         context: SessionContext(
-          activePrivateServerId: _activePrivateServerId,
+          activePrivateServerId: _session.activePrivateServerId,
           conversationId: convId,
-          degradation: _degradation ??= DegradationController(),
-          transcript: _history,
-          wsStates: wsStates,
+          degradation: _session.degradation,
+          transcript: _session.transcript,
+          wsStates: _session.wsStates,
         ),
         endpoints: endpoints,
         locals: mountedLocals,
         apiKeyReader: epStore.apiKey,
         memoryStore: memoryStore,
-        skills: skills,
+        skills: _session.skills!,
         delegates: RuntimeDelegates(
           gateDelegate: _ChatGate(this),
           fenceDelegate: _ChatFence(this), // D4 有人值守拦截卡
@@ -771,7 +752,7 @@ class _ChatPageState extends State<ChatPage> {
             }
           },
         ),
-        quota: _samplingQuota,
+        quota: _session.samplingQuota,
         onSamplingBegin: () => _watcher?.samplingBegin(),
         onSamplingEnd: () => _watcher?.samplingEnd(),
       );
@@ -800,7 +781,7 @@ class _ChatPageState extends State<ChatPage> {
         // （挂 ephemeral 断点），记忆区走 systemTail 置尾——记忆增长不顶掉
         // 静态前缀缓存边界。P2-4（§3.2）：workspace_update 提取指令为固定
         // 静态区追加（含「tool-call 轮严禁输出」铁律）。
-        systemPrompt: skills.composeSystemPrompt(
+        systemPrompt: _session.skills!.composeSystemPrompt(
           _systemPrompt,
           connectedServerIds: router.serverIds,
         ) +
@@ -808,7 +789,7 @@ class _ChatPageState extends State<ChatPage> {
             WorkspaceStreamFilter.promptInstructions,
         systemTail: memSection,
         userPrompt: prompt,
-        history: List.of(_history), // D11：上轮 transcript 续接
+        history: List.of(_session.transcript), // D11：上轮 transcript 续接
         workspaceFilter: workspaceFilter, // P2-6：In-band 分流+胶囊
         // P3-2（D-H/§9.1）：已让位私有域的历史调用发送边界合成桩脱敏。
         maskTool: (name) {
@@ -871,9 +852,9 @@ class _ChatPageState extends State<ChatPage> {
             _watcher?.stop();
             _setPill(rejected ? 'rejected' : 'idle', CapsuleTone.l1);
           case LoopFinished(:final text, :final transcript):
-            _history
-              ..clear()
-              ..addAll(transcript); // D11：下轮续接（未配对尾巴已截断）
+            // 步 3 写回契约（§8.1-1）：全量替换（非 append）——D11 下轮续接
+            //（未配对尾巴已截断），同会话多轮后条数不翻倍 = 行为变更③。
+            _session.replaceTranscript(transcript);
             _appendText(text.isEmpty ? '' : '\n');
             _add(TrackNote('✓ 任务完成', danger: false));
             _setPill('done', CapsuleTone.idle);
@@ -882,13 +863,12 @@ class _ChatPageState extends State<ChatPage> {
         }
       }
       // 会话绑定捕获：模型可能在本轮经 use_server/activate 改写私有槽位，
-      // 收尾前落到会话元数据，使该会话后续轮次稳固锁定（免每轮重选）。
+      // 收尾前经三态写回契约落到会话元数据（免每轮重选）。
       final slot = router.activePrivateServerId;
       if (slot != null) {
-        _activePrivateServerId = slot;
-      } else if (_activePrivateServerId != null &&
-          _activePrivateServerId!.isNotEmpty) {
-        _activePrivateServerId = ''; // 曾绑定 → 本轮 use_server('all') 清空 = 显式公共
+        _session.bindPrivateServer(slot);
+      } else if ((_session.activePrivateServerId ?? '').isNotEmpty) {
+        _session.unbindToPublic(); // 曾绑定 → 本轮 use_server('all') 清空 = 显式公共
       }
     } on Object catch (e) {
       _add(TrackNote('✕ 任务中断：$e', danger: true));
@@ -1076,7 +1056,7 @@ class _ChatPageState extends State<ChatPage> {
       CapsuleTone.l2 => t.l2Warn,
       CapsuleTone.danger => t.danger,
     };
-    final ctxId = _activePrivateServerId;
+    final ctxId = _session.activePrivateServerId;
     final hasCtx = ctxId != null && ctxId.isNotEmpty;
     final hasLocal = _localPlugins.isNotEmpty;
     // 绑定私有端点 / 本地插件 均按「私有」呈现（锁形 + l1 色），不视作公有；

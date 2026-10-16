@@ -11,6 +11,7 @@
 /// 「只立签名、不实现」，其余按 §8.1 已拍板语义可完整实现。
 library;
 
+import 'dart:async' show unawaited;
 import 'dart:developer' as developer;
 import 'dart:io';
 
@@ -31,6 +32,7 @@ import 'skill_activation_executor.dart';
 import 'skill_registry.dart';
 import 'tool_breaker.dart' show BlockDelegate;
 import 'tool_router.dart';
+import 'workspace_stream_filter.dart';
 import '../core/errors/mcp_error.dart';
 import '../llm/cloud/cloud_llm.dart'
     show AssembledToolCall, CloudChatMessage, CloudLlmEngine, CloudToolSchema;
@@ -716,13 +718,34 @@ class ConversationSession {
   String? _activePrivateServerId;
   final List<CloudChatMessage> _transcript = [];
 
+  // —— 会话级活态（步 3-T4 自 chat_page 五字段收编；懒建由窗口绑定）——
+  SkillRegistry? _skills;
+  DegradationController? _degradation;
+  WorkspaceStateStore? _wsStates;
+
   /// 三态：null=未绑定 / ''=显式公共 / id=锁定。
   String? get activePrivateServerId => _activePrivateServerId;
 
   /// 只读视图；写回唯一通道 = [replaceTranscript]。
   List<CloudChatMessage> get transcript => List.unmodifiable(_transcript);
 
-  /// **全量替换**（非 append！）：对应现 `chat_page:1067` 的
+  /// 会话粒度 SkillRegistry（§15：激活集跨 Run 保留；新会话 = 新实例 = 重开）。
+  SkillRegistry? get skills => _skills;
+
+  /// 降级判据记忆（会话级）。
+  DegradationController? get degradation => _degradation;
+
+  /// 会话级事实库（P2-6；懒建绑定）。
+  WorkspaceStateStore? get wsStates => _wsStates;
+
+  void bindSkills(SkillRegistry registry) => _skills = registry;
+
+  void bindDegradation(DegradationController controller) =>
+      _degradation = controller;
+
+  void bindWsStates(WorkspaceStateStore store) => _wsStates = store;
+
+  /// **全量替换**（非 append！）：对应原 `chat_page` 事件循环的
   /// `clear() + addAll()`——命名成 append 会致 transcript 跨轮翻倍。
   void replaceTranscript(Iterable<CloudChatMessage> transcript) {
     _transcript
@@ -737,6 +760,50 @@ class ConversationSession {
 
   /// 显式回公共（= `bindPrivateServer('')`，语义别名）。
   void unbindToPublic() => _activePrivateServerId = '';
+
+  /// 步 3-T3：In-band 提取面构造与落盘（原 `chat_page._send` 内联 650-700
+  /// 剥离至此——session 域落 [wsStates]，user/srv 域走 memoryStore keyed 映射
+  /// G1；remove 幂等；幻觉 scope 丢弃 G4）。UI 胶囊部分经 [onCapsule] 回传
+  /// 窗口（TrackMemoryCapsule 渲染与撤销挂载留在窗口；[undo] 已含落盘回滚）。
+  /// Memory 内核（Deferred）认领前的临时替身，与 `_persistConversation` 留窗
+  /// 同口径。
+  WorkspaceStreamFilter memoryFilter(
+    MemoryStore memoryStore, {
+    required String conversationId,
+    required void Function(String key, String value, void Function() undo)
+        onCapsule,
+  }) =>
+      WorkspaceStreamFilter(
+        onExtracted: (facts) {
+          for (final f in facts) {
+            final scope = f.normalizedScope;
+            if (scope == null) continue; // 幻觉 scope 丢弃（G4）
+            Future<void> undo() => scope == 'session'
+                ? wsStates!.remove(conversationId, f.key)
+                : memoryStore.removeFacts(f.key, scope: scope);
+            if (scope == 'session') {
+              if (f.action == 'remove') {
+                // ignore: discarded_futures
+                unawaited(wsStates!.remove(conversationId, f.key));
+              } else {
+                // ignore: discarded_futures
+                unawaited(wsStates!.upsert(conversationId, f.key, f.value));
+              }
+            } else {
+              // P2-1b（G1）：user/srv 域走 MemoryStore keyed 映射——同 key
+              // 覆盖不追加；remove 幂等。
+              if (f.action == 'remove') {
+                // ignore: discarded_futures
+                unawaited(memoryStore.removeFacts(f.key, scope: scope));
+              } else {
+                // ignore: discarded_futures
+                unawaited(memoryStore.upsertFacts(f.key, f.value, scope: scope));
+              }
+            }
+            onCapsule(f.key, f.value, undo);
+          }
+        },
+      );
 
   /// 持久化签名（§7.5 T6 / §8.3：**只立签名、不实现持久化**——真实落盘属
   /// `ConversationArchive`（Deferred），步 3 收口后另立 epic）。

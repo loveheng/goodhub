@@ -2,8 +2,8 @@
 dev-loop: memory
 format: v1
 epic: chatmessage
-total-merged: 1
-last-merge: 2026-10-15
+total-merged: 2
+last-merge: 2026-10-16
 ---
 
 # chatmessage
@@ -49,6 +49,15 @@ last-merge: 2026-10-15
   - `lib/mcp/connection_manager.dart`：`_resyncSubscriptions` 重连重放原走 `listResources()` 重列，server 重启后缺 `resources` 数组抛错且清单未必含手动订阅 uri → 重放中断（`subscription_test` 实际 1/期望 2）；改为先按本地 `client.subscribedUris` 重报（force）+ best-effort 重列补新增。
   - `lib/coordinator/hybrid_cloud_engine.dart`：`_cloudSend` gapTimer 三元 `isFirst ? firstTokenTimeout : interEventGapTimeout` 首事件后误重装首 token 预算（interEventGapTimeout 判据永不触发）；改为事件到达后一律按 `interEventGapTimeout` 重装并删废变量 `isFirst`；`hybrid_cloud_engine_test` `CloudDone` 缺必填 `finishReason` 编译失败补 `CloudFinishReason.stop`。
 
+## 归并 (2026-10-16 · 会话绑定 UI 与流控判据)
+
+- **会话绑定 UI 定稿**：状态带上下文胶囊改**常驻可点**（已绑定→`[服务名]`；有端点→`[公共]`；本地插件→`本地×N`），输入框「+」**固定常显不隐藏**（移除 `_composerVisible` 及输入监听）——解决"输入一半想切服务"的痛点，输入内容不丢。
+- **本地插件语义（易错点）**：Binder 自动发现项**不进 `mcp_servers.json`**，经 `localPluginDiscovery.scan()` 填 `_localPlugins`；**按私有呈现**（锁形 + `l1Info` 色，非公有灰），**始终挂载**、无需绑定选择——绑定语义仅适用于手填 HTTP 端点。
+- **`_endpoints` 缓存过时缺陷**：`ChatPage` 原只在 `initState` 读一次目录，"先开聊天→设置加服务→返回"后菜单恒空。修法 = `_openComposerMenu` 开菜单前先 `await _loadEndpoints()` 重读；且加载后即完成"新会话默认锁定"（`isDefault` → 首个 private）。
+- **流控判据放宽（D-K 连带）**：`DegradationController` 移除 `maxThinkingGap` 上限——长思考/慢推理不掐断，交由人类按状态带新增的 `mm:ss` 运行计时自行决定中止；活体连接（含 SSE 心跳字节）永不误杀，仅持续无字节的真死连接被 `interEventGapTimeout`=120s 下限兜底。
+- **验证基线**：`flutter analyze` No issues；全量 564/0（该轮排除 hybrid_cloud_engine_test），后随编译修复入网升至 583/583（见上节收尾账本）。
+
 ## 断点
 
 - [断点] 下一步：收尾全量测试已完成：583/583 全绿（hybrid_cloud_engine_test 编译失败已修复并入网 21 例；连带修复 hybrid_cloud_engine 流内间隙计时器三元 bug）；等待新子任务或 ::done
+- [note] 2026-10-16：本 epic 的 UI/装配层解耦已**分拆**至新 epic `window-kernel-split`（挂 `docs/design/window-kernel-split.md`），本 epic 仅保留 §3 记忆 In-band 提取战场；两边连线 = 依赖跟踪 §2.4 投影平面隔离

@@ -250,5 +250,62 @@ void _assembleTests() {
       reason: '装配异常路径：成功协商的端点也必须 close（防泄漏）',
     );
   });
+
+  group('ConversationSession 写回契约（真机验收③降级单测：transcript 不翻倍）', () {
+    test('连续两轮 Run 收尾写回：replaceTranscript 全量替换非累积', () {
+      final session = ConversationSession();
+      final round1 = <CloudChatMessage>[
+        UserMessage('q1'),
+        AssistantMessage(content: 'a1'),
+      ];
+      session.replaceTranscript(round1);
+      expect(session.transcript.length, 2);
+
+      // 第二轮 Run：事件循环口径 = loop 返回含上轮历史的全量 transcript。
+      // 写回必须 clear+addAll；若为 append 则跨轮翻倍（length 4+4=8）。
+      final round2 = <CloudChatMessage>[
+        ...round1,
+        ToolResultMessage(toolCallId: 't1', content: 'r1'),
+        UserMessage('q2'),
+        AssistantMessage(content: 'a2'),
+      ];
+      session.replaceTranscript(round2);
+      expect(session.transcript.length, round2.length,
+          reason: '两轮写回后长度必须等于第二轮全量（不翻倍）');
+    });
+
+    test('写回后 transcript 为不可变视图：外部改动不渗入内核态', () {
+      final session = ConversationSession();
+      session.replaceTranscript([UserMessage('q')]);
+      final view = session.transcript;
+      expect(() => view.add(AssistantMessage(content: 'x')), throwsA(isA<Object>()));
+      expect(session.transcript.length, 1);
+    });
+
+    test('第三轮空写回：清空语义成立（replace 非 merge）', () {
+      final session = ConversationSession();
+      session.replaceTranscript([UserMessage('q'), AssistantMessage(content: 'a')]);
+      session.replaceTranscript(const []);
+      expect(session.transcript, isEmpty);
+    });
+  });
+
+  group('ConversationSession 配额归 Session（行为变更①单测：切会话即重置配额）', () {
+    test('旧实例配额烧尽后，新实例满额独立（SamplingQuota 实例独立入参）', () {
+      final a = ConversationSession();
+      final now = DateTime.now();
+      for (var i = 0; i < a.samplingQuota.maxPerWindow; i++) {
+        expect(a.samplingQuota.tryConsume('srv', now), isNull, reason: '窗口内应放行');
+      }
+      expect(a.samplingQuota.tryConsume('srv', now), isNotNull, reason: '第 21 次应拒绝');
+
+      final b = ConversationSession();
+      expect(
+        b.samplingQuota.tryConsume('srv', now),
+        isNull,
+        reason: '切会话 = 新 ConversationSession = 新 SamplingQuota = 配额重置',
+      );
+    });
+  });
 }
 
