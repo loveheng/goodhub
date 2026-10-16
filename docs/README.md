@@ -32,3 +32,4 @@ updated: 2026-10-17
   - [design/arch-hardening.md](design/arch-hardening.md) — 架构债修复施工稿：内核单入口 + 四条反向边斩断（承接 window-kernel-split 步 0→3 的勾稽表）
   - [design/archive-memory-claim.md](design/archive-memory-claim.md) — 会话归档与记忆认领设计（Archive 生命周期与配额）
   - [design/p0-security-correctness.md](design/p0-security-correctness.md) — P0 缺陷修复施工稿：文件级写互斥 / 网关 per-session 安全上下文与装配句柄释放 / 依赖护栏与门禁加固
+  - [design/window-slim.md](design/window-slim.md) — 窗口层瘦身与编排下沉（P1 结构盘点账实核对版：窗口过厚/双实现/降级不可见/释放不幂等，draft）

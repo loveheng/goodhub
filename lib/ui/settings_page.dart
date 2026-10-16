@@ -50,7 +50,6 @@ import '../app/service_directory.dart';
 import '../coordinator/cow_sync.dart';
 import '../gateway_api/gateway_control.dart';
 import '../llm/cloud/byok_store.dart';
-import '../llm/cloud/cloud_llm.dart';
 import '../mcp/server_endpoints.dart';
 import '../mcp/server_probe.dart';
 import '../mcp/default_private_server.dart';
@@ -58,9 +57,9 @@ import 'components/server_endpoint_forms.dart';
 import 'claim_loop_page.dart';
 import 'gateway_loop_debug_page.dart';
 import 'update_page.dart';
+import 'sections/local_plugins_section.dart';
+import 'sections/byok_section.dart';
 import '../mcp/local_plugin_discovery.dart';
-import '../mcp/trusted_plugins.dart';
-import 'trust_plugin_dialog.dart';
 import 'tokens/console_tokens.dart';
 
 /// appScoped 覆写正文的防呆上限（无硬预算闸，防呆防手滑）。
@@ -123,20 +122,8 @@ class _SettingsPageState extends State<SettingsPage> {
   // Rose 文案 + 重试入口；面板间无数据依赖，其余照常可用。
   String? _cowError;
 
-  // —— BYOK 面板状态（M4-T5）——
-  ByokStore? _byokStore;
-  var _byokProfiles = const <ByokProfile>[];
-  String? _byokPreferredId; // 生效 profile id（用户显式选择；未选=列表首位）
-  final _hasByokKey = <String>{}; // 安全存储已有密钥的 profileId（真值不入内存明文）
-  String? _editingByokId;
-  var _creatingByok = false;
-  String? _byokError;
-  var _byokProto = CloudProtocol.openaiCompatible;
-  final _byokNameCtrl = TextEditingController();
-  final _byokUrlCtrl = TextEditingController();
-  final _byokModelCtrl = TextEditingController();
-  final _byokTempCtrl = TextEditingController();
-  final _byokKeyCtrl = TextEditingController();
+  // —— 云端引擎（BYOK）段（window-slim P1-A 已抽 lib/ui/sections/byok_section.dart
+  // 自持：store 读写/生效位/密钥编排/表单渲染；本页只透传 store 注入）——
 
   // —— Server 节点卡状态（M4-T5）——
   ServerEndpointStore? _epStore;
@@ -149,12 +136,8 @@ class _SettingsPageState extends State<SettingsPage> {
   String? _editingEpId;
   String? _nodesError;
 
-  // —— 本地插件面板（Binder 发现，零配置自动挂载）——
-  Future<List<LocalPluginInfo>> Function()? _localScan;
-  var _localPlugins = const <LocalPluginInfo>[];
-  var _trustedPackages = const <String>{}; // 已信任包名（同签名免确认仍显式标）
-  StreamSubscription<void>? _localChangesSub;
-  String? _localError;
+  // —— 本地插件段（window-slim P1-A 已抽 lib/ui/sections/local_plugins_section.dart
+  // 自持：发现/信任白名单/重扫流；本页只保留钉选默认私有回调与注入透传）——
 
   // —— 默认私有服务（统一钉选，覆盖手动端点 + 本地插件；持久于 SharedPreferences）——
   // 方案 A（2026-10-16）：独立 radio 面板撤销，钉选态降级为 ②③ 卡片行内
@@ -178,28 +161,24 @@ class _SettingsPageState extends State<SettingsPage> {
 
   @override
   void dispose() {
-    _localChangesSub?.cancel();
     _editCtrl.dispose();
     _newNameCtrl.dispose();
     _newContentCtrl.dispose();
-    _byokNameCtrl.dispose();
-    _byokUrlCtrl.dispose();
-    _byokModelCtrl.dispose();
-    _byokTempCtrl.dispose();
-    _byokKeyCtrl.dispose();
     _gwTokenCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _init() async {
     await _initCow();
-    await _initByok();
+    // 云端引擎（BYOK）段自持初始化（window-slim P1-A）：段 widget initState
+    // 自行 reload，本页不再编排。
     await _initNodes();
     // P2：进入页面自动探活一次——「未探测 · 已存令牌」不再让用户先找按钮。
     if (widget.autoProbe && mounted) {
       unawaited(_probeAll());
     }
-    await _initLocalPlugins();
+    // 本地插件段自持初始化（window-slim P1-A）：段 widget initState 自挂
+    // 变更流与首扫，本页不再编排。
     // 网关面板独立初始化：只读当前起停态与持久化 Token——网关是全局单例，
     // 页面 dispose **不停服**（起停是用户显式动作，页面进出不该带副作用）。
     try {
@@ -241,18 +220,12 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  /// BYOK 面板初始化（P0-3 同口径）：失败从「静默按空目录」升级为面板级
-  /// 错误态——用户自带 key 失效时看得到原因，而非面对空列表猜疑。
-  Future<void> _initByok() async {
-    try {
-      final byok = widget.byokStoreOverride ?? ByokStore();
-      await _reloadByok(byok);
-      if (mounted) setState(() => _byokError = null);
-    } catch (e) {
-      debugPrint('[DEGRADE] byok-panel: 配置读取失败: $e');
-      if (mounted) setState(() => _byokError = '模型配置读取失败：$e');
-    }
-  }
+  /// 云端引擎段装配（window-slim P1-A）：store 注入透传（测试假件/生产单入口）。
+  Widget _byokPanelSection() => ByokSection(
+        store: widget.byokStoreOverride ?? ByokStore(),
+        onFlash: _flash,
+        errorRowBuilder: _panelError,
+      );
 
   /// 节点卡面板初始化（P0-3 同口径）：失败置面板级错误态（与聊天页 ⚙ 设置
   /// 同一 ServerEndpointStore 文件——应用支持目录/mcp_servers.json + 旧单端点
@@ -265,27 +238,6 @@ class _SettingsPageState extends State<SettingsPage> {
     } catch (e) {
       debugPrint('[DEGRADE] nodes-panel: 端点目录读取失败: $e');
       if (mounted) setState(() => _nodesError = '节点目录读取失败：$e');
-    }
-  }
-
-  /// 本地插件面板初始化（P0-3 同口径）：Binder 通道拉扫同机插件（零配置自动
-  /// 挂载），订阅包变更流做热刷新；失败（通道不可用）置面板级错误态 + 重试，
-  /// 不再永显「读取本地插件…」。
-  Future<void> _initLocalPlugins() async {
-    try {
-      _localScan = widget.localScanOverride ?? localPluginDiscovery.scan;
-      final changes =
-          widget.localChangesOverride ?? localPluginDiscovery.changes;
-      // 重试路径防重复订阅：先摘旧订阅再挂新（幂等）。
-      await _localChangesSub?.cancel();
-      _localChangesSub = changes.listen((_) {
-        if (mounted) unawaited(_reloadLocalPlugins());
-      });
-      await _reloadLocalPlugins();
-      if (mounted) setState(() => _localError = null);
-    } catch (e) {
-      debugPrint('[DEGRADE] local-plugins-panel: 初始化失败: $e');
-      if (mounted) setState(() => _localError = '本地插件读取失败：$e');
     }
   }
 
@@ -469,28 +421,6 @@ class _SettingsPageState extends State<SettingsPage> {
     _flash(value ? '✓ 已挂载 ${ep.name}' : '⊘ 已卸载 ${ep.name}（配置与令牌保留）');
   }
 
-  Future<void> _reloadByok(ByokStore store) async {
-    final profiles = await store.load();
-    final withKey = <String>{};
-    for (final p in profiles) {
-      if (await store.apiKey(p.id) != null) withKey.add(p.id);
-    }
-    final preferred = await store.preferredProfileId();
-    if (mounted) {
-      setState(() {
-        _byokStore = store;
-        _byokProfiles = profiles;
-        _hasByokKey
-          ..clear()
-          ..addAll(withKey);
-        _byokPreferredId =
-            preferred ?? (profiles.isNotEmpty ? profiles.first.id : null);
-        _creatingByok = false;
-        _editingByokId = null;
-      });
-    }
-  }
-
   Future<void> _reload(CowOverridesStore store) async {
     final names = await store.overrideNames();
     final entries = <String, DateTime?>{};
@@ -600,11 +530,19 @@ class _SettingsPageState extends State<SettingsPage> {
         padding: const EdgeInsets.all(12),
         children: [
           // 顺序按使用频率：先选引擎，再接服务，后管放行与覆写。
-          _byokPanel(context, t),
+          _byokPanelSection(),
           const SizedBox(height: 12),
           _nodesPanel(context, t),
           const SizedBox(height: 12),
-          _localPluginsPanel(context, t),
+          LocalPluginsSection(
+            scan: widget.localScanOverride ?? localPluginDiscovery.scan,
+            changes: widget.localChangesOverride ?? localPluginDiscovery.changes,
+            isDefaultPrivate: _isDefaultPrivate,
+            onPinToggle: (id, label, isDefault) =>
+                isDefault ? _clearDefaultPrivate() : _setDefaultPrivate(id, label),
+            onFlash: _flash,
+            errorRowBuilder: _panelError,
+          ),
           const SizedBox(height: 12),
           _gatewayPanel(context, t),
           const SizedBox(height: 12),
@@ -891,420 +829,7 @@ class _SettingsPageState extends State<SettingsPage> {
     ),
   );
 
-  // —— 面板二：BYOK 云端引擎（M4-T5） ——
-
-  /// 装配语义：hybrid_assembly 取列表首个 profile 为生效云端引擎——首位即
-  /// 「生效中」，置顶动作即切换生效配置（不改装配线，零回归面）。
-  Widget _byokPanel(BuildContext context, ConsoleTokens t) {
-    final store = _byokStore;
-    return Card(
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Text(
-                  // P1-7：标题去首字母缩略语——BYOK 对普通用户是黑话。
-                  '云端引擎（自带 API Key）',
-                  style: const TextStyle(
-                    fontSize: Fsz.sectionTitle,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const Spacer(),
-                Text(
-                  '配置 ${_byokProfiles.length} 项',
-                  style: TextStyle(
-                    fontFamily: t.monoFamily,
-                    fontSize: Fsz.telemetrySm,
-                    color: t.terminalMuted,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              '用你自己的 API Key 接入云端模型（OpenAI 兼容 / Anthropic）。'
-              '标注「生效中」的是当前实际使用的模型，可点「设为生效引擎」切换。',
-              style: TextStyle(
-                fontSize: Fsz.telemetrySm,
-                color: Theme.of(context).hintColor,
-              ),
-            ),
-            const SizedBox(height: 8),
-            if (_byokError != null)
-              _panelError(
-                t,
-                _byokError!,
-                _initByok,
-                key: const ValueKey('byok-error'),
-              )
-            else if (store == null)
-              const Padding(
-                padding: EdgeInsets.all(8),
-                child: Center(
-                  child: Text(
-                    '读取模型配置…',
-                    style: TextStyle(fontSize: Fsz.telemetry),
-                  ),
-                ),
-              )
-            else ...[
-              for (final p in _byokProfiles) _byokItem(context, t, p),
-              if (_byokProfiles.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 6),
-                  child: Text(
-                    // P1-7：空态文案去「装配」黑话。
-                    '（暂无模型配置——未接入云端模型，仅端侧路径）',
-                    style: TextStyle(
-                      fontSize: Fsz.telemetry,
-                      color: Theme.of(context).hintColor,
-                    ),
-                  ),
-                ),
-              if (_creatingByok) _byokEditor(context, t, null),
-              if (!_creatingByok)
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton.icon(
-                    key: const Key('byok-new'),
-                    onPressed: () => setState(() => _creatingByok = true),
-                    icon: const Icon(Icons.add, size: 16),
-                    label: const Text('添加模型'),
-                  ),
-                ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _byokItem(BuildContext context, ConsoleTokens t, ByokProfile p) {
-    final editing = _editingByokId == p.id;
-    final hasKey = _hasByokKey.contains(p.id);
-    final active = _byokPreferredId == p.id;
-    return Container(
-      key: Key('byok-item-${p.id}'),
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(t.cardRadius),
-        // 生效中 = L1 就绪语义（Amber 是写操作警示，不挪用）。
-        border: Border.all(
-          color: active ? t.l1Ok : t.hairline,
-          width: active ? 1.2 : 1,
-        ),
-      ),
-      child: editing
-          ? _byokEditor(context, t, p)
-          : Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Flexible(
-                            child: Text(
-                              p.name,
-                              style: TextStyle(
-                                fontFamily: t.monoFamily,
-                                fontSize: Fsz.telemetry,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          if (active) ...[
-                            const SizedBox(width: 6),
-                            Text(
-                              '生效中',
-                              style: TextStyle(
-                                fontSize: Fsz.microSm,
-                                color: t.l1Ok,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                      Text(
-                        '${_protoLabel(p.protocol)} · ${p.model}\n'
-                        '${p.baseUrl}${hasKey ? ' · 已存密钥' : ' · ⚠ 未存密钥'}',
-                        style: TextStyle(
-                          fontFamily: t.monoFamily,
-                          fontSize: Fsz.micro,
-                          color: t.terminalMuted,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                if (!active)
-                  IconButton(
-                    key: Key('byok-top-${p.id}'),
-                    tooltip: '设为生效引擎',
-                    iconSize: 18,
-                    onPressed: () => _byokMoveTop(p),
-                    icon: const Icon(Icons.vertical_align_top_outlined),
-                  ),
-                IconButton(
-                  key: Key('byok-edit-${p.id}'),
-                  tooltip: '编辑',
-                  iconSize: 18,
-                  onPressed: () => setState(() {
-                    _editingByokId = p.id;
-                    _byokNameCtrl.text = p.name;
-                    _byokProto = p.protocol;
-                    _byokUrlCtrl.text = p.baseUrl;
-                    _byokModelCtrl.text = p.model;
-                    _byokTempCtrl.text = p.temperature?.toString() ?? '';
-                    _byokKeyCtrl.clear();
-                  }),
-                  icon: const Icon(Icons.edit_outlined),
-                ),
-                IconButton(
-                  key: Key('byok-del-${p.id}'),
-                  tooltip: '删除',
-                  iconSize: 18,
-                  onPressed: () => _deleteByok(p),
-                  icon: const Icon(Icons.delete_outline),
-                ),
-              ],
-            ),
-    );
-  }
-
-  /// 新增（profile == null）与编辑共用表单；编辑模式密钥留空 = 保持已存密钥。
-  Widget _byokEditor(
-    BuildContext context,
-    ConsoleTokens t,
-    ByokProfile? profile,
-  ) {
-    final isEdit = profile != null;
-    return Container(
-      key: Key(isEdit ? 'byok-edit-form' : 'byok-new-form'),
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(t.cardRadius),
-        border: Border.all(color: t.hairline),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          TextField(
-            key: const Key('byok-field-name'),
-            controller: _byokNameCtrl,
-            style: TextStyle(fontFamily: t.monoFamily, fontSize: Fsz.telemetry),
-            decoration: const InputDecoration(
-              labelText: '显示名',
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
-          ),
-          const SizedBox(height: 6),
-          SegmentedButton<CloudProtocol>(
-            segments: const [
-              ButtonSegment(
-                value: CloudProtocol.openaiCompatible,
-                label: Text('OpenAI 兼容'),
-              ),
-              ButtonSegment(
-                value: CloudProtocol.anthropic,
-                label: Text('Anthropic'),
-              ),
-            ],
-            selected: {_byokProto},
-            onSelectionChanged: (s) => setState(() => _byokProto = s.first),
-          ),
-          const SizedBox(height: 6),
-          TextField(
-            key: const Key('byok-field-url'),
-            controller: _byokUrlCtrl,
-            style: TextStyle(fontFamily: t.monoFamily, fontSize: Fsz.telemetry),
-            decoration: const InputDecoration(
-              labelText: 'Base URL',
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
-          ),
-          const SizedBox(height: 6),
-          TextField(
-            key: const Key('byok-field-model'),
-            controller: _byokModelCtrl,
-            style: TextStyle(fontFamily: t.monoFamily, fontSize: Fsz.telemetry),
-            decoration: const InputDecoration(
-              labelText: '模型 ID（如 deepseek-chat / claude-sonnet-4-5）',
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
-          ),
-          const SizedBox(height: 6),
-          TextField(
-            key: const Key('byok-field-temp'),
-            controller: _byokTempCtrl,
-            style: TextStyle(fontFamily: t.monoFamily, fontSize: Fsz.telemetry),
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: const InputDecoration(
-              labelText: 'Temperature（可空）',
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
-          ),
-          const SizedBox(height: 6),
-          TextField(
-            key: const Key('byok-field-key'),
-            controller: _byokKeyCtrl,
-            obscureText: true,
-            style: TextStyle(fontFamily: t.monoFamily, fontSize: Fsz.telemetry),
-            decoration: InputDecoration(
-              labelText: isEdit ? 'API Key（留空 = 保持已存密钥）' : 'API Key',
-              border: const OutlineInputBorder(),
-              isDense: true,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              TextButton(
-                onPressed: () => setState(() {
-                  if (isEdit) {
-                    _editingByokId = null;
-                  } else {
-                    _creatingByok = false;
-                  }
-                }),
-                child: const Text('取消'),
-              ),
-              const SizedBox(width: 8),
-              FilledButton(
-                key: Key(isEdit ? 'byok-save' : 'byok-create'),
-                onPressed: () =>
-                    isEdit ? _saveByokEdit(profile) : _createByok(),
-                child: Text(isEdit ? '保存' : '创建'),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _protoLabel(CloudProtocol p) => switch (p) {
-    CloudProtocol.openaiCompatible => 'OpenAI 兼容',
-    CloudProtocol.anthropic => 'Anthropic',
-  };
-
-  /// 表单 → profile 校验（name/baseUrl/model 必填；temperature 容错解析）。
-  /// 返回 null = 校验失败（已 flash 提示）。
-  ByokProfile? _collectForm(String id) {
-    final name = _byokNameCtrl.text.trim();
-    final url = _byokUrlCtrl.text.trim();
-    final model = _byokModelCtrl.text.trim();
-    final tempText = _byokTempCtrl.text.trim();
-    if (name.isEmpty || url.isEmpty || model.isEmpty) {
-      _flash('显示名 / Base URL / 模型 ID 均必填');
-      return null;
-    }
-    double? temp;
-    if (tempText.isNotEmpty) {
-      temp = double.tryParse(tempText);
-      if (temp == null) {
-        _flash('Temperature 须为数字（如 0.2）');
-        return null;
-      }
-    }
-    return ByokProfile(
-      id: id,
-      name: name,
-      protocol: _byokProto,
-      baseUrl: url,
-      model: model,
-      temperature: temp,
-    );
-  }
-
-  Future<void> _createByok() async {
-    final store = _byokStore;
-    if (store == null) return;
-    final key = _byokKeyCtrl.text.trim();
-    if (key.isEmpty) {
-      _flash('API Key 必填（走安全存储，不落明文）');
-      return;
-    }
-    var id = 'byok_${DateTime.now().millisecondsSinceEpoch}';
-    while (_byokProfiles.any((p) => p.id == id)) {
-      id = 'byok_${DateTime.now().microsecondsSinceEpoch}';
-    }
-    final profile = _collectForm(id);
-    if (profile == null) return;
-    await store.save([..._byokProfiles, profile]);
-    await store.setApiKey(id, key);
-    await _reloadByok(store);
-    _flash('✓ 已添加 ${profile.name}');
-  }
-
-  Future<void> _saveByokEdit(ByokProfile old) async {
-    final store = _byokStore;
-    if (store == null) return;
-    final profile = _collectForm(old.id);
-    if (profile == null) return;
-    final key = _byokKeyCtrl.text.trim();
-    await store.save([
-      for (final p in _byokProfiles)
-        if (p.id == old.id) profile else p,
-    ]);
-    if (key.isNotEmpty) await store.setApiKey(old.id, key);
-    await _reloadByok(store);
-    _flash('✓ 已更新 ${profile.name}');
-  }
-
-  Future<void> _byokMoveTop(ByokProfile p) async {
-    final store = _byokStore;
-    if (store == null) return;
-    // 重排（首位展示惯例）+ 写生效位：装配以 preferred 为准（未选才回退首位）。
-    await store.save([p, ..._byokProfiles.where((e) => e.id != p.id)]);
-    await store.setPreferredProfileId(p.id);
-    await _reloadByok(store);
-    _flash('✓ 已切换生效引擎：${p.name}');
-  }
-
-  Future<void> _deleteByok(ByokProfile p) async {
-    final store = _byokStore;
-    if (store == null) return;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('删除模型配置'),
-        content: Text('删除「${p.name}」（${p.model}）？其已存密钥将一并清除。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: consoleTokens(ctx).danger,
-            ),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('删除'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-    // save 自带孤儿密钥连带清理（被移除 profile 的密钥删除）。
-    await store.save(_byokProfiles.where((e) => e.id != p.id).toList());
-    await _reloadByok(store);
-    _flash('✓ 已删除 ${p.name}');
-  }
+  // —— 面板二：云端引擎（BYOK，window-slim P1-A 已抽 ByokSection，见 sections/）——
 
   // —— 面板三：跨源授权语义（D5） ——
 
@@ -1814,271 +1339,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   // —— 面板四·b：本地插件（同机 Binder 发现，零配置自动挂载） ——
 
-  Future<void> _reloadLocalPlugins() async {
-    final scan = _localScan;
-    if (scan == null) return;
-    final found = await scan();
-    var trusted = const <String>{};
-    try {
-      final tp = await TrustedPlugins.instance;
-      trusted = tp.all().keys.toSet();
-    } on Object catch (e) {
-      debugPrint('[DEGRADE] local-plugins-panel: 信任白名单读取失败按空: $e');
-    }
-    if (!mounted) return;
-    setState(() {
-      _localPlugins = found;
-      _trustedPackages = trusted;
-    });
-  }
-
-  Future<void> _trustPlugin(LocalPluginInfo info) async {
-    final ok = await showTrustCard(context, info);
-    if (ok && mounted) {
-      await _reloadLocalPlugins();
-      _flash('✓ 已信任 ${info.serverTitle}');
-    }
-  }
-
-  /// 撤销信任（2026-10-16 自聊天页 ⚙ 迁入——原设置弹层的真缺口，大厅只有信任）。
-  ///
-  /// 语义 = **仅移出白名单，不动连接池**：信任闸门是装配期校验而非长连接状态
-  /// ——本机下一轮装配重新弹信任卡（`chat_page` 装配循环），PC 网关侧下一轮
-  /// `_assemble` 直接跳过不再暴露（`gateway_controller`）。故撤销无需断开现有
-  /// 连接，也不必触碰 ConnectionManager。
-  Future<void> _untrustPlugin(LocalPluginInfo info) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('撤销信任'),
-        content: Text(
-          '撤销后「${info.serverTitle}」：本机下次使用需重新确认信任；'
-          'PC 远程网关将不再暴露它。当前会话已建立的连接不受影响。',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('撤销信任'),
-          ),
-        ],
-      ),
-    );
-    if (ok != true) return;
-    try {
-      final tp = await TrustedPlugins.instance;
-      await tp.remove(info.packageName);
-      await _reloadLocalPlugins();
-      _flash('✓ 已撤销对 ${info.serverTitle} 的信任');
-    } on Object catch (e) {
-      _flash('⚠ 撤销信任失败: $e');
-    }
-  }
-
-  Widget _localPluginsPanel(BuildContext context, ConsoleTokens t) {
-    return Card(
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Text(
-                  '本地插件（同机发现）',
-                  style: const TextStyle(
-                    fontSize: Fsz.sectionTitle,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const Spacer(),
-                Text(
-                  '发现 ${_localPlugins.length} 项',
-                  style: TextStyle(
-                    fontFamily: t.monoFamily,
-                    fontSize: Fsz.telemetrySm,
-                    color: t.terminalMuted,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              '已安装且声明 MCP_SERVER 的同机插件，零配置自动挂载；同签名私有生态免确认，'
-              '第三方首次需信任确认。不进手填配置（与远端节点不同源）。'
-              '图钉 = 钉选为默认私有服务（与「Server 节点」同一默认键）。',
-              style: TextStyle(
-                fontSize: Fsz.telemetrySm,
-                color: Theme.of(context).hintColor,
-              ),
-            ),
-            const SizedBox(height: 8),
-            if (_localError != null)
-              _panelError(
-                t,
-                _localError!,
-                _initLocalPlugins,
-                key: const ValueKey('local-error'),
-              )
-            else if (_localScan == null)
-              const Padding(
-                padding: EdgeInsets.all(8),
-                child: Center(
-                  child: Text(
-                    '读取本地插件…',
-                    style: TextStyle(fontSize: Fsz.telemetry),
-                  ),
-                ),
-              )
-            else ...[
-              for (final p in _localPlugins) _localPluginItem(context, t, p),
-              if (_localPlugins.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 6),
-                  child: Text(
-                    '（暂无本地插件——安装声明 MCP_SERVER 的同机应用后自动出现）',
-                    style: TextStyle(
-                      fontSize: Fsz.telemetry,
-                      color: Theme.of(context).hintColor,
-                    ),
-                  ),
-                ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _localPluginItem(
-    BuildContext context,
-    ConsoleTokens t,
-    LocalPluginInfo p,
-  ) {
-    final trusted = p.sameSignature || _trustedPackages.contains(p.packageName);
-    return Container(
-      key: Key('local-plugin-${p.transportId}'),
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(t.cardRadius),
-        border: Border.all(color: t.hairline),
-      ),
-      child: Row(
-        children: [
-          // 已发现即接入（Binder 通道存在 = 自动挂载）；会话内是否可调用须由
-          // 上下文菜单锁定私有槽位决定（私有≠免隔离）。绿色点表「已发现」。
-          Container(
-            width: 10,
-            height: 10,
-            decoration: BoxDecoration(color: t.l1Ok, shape: BoxShape.circle),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  p.serverTitle.isNotEmpty ? p.serverTitle : p.serverId,
-                  style: TextStyle(
-                    fontFamily: t.monoFamily,
-                    fontSize: Fsz.telemetry,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-                Text(
-                  '${p.packageName}\n${p.transportId}',
-                  style: TextStyle(
-                    fontFamily: t.monoFamily,
-                    fontSize: Fsz.micro,
-                    color: t.terminalMuted,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Row(
-                  children: [
-                    Text(
-                      '已挂载（自动）',
-                      style: TextStyle(
-                        fontSize: Fsz.microSm,
-                        color: t.terminalMuted,
-                      ),
-                    ),
-                    // 默认私有 pill（方案 A：与节点卡同款行内态）。
-                    if (_isDefaultPrivate(p.serverId)) ...[
-                      const SizedBox(width: 8),
-                      _defaultPill(t),
-                    ],
-                    const SizedBox(width: 8),
-                    if (p.sameSignature)
-                      Text(
-                        '私有生态 · 自动信任',
-                        style: TextStyle(
-                          fontSize: Fsz.microSm,
-                          color: t.l1Ok,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      )
-                    else if (trusted) ...[
-                      Text(
-                        '已信任',
-                        style: TextStyle(
-                          fontSize: Fsz.microSm,
-                          color: t.l1Ok,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      // 同签名私有生态免确认（不入白名单，无撤销对象）。
-                      if (!p.sameSignature) ...[
-                        const SizedBox(width: 6),
-                        // P1-8：撤销入口补后果 tooltip（可发现性 = 看得见
-                        // + 看得懂点了会怎样）。TextButton 无 tooltip 形参，
-                        // 外包 Tooltip 承载。
-                        Tooltip(
-                          message: '撤销后下次使用需重新确认信任，PC 网关也不再暴露它',
-                          child: TextButton(
-                            key: Key('local-untrust-${p.transportId}'),
-                            onPressed: () => _untrustPlugin(p),
-                            child: const Text('撤销'),
-                          ),
-                        ),
-                      ],
-                    ] else ...[
-                      Text(
-                        '待信任',
-                        style: TextStyle(
-                          fontSize: Fsz.microSm,
-                          color: t.l2Warn,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      TextButton(
-                        key: Key('local-trust-${p.transportId}'),
-                        onPressed: () => _trustPlugin(p),
-                        child: const Text('信任'),
-                      ),
-                    ],
-                  ],
-                ),
-              ],
-            ),
-          ),
-          // 默认私有服务钉选（方案 A：与节点卡同款图钉；候选 = serverId 非空）。
-          _defaultPinButton(
-            pinKey: Key('local-default-${p.transportId}'),
-            id: p.serverId,
-            label: p.serverTitle.isNotEmpty ? p.serverTitle : p.serverId,
-            eligible: p.serverId.isNotEmpty,
-          ),
-        ],
-      ),
-    );
-  }
+  // —— 本地插件段渲染（window-slim P1-A 已抽 LocalPluginsSection，见 sections/）——
 
   // —— 默认私有服务（方案 A：统一钉选降级为 ②③ 卡片行内态，2026-10-16）——
 
