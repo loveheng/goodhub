@@ -9,6 +9,7 @@
 library;
 
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -47,6 +48,7 @@ import 'components/session_context_sheet.dart';
 import 'error_copy.dart';
 import 'components/status_capsule.dart';
 
+import 'chat_status_controller.dart';
 import 'components/stream_text_buffer.dart';
 import 'tokens/console_tokens.dart';
 import 'components/stuck_watcher.dart';
@@ -56,11 +58,7 @@ import 'settings_page.dart';
 /// 走安全存储）；旧单端点 SharedPreferences 由该 store 在首次 load 时迁移。
 
 class ChatPage extends StatefulWidget {
-  const ChatPage({
-    super.key,
-    this.endpointStoreOverride,
-    this.engineOverride,
-  });
+  const ChatPage({super.key, this.endpointStoreOverride, this.engineOverride});
 
   /// 测试注入位（window-kernel-split 移交 misc#17）：null = 生产路径
   /// （应用支持目录/mcp_servers.json，与设置页 ⚙ 设置同一文件）；测试传假
@@ -75,11 +73,22 @@ class ChatPage extends StatefulWidget {
   State<ChatPage> createState() => _ChatPageState();
 }
 
-class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
+class _ChatPageState extends State<ChatPage>
+    with WidgetsBindingObserver
+    implements ChatTrackSink {
   @override
   void addTrack(TrackEntry entry) => _add(entry);
   @override
   void setPill(String label, CapsuleTone tone) => _setPill(label, tone);
+
+  /// 状态/副作用收敛件（window-slim P1-B/C/D）：pill/运行态/已耗时/轨道列表/
+  /// 滚动锚定/键盘/会话切换生命周期全部收口此处；窗口只持配置缓存与编排句柄。
+  final ChatStatusController _status = ChatStatusController();
+
+  /// 运行期阅读轨文本活动条目（C：TrackText 自管，append 仅自身重绘）；插非文本
+  /// 条目（工具卡等）时清空，使下一段文本另起条目（与原「last is TrackText」同义）。
+  TrackText? _activeTextEntry;
+
   static const _systemPrompt =
       '你是 GoodHub 宿主助手，调度已挂载服务与宿主能力完成用户任务。'
       '只读工具会静默执行，写操作需用户在确认卡批准；用户偏好可写入宿主记忆'
@@ -87,7 +96,6 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
 
   final _inputCtrl = TextEditingController();
   final _scrollCtrl = ScrollController();
-  final _track = <TrackEntry>[];
 
   // 连接配置：多端点持久化走 [ServerEndpointStore]（无单值内存镜像）；
   // [_send] 每次 Run 启动从 store 全量加载；增删改与探活/挂载全归设置页
@@ -106,8 +114,10 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
 
   /// 活态会话（getter 委托到服务，读取引用零改写；赋值走服务方法）。
   ConversationSession get _session => _sessionSvc.session;
+
   /// 落盘内核（getter 委托；读取引用零改写）。
   ConversationArchive? get _archive => _sessionSvc.archive;
+
   /// 侧边栏列表投影（getter 委托）。
   List<ConversationMeta> get _conversations => _sessionSvc.conversations;
 
@@ -129,20 +139,9 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
   // 开会话回退链以本键为准（见 _resolveBinding）。
   String? _defaultPrivateId;
 
-  // Run 期柄（Abort/卡状态机/卡死判定接线目标；finally 清）
-  var _running = false;
-
-  /// 运行起始时刻（状态带计时显示用；running=false 时清空）。
-  DateTime? _runStartedAt;
-
   /// 上一句发送的任务文本（ux-hardening P0-2：错误卡「重试」重跑语料）。
   String? _lastPrompt;
 
-  var _pillLabel = 'idle';
-  var _pillTone = CapsuleTone.idle;
-
-  /// 流式自动跟随（P2）：用户上翻看历史时暂停「拽回底部」，回到底部恢复。
-  var _autoFollow = true;
   McpAssembly? _activeAssembly; // Run 期句柄（Abort/finally 释放；步 1 内核化后窗口只持句柄）
   TrackCall? _activeCallEntry;
   StuckWatcher? _watcher;
@@ -154,7 +153,9 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
   void initState() {
     super.initState();
     _streamBuf.onFlush = _onStreamFlush;
+    _status.attachScroll(_scrollCtrl);
     _scrollCtrl.addListener(_onUserScroll);
+    WidgetsBinding.instance.addObserver(this);
     unawaited(_loadConfig());
     unawaited(_initConversations());
     unawaited(_loadEndpoints());
@@ -162,10 +163,19 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
     _streamBuf.dispose(); // P0：取消节拍定时器（widget 已销毁，残余无处可刷）
+    _status.dispose();
     super.dispose();
+  }
+
+  /// D：键盘遮挡收敛——键盘升降改 viewInsets 后，自动跟随时重新锚定底部，
+  /// 避免输入条被软键盘顶起时流末尾看不见（无需整页 setState）。
+  @override
+  void didChangeMetrics() {
+    _status.pinToBottom();
   }
 
   /// T6：从 [ServerEndpointStore] 加载（首次 load 自动迁移旧 SharedPreferences
@@ -183,8 +193,7 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
     // P2-1：配额损坏/签名不符不再静默清零——原文件已备份，用户可见提示
     // （旧行为：用户对额度重置毫无知觉）。
     if (_sessionSvc.archive?.lastQuotaError != null) {
-      _add(TrackNote('⚠ 用量配额记录损坏，已按全新额度计算（原文件已备份）',
-          danger: true));
+      _add(TrackNote('⚠ 用量配额记录损坏，已按全新额度计算（原文件已备份）', danger: true));
     }
     if (mounted) setState(() {}); // 配额/会话已从服务恢复
   }
@@ -203,7 +212,7 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
       // ux-hardening P0-1：引导卡瞬态（动作回调不可序列化）——持久化前
       // 过滤，恢复会话不出现；未配置状态由 _loadEndpoints 重插。
       trackJson: TrackEntryCodec.encode(
-        _track.where((e) => e is! TrackGuide).toList(),
+        _status.tracks.where((e) => e is! TrackGuide).toList(),
       ),
     );
     if (!ok) _add(TrackNote('⚠ 会话快照保存失败（见日志）', danger: true));
@@ -213,7 +222,7 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
   Future<void> _persistIfAny() async {
     await _sessionSvc.persistIfAny(
       trackJson: TrackEntryCodec.encode(
-        _track.where((e) => e is! TrackGuide).toList(),
+        _status.tracks.where((e) => e is! TrackGuide).toList(),
       ),
     );
   }
@@ -223,15 +232,12 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
   /// （transcript/绑定/激活集/降级/事实库/配额随之全部归零，
   /// **切会话即重置配额** = 行为变更①，原为页面级「重启清零」）。
   void _resetSessionState() {
-    setState(() {
-      _track.clear();
-      _activeCallEntry = null;
-      _pillLabel = 'idle';
-      // 记忆治理器随会话生灭（§6.2：传输态切会话即弃，重置周期锚点）——
-      // governor 随编排件（window-slim P1-A），本页只触发重置。
-      _runOrchestrator.memGovernor.reset();
-      _pillTone = CapsuleTone.idle;
-    });
+    _activeCallEntry = null;
+    _activeTextEntry = null;
+    // 记忆治理器随会话生灭（§6.2：传输态切会话即弃，重置周期锚点）——
+    // governor 随编排件（window-slim P1-A），本页只触发重置。
+    _runOrchestrator.memGovernor.reset();
+    _status.resetForSession(); // 清轨道 + 复位状态带到 idle + 复位自动跟随
     _sessionSvc.resetSession(); // 内核态重置（会话实例 + 归档当前指针）
   }
 
@@ -241,7 +247,6 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
     if (!mounted) return;
     Navigator.pop(context); // 关抽屉
     _resetSessionState();
-    _autoFollow = true;
   }
 
   Future<void> _loadConversation(ConversationMeta meta) async {
@@ -257,11 +262,8 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
     if (!mounted) return;
     Navigator.pop(context);
     _resetSessionState();
-    _autoFollow = true;
     await _sessionSvc.adoptSnapshot(snap); // 内核态恢复（id/title/绑定/transcript）
-    setState(() {
-      _track.addAll(TrackEntryCodec.decode(snap.track)); // 轨道卡解码在 UI 层
-    });
+    _status.addEntries(TrackEntryCodec.decode(snap.track)); // 轨道卡解码在 UI 层
     // MO6 阶段一：切换会话 → 网关投影同步宿主当前激活私有域（PC 只读镜像）。
     syncGatewayActivePrivate(_session.activePrivateServerId);
     _pinToBottom();
@@ -297,7 +299,7 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
 
   void _add(TrackEntry entry) {
     if (!mounted) return;
-    setState(() => _track.add(entry));
+    _status.addEntry(entry);
     _pinToBottom();
   }
 
@@ -321,16 +323,14 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
     _add(card);
   }
 
-  /// 本会话轨道是否存在记忆胶囊（悬浮 ≡ 按钮的显隐依据）。
-  bool get _hasMemoryCapsules => _track.any((e) => e is TrackMemoryCapsule);
-
   /// 会话记忆汇总列表（BottomSheet）：轨道内全部 TrackMemoryCapsule 快照，
   /// 已撤销条目灰阶弱化（终态锁定语义，ui-design §3.2）。纯展示——落盘与
   /// 撤销仍由内联胶囊的 undo 通道负责，此处不做修改入口。
   void _showMemoryListSheet() {
     final t = consoleTokens(context);
-    final capsules =
-        _track.whereType<TrackMemoryCapsule>().toList(growable: false);
+    final capsules = _status.tracks.whereType<TrackMemoryCapsule>().toList(
+      growable: false,
+    );
     unawaited(
       showModalBottomSheet<void>(
         context: context,
@@ -358,8 +358,10 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
                 if (capsules.isEmpty)
                   Text(
                     '本会话暂无提取的记忆',
-                    style:
-                        TextStyle(fontSize: Fsz.note, color: t.terminalMuted),
+                    style: TextStyle(
+                      fontSize: Fsz.note,
+                      color: t.terminalMuted,
+                    ),
                   ),
                 for (final c in capsules)
                   Padding(
@@ -379,13 +381,16 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            c.undone ? '${c.key}=${c.value}（已撤销）' : '${c.key}=${c.value}',
+                            c.undone
+                                ? '${c.key}=${c.value}（已撤销）'
+                                : '${c.key}=${c.value}',
                             style: TextStyle(
                               fontFamily: t.monoFamily,
                               fontSize: Fsz.note,
                               color: c.undone ? t.terminalMuted : null,
-                              decoration:
-                                  c.undone ? TextDecoration.lineThrough : null,
+                              decoration: c.undone
+                                  ? TextDecoration.lineThrough
+                                  : null,
                             ),
                           ),
                         ),
@@ -407,39 +412,30 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
     _streamBuf.add(delta);
   }
 
-  /// 流控刷盘回调：与 _appendText 同一节拍落地 setState + _pinToBottom。
+  /// 流控刷盘回调：40ms 节拍批量落地（切片 C：消整页 setState）。活动文本条目自管
+  /// append 仅自身重绘；无活动条目则新建并结构性入轨（tracksListenable 通知双轨流）。
   void _onStreamFlush(String text) {
     if (!mounted) return;
-    setState(() {
-      final last = _track.isNotEmpty ? _track.last : null;
-      if (last is TrackText) {
-        last.text.write(text);
-      } else {
-        _track.add(TrackText(text));
-      }
-    });
+    final active = _activeTextEntry;
+    if (active != null) {
+      active.append(text); // 自管：仅 TrackText 局部重绘，无整页 setState
+    } else {
+      final entry = TrackText(text);
+      _activeTextEntry = entry;
+      _status.addEntry(entry); // 结构性新增 → tracksListenable 通知双轨流
+    }
     _pinToBottom();
   }
 
   /// 用户滚动监听：离开底部即暂停自动跟随（流式输出不劫持滚动），回到
-  /// 底部恢复。程序性 jumpTo 恒落底部，不会误触该标志。
+  /// 底部恢复。逻辑收口 controller（D）。
   void _onUserScroll() {
-    if (!_scrollCtrl.hasClients) return;
-    final atBottom =
-        _scrollCtrl.position.pixels >=
-        _scrollCtrl.position.maxScrollExtent - 24;
-    if (atBottom != _autoFollow && mounted) {
-      setState(() => _autoFollow = atBottom);
-    }
+    _status.onUserScroll();
   }
 
+  /// 滚动锚定（D）：逻辑收口 controller；自动跟随时拽回底部。
   void _pinToBottom() {
-    if (!_autoFollow) return; // 用户上翻看历史中：不拽回
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollCtrl.hasClients) {
-        _scrollCtrl.jumpTo(_scrollCtrl.position.maxScrollExtent);
-      }
-    });
+    _status.pinToBottom();
   }
 
   /// 轻量反馈（SnackBar）：运行中共用守卫——给原因而非静默禁用。
@@ -452,7 +448,7 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
 
   /// 运行中拦截的共用话术；返回 false = 调用方应中止动作。
   bool _guardRunning(String action) {
-    if (_running) {
+    if (_status.running) {
       _toast('任务运行中，$action需等待当前任务结束');
       return false;
     }
@@ -461,10 +457,7 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
 
   void _setPill(String label, CapsuleTone tone) {
     if (!mounted) return;
-    setState(() {
-      _pillLabel = label;
-      _pillTone = tone;
-    });
+    _status.setPill(label, tone);
   }
 
   /// 端点缓存预热（供 composer menu / 默认回退；首屏即可列服务）。
@@ -506,10 +499,11 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
   /// 冷启动引导卡（chat-interaction.md §1）：幂等——已在轨不重复插。
   void _ensureGuide() {
     if (!_unconfigured) return;
-    if (_track.any((e) => e is TrackGuide)) return;
+    if (_status.tracks.any((e) => e is TrackGuide)) return;
     _add(
       TrackGuide(
-        text: '尚未配置任何 MCP 服务，也未发现本地插件。'
+        text:
+            '尚未配置任何 MCP 服务，也未发现本地插件。'
             '先配置一个服务端点，才能下达任务。',
         actionLabel: '去配置',
         onAction: _openSettingsFromGuide,
@@ -520,14 +514,14 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
   /// 配置就绪后摘除引导卡（用户从设置返回时重估）。
   void _removeGuide() {
     if (!mounted) return;
-    setState(() => _track.removeWhere((e) => e is TrackGuide));
+    _status.removeWhere((e) => e is TrackGuide);
   }
 
   /// 引导卡动作：进设置页；返回后重估配置——已配置摘卡，仍未配置保留可再入。
   Future<void> _openSettingsFromGuide() async {
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(builder: (_) => const SettingsPage()),
-    );
+    await Navigator.of(
+      context,
+    ).push<void>(MaterialPageRoute<void>(builder: (_) => const SettingsPage()));
     if (!mounted) return;
     await _loadEndpoints();
     if (!mounted) return;
@@ -551,10 +545,11 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
     if (bound != null) return bound.isEmpty ? null : bound;
     final def = _defaultPrivateId;
     if (def != null && def.isNotEmpty) {
-      final exists = eps.any((e) =>
-              e.enabled &&
-              e.tier == ServerPrivacyTier.private &&
-              e.id == def) ||
+      final exists =
+          eps.any(
+            (e) =>
+                e.enabled && e.tier == ServerPrivacyTier.private && e.id == def,
+          ) ||
           _localPlugins.any((lp) => lp.serverId == def);
       if (exists) return def;
     }
@@ -623,14 +618,13 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
     );
   }
 
-
   /// M4-T3 发送（D11 多轮）：上轮 transcript 作 history 续接；一次一个 Run。
   /// [promptOverride] = 错误卡「重试」入口重跑上一句（ux-hardening P0-2）：
   /// 不重复插用户轮卡、不清输入框（用户可能正在预输入下一轮）。
   Future<void> _send([String? promptOverride]) async {
     final isRetry = promptOverride != null;
     final prompt = (promptOverride ?? _inputCtrl.text).trim();
-    if (prompt.isEmpty || _running) return;
+    if (prompt.isEmpty || _status.running) return;
     // —— T6-2 多服务装配：ServerEndpointStore 读多端点（含旧 SharedPreferences
     // 迁移）→ 每端点一个 McpClient + McpToolFace → ToolRouter（实例随会话建）——
     // （support 目录另供 WorkspaceStateStore / MemoryStore 落点。）
@@ -664,15 +658,9 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
     // P0-2：错误卡「重试」的语料（未配置路径不设——重试无意义，走引导卡）。
     _lastPrompt = prompt;
     if (!isRetry) _inputCtrl.clear();
-    setState(() {
-      _running = true;
-      _pillLabel = 'connecting';
-      _pillTone = CapsuleTone.l1;
-      _autoFollow = true; // 新任务：回到底部并恢复自动跟随
-    });
-    // P1-4：运行计时接通——_runStartedAt 记运行起点；状态带「已耗时」mm:ss 由
-    // StatusStrip._ElapsedText 自持 1s 定时器局部刷新（不再整页每秒 setState）。
-    _runStartedAt = DateTime.now();
+    // 切片 B：运行态收口到 controller——beginRun 一次性落 running/connecting/
+    // 自动跟随/已耗时起点，合并为单次状态通知（替代原 4 行整页 setState）。
+    _status.beginRun(startedAt: DateTime.now());
     if (!isRetry) _add(TrackUser(prompt));
     // T3b：会话懒建（首个任务起落盘；标题截取策略在 Archive 内核）。
     await _archive!.ensureCurrent(prompt: prompt);
@@ -684,8 +672,13 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
       final memoryStore = MemoryStore.underSupportDir(support.path);
       // 记忆内核接线收口编排件（window-slim P1-A）；窗口只留胶囊 UI
       // （TrackMemoryCapsule 渲染与撤销挂载）与写失败可见轨道（P1-C）。
-      void onCapsule(String key, String value, String action, String scope,
-          void Function() undo) {
+      void onCapsule(
+        String key,
+        String value,
+        String action,
+        String scope,
+        void Function() undo,
+      ) {
         final capsule = TrackMemoryCapsule(key: key, value: value);
         capsule.onUndo = () {
           undo(); // 落盘回滚（内核侧闭包）
@@ -702,10 +695,10 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
       void onWriteFailure(String key, String scope) {
         if (!mounted) return;
         setState(() {
-          _add(TrackNote('⚠ 记忆写入失败（$scope 域 $key），本条事实未保存',
-              danger: true));
+          _add(TrackNote('⚠ 记忆写入失败（$scope 域 $key），本条事实未保存', danger: true));
         });
       }
+
       // 步 1（window-kernel-split）：装配段迁入 McpRuntime（内核）；本页收集
       // 会话快照 + 实现端口。本地插件信任闸门是 UI（信任卡片）——窗口先裁再传，
       // 内核只挂载（§7.1：不为此造第 10 个端口）。
@@ -732,9 +725,9 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
       _watcher = StuckWatcher(onStuck: _markActiveCallStuck);
       // 步 3-T4：激活集/降级判据懒建收编进 session（新会话 = 新实例 = 重开）。
       _session.bindSkills(
-          _session.skills ?? (SkillRegistry()..registerAll(builtinSkills())));
-      _session.bindDegradation(
-          _session.degradation ?? DegradationController());
+        _session.skills ?? (SkillRegistry()..registerAll(builtinSkills())),
+      );
+      _session.bindDegradation(_session.degradation ?? DegradationController());
       assembly = await const McpRuntime().assemble(
         engine: widget.engineOverride,
         context: SessionContext(
@@ -777,9 +770,7 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
               context: context,
               builder: (dialogCtx) => AlertDialog(
                 title: Text('模板大版本更新：$name'),
-                content: Text(
-                  '服务端模板 $from → $to（大版本跃迁）。\n重置回服务端最新版，还是保留本地覆写？',
-                ),
+                content: Text('服务端模板 $from → $to（大版本跃迁）。\n重置回服务端最新版，还是保留本地覆写？'),
                 actions: [
                   TextButton(
                     onPressed: () => Navigator.pop(dialogCtx, false),
@@ -810,20 +801,26 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
             if (!mounted) return;
             switch (report.kind) {
               case ConnectionReportKind.disconnect:
-                _add(TrackNote(
-                  '⚠ 连接中断，在途 ${report.inFlightCancelled} 个请求已取消，不重放',
-                  danger: true,
-                ));
+                _add(
+                  TrackNote(
+                    '⚠ 连接中断，在途 ${report.inFlightCancelled} 个请求已取消，不重放',
+                    danger: true,
+                  ),
+                );
               case ConnectionReportKind.backlog:
-                _add(TrackNote(
-                  '⚠ 连接中断，积压 ${report.droppedCount} 个请求已丢弃，不重放',
-                  danger: true,
-                ));
+                _add(
+                  TrackNote(
+                    '⚠ 连接中断，积压 ${report.droppedCount} 个请求已丢弃，不重放',
+                    danger: true,
+                  ),
+                );
               case ConnectionReportKind.resourceUpdated:
-                _add(TrackNote(
-                  '${McpConnection.resourceStaleMessage}（${report.uri}）',
-                  danger: false,
-                ));
+                _add(
+                  TrackNote(
+                    '${McpConnection.resourceStaleMessage}（${report.uri}）',
+                    danger: false,
+                  ),
+                );
             }
           },
         ),
@@ -884,6 +881,7 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
             _setPill(call.name, CapsuleTone.l1);
             final entry = TrackCall(tool: call.name);
             _activeCallEntry = entry;
+            _activeTextEntry = null; // 工具卡插入打断文本流：下一段文本另起条目
             _add(entry);
             _watcher?.start();
           case LoopToolProgress(
@@ -894,12 +892,13 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
           ):
             final entry = _activeCallEntry;
             if (entry != null && entry.tool == call.name) {
-              setState(() {
-                final tail = message == null ? '' : ' · $message';
-                entry.progressNote = total != null
+              // 切片 C：工具卡相位自管，进度更新仅本卡局部重绘（无整页 setState）。
+              final tail = message == null ? '' : ' · $message';
+              entry.patch(
+                progressNote: total != null
                     ? '$progress/$total$tail'
-                    : '$progress$tail';
-              });
+                    : '$progress$tail',
+              );
             }
             _watcher?.onProgressFrame();
           case LoopToolCallFinished(:final call, :final result):
@@ -910,13 +909,13 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
                 : CallCardPhase.success;
             if (entry != null && entry.tool == call.name) {
               // 真实结果优先于 Abort 的 cancelled 标记（在途调用完成后照常回填）
-              setState(() {
-                entry
-                  ..phase = phase
-                  ..preview = _preview(result.content)
-                  ..resultText = result.content
-                  ..progressNote = null;
-              });
+              // 切片 C：工具卡相位自管，patch 仅本卡局部重绘（无整页 setState）。
+              entry.patch(
+                phase: phase,
+                preview: _preview(result.content),
+                resultText: result.content,
+                progressNote: null,
+              );
             } else {
               _add(
                 TrackCall(tool: call.name)
@@ -953,6 +952,7 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
       _watcher?.stop();
       _watcher = null;
       _activeCallEntry = null;
+      _activeTextEntry = null;
       // §6.4 TTL 机会主义压实的判定起点：本 Run 结束时刻（governor 持有，
       // 随编排件——window-slim P1-A）。
       _runOrchestrator.markRunEnded();
@@ -965,8 +965,7 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
       _activeAssembly = null;
       assembly = null;
       await _persistCurrent(); // T3b：Run 收尾快照（含 Cancelled 终态）
-      _runStartedAt = null;
-      if (mounted) setState(() => _running = false);
+      if (mounted) _status.endRun();
     }
   }
 
@@ -974,23 +973,27 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
   void _markActiveCallStuck() {
     final entry = _activeCallEntry;
     if (entry == null || entry.phase != CallCardPhase.running) return;
-    if (mounted) setState(() => entry.phase = CallCardPhase.stuck);
+    // 切片 C：工具卡相位自管，patch 仅本卡局部重绘（无整页 setState）。
+    entry.patch(phase: CallCardPhase.stuck);
   }
 
   /// §10 级联 UI 侧（M3-T2 语义复用）：③ cancelled 下发 → 环边界停下 →
   /// 在途卡 Cancelled 态（区别 Failed）。
   void _abort() {
-    if (!_running) return;
+    if (!_status.running) return;
     // §4.1：Abort → 重度确认震动
     unawaited(HapticFeedback.heavyImpact());
     _watcher?.stop();
-    _activeAssembly?.abort(reason: 'user abort'); // 内核遍历全部 face 取消在途 + loop.abort
+    _activeAssembly?.abort(
+      reason: 'user abort',
+    ); // 内核遍历全部 face 取消在途 + loop.abort
     final entry = _activeCallEntry;
     if (entry != null && entry.phase == CallCardPhase.running) {
-      setState(() {
-        entry.phase = CallCardPhase.cancelled;
-        entry.progressNote = '已中止（在途调用结果仍会回填）';
-      });
+      // 切片 C：工具卡相位自管，patch 仅本卡局部重绘（无整页 setState）。
+      entry.patch(
+        phase: CallCardPhase.cancelled,
+        progressNote: '已中止（在途调用结果仍会回填）',
+      );
     }
     _setPill('idle', CapsuleTone.idle);
   }
@@ -1015,7 +1018,9 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
   /// _currentTitle，防下次 saveCurrent 覆盖回旧标题）+ 列表刷新。元数据
   /// 操作不动 transcript，运行中亦可（无会话态扰动，故不走运行守卫）。
   Future<void> _renameConversation(
-      ConversationMeta meta, String rawTitle) async {
+    ConversationMeta meta,
+    String rawTitle,
+  ) async {
     final title = rawTitle.trim();
     if (title.isEmpty) return;
     final ok = await _archive?.rename(meta.id, title) ?? false;
@@ -1035,14 +1040,18 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
   }
 
   /// Run 进行中离开拦截(破坏性防护 P0):系统返回/手势先弹确认——确认则
-  /// abort 后退出,否则留在页内。非运行态不拦截(零摩擦)。
+  /// 触发即停(abort 在途任务)+ 会话快照落盘(保存部分进度,可稍后从会话恢复),
+  /// 否则留在页内。非运行态不拦截(零摩擦)。
   Future<bool> _confirmLeaveWhileRunning() async {
-    if (!_running) return true;
+    if (!_status.running) return true;
     final ok = await showDialog<bool>(
       context: context,
       builder: (dialogCtx) => AlertDialog(
         title: const Text('任务运行中'),
-        content: const Text('离开将中止当前任务,在途调用已发出的结果仍会回填。确定离开?'),
+        content: const Text(
+          '离开将中止当前任务并保存当前进度快照(可从会话恢复),'
+          '在途调用已发出的结果仍会回填。确定离开?',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogCtx, false),
@@ -1056,7 +1065,11 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
       ),
     );
     if (ok != true) return false;
+    // D 外溢拦截:触发即停(中止在途任务,避免任务在后台泄漏运行)+ 会话快照落盘
+    // (显式落盘当前部分进度,趁仍 mounted 保证写入;随后 PopScope 弹栈,循环
+    // finally 的 _persistCurrent 再补一次幂等写入)。
     _abort();
+    await _persistCurrent();
     return true;
   }
 
@@ -1064,7 +1077,7 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
   Widget build(BuildContext context) {
     final t = consoleTokens(context);
     return PopScope(
-      canPop: !_running,
+      canPop: !_status.running,
       onPopInvokedWithResult: (didPop, _) async {
         if (didPop) return;
         final leave = await _confirmLeaveWhileRunning();
@@ -1077,100 +1090,110 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
         appBar: AppBar(
           // 会话标题进 AppBar（D13 多会话：切会话后知道自己所在会话）。
           title: Text(
-            _archive?.currentTitle.isEmpty ?? true ? 'GoodHub' : _archive!.currentTitle,
+            _archive?.currentTitle.isEmpty ?? true
+                ? 'GoodHub'
+                : _archive!.currentTitle,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
         ),
-        body: Column(
-          children: [
-            Expanded(
-              // 上翻看历史时不劫持滚动；离底时给「回到最新」浮钮。
-              child: Stack(
-                children: [
-                  DualTrackStream(
-                    entries: _track,
-                    controller: _scrollCtrl,
-                    // 未配置时的可操作引导在轨道内引导卡（ux-hardening P0-1，
-                    // _ensureGuide），空态提示只承担已配置用户的首次指引。
-                    emptyHint: '下达自然语言任务，宿主调度已挂载服务完成',
-                  ),
-                  if (!_autoFollow && _track.isNotEmpty)
-                    Positioned(
-                      right: 16,
-                      bottom: _hasMemoryCapsules ? 72 : 8,
-                      child: FloatingActionButton.small(
-                        heroTag: 'chat-scroll-bottom',
-                        tooltip: '回到最新',
-                        onPressed: () {
-                          _scrollCtrl
-                              .animateTo(
-                                _scrollCtrl.position.maxScrollExtent,
-                                duration: t.fastDuration,
-                                curve: Curves.easeOut,
-                              )
-                              .then((_) {
-                                if (mounted) setState(() => _autoFollow = true);
-                              });
-                        },
-                        child: const Icon(Icons.arrow_downward),
-                      ),
+        // 切片 B/D：状态带与轨道列表经 controller 双 Listenable 切分——status 变更
+        // 仅重建状态带+输入集群，tracks 变更仅重建双轨流，互不打扰；二者合并为本
+        // 件的重建触发源。40ms 文本流（C）走 TrackText 自管，不触发本 ListenableBuilder。
+        body: ListenableBuilder(
+          listenable: Listenable.merge([
+            _status.statusListenable,
+            _status.tracksListenable,
+          ]),
+          builder: (context, _) => Column(
+            children: [
+              Expanded(
+                // 上翻看历史时不劫持滚动；离底时给「回到最新」浮钮。
+                child: Stack(
+                  children: [
+                    DualTrackStream(
+                      entries: _status.tracks,
+                      listenable: _status.tracksListenable,
+                      controller: _scrollCtrl,
+                      // 未配置时的可操作引导在轨道内引导卡（ux-hardening P0-1，
+                      // _ensureGuide），空态提示只承担已配置用户的首次指引。
+                      emptyHint: '下达自然语言任务，宿主调度已挂载服务完成',
                     ),
-                  // 悬浮记忆入口（≡）：与「回到最新」同款 FAB——本会话轨道
-                  // 存在记忆胶囊时显示，点击弹 BottomSheet 汇总列表。
-                  if (_hasMemoryCapsules)
-                    Positioned(
-                      right: 16,
-                      bottom: 8,
-                      child: FloatingActionButton.small(
-                        heroTag: 'chat-memory-list',
-                        tooltip: '会话记忆',
-                        onPressed: _showMemoryListSheet,
-                        child: const Icon(Icons.reorder),
+                    if (!_status.autoFollow && _status.tracks.isNotEmpty)
+                      Positioned(
+                        right: 16,
+                        bottom: _status.hasMemoryCapsules ? 72 : 8,
+                        child: FloatingActionButton.small(
+                          heroTag: 'chat-scroll-bottom',
+                          tooltip: '回到最新',
+                          onPressed: () {
+                            _scrollCtrl
+                                .animateTo(
+                                  _scrollCtrl.position.maxScrollExtent,
+                                  duration: t.fastDuration,
+                                  curve: Curves.easeOut,
+                                )
+                                .then((_) {
+                                  if (mounted) _status.setAutoFollow(true);
+                                });
+                          },
+                          child: const Icon(Icons.arrow_downward),
+                        ),
                       ),
-                    ),
-                ],
+                    // 悬浮记忆入口（≡）：与「回到最新」同款 FAB——本会话轨道
+                    // 存在记忆胶囊时显示，点击弹 BottomSheet 汇总列表。
+                    if (_status.hasMemoryCapsules)
+                      Positioned(
+                        right: 16,
+                        bottom: 8,
+                        child: FloatingActionButton.small(
+                          heroTag: 'chat-memory-list',
+                          tooltip: '会话记忆',
+                          onPressed: _showMemoryListSheet,
+                          child: const Icon(Icons.reorder),
+                        ),
+                      ),
+                  ],
+                ),
               ),
-            ),
-            SafeArea(
-              top: false,
-              child: Center(
-                // 桌面宽屏下输入区居中限宽，避免全宽拉伸
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 720),
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
-                    // 底部控制集群已抽 lib/ui/components/chat_composer.dart
-                    // （断点③ step2：传数据 + 回调，零依赖本页私有态）。
-                    child: ChatComposer(
-                      inputCtrl: _inputCtrl,
-                      running: _running,
-                      hasContext: _hasContext,
-                      contextId: _session.activePrivateServerId,
-                      endpointName: _endpointName,
-                      hasEndpoints: _endpoints.isNotEmpty,
-                      localPluginCount: _localPlugins.length,
-                      pillTone: _pillTone,
-                      pillLabel: _pillLabel,
-                      runStartedAt: _runStartedAt,
-                      onOpenMenu: _openComposerMenu,
-                      // 回车与发送钮统一走 guard（非 running 时 guard 通过→等价原
-                      // 按钮直发；running 时按钮已变中止键，此处拦下并给 SnackBar）。
-                      onSend: () {
-                        if (!_guardRunning('发送')) return;
-                        _send();
-                      },
-                      onAbort: _abort,
+              SafeArea(
+                top: false,
+                child: Center(
+                  // 桌面宽屏下输入区居中限宽，避免全宽拉伸
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 720),
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
+                      // 底部控制集群已抽 lib/ui/components/chat_composer.dart
+                      // （断点③ step2：传数据 + 回调，零依赖本页私有态）。
+                      child: ChatComposer(
+                        inputCtrl: _inputCtrl,
+                        running: _status.running,
+                        hasContext: _hasContext,
+                        contextId: _session.activePrivateServerId,
+                        endpointName: _endpointName,
+                        hasEndpoints: _endpoints.isNotEmpty,
+                        localPluginCount: _localPlugins.length,
+                        pillTone: _status.pillTone,
+                        pillLabel: _status.pillLabel,
+                        runStartedAt: _status.runStartedAt,
+                        onOpenMenu: _openComposerMenu,
+                        // 回车与发送钮统一走 guard（非 running 时 guard 通过→等价原
+                        // 按钮直发；running 时按钮已变中止键，此处拦下并给 SnackBar）。
+                        onSend: () {
+                          if (!_guardRunning('发送')) return;
+                          _send();
+                        },
+                        onAbort: _abort,
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
 }
-
-

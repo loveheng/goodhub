@@ -33,12 +33,24 @@ sealed class TrackEntry {
 }
 
 /// 阅读轨文本（流式追加：页面往 [text] 写 delta）。
-class TrackText extends TrackEntry {
+///
+/// 自管件（window-slim P1-B/C/D 切片 C）：原页面 40ms 流控刷盘每帧整页
+/// `setState` 只为刷新本条目文本——典型反模式。改由本件实现 [Listenable]，
+/// [append] 写 delta 后仅自身通知，渲染侧经 `ListenableBuilder` 局部重绘，
+/// 不再牵连整页重建（`StreamingRichText` 前缀块缓存仍收口细粒度）。
+class TrackText extends TrackEntry with ChangeNotifier {
   TrackText(String initial) {
     text.write(initial);
   }
 
   final StringBuffer text = StringBuffer();
+
+  /// 追加 delta 并通知自身监听者（仅本条目重绘，无整页 setState）。
+  void append(String delta) {
+    if (delta.isEmpty) return;
+    text.write(delta);
+    notifyListeners();
+  }
 }
 
 /// 用户轮次（发送即插卡）。
@@ -49,7 +61,12 @@ class TrackUser extends TrackEntry {
 }
 
 /// 操作轨执行卡（CallCard 快照源；终态后页面不再 mutate）。
-class TrackCall extends TrackEntry {
+///
+/// 自管件（window-slim P1-B/C/D 切片 C）：运行期相位/进度/预览/结果高频 mutate
+/// 原每帧整页 `setState`——反模式。改由本件实现 [Listenable]，[patch] 改相位并
+/// 仅自身通知，渲染侧经 `ListenableBuilder` 局部重绘。构造期直接赋值字段（如
+/// 历史恢复解码）不触发通知，由随后整页重建读取，语义不变。
+class TrackCall extends TrackEntry with ChangeNotifier {
   TrackCall({required this.tool});
 
   final String tool;
@@ -59,6 +76,20 @@ class TrackCall extends TrackEntry {
 
   /// 终态结果全文（可展开查看；空 = 仅预览）。
   String resultText = '';
+
+  /// 运行期更新相位/进度/预览/结果：合并写 + 单次自我通知（仅本卡局部重绘）。
+  void patch({
+    CallCardPhase? phase,
+    String? progressNote,
+    String? preview,
+    String? resultText,
+  }) {
+    if (phase != null) this.phase = phase;
+    if (progressNote != null) this.progressNote = progressNote;
+    if (preview != null) this.preview = preview;
+    if (resultText != null) this.resultText = resultText;
+    notifyListeners();
+  }
 }
 
 /// L2 确认卡（GateDelegate 待决挂起；用户操作后锁定终态）。
@@ -124,11 +155,7 @@ class TrackGuide extends TrackEntry {
 /// 自救入口。持久化保留（历史保真）；恢复会话 onAction=null 锁定为不可
 /// 重试（恢复的历史里不存在可重跑的任务）。
 class TrackError extends TrackEntry {
-  TrackError({
-    required this.title,
-    required this.advice,
-    required this.detail,
-  });
+  TrackError({required this.title, required this.advice, required this.detail});
 
   final String title;
   final String advice;
@@ -197,17 +224,32 @@ class DualTrackStream extends StatelessWidget {
     super.key,
     required this.entries,
     this.controller,
+    this.listenable,
     this.emptyHint = '',
   });
 
   final List<TrackEntry> entries;
   final ScrollController? controller;
 
+  /// 列表结构性变更端口（window-slim P1-B/C/D）：非空时外层包 `ListenableBuilder`，
+  /// 列表增/删/清（controller 的 tracksListenable）仅本件重建；条目内部刷新（C：
+  /// TrackText/TrackCall 自管）不触发本件，由其自身 ListenableBuilder 局部处理。
+  /// 为空（如单测直接喂静态列表）则按原行为一次性构建。
+  final Listenable? listenable;
+
   /// 空轨道提示（会话起始态）。
   final String emptyHint;
 
   @override
   Widget build(BuildContext context) {
+    if (listenable == null) return _buildList(context);
+    return ListenableBuilder(
+      listenable: listenable!,
+      builder: (ctx, _) => _buildList(ctx),
+    );
+  }
+
+  Widget _buildList(BuildContext context) {
     if (entries.isEmpty && emptyHint.isNotEmpty) {
       return Center(
         child: Text(
@@ -229,7 +271,14 @@ class DualTrackStream extends StatelessWidget {
       if (pendingNotes.length == 1) {
         rows.add(renderEntry(context, pendingNotes.single));
       } else {
-        rows.add(_RunSummary(notes: List.of(pendingNotes)));
+        // 以通告内容拼接为稳定 key：本件重建（列表增删）后 ExpansionTile
+        // 展开态按 key 续接，不误塌缩（切片 C 引入外层 ListenableBuilder 后须保）。
+        rows.add(
+          _RunSummary(
+            key: ValueKey(pendingNotes.map((n) => n.text).join('\u0000')),
+            notes: List.of(pendingNotes),
+          ),
+        );
       }
       pendingNotes.clear();
     }
@@ -253,13 +302,17 @@ class DualTrackStream extends StatelessWidget {
   /// 条目 → 轨道 widget（公开静态：T3b 恢复装配复用 + 单测直测映射）。
   static Widget renderEntry(BuildContext context, TrackEntry entry) {
     switch (entry) {
-      case TrackText(:final text):
-        if (text.isEmpty) return const SizedBox.shrink();
+      case TrackText():
+        if (entry.text.isEmpty) return const SizedBox.shrink();
         // P1（stream-perf §4）：流式前缀块缓存 + 隔离重绘——解析与渲染隔离
-        // 收编于 StreamingRichText（RichTextView 仍为块渲染器）。
-        return Padding(
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          child: StreamingRichText(text: text.toString()),
+        // 收编于 StreamingRichText（RichTextView 仍为块渲染器）。切片 C：本件自管
+        // Listenable，delta 追加仅本条目局部重绘，不牵连整页（ListenableBuilder）。
+        return ListenableBuilder(
+          listenable: entry,
+          builder: (context, _) => Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: StreamingRichText(text: entry.text.toString()),
+          ),
         );
       case TrackUser(:final text):
         final t = consoleTokens(context);
@@ -305,12 +358,17 @@ class DualTrackStream extends StatelessWidget {
           ),
         );
       case TrackCall e:
-        return CallCard(
-          tool: e.tool,
-          phase: e.phase,
-          progressNote: e.progressNote,
-          preview: e.preview,
-          fullResult: e.resultText.isEmpty ? null : e.resultText,
+        // 切片 C：本件自管 Listenable，运行期相位/进度/结果变更仅本卡局部重绘
+        // （ListenableBuilder），不再整页 setState。
+        return ListenableBuilder(
+          listenable: e,
+          builder: (context, _) => CallCard(
+            tool: e.tool,
+            phase: e.phase,
+            progressNote: e.progressNote,
+            preview: e.preview,
+            fullResult: e.resultText.isEmpty ? null : e.resultText,
+          ),
         );
       case TrackConfirm(
         :final pending,
@@ -445,7 +503,12 @@ class DualTrackStream extends StatelessWidget {
             ],
           ),
         );
-      case TrackMemoryCapsule(:final key, :final value, :final onUndo, :final undone):
+      case TrackMemoryCapsule(
+        :final key,
+        :final value,
+        :final onUndo,
+        :final undone,
+      ):
         final t = consoleTokens(context);
         return Container(
           margin: const EdgeInsets.symmetric(vertical: 2),
@@ -496,7 +559,12 @@ class DualTrackStream extends StatelessWidget {
             ],
           ),
         );
-      case TrackContextAttribution(:final memories, :final services, :final droppedCount, :final onItemExclude):
+      case TrackContextAttribution(
+        :final memories,
+        :final services,
+        :final droppedCount,
+        :final onItemExclude,
+      ):
         return _ContextAttributionRow(
           memories: memories,
           services: services,
@@ -734,10 +802,7 @@ class _ContextItemRow extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(
-              item.text,
-              style: TextStyle(fontSize: Fsz.note),
-            ),
+            child: Text(item.text, style: TextStyle(fontSize: Fsz.note)),
           ),
           // 预留排除位：回调未接线（null）时不占位，交互零痕迹。
           if (onExclude != null)
@@ -758,7 +823,7 @@ class _ContextItemRow extends StatelessWidget {
 /// Run 概要条（P2）：连续灰阶通告折叠为一条可展开行——标题计等宽遥测轨,
 /// 展开即原通告行列表。危险通告不进此条（Rose 独立凸显由页面分组保证）。
 class _RunSummary extends StatelessWidget {
-  const _RunSummary({required this.notes});
+  const _RunSummary({super.key, required this.notes});
 
   final List<TrackNote> notes;
 
@@ -861,11 +926,7 @@ extension TrackEntryCodec on TrackEntry {
       'danger': danger,
     },
     // 瞬态条目：页面持久化前已过滤；此处兜底防直插（丢动作保文本）。
-    TrackGuide(:final text) => {
-      'type': 'note',
-      'text': text,
-      'danger': false,
-    },
+    TrackGuide(:final text) => {'type': 'note', 'text': text, 'danger': false},
     // 错误卡持久化保留（历史保真）：onAction 不序列化（恢复态锁定）。
     TrackError e => {
       'type': 'error',
@@ -962,13 +1023,13 @@ extension TrackEntryCodec on TrackEntry {
         case 'context':
           // 历史恢复归因条：仅展示快照（onItemExclude=null 锁定，同上口径）。
           List<ContextAttributionItem> items(Object? raw) => [
-                for (final e in (raw as List? ?? const []))
-                  if (e is Map)
-                    ContextAttributionItem(
-                      source: e['s'] as String? ?? '?',
-                      text: e['t'] as String? ?? '',
-                    ),
-              ];
+            for (final e in (raw as List? ?? const []))
+              if (e is Map)
+                ContextAttributionItem(
+                  source: e['s'] as String? ?? '?',
+                  text: e['t'] as String? ?? '',
+                ),
+          ];
           out.add(
             TrackContextAttribution(
               memories: items(m['memories']),
