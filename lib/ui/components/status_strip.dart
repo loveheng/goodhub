@@ -7,6 +7,8 @@
 /// 服务的痛点）。
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../tokens/console_tokens.dart';
@@ -54,9 +56,10 @@ class StatusStrip extends StatelessWidget {
     _ => label,
   };
 
-  /// 已耗时格式化（mm:ss），自 [runStartedAt] 起算，供运行态计时显示。
-  static String fmtElapsed(DateTime start) {
-    final s = DateTime.now().difference(start).inSeconds;
+  /// 已耗时格式化（mm:ss），自 [start] 起算，供运行态计时显示。
+  /// [now] 为可注入时间源（默认 `DateTime.now`，测试可控）。
+  static String fmtElapsed(DateTime start, [DateTime Function() now = DateTime.now]) {
+    final s = now().difference(start).inSeconds;
     final m = s ~/ 60;
     final sec = s % 60;
     return '${m.toString().padLeft(2, '0')}:${sec.toString().padLeft(2, '0')}';
@@ -146,17 +149,64 @@ class StatusStrip extends StatelessWidget {
           if (running && runStartedAt != null)
             Padding(
               padding: const EdgeInsets.only(left: 8),
-              child: Text(
-                fmtElapsed(runStartedAt!),
-                style: TextStyle(
-                  fontFamily: t.monoFamily,
-                  fontSize: Fsz.micro,
-                  color: color,
-                ),
-              ),
+              child: ElapsedText(start: runStartedAt!, t: t, color: color),
             ),
         ],
       ),
     );
   }
+}
+
+/// 已耗时自管件（window-slim P1-B 续 · chat_page 二轮下沉切片 A）：原先由
+/// ChatPage 每秒 `setState` 重建整页（含输入框 TextField）只为刷新本 `mm:ss`
+/// 文本——典型反模式，且运行态逐秒重建 TextField 有丢光标/焦点风险。改由本件
+/// 自持 1s 定时器，仅自身重建，杜绝整页级重绘级联（状态流转与 UI 分离的第一步）。
+class ElapsedText extends StatefulWidget {
+  const ElapsedText({
+    super.key,
+    required this.start,
+    required this.t,
+    required this.color,
+    this.now = DateTime.now,
+  });
+  final DateTime start;
+  final ConsoleTokens t;
+  final Color color;
+  /// 时间源（副作用收敛端口：默认真实时钟，测试可注入可控时钟，避免 fake-timer
+  /// 与真实时钟错位导致数值不可测）。
+  final DateTime Function() now;
+
+  @override
+  State<ElapsedText> createState() => _ElapsedTextState();
+}
+
+class _ElapsedTextState extends State<ElapsedText> {
+  late String _text = StatusStrip.fmtElapsed(widget.start, widget.now);
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) {
+        setState(() => _text = StatusStrip.fmtElapsed(widget.start, widget.now));
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Text(
+        _text,
+        style: TextStyle(
+          fontFamily: widget.t.monoFamily,
+          fontSize: Fsz.micro,
+          color: widget.color,
+        ),
+      );
 }

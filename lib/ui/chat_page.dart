@@ -138,8 +138,6 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
   /// 上一句发送的任务文本（ux-hardening P0-2：错误卡「重试」重跑语料）。
   String? _lastPrompt;
 
-  /// 状态带秒级计时刷新定时器（running 期间每秒 setState 刷新已耗时）。
-  Timer? _elapsedTimer;
   var _pillLabel = 'idle';
   var _pillTone = CapsuleTone.idle;
 
@@ -164,7 +162,6 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
 
   @override
   void dispose() {
-    _elapsedTimer?.cancel();
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
     _streamBuf.dispose(); // P0：取消节拍定时器（widget 已销毁，残余无处可刷）
@@ -673,13 +670,9 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
       _pillTone = CapsuleTone.l1;
       _autoFollow = true; // 新任务：回到底部并恢复自动跟随
     });
-    // P1-4：运行计时接通——_runStartedAt/_elapsedTimer 此前定义后从未赋值
-    // （死代码），状态带 runStartedAt 分支永不亮；秒级 tick 刷已耗时。
+    // P1-4：运行计时接通——_runStartedAt 记运行起点；状态带「已耗时」mm:ss 由
+    // StatusStrip._ElapsedText 自持 1s 定时器局部刷新（不再整页每秒 setState）。
     _runStartedAt = DateTime.now();
-    _elapsedTimer?.cancel();
-    _elapsedTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() {});
-    });
     if (!isRetry) _add(TrackUser(prompt));
     // T3b：会话懒建（首个任务起落盘；标题截取策略在 Archive 内核）。
     await _archive!.ensureCurrent(prompt: prompt);
@@ -972,8 +965,6 @@ class _ChatPageState extends State<ChatPage> implements ChatTrackSink {
       _activeAssembly = null;
       assembly = null;
       await _persistCurrent(); // T3b：Run 收尾快照（含 Cancelled 终态）
-      _elapsedTimer?.cancel();
-      _elapsedTimer = null;
       _runStartedAt = null;
       if (mounted) setState(() => _running = false);
     }
