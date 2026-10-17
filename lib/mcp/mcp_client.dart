@@ -1,6 +1,6 @@
 /// MCP Client：JSON-RPC 2.0 协议层（无状态逐请求，接缝契约前提）。
 ///
-/// 协议语义住本文件（coding-standards §1 边界纪律：core/network 只放纯传输底座）；
+/// 协议语义住本文件（coding-standards §1.2 边界纪律：core/network 只放纯传输底座）；
 /// 原始 I/O 委托给 [McpTransport]（HTTP 实现见 transport/mcp_transport.dart；
 /// 同机 Binder 实现规划于 thirdconnect T-trans-2/3）。本文件不含任何传输细节。
 library;

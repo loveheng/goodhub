@@ -8,7 +8,7 @@ last-merge: 2026-10-11
 
 # lessons
 
-按模块归类的避坑规则正文（正文行禁用 `- [` 开头——该前缀专属底部追加区）
+维护协议（使用时机/录入准则/四段格式/清零纪律）SSOT = `.agents/skills/goodhub-workflow/SKILL.md`「经验教训维护协议」节——规则住 skill，本文件只承载数据正文（防双源）
 
 ## llm / 模型部署
 
@@ -29,13 +29,22 @@ last-merge: 2026-10-11
 ## mcp / 传输
 
 - dart:io HttpResponse.bufferOutput 默认 true——SSE 流内帧（中途 progress/心跳/反向请求）全部缓冲滞留到连接关闭才一次性发出，join 全量断言的测试抓不到（读完再验），只有增量逐帧消费的测试能暴露 ➔ SSE 起始处必须 bufferOutput=false，真机中途帧联调前置依赖此修复；**好仓每一处新写 SSE 承载面都要复查此修复**——G1 gateway_server.dart（晚于 goodshare 修复 1 天新写）就漏了，真网外部客户端实测（progress 4 帧挤压收尾 1ms）才暴露；现已有逐帧计时回归钉子 test/gateway/gateway_server_test.dart「SSE 进度帧即达」（撤修复即红，已验证能咬人） (Ref: m3-ui-subs-sampling, thirdconnect)
+
+## 工具链 / toolbox
+
+- `toolbox run todos add` 的事项文本经 shell 传递，禁用反引号与 `$`——反引号被 bash 当命令替换执行（实测落盘后开头被吞），`$` 被变量展开 ➔ 带这两种字符的条目改用 Edit 直接写文件，勿走 shell（事后补回易漏且留双源）(Ref: misc)
+- `todos add --src` 必须以 `ai` 或 `用户` 起头（可带 `, 说明` 后缀）——写 `agent` 被拒（exit 1，误以为落盘失败）(Ref: misc)
+- 域内 `todos.md` 机械件格式：标题须为 `# <epic名> · 域内待办`、frontmatter 须 `format: v3` + `epic: <名>`，否则 `todos add` 报「缺标题行」拒绝写入——存量 v2 域文件首次写入前先改头部 (Ref: misc)
+- LiteRT-LM 迁移：R8 混淆致 JNI SIGABRT ➔ proguard 必须 keep `-keep class com.google.ai.edge.** { *; }` (Ref: init)
+- release 构建踩坑（Flutter 3.47.5）：`dev_dependencies` 的 `integration_test` 会被 `flutter pub get`/`flutter analyze` 以非 release 语义反复写入 `android GeneratedPluginRegistrant.java`，但其原生类不进 release classpath ➔ `compileReleaseJavaWithJavac` 报「程序包 dev.flutter.plugins.integration_test 不存在」构建失败 ➔ `release-r2.sh` 在 analyze 之后用 python 剔除 registrant 中该 try/catch 注册块 + 构建带 `--no-pub`（patch 早于 analyze 会被覆盖；build 阶段 pub get 会再写脏）；上游修复后可删脚本中该段 (Ref: self-update)
+
 ## 待归并（android-ops）
 
 - [android-ops] 真机自驱输入 URL：ime set 到 Gboard(LatinIME) 后 input text 仍被中文候选转换（HTTP：／／全角化复现）——Gboard 单实例承载多语言，ime set 只切 IME 不切键盘语言 ➔ 英文/URL 类自驱输入不可靠 ➔ 真机联调遇文本输入面直接交人工手输，AI 侧只做 tap/screencap/坐标换算（截图尺寸=物理分辨率，显示缩放图必错位） (Ref: m4)
 
-## 待归并（android-ops）
+## 待归并（misc）
 
-- [android-ops] 真机自驱输入 URL：ime set 到 Gboard(LatinIME) 后 input text 仍被中文候选转换（HTTP：／／全角化复现）——Gboard 单实例承载多语言，ime set 只切 IME 不切键盘语言 ➔ 英文/URL 类自驱输入不可靠 ➔ 真机联调遇文本输入面直接交人工手输，AI 侧只做 tap/screencap/坐标换算（截图尺寸=物理分辨率，显示缩放图必错位） (Ref: m4)
+- [docs/终态纪律] AI 生成文档混入过程数据——goodhub-docs 域表曾硬编码文档数（3/4/14）、迁入时间线备注（「ui-design 于 2026-10-17 自 product 迁入」）、「暂无 + 解释正常流程」伪例外段，lessons.md 自身也有整段重复的待归并块 | 根因：AI 写文档倾向自证过程（何时新增/原来没有/为什么不冲突），未区分「现行事实」与「关于事实的历史」 | 处置：终态文档只写现行事实，过程/时间线/变更叙事一律归 devlog；docs-spec §7 反模式立法 + goodhub-docs 域表重写落地 | 回归：docs-lint 属机械校验抓不住语义级过程数据，依赖评审抽查 (Ref: misc)
 
 - [release-r2.sh] flutter analyze 含 issue 即 exit 1（存量 info 也算）➔ release-r2.sh set -e 被 1 条 deprecated info 中止构建 ➔ 发布脚本 analyze 降为告警不阻断，交付门槛由日常 analyze/test 把守 (Ref: self-update) (Ref: self-update)
 - [dart/closure] 闭包在 late final 局部变量声明前引用它编译报错「can't be referenced before it is declared」➔ Dart 禁止 late 局部变量在声明位置之前的闭包中引用（闭包可能早于初始化被调用）➔ 含 late final 局部变量且闭包需引用它时，把声明前置到闭包定义之前（即使赋值在后）(Ref: chatmessage)

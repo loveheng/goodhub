@@ -1,4 +1,4 @@
-/// 系统安全存储抽象（coding-standards §1 core/security）：
+/// 系统安全存储抽象（coding-standards §6.3 安全护栏）：
 /// 密钥类数据（BYOK API Key、Bearer Token）的读写接口，平台实现经依赖注入装配。
 ///
 /// Android 后端 = flutter_secure_storage（EncryptedSharedPreferences / Keystore，

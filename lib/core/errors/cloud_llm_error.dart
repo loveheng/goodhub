@@ -1,4 +1,4 @@
-/// 云端 LLM 引擎领域异常（coding-standards §4：显式错误传递，禁裸抛）。
+/// 云端 LLM 引擎领域异常（coding-standards §5.5：显式错误传递，禁裸抛）。
 /// 与 MCP 总线的 [McpException] 平行：出站 BYOK 推理路径的独立错误域。
 library;
 

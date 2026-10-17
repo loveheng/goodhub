@@ -60,6 +60,41 @@ void main() {
     );
     expect(find.text('00:00'), findsNothing);
   });
+
+  // A2（page-beautify）：工具名人话化纯函数——状态带/CallCard 共用同源。
+  group('A2 工具名人话化（toolAction/shortClause）', () {
+    test('description 首子句截断（中文分号 / 左括号均切）', () {
+      expect(
+        StatusStrip.toolAction('goodshare__get_item', const {
+          'goodshare__get_item': '读取单个收集条目的完整内容（原文 + 人类态/机器态）；'
+              '图片条目小图返回 base64 图像块',
+        }),
+        '读取单个收集条目的完整内容',
+      );
+      expect(
+        StatusStrip.shortClause('把一段文本或链接存入「拾贝」收集器（例如用户说"帮我存一下"时使用）。'),
+        '把一段文本或链接存入「拾贝」收集器',
+      );
+    });
+
+    test('无标点长句 16 字硬截 + 省略号；短文本原样', () {
+      expect(
+        StatusStrip.shortClause('这是一段没有任何标点的超长工具描述文本需要硬截断'),
+        '这是一段没有任何标点的超长工具描…',
+      );
+      expect(StatusStrip.shortClause('列出最近的收集条目'), '列出最近的收集条目');
+    });
+
+    test('无描述回退裸工具名（剥 serverId__ 前缀）', () {
+      expect(StatusStrip.toolAction('goodshare__list_items', const {}), 'list_items');
+    });
+
+    test('无前缀宿主本地工具原名透传；空描述同样回退裸名', () {
+      expect(StatusStrip.toolAction('update_memory', const {}), 'update_memory');
+      expect(StatusStrip.toolAction('goodshare__add_item', const {'goodshare__add_item': '  '}),
+          'add_item');
+    });
+  });
 }
 
 /// 从 StatusStrip 渲染出的文本中解析「已耗时」秒数：状态带内唯一形如 mm:ss 的

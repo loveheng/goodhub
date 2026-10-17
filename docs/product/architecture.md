@@ -99,7 +99,7 @@ flowchart TB
 - 顶部状态胶囊（应用内 OverlayEntry → 未来系统通知/灵动岛）：阶段展示 + 常驻 Abort
 - 双轨消息流：阅读轨（流式 Markdown 原生排版）；操作轨（参数确认卡片 / 执行状态卡片状态机 / 熔断排查卡片：单步重试/跳过/人工接管）
 - 设置页：已连 App 管理面板 + 模型配置面板
-- 视觉与交互语言 SSOT：[ui-design.md](ui-design.md)（工业实用主义 × 现代控制台风格）
+- 视觉与交互语言 SSOT：[ui-design.md](../project/ui-design.md)（工业实用主义 × 现代控制台风格）
 
 ### 6. 聚合网关（Inter-MCP Aggregator）
 

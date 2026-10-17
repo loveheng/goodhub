@@ -23,6 +23,7 @@ class SessionContextSheetBody extends StatelessWidget {
     required this.onBind,
     required this.onClear,
     required this.onDone,
+    this.bindLocked = false,
   });
 
   final ConsoleTokens t;
@@ -39,6 +40,11 @@ class SessionContextSheetBody extends StatelessWidget {
   final ValueChanged<String> onBind;
   final VoidCallback onClear;
   final VoidCallback onDone;
+
+  /// A5（page-beautify P3）：运行中菜单**可查看不可切换**——原一刀切
+  /// guard 连只读查看都弹「需等待」（查看当前绑定零收益被禁、纯添堵）。
+  /// true = 绑定/清空项置灰 + 说明行；查看信息不受影响。
+  final bool bindLocked;
 
   @override
   Widget build(BuildContext context) {
@@ -75,6 +81,13 @@ class SessionContextSheetBody extends StatelessWidget {
                 ),
               ),
             const Divider(height: 16),
+            // A5：运行中锁定说明（查看可用、切换待命）。
+            if (bindLocked)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text('任务运行中：可查看，暂不可切换绑定',
+                    style: TextStyle(fontSize: Fsz.note, color: t.l2Warn)),
+              ),
             if (privEndpoints.isEmpty && localPlugins.isEmpty)
               Text('无可用私有服务（私有端点请在侧边栏 → 设置页添加）',
                   style: TextStyle(fontSize: Fsz.note, color: t.terminalMuted)),
@@ -86,6 +99,7 @@ class SessionContextSheetBody extends StatelessWidget {
                 trailing: (bound != null && bound == e.id)
                     ? const Icon(Icons.check, size: 18)
                     : null,
+                enabled: !bindLocked,
                 onTap: () => onBind(e.id),
               ),
             if (localPlugins.isNotEmpty) ...[
@@ -105,6 +119,7 @@ class SessionContextSheetBody extends StatelessWidget {
                   trailing: (bound != null && bound == lp.serverId)
                       ? const Icon(Icons.check, size: 18)
                       : null,
+                  enabled: !bindLocked,
                   onTap: () => onBind(lp.serverId),
                 ),
             ],
@@ -121,6 +136,7 @@ class SessionContextSheetBody extends StatelessWidget {
               ListTile(
                 leading: const Icon(Icons.public),
                 title: const Text('清空（纯公共）'),
+                enabled: !bindLocked,
                 onTap: onClear,
               ),
             ],

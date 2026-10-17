@@ -10,9 +10,78 @@ library;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../tokens/console_tokens.dart';
 import 'status_capsule.dart';
+
+/// 上下文胶囊——本会话绑定的私有服务 / 本地插件 / 公共态的弱感知，点击
+/// 打开会话上下文菜单。[SSOT 修正] B6 已回退（2026-10-17 用户拍板）：
+/// 胶囊只挂输入框上方状态带（B6 曾把 idle 期胶囊融输入行，已撤销），
+/// 显隐由状态带展开条件决定（running || hasContext || hasEndpoints）。
+class ContextChip extends StatelessWidget {
+  const ContextChip({
+    super.key,
+    required this.t,
+    required this.contextId,
+    required this.localPluginCount,
+    required this.hasEndpoints,
+    required this.endpointName,
+    required this.onTap,
+  });
+
+  final ConsoleTokens t;
+
+  /// 本会话三态绑定：null=未绑定 / ''=显式公共 / id=锁定。
+  final String? contextId;
+  final int localPluginCount;
+  final bool hasEndpoints;
+  final String Function(String id) endpointName;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasCtx = contextId != null && contextId!.isNotEmpty;
+    final hasLocal = localPluginCount > 0;
+    // 绑定私有端点 / 本地插件 均按「私有」呈现（锁形 + l1 色），不视作公有。
+    final isPrivate = hasCtx || hasLocal;
+    final chipColor = isPrivate ? t.l1Info : t.terminalMuted;
+    final chipIcon = isPrivate ? Icons.lock_outline : Icons.public;
+    final chipText = hasCtx
+        ? endpointName(contextId!)
+        : (hasLocal ? '本地×$localPluginCount' : '公共');
+    return GestureDetector(
+      // B3：轻触觉确认（点击已被接收的确定感）。
+      onTap: () {
+        unawaited(HapticFeedback.selectionClick());
+        onTap();
+      },
+      child: Container(
+        margin: const EdgeInsets.only(right: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          color: chipColor.withValues(alpha: 0.16),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(chipIcon, size: 11, color: chipColor),
+            const SizedBox(width: 4),
+            Text(
+              chipText,
+              style: TextStyle(
+                fontFamily: t.monoFamily,
+                fontSize: Fsz.micro,
+                color: chipColor,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 class StatusStrip extends StatelessWidget {
   const StatusStrip({
@@ -56,6 +125,34 @@ class StatusStrip extends StatelessWidget {
     _ => label,
   };
 
+  /// A2（page-beautify）：工具名 → 人话动作标签。优先取服务端下发的
+  /// description 首子句（goodshare 侧实证为中文人话长句，首子句即动作）；
+  /// 无描述回退裸工具名（剥 `<serverId>__` 服务前缀）；无分隔符（宿主
+  /// 本地工具）原样透传。原始前缀名仍由 CallCard 头部等宽遥测轨展示。
+  static String toolAction(
+    String prefixedName,
+    Map<String, String> descriptions,
+  ) {
+    final desc = descriptions[prefixedName]?.trim();
+    if (desc != null && desc.isNotEmpty) return shortClause(desc);
+    final i = prefixedName.indexOf('__');
+    return i > 0 ? prefixedName.substring(i + 2) : prefixedName;
+  }
+
+  /// 长描述 → 短标签：至首个分隔标点（中英文句读 / 左括号，描述常见
+  /// 「……（原文 + 机器态）；……」结构）——自然截断不加省略号（短语已完整）；
+  /// 无标点且超 16 字才硬截并加省略号。
+  static String shortClause(String text) {
+    final t = text.trim();
+    if (t.isEmpty) return t;
+    const seps = '。；;！!？?（(';
+    for (var i = 0; i < t.length; i++) {
+      if (seps.contains(t[i])) return t.substring(0, i);
+    }
+    if (t.length <= 16) return t;
+    return '${t.substring(0, 16)}…';
+  }
+
   /// 已耗时格式化（mm:ss），自 [start] 起算，供运行态计时显示。
   /// [now] 为可注入时间源（默认 `DateTime.now`，测试可控）。
   static String fmtElapsed(DateTime start, [DateTime Function() now = DateTime.now]) {
@@ -76,45 +173,18 @@ class StatusStrip extends StatelessWidget {
     final hasCtx = contextId != null && contextId!.isNotEmpty;
     final hasLocal = localPluginCount > 0;
     // 绑定私有端点 / 本地插件 均按「私有」呈现（锁形 + l1 色），不视作公有；
-    // 三者任一即显示上下文胶囊（均可点开菜单）。
+    // running 态三者任一即显示上下文胶囊（可点开菜单；idle 期胶囊在输入条）。
     final isPrivate = hasCtx || hasLocal;
     final showChip = isPrivate || hasEndpoints;
     Widget? chip;
     if (showChip) {
-      final chipColor = isPrivate ? t.l1Info : t.terminalMuted;
-      final chipIcon = isPrivate ? Icons.lock_outline : Icons.public;
-      final chipText = hasCtx
-          ? endpointName(contextId!)
-          : (hasLocal ? '本地×$localPluginCount' : '公共');
-      chip = GestureDetector(
+      chip = ContextChip(
+        t: t,
+        contextId: contextId,
+        localPluginCount: localPluginCount,
+        hasEndpoints: hasEndpoints,
+        endpointName: endpointName,
         onTap: onOpenMenu,
-        child: Container(
-          margin: const EdgeInsets.only(right: 8),
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(12),
-            color: chipColor.withValues(alpha: 0.16),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                chipIcon,
-                size: 11,
-                color: chipColor,
-              ),
-              const SizedBox(width: 4),
-              Text(
-                chipText,
-                style: TextStyle(
-                  fontFamily: t.monoFamily,
-                  fontSize: Fsz.micro,
-                  color: chipColor,
-                ),
-              ),
-            ],
-          ),
-        ),
       );
     }
     return Container(

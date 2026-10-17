@@ -1,8 +1,8 @@
 {
-  "versionCode": 2003,
-  "versionName": "1.0.1",
+  "versionCode": 2004,
+  "versionName": "1.0.2",
   "applicationId": "com.zzh.goodhub",
   "apkUrl": "https://r2.oklhj.eu.org/updates/goodhub/app-release.apk",
-  "sha256": "b98832e71d002addd375a3762335a29a7d619837b1f07078064dea0b4efe5b69",
-  "changelog": "v1.0.1：更新源隔离到 updates/goodhub 独立目录；清单新增包名（applicationId）校验，多应用共用更新源不再串包"
+  "sha256": "79089f35b090db52cdb063fff3ceaf9cc41bca3690e7b6339642c51050e94cee",
+  "changelog": "v1.0.2：窗口瘦身（状态条/双轨流/会话抽屉重构）与页面美化；更新源目录与清单校验不变"
 }

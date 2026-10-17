@@ -6,7 +6,7 @@ updated: 2026-10-16
 # 页面整改(page-revamp)· 底子文档
 
 > 来源:2026-10-14 对现有 UI 的全量评估(chat_page / services_hall / memory_board / claim_loop / 双轨卡片族 / tokens,约 6400 行)。
-> 规范 SSOT 仍是 [ui-design.md](../product/ui-design.md)——本文只记整改范围与实施分解,不复制规范正文。
+> 规范 SSOT 仍是 [ui-design.md](../project/ui-design.md)——本文只记整改范围与实施分解,不复制规范正文。
 
 ## 1. 评估结论摘要
 

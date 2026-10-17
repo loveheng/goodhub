@@ -1,6 +1,6 @@
 /// 云端协议客户端共享接线：HTTP-SSE 传输 + 共享 JSON 解析（M2-T1）。
 /// 协议语义（OpenAI/Anthropic 线格式）各住自己的 client 文件，
-/// 本文件只做传输层（coding-standards §1 边界纪律的 llm 侧同构）。
+/// 本文件只做传输层（coding-standards §1.2 边界纪律的 llm 侧同构）。
 library;
 
 import 'dart:async';

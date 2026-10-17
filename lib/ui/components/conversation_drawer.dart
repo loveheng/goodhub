@@ -242,9 +242,12 @@ class _ConversationDrawerState extends State<ConversationDrawer> {
                 );
               },
             ),
+            // A7（page-beautify P3）：命名与聊天页「本轮记忆」区分——原
+            // 「记忆看板」（全局管理）vs「会话记忆」（本轮提取）两套「记忆」
+            // 用户必混；此处=跨会话持久记忆库的统管入口。
             ListTile(
               leading: const Icon(Icons.inventory_2_outlined),
-              title: const Text('记忆看板'),
+              title: const Text('记忆库'),
               onTap: () {
                 Navigator.pop(context);
                 Navigator.of(context).push(

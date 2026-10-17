@@ -1,15 +1,13 @@
 /// 设置页 · 跨源授权语义段（window-slim P1-A 分段拆解，2026-10-17 自
-/// settings_page 迁出）：D5 恒 L2 弹卡不豁免的口径展示 + 联调入口（仅 debug）。
+/// settings_page 迁出）：D5 恒 L2 弹卡不豁免的口径展示。
 ///
 /// 迁移语义原样保留：策略行三条口径（恒 L2 弹卡 / 看不清不放行 / 不记忆不豁免）
-/// 文案与 l2Warn 图标同色；「去联调页实测」入口仅 `kDebugMode` 构建可见，正式面
-/// 不暴露调试工具。
+/// 文案与 l2Warn 图标同色。「去联调页实测」入口已摘除（2026-10-17 用户拍板），
+/// 联调页仍可由代码侧直达（ui/gateway_loop_debug_page.dart 保留）。
 library;
 
-import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 
-import '../gateway_loop_debug_page.dart';
 import '../tokens/console_tokens.dart';
 
 /// 段 widget：纯展示段（无领域态、无注入位）。
@@ -62,20 +60,6 @@ class CrossSourceSection extends StatelessWidget {
               '与隐私围栏同口径：显式确认不落盘、不旁路 N7 出站围栏',
             ),
             const SizedBox(height: 8),
-            // 联调入口仅 debug 构建（正式面不暴露调试工具）。
-            if (kDebugMode)
-              Align(
-                alignment: Alignment.centerRight,
-                child: OutlinedButton.icon(
-                  onPressed: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => const GatewayLoopDebugPage(),
-                    ),
-                  ),
-                  icon: const Icon(Icons.science_outlined, size: 16),
-                  label: const Text('去联调页实测'),
-                ),
-              ),
           ],
         ),
       ),

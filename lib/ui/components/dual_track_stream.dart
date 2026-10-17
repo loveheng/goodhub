@@ -32,6 +32,15 @@ sealed class TrackEntry {
   const TrackEntry();
 }
 
+/// C6（page-beautify P3）：完成通告文本——据此把「✓ 任务完成」从 Run 概要
+/// 折叠中摘出、单独 Emerald 成行（chat_page 与本文件共此常量，防文本漂移）。
+const String kTaskDoneNote = '✓ 任务完成';
+
+/// A4（page-beautify P3）：首颗记忆胶囊的事前说明（chat_page onCapsule 幂等
+/// 插入；恢复会话经序列化还原、不再触发插入）。
+const String kMemoryFirstNotice =
+    '模型从对话中提取了一条事实写入记忆（可逐条撤销；AppBar ⚡ 查看本轮全部）';
+
 /// 阅读轨文本（流式追加：页面往 [text] 写 delta）。
 ///
 /// 自管件（window-slim P1-B/C/D 切片 C）：原页面 40ms 流控刷盘每帧整页
@@ -76,6 +85,10 @@ class TrackCall extends TrackEntry with ChangeNotifier {
 
   /// 终态结果全文（可展开查看；空 = 仅预览）。
   String resultText = '';
+
+  /// A2（page-beautify）：服务端工具描述全文（run 起步由页面建映射注入；
+  /// 恢复历史经 codec 还原）。CallCard 收起态显示首子句、可展开全文。
+  String? description;
 
   /// 运行期更新相位/进度/预览/结果：合并写 + 单次自我通知（仅本卡局部重绘）。
   void patch({
@@ -251,12 +264,20 @@ class DualTrackStream extends StatelessWidget {
 
   Widget _buildList(BuildContext context) {
     if (entries.isEmpty && emptyHint.isNotEmpty) {
+      // C5：空态提示同限宽（560——提示句不宜拉宽），居中。
       return Center(
-        child: Text(
-          emptyHint,
-          style: TextStyle(
-            color: consoleTokens(context).terminalMuted,
-            fontSize: Fsz.body,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Text(
+              emptyHint,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: consoleTokens(context).terminalMuted,
+                fontSize: Fsz.body,
+              ),
+            ),
           ),
         ),
       );
@@ -284,7 +305,12 @@ class DualTrackStream extends StatelessWidget {
     }
 
     for (final e in entries) {
-      if (e is TrackNote && !e.danger) {
+      // C6：「✓ 任务完成」是 Run 级重要反馈——与遥测通告混排会被折叠降权
+      // （滚回去看不到「任务成功了」），单独 Emerald 成行。
+      if (e is TrackNote && e.text == kTaskDoneNote) {
+        flushNotes();
+        rows.add(_DoneNote(e));
+      } else if (e is TrackNote && !e.danger) {
         pendingNotes.add(e);
       } else {
         flushNotes();
@@ -292,10 +318,22 @@ class DualTrackStream extends StatelessWidget {
       }
     }
     flushNotes();
-    return ListView(
-      controller: controller,
-      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-      children: rows,
+    // C5：阅读轨限宽 720（与输入区同限）——宽屏下行宽 60+ 字阅读疲劳，
+    // 中文长文舒适行宽约 30~40 字；桌面/折叠屏随 Center 居中。
+    // B7：ListView(children:) → builder——rows 仍预构建（分组折叠语义所需），
+    // 但 element/layout 懒化：几百轮长会话滚出视口的条目不再建 element
+    // （原 children 模式一次性全量建）。彻底 builder 化需重排分组逻辑，
+    // 待超长会话真机实测后再议。
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 720),
+        child: ListView.builder(
+          controller: controller,
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          itemCount: rows.length,
+          itemBuilder: (context, i) => rows[i],
+        ),
+      ),
     );
   }
 
@@ -304,6 +342,7 @@ class DualTrackStream extends StatelessWidget {
     switch (entry) {
       case TrackText():
         if (entry.text.isEmpty) return const SizedBox.shrink();
+        final t = consoleTokens(context);
         // P1（stream-perf §4）：流式前缀块缓存 + 隔离重绘——解析与渲染隔离
         // 收编于 StreamingRichText（RichTextView 仍为块渲染器）。切片 C：本件自管
         // Listenable，delta 追加仅本条目局部重绘，不牵连整页（ListenableBuilder）。
@@ -311,7 +350,23 @@ class DualTrackStream extends StatelessWidget {
           listenable: entry,
           builder: (context, _) => Padding(
             padding: const EdgeInsets.symmetric(vertical: 4),
-            child: StreamingRichText(text: entry.text.toString()),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // C4：轮次标识——与用户轮「你」标签对称的极轻 assistant 标
+                // （microSm 灰阶等宽），长会话多轮回看时轮次边界不再融化。
+                Text(
+                  'GoodHub',
+                  style: TextStyle(
+                    fontFamily: t.monoFamily,
+                    fontSize: Fsz.microSm,
+                    color: t.terminalMuted,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                StreamingRichText(text: entry.text.toString()),
+              ],
+            ),
           ),
         );
       case TrackUser(:final text):
@@ -368,6 +423,7 @@ class DualTrackStream extends StatelessWidget {
             progressNote: e.progressNote,
             preview: e.preview,
             fullResult: e.resultText.isEmpty ? null : e.resultText,
+            description: e.description,
           ),
         );
       case TrackConfirm(
@@ -536,7 +592,7 @@ class DualTrackStream extends StatelessWidget {
                     minimumSize: const Size(0, 28),
                   ),
                   child: Text(
-                    '✕撤销',
+                    '✕ 撤销',
                     style: TextStyle(
                       fontFamily: t.monoFamily,
                       fontSize: Fsz.note,
@@ -822,6 +878,30 @@ class _ContextItemRow extends StatelessWidget {
 
 /// Run 概要条（P2）：连续灰阶通告折叠为一条可展开行——标题计等宽遥测轨,
 /// 展开即原通告行列表。危险通告不进此条（Rose 独立凸显由页面分组保证）。
+
+/// C6：完成通告独立行（Emerald + w600 微强调）——脱离 Run 概要折叠，重要
+/// 反馈不被遥测通告稀释；SelectableText 保持排障复制口径。
+class _DoneNote extends StatelessWidget {
+  const _DoneNote(this.note);
+
+  final TrackNote note;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = consoleTokens(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: SelectableText(
+        note.text,
+        style: TextStyle(
+          fontSize: Fsz.note,
+          fontWeight: FontWeight.w600,
+          color: t.l1Ok,
+        ),
+      ),
+    );
+  }
+}
 class _RunSummary extends StatelessWidget {
   const _RunSummary({super.key, required this.notes});
 
@@ -887,6 +967,8 @@ extension TrackEntryCodec on TrackEntry {
       'progressNote': ?e.progressNote,
       'preview': e.preview,
       'resultText': e.resultText,
+      // A2：描述全文持久化（恢复会话人话行不丢；缺省 = 旧数据无描述）。
+      'description': ?e.description,
     },
     TrackConfirm(:final pending, :final decision, :final decidedAt) => {
       'type': 'confirm',
@@ -992,7 +1074,8 @@ extension TrackEntryCodec on TrackEntry {
               ..phase = settled ? CallCardPhase.cancelled : phase
               ..preview = settled ? '(会话中断)' : (m['preview'] as String? ?? '')
               ..progressNote = m['progressNote'] as String?
-              ..resultText = m['resultText'] as String? ?? '',
+              ..resultText = m['resultText'] as String? ?? ''
+              ..description = m['description'] as String?,
           );
         case 'note':
           out.add(

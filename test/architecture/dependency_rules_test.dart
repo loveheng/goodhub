@@ -6,7 +6,7 @@
 ///
 /// - 扫描器先剥注释（行注释 + 块注释），再匹配 `import` / `export` 的 URI——
 ///   **不锚行首**，覆盖 `export` 转发链与折行 import；
-/// - 规则表与 `goodhub-workflow` skill「架构依赖纪律」红灯表同源，缺一条即红灯：
+/// - 规则表与 `docs/project/coding-standards.md` §1.0 护栏表同源，缺一条即红灯：
 ///   R1 core 零出向 / R2 mcp·sandbox↛coordinator / R3 mcp·sandbox↛llm /
 ///   R4 ui↛gateway_controller / R5 gateway↛ui / R6 禁引 mcp/tool_router.dart。
 ///
@@ -19,7 +19,8 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
-/// goodhub 扁平域目录（与 workflow skill「模块结构」表同源；新增域须同步此表）。
+/// goodhub 扁平域目录（与 `docs/project/coding-standards.md` §1.0 分层矩阵同源；
+/// 新增域须同步此表 + goodhub-index 落点登记）。
 const Set<String> kGoodhubDomains = <String>{
   'app',
   'coordinator',
@@ -174,7 +175,7 @@ class _Rule {
       }).toList();
 }
 
-/// 规则表（与 goodhub-workflow skill 红灯表同源，改规则须同步 shell 镜像
+/// 规则表（与 coding-standards.md §1.0 护栏表同源，改规则须同步 shell 镜像
 /// `scripts/agent-tools/arch-guard.sh` R4~R8）。
 const List<_Rule> _kDependencyRules = <_Rule>[
   _Rule(

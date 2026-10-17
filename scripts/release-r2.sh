@@ -89,7 +89,8 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "[dry-run] 将执行:"
   echo "  flutter pub get"
   echo "  flutter analyze"
-  echo "  flutter build apk --release --split-per-abi --target-platform android-arm64 --dart-define=UPDATE_SOURCE_URL=\"$SRC_URL\""
+  echo "  （Flutter 3.47.5 坑）剔除 GeneratedPluginRegistrant.java 中 integration_test 注册块"
+  echo "  flutter build apk --release --split-per-abi --target-platform android-arm64 --dart-define=UPDATE_SOURCE_URL=\"$SRC_URL\" --no-pub"
   echo "  sha256sum $APK"
   echo "  生成 updates/goodhub-update.json (apkUrl=$APK_URL)"
   echo "  node scripts/upload-r2.mjs $APK $REMOTE_PREFIX/app-release.apk application/vnd.android.package-archive"
@@ -100,8 +101,32 @@ fi
 # ---- 构建 ----
 flutter pub get
 # analyze 非 0（如存量 info/deprecated 提示）只告警不阻断；交付门槛由日常 analyze/test 把守
+# ⚠️ analyze 自身也会以非 release 语义重生成 registrant（pub get 同款），故 patch 必须在其后
 flutter analyze || echo "WARN: flutter analyze 报 ${?}（可能为存量 issue），继续构建"
-flutter build apk --release --split-per-abi --target-platform android-arm64 --dart-define=UPDATE_SOURCE_URL="$SRC_URL"
+# 工具链坑（Flutter 3.47.5 实测，2026-10-17）：dev_dependency 的 integration_test 会被
+# pub get / analyze / build(非--no-pub) 反复写入 android GeneratedPluginRegistrant.java，
+# 但其原生类按设计不进 release classpath → javac 报「程序包 dev.flutter.plugins.integration_test
+# 不存在」构建失败。在最后一次 tooling 生成之后剔除该注册块；构建加 --no-pub 防止
+# build 阶段再次 pub get 时被覆盖。上游修复后可删此段。
+REGISTRANT="android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java"
+if [ -f "$REGISTRANT" ] && grep -q 'dev\.flutter\.plugins\.integration_test' "$REGISTRANT"; then
+  python3 - "$REGISTRANT" <<'PYEOF'
+import re, sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+s2 = re.sub(
+    r'\n[ \t]*try \{\n'
+    r'[ \t]*flutterEngine\.getPlugins\(\)\.add\(new dev\.flutter\.plugins\.integration_test\.IntegrationTestPlugin\(\)\);\n'
+    r'[ \t]*\} catch \(Exception e\) \{\n'
+    r'[ \t]*Log\.e\([^\n]*\);\n'
+    r'[ \t]*\}',
+    '', s)
+assert s2 != s, 'registrant patch failed: integration_test block not found'
+open(p, 'w', encoding='utf-8').write(s2)
+PYEOF
+  echo "已剔除 registrant 中 integration_test 注册块（dev_dependency 不进 release）"
+fi
+flutter build apk --release --split-per-abi --target-platform android-arm64 --dart-define=UPDATE_SOURCE_URL="$SRC_URL" --no-pub
 
 [ -f "$APK" ] || { echo "FAIL: 构建产物不存在: $APK"; exit 1; }
 SHA="$(sha256sum "$APK" | cut -d' ' -f1)"

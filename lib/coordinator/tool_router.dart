@@ -3,7 +3,7 @@
 /// 元工具）/§14（Tier 协商）+ M4 施工设计 T6 注记。
 ///
 /// - **不是装饰器**：直接持 `Map<serverId, McpToolFace>`；对外工具名
-///   `<serverId>__<toolName>`（coding-standards §4：双下划线仅分隔符，各段
+///   `<serverId>__<toolName>`（coding-standards §5.6：双下划线仅分隔符，各段
 ///   自身不含 `__`），[execute] 剥前缀路由——face 收裸名，server 侧零感知；
 /// - **激活集会话粒度**（§15）：router 实例随会话建；未激活 server 的调用
 ///   → isError 引导先 `activate_server_tools`（幻觉调用防线 + N2 常驻开销
@@ -18,7 +18,7 @@ import '../llm/cloud/cloud_llm.dart';
 import 'agent_loop.dart';
 import 'mcp_tool_face.dart';
 
-/// 前缀分隔符（coding-standards §4：双下划线仅作两段分隔符）。
+/// 前缀分隔符（coding-standards §5.6：双下划线仅作两段分隔符）。
 const String kToolNamespaceSep = '__';
 
 /// 拆 `<serverId>__<toolName>`；不合规（无分隔符/空段）返回 null。

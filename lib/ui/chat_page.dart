@@ -47,6 +47,7 @@ import 'components/dual_track_stream.dart';
 import 'components/session_context_sheet.dart';
 import 'error_copy.dart';
 import 'components/status_capsule.dart';
+import 'components/status_strip.dart';
 
 import 'chat_status_controller.dart';
 import 'components/stream_text_buffer.dart';
@@ -343,7 +344,7 @@ class _ChatPageState extends State<ChatPage>
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '本会话记忆（${capsules.length}）',
+                  '本轮记忆（${capsules.length}）',
                   style: TextStyle(
                     fontSize: Fsz.telemetry,
                     fontWeight: FontWeight.w600,
@@ -439,17 +440,29 @@ class _ChatPageState extends State<ChatPage>
   }
 
   /// 轻量反馈（SnackBar）：运行中共用守卫——给原因而非静默禁用。
+  ///
+  /// B5（page-beautify P3）：token 化 + 时长 2→4s——原默认 SnackBar
+  /// （inverseSurface 深灰）与控制台风格不搭，且守卫话术是长句，2s 一闪
+  /// 读不完；floating + codeBg 微深底贴卡片族，连续 toast 先清栈不叠加。
   void _toast(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+    final t = consoleTokens(context);
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: t.codeBg,
+        duration: const Duration(seconds: 4),
+      ),
     );
   }
 
   /// 运行中拦截的共用话术；返回 false = 调用方应中止动作。
   bool _guardRunning(String action) {
     if (_status.running) {
-      _toast('任务运行中，$action需等待当前任务结束');
+      _toast('任务运行中，$action 需等待当前任务结束');
       return false;
     }
     return true;
@@ -584,7 +597,9 @@ class _ChatPageState extends State<ChatPage>
   /// Composer Menu（药丸内左侧「+」→ 底部弹层）：本会话绑定哪个私有服务。
   /// 持久默认（设置页钉选）不在此处改——此处只做本次会话即时切换/覆盖。
   Future<void> _openComposerMenu() async {
-    if (!_guardRunning('打开上下文菜单')) return;
+    // A5（page-beautify P3）：运行中菜单**可查看**（当前绑定/可用服务一览）
+    // ——原一刀切 guard 把只读查看也弹「需等待」，零收益纯添堵；切换类
+    // 动作（绑定/清空）才走 guard，与 sheet 内置灰双保险。
     // 开菜单前先重读端点目录：大厅新增/卸载服务后返回聊天页，initState 缓存可能
     // 已过时，直接重读保证菜单列出当前真实存在的私有服务。
     await _loadEndpoints();
@@ -604,11 +619,14 @@ class _ChatPageState extends State<ChatPage>
           localPlugins: _localPlugins,
           defaultId: _defaultPrivateId,
           endpointName: _endpointName,
+          bindLocked: _status.running,
           onBind: (id) {
+            if (!_guardRunning('切换会话绑定')) return;
             _bindSessionServer(id);
             setSheet(() {});
           },
           onClear: () {
+            if (!_guardRunning('切换会话绑定')) return;
             _bindSessionServer('');
             setSheet(() {});
           },
@@ -637,7 +655,7 @@ class _ChatPageState extends State<ChatPage>
     _endpoints = allEndpoints;
     final unmounted = allEndpoints.length - endpoints.length;
     if (unmounted > 0) {
-      _add(TrackNote('⊘ 有 $unmounted 项服务已卸载，未参与本次任务（设置页可重新挂载）', danger: false));
+      _add(TrackNote('⊘ 有 $unmounted 个服务已卸载，未参与本次任务（设置页可重新挂载）', danger: false));
     }
     // T-trans-4：本地插件零配置发现（系统托管，不进手填配置）；与 HTTP 端点合并判定。
     final locals = <LocalPluginInfo>[];
@@ -679,6 +697,13 @@ class _ChatPageState extends State<ChatPage>
         String scope,
         void Function() undo,
       ) {
+        // A4（page-beautify P3）：首颗记忆胶囊入轨前插一条事前说明——模型
+        // 「何时会记/记了什么/去哪管」须可解释，而非静默出现（幂等：本会话
+        // 只插一次；恢复会话经 note 序列化还原、不再触发本回调）。
+        if (!_status.tracks.any((e) =>
+            e is TrackNote && e.text == kMemoryFirstNotice)) {
+          _add(const TrackNote(kMemoryFirstNotice, danger: false));
+        }
         final capsule = TrackMemoryCapsule(key: key, value: value);
         capsule.onUndo = () {
           undo(); // 落盘回滚（内核侧闭包）
@@ -728,6 +753,10 @@ class _ChatPageState extends State<ChatPage>
         _session.skills ?? (SkillRegistry()..registerAll(builtinSkills())),
       );
       _session.bindDegradation(_session.degradation ?? DegradationController());
+      // A2（page-beautify）：工具名人话化映射（前缀名 → 服务端 description
+      // 全文）——onProgress/onNotice 等委托先于 assembly 建成，故此处持可变
+      // 映射由委托闭包捕获，装配完成后（下方 router 就绪即 run 起步前）填充。
+      final toolDescriptions = <String, String>{};
       assembly = await const McpRuntime().assemble(
         engine: widget.engineOverride,
         context: SessionContext(
@@ -788,13 +817,18 @@ class _ChatPageState extends State<ChatPage>
           onNote: (message, {danger = false}) =>
               _add(TrackNote(message, danger: danger)),
           onProgress: (tool, progress, total, message) {
+            // A2：进度胶囊同步人话动作标签（原名归 CallCard 遥测轨）。
+            final action = StatusStrip.toolAction(tool, toolDescriptions);
             _setPill(
-              total != null ? '$tool $progress/$total' : '$tool $progress',
+              total != null ? '$action $progress/$total' : '$action $progress',
               CapsuleTone.l1,
             );
           },
           onNotice: (n) {
-            _setPill(n.toolName, CapsuleTone.l1);
+            _setPill(
+              StatusStrip.toolAction(n.toolName, toolDescriptions),
+              CapsuleTone.l1,
+            );
             unawaited(HapticFeedback.selectionClick());
           },
           connectionReport: (report) {
@@ -830,6 +864,13 @@ class _ChatPageState extends State<ChatPage>
       );
       _activeAssembly = assembly;
       final router = assembly.router;
+      // A2：填充人话化映射——faces 的 cachedSchemas 已缓存，一次性 O(工具数)；
+      // 值 = 服务端 description 全文（CallCard 收起首子句/可展开全文）。
+      for (final id in router.serverIds) {
+        for (final s in router.schemasFor(id)) {
+          toolDescriptions[s.name] = s.description;
+        }
+      }
       // Run 编排核下沉（window-slim P1-A）：workspaceFilter/记忆冷热分层/
       // 系统前缀/归因数据/maskTool 由编排件组装，窗口只映射到轨道。
       final plan = await _runOrchestrator.plan(
@@ -878,8 +919,14 @@ class _ChatPageState extends State<ChatPage>
           case LoopTextDelta(:final text):
             _appendText(text);
           case LoopToolCallStarted(:final call):
-            _setPill(call.name, CapsuleTone.l1);
-            final entry = TrackCall(tool: call.name);
+            // A2：状态带人话相位「执行中 · 动作」；原名 + 描述全文归 CallCard
+            // （头部等宽遥测轨 + 灰阶人话行，可展开全文）。
+            _setPill(
+              '执行中 · ${StatusStrip.toolAction(call.name, toolDescriptions)}',
+              CapsuleTone.l1,
+            );
+            final entry = TrackCall(tool: call.name)
+              ..description = toolDescriptions[call.name];
             _activeCallEntry = entry;
             _activeTextEntry = null; // 工具卡插入打断文本流：下一段文本另起条目
             _add(entry);
@@ -934,7 +981,9 @@ class _ChatPageState extends State<ChatPage>
             //（未配对尾巴已截断），同会话多轮后条数不翻倍 = 行为变更③。
             _session.replaceTranscript(transcript);
             _appendText(text.isEmpty ? '' : '\n');
-            _add(TrackNote('✓ 任务完成', danger: false));
+            // C6：完成通告走常量（dual_track_stream 据此把它从 Run 概要
+            // 折叠中摘出、单独 Emerald 成行——重要反馈不被遥测通告稀释）。
+            _add(const TrackNote(kTaskDoneNote, danger: false));
             _setPill('done', CapsuleTone.idle);
             // §4.1：L1 药丸完成 → 极轻微 tick
             unawaited(HapticFeedback.selectionClick());
@@ -1049,8 +1098,8 @@ class _ChatPageState extends State<ChatPage>
       builder: (dialogCtx) => AlertDialog(
         title: const Text('任务运行中'),
         content: const Text(
-          '离开将中止当前任务并保存当前进度快照(可从会话恢复),'
-          '在途调用已发出的结果仍会回填。确定离开?',
+          '离开将中止当前任务并保存当前进度快照（可从会话恢复），'
+          '在途调用已发出的结果仍会回填。确定离开？',
         ),
         actions: [
           TextButton(
@@ -1096,6 +1145,25 @@ class _ChatPageState extends State<ChatPage>
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
+          // B2（page-beautify）：会话记忆入口上收 AppBar——原右下悬浮 ≡ FAB
+          // 与「回到最新」同尺寸垂直堆叠、主次不分，且 reorder 图标表意弱
+          // （排序/菜单心智，且与归因条「≡」前缀撞车，A3 同源半题）。改 Bolt
+          // 图标（与流内「⚡ 已记录」胶囊同符号），仅本会话存在记忆胶囊时
+          // 出现（首颗入轨即亮、因果可见）；点击仍弹 BottomSheet 汇总列表
+          // （_showMemoryListSheet，纯展示不变）。
+          actions: [
+            // B2：本轮记忆入口（仅存在胶囊时出现，首颗入轨即亮、因果可见）。
+            // A7（page-beautify P3）：命名与抽屉「记忆库」（全局）区分——
+            // 原「会话记忆」vs「记忆看板」两套「记忆」用户必混。
+            if (_status.hasMemoryCapsules)
+              IconButton(
+                tooltip: '本轮记忆',
+                onPressed: _showMemoryListSheet,
+                icon: const Icon(Icons.bolt),
+              ),
+            // A6（page-beautify P3）已撤销（2026-10-17 用户拍板）：⚙ 设置直达
+            // 从对话页 AppBar 摘除，设置入口回归抽屉底部。
+          ],
         ),
         // 切片 B/D：状态带与轨道列表经 controller 双 Listenable 切分——status 变更
         // 仅重建状态带+输入集群，tracks 变更仅重建双轨流，互不打扰；二者合并为本
@@ -1108,7 +1176,9 @@ class _ChatPageState extends State<ChatPage>
           builder: (context, _) => Column(
             children: [
               Expanded(
-                // 上翻看历史时不劫持滚动；离底时给「回到最新」浮钮。
+                // 上翻看历史时不劫持滚动；离底时给「回到最新」浮钮。B2 后
+                // 全页唯一悬浮钮（记忆入口已上收 AppBar），主操作不再与
+                // 次级入口竞争右下角。
                 child: Stack(
                   children: [
                     DualTrackStream(
@@ -1119,38 +1189,41 @@ class _ChatPageState extends State<ChatPage>
                       // _ensureGuide），空态提示只承担已配置用户的首次指引。
                       emptyHint: '下达自然语言任务，宿主调度已挂载服务完成',
                     ),
+                    // B2：唯一悬浮钮出场/退场包 AnimatedSwitcher（180ms 淡入，
+                    // ui-design §4.2 紧凑减速；替代原瞬时出现——离底事件应有
+                    // 可感知的出现过程而非「闪出一钮」）。注意 Positioned 必须
+                    // 是 Stack 直接子级（隔 RenderObjectWidget 时 parent data
+                    // 不被应用，定位失效），故动效包在 Positioned 内层包按钮本体。
                     if (!_status.autoFollow && _status.tracks.isNotEmpty)
                       Positioned(
                         right: 16,
-                        bottom: _status.hasMemoryCapsules ? 72 : 8,
-                        child: FloatingActionButton.small(
-                          heroTag: 'chat-scroll-bottom',
-                          tooltip: '回到最新',
-                          onPressed: () {
-                            _scrollCtrl
-                                .animateTo(
-                                  _scrollCtrl.position.maxScrollExtent,
-                                  duration: t.fastDuration,
-                                  curve: Curves.easeOut,
-                                )
-                                .then((_) {
-                                  if (mounted) _status.setAutoFollow(true);
-                                });
-                          },
-                          child: const Icon(Icons.arrow_downward),
-                        ),
-                      ),
-                    // 悬浮记忆入口（≡）：与「回到最新」同款 FAB——本会话轨道
-                    // 存在记忆胶囊时显示，点击弹 BottomSheet 汇总列表。
-                    if (_status.hasMemoryCapsules)
-                      Positioned(
-                        right: 16,
-                        bottom: 8,
-                        child: FloatingActionButton.small(
-                          heroTag: 'chat-memory-list',
-                          tooltip: '会话记忆',
-                          onPressed: _showMemoryListSheet,
-                          child: const Icon(Icons.reorder),
+                        bottom: 16,
+                        child: AnimatedSwitcher(
+                          duration: t.fastDuration,
+                          transitionBuilder: (child, animation) =>
+                              FadeTransition(
+                            opacity: animation,
+                            child: child,
+                          ),
+                          child: FloatingActionButton.small(
+                            key: const ValueKey('chat-scroll-bottom'),
+                            heroTag: 'chat-scroll-bottom',
+                            tooltip: '回到最新',
+                            onPressed: () {
+                              _scrollCtrl
+                                  .animateTo(
+                                    _scrollCtrl.position.maxScrollExtent,
+                                    duration: t.fastDuration,
+                                    curve: Curves.easeOut,
+                                  )
+                                  .then((_) {
+                                    if (mounted) {
+                                      _status.setAutoFollow(true);
+                                    }
+                                  });
+                            },
+                            child: const Icon(Icons.arrow_downward),
+                          ),
                         ),
                       ),
                   ],

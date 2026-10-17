@@ -6,7 +6,7 @@
 ///   update_memory 是写操作（readOnlyHint false → L2 确认卡，F4.4 记忆类
 ///   写路径强制 L2），裁决必须先于执行；query_memory 只读（true → L1 静默 +
 ///   药丸）。gateway.loadCatalog 须包含 [toolSchemas]（裁决依据）；
-/// - **写入门槛（D8 + coding-standards §7.1 主动引导）**：update_memory 的
+/// - **写入门槛（D8 + coding-standards §5.1 主动引导）**：update_memory 的
 ///   description 明示「只记稳定事实、禁记会话临时快照/易变数据」——数据级
 ///   事实走 resources/read 实时读，记了会过时；
 /// - **§7.3 写后必回最新快照**：update_memory 返回落库条目全字段 JSON（非

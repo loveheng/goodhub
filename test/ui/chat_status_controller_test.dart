@@ -58,6 +58,16 @@ void main() {
   });
 
   group('ChatStatusController · 轨道列表（tracksListenable）', () {
+    test('hasMemoryCapsules：记忆胶囊入轨即真（AppBar Bolt 入口显隐判据，B2）', () {
+      final c = ChatStatusController();
+      expect(c.hasMemoryCapsules, isFalse);
+      c.addEntry(TrackMemoryCapsule(key: 'user.name', value: 'Z'));
+      expect(c.hasMemoryCapsules, isTrue);
+      // 会话切换清轨后即假（新会话无历史胶囊，AppBar 入口随之隐藏）。
+      c.clearTracks();
+      expect(c.hasMemoryCapsules, isFalse);
+    });
+
     test('addEntry/removeWhere 仅通知 tracksListenable，不牵连 status', () {
       final c = ChatStatusController();
       var tN = 0;

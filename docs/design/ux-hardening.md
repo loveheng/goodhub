@@ -6,7 +6,7 @@ updated: 2026-10-16
 # 普通用户可用性加固（UX Hardening）
 
 > 来源：2026-10-16 普通用户视角全库体验盘点（聊天主功能面 + 设置/记忆看板/更新/信任弹窗 + `lib/` DEGRADE 标记扫描 20 处，关键指控已逐条 file:line 核对）。
-> 与 page-revamp 的关系：page-revamp 管视觉规范与信息结构（P0~P2 已全部清零）；本 epic 管**「出错后的用户之路」与冷启动**——可用性、错误反馈、术语白话、危险操作权重、DEGRADE 用户可见性。两域不重叠，规范 SSOT 仍是 [ui-design.md](../product/ui-design.md)，本文只记可用性整改范围与分解。
+> 与 page-revamp 的关系：page-revamp 管视觉规范与信息结构（P0~P2 已全部清零）；本 epic 管**「出错后的用户之路」与冷启动**——可用性、错误反馈、术语白话、危险操作权重、DEGRADE 用户可见性。两域不重叠，规范 SSOT 仍是 [ui-design.md](../project/ui-design.md)，本文只记可用性整改范围与分解。
 
 ## 1. 范围（Scope）
 

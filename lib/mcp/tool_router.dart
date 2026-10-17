@@ -39,7 +39,7 @@ class McpTool {
     if (name is! String || name.isEmpty) {
       throw const McpProtocolException('tools/list entry missing name');
     }
-    // coding-standards §4：双下划线仅作命名空间分隔符，工具名内禁用
+    // coding-standards §5.6：双下划线仅作命名空间分隔符，工具名内禁用
     if (name.contains('__')) {
       throw McpProtocolException(
           'tool name "$name" must not contain "__" (namespace separator)');

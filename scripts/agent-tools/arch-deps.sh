@@ -15,7 +15,8 @@
 #   arch-guard（shell，秒级）  —— pre-commit 钩子 10s 预算内跑得完，进默认门禁；
 #   arch-deps（本工具，~12s）  —— 跑 flutter test，覆盖扫描器金丝雀与规则表全量，
 #                                适合 CI 与「提交前全量」开关，不进默认钩子路径。
-# 规则口径同源：goodhub-workflow skill「架构依赖纪律」红灯表；改规则须两处同步。
+# 规则口径 SSOT：docs/project/coding-standards.md §1.0 护栏表（两套机械镜像 =
+# arch-guard.sh 秒级版 + 本工具跑的 test/architecture/dependency_rules_test.dart）。
 
 set -uo pipefail
 
@@ -90,7 +91,7 @@ run() {
     return 2
   fi
   [ "$JSON_ONLY" -eq 1 ] && json_out "FAIL" "error" "arch-deps: 依赖护栏未通过（test/architecture/）" "裸跑 toolbox run arch-deps 看失败用例；各规则的修复指向见 dependency_rules_test.dart 的 hint 字段"
-  echo "[remedy] 裸跑 toolbox run arch-deps 看失败用例；逐条对照 goodhub-workflow skill 红灯表修正反向边"
+  echo "[remedy] 裸跑 toolbox run arch-deps 看失败用例；逐条对照 coding-standards §1.0 护栏表修正反向边"
   return 1
 }
 

@@ -43,6 +43,40 @@ void main() {
     expect(find.byType(CallCard), findsOneWidget);
   });
 
+  testWidgets('A2：CallCard 人话描述行——原名遥测轨在位 + 首子句 + 可展开全文',
+      (tester) async {
+    await pump(tester, [
+      TrackCall(tool: 'goodshare__get_item')
+        ..phase = CallCardPhase.success
+        ..description = '读取单个收集条目的完整内容（原文 + 人类态/机器态）；图片小图返回 base64',
+    ]);
+
+    expect(find.text('goodshare__get_item'), findsOneWidget,
+        reason: '原始前缀名留遥测轨（CallCard 头部等宽）');
+    expect(find.text('读取单个收集条目的完整内容'), findsOneWidget,
+        reason: '收起态 = description 首子句（灰阶人话行）');
+    expect(find.text('图片小图返回 base64'), findsNothing, reason: '长描述默认收起');
+
+    await tester.tap(find.text('展开'));
+    await tester.pump();
+    expect(
+      find.text('读取单个收集条目的完整内容（原文 + 人类态/机器态）；图片小图返回 base64'),
+      findsOneWidget,
+      reason: '展开后全文（SelectableText 便于复制）',
+    );
+    await tester.tap(find.text('收起'));
+    await tester.pump();
+    expect(find.text('读取单个收集条目的完整内容'), findsOneWidget);
+  });
+
+  testWidgets('A2：无描述的 CallCard 不渲染人话行（旧数据零痕迹）', (tester) async {
+    await pump(tester, [
+      TrackCall(tool: 'list_items')..phase = CallCardPhase.success,
+    ]);
+    expect(find.text('list_items'), findsOneWidget);
+    expect(find.text('展开'), findsNothing);
+  });
+
   testWidgets('表格渲染：列宽按内容自适应（防 FlexColumnWidth 塌缩错乱）',
       (tester) async {
     const md = '| 名称 | 端口 | 状态 |\n'
@@ -189,5 +223,25 @@ void main() {
     expect(find.text('本轮携带上下文'), findsOneWidget);
     expect(find.text('宿主记忆（1）'), findsOneWidget);
     expect(find.text('已挂载服务（1）'), findsOneWidget);
+  });
+
+  testWidgets('C4：助手文本轮次带「GoodHub」轻标（与用户轮「你」对称）', (tester) async {
+    await pump(tester, [TrackText('回答正文')]);
+    expect(find.text('GoodHub'), findsOneWidget,
+        reason: 'microSm 灰阶等宽轮次标——长会话回看时轮次边界不再融化');
+  });
+
+  testWidgets('C6：「✓ 任务完成」脱离 Run 概要折叠，遥测通告仍折叠', (tester) async {
+    await pump(tester, [
+      const TrackNote(kTaskDoneNote, danger: false),
+      const TrackNote('⊘ 有 2 个服务已卸载', danger: false),
+      const TrackNote('✓ 已激活 goodshare 的工具', danger: false),
+    ]);
+    // 完成行独立在（不被折叠、不被隐藏）。
+    expect(find.text(kTaskDoneNote), findsOneWidget);
+    // 两条遥测通告照旧折叠为概要（降噪不回归）。
+    expect(find.text('Run 概要（2 条通告）'), findsOneWidget);
+    expect(find.text('⊘ 有 2 个服务已卸载'), findsNothing,
+        reason: '遥测通告在折叠概要内，默认不展开');
   });
 }

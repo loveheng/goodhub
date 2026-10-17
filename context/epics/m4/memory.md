@@ -23,7 +23,7 @@ last-merge: 2026-10-14
 ## T4 连接韧性（2026-10-15 重启，SA-Q2 文档收口后）
 
 - [结论] 施工分解：**T4-1 退避底座（✓ 已落）** → T4-2 心跳探活 → T4-3 指数退避重连 → T4-4 积压丢弃回告 → T4-5 `resources/subscribe` 全链与失效感知。切分依据：T4-2~4 是纯客户端能力（不依赖 goodshare 新能力），T4-5 依赖对方真发 `notifications/resources/updated`（未核实前先做易成空中楼阁）
-- [结论] T4-1 落点与纪律：`lib/core/network/backoff.dart` 只放**纯算法**（指数退避 + jitter + 重试额度 + 最坏累计），按 coding-standards §1 边界纪律——「什么时候重连、重连后怎么重建」的总线策略必须住 `lib/mcp/`（T4-2/3），不得下沉 core
+- [结论] T4-1 落点与纪律：`lib/core/network/backoff.dart` 只放**纯算法**（指数退避 + jitter + 重试额度 + 最坏累计），按 coding-standards §1.2 边界纪律——「什么时候重连、重连后怎么重建」的总线策略必须住 `lib/mcp/`（T4-2/3），不得下沉 core
 - [结论] 现状取证（2026-10-15）：`mcp_client` 已有 `listResources`/`readResource`（只读数据面），但**无 `resources/subscribe` 方法、无 `notifications/resources/updated` 收侧**；`server_capabilities.hasSubscriptions` 仅 gate；`server_probe` 是用户触发的一次性探活，非周期心跳
 - [待办] D15~D20 拍板（见 `context/pending-confirm.md`）：顺序切分 / 心跳参数（推荐 15s-5s-2 次）/ 重连后保留激活集 / 断连终态 `Cancelled` 且 TrackNote 回告 / 失效感知不自动重读 / goodshare 契约回写归跨仓由用户执行
 

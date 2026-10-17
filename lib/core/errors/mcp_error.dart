@@ -1,4 +1,4 @@
-/// MCP 层领域异常基类（coding-standards §4：显式错误传递，禁裸抛）。
+/// MCP 层领域异常基类（coding-standards §5.5：显式错误传递，禁裸抛）。
 sealed class McpException implements Exception {
   const McpException(this.message);
   final String message;

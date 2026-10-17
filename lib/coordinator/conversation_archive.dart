@@ -23,6 +23,7 @@ import 'package:crypto/crypto.dart';
 
 import '../core/security/flutter_secure_key_value.dart';
 import '../core/security/secure_key_value.dart';
+import '../core/storage/keyed_write_queue.dart';
 import '../llm/cloud/chat_message_codec.dart';
 import '../mcp/sampling.dart';
 import '../sandbox/conversation_store.dart';
@@ -75,10 +76,18 @@ class ConversationArchive {
       final hits = quota.snapshotHits(DateTime.now());
       final payload = jsonEncode(hits);
       final sig = _sign(await _quotaHmacKey(), payload);
-      await store.dir.create(recursive: true);
-      await _quotaFile.writeAsString(
-        jsonEncode(<String, Object?>{'hits': hits, 'sig': sig}),
-        flush: true,
+      // §3.2：接进程级按路径串行写队列 + 原子 temp→rename，防并发落盘交错。
+      await KeyedWriteQueue.instance.enqueue(
+        KeyedWriteQueue.keyForPath(_quotaFile.path),
+        () async {
+          await store.dir.create(recursive: true);
+          final tmp = File('${_quotaFile.path}.tmp');
+          await tmp.writeAsString(
+            jsonEncode(<String, Object?>{'hits': hits, 'sig': sig}),
+            flush: true,
+          );
+          await tmp.rename(_quotaFile.path);
+        },
       );
       return true;
     } on Object catch (e) {

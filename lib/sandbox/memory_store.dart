@@ -1,7 +1,7 @@
 /// 记忆沙盒内核（Memory Sandbox，M4-T1）。
 /// 规格 SSOT：architecture.md §4（三件套/串行写队列/原子替换/预算截断）、
 /// §11（ops.log 10MB 单代轮转/启动清理）、future-considerations.md FC1
-/// （结构化块锚点）、coding-standards.md §5.1（File Mutex 降格实现）；
+/// （结构化块锚点）、coding-standards.md §3.2（文件写安全）；
 /// 施工设计与拍板 D4~D7 = docs/design/m4.md §3-T1/§4。
 ///
 /// - 三件套：memory.md（长期事实）/ lessons.md（踩坑教训）/ ops.log（Tool Call

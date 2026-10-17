@@ -5,7 +5,7 @@ updated: 2026-10-16
 
 # arch-hardening：架构债修复施工稿（内核单入口 + 反向边斩断）
 
-> **定位**：施工 epic 的范围/顺序/验收勾稽表。**内容 SSOT = [`window-kernel-split.md`](window-kernel-split.md)**（架构裁决十二项 §8.1、执行路线图 §7.5 步 0→3）；规则链 = `coding-standards.md` §1.1 → `goodhub-workflow` skill「架构依赖纪律与修复施工规范」节。本文严禁复制上述正文，只登记施工态。
+> **定位**：施工 epic 的范围/顺序/验收勾稽表。**内容 SSOT = [`window-kernel-split.md`](window-kernel-split.md)**（架构裁决十二项 §8.1、执行路线图 §7.5 步 0→3）；规则链 = `coding-standards.md` §1.1（红灯机械基线 §1.0）。本文严禁复制上述正文，只登记施工态。
 > **背景**：2026-10-16 架构盘点判 S2（六信号命中 #2 装配 ×3、#4 公共接口），结构性方案已在 window-kernel-split 立法拍板（该 epic 已归档）；本 epic 承接其施工。
 
 ## 1. 施工范围（对齐 §7.5 步 0→3）
@@ -19,7 +19,7 @@ updated: 2026-10-16
 
 ## 2. 施工纪律（速查，正文见上游）
 
-- 修复期**禁止新增任何反向边**；存量违例（`mcp→coordinator/sandbox`×4、`gateway→ui`×1、`ui↔gateway` 环）随步 2 清零，每清一条同步 `goodhub-workflow` 红灯表 + `goodhub-index` 债表状态列。
+- 修复期**禁止新增任何反向边**；存量违例（`mcp→coordinator/sandbox`×4、`gateway→ui`×1、`ui↔gateway` 环）随步 2 清零，每清一条同步护栏红灯基线（今 `docs/project/coding-standards.md` §1.0）+ `docs/project/index.md` 债表状态列。
 - `ServerEndpointStore` 唯一 owner = 装配容器单例；`lib/mcp/tool_router.dart`（海关过滤）**不删不引**；`MemoryStore` 兼审计日志本轮不动；`TaskLoop` 绕目录仅适配不改流程。
 - 内核新文件**严禁 import Flutter Widget**；装配函数必须带注入位（范式 `server_probe.dart` clientFactory）。
 

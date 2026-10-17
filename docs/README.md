@@ -6,12 +6,13 @@ updated: 2026-10-17
 
 - `project/` — 项目接入与工程事实
   - [project/init.md](project/init.md) — goodhub 项目 AI 协作体系接入定稿
-  - [project/coding-standards.md](project/coding-standards.md) — 工程编码基准规则（分层拓扑/硬规则/质量门禁 SSOT）
+  - [project/coding-standards.md](project/coding-standards.md) — 工程编码规范 SSOT
+  - [project/index.md](project/index.md) — 功能落点索引（代码落点/文档落点/架构债三表）
+  - [project/ui-design.md](project/ui-design.md) — 运行时控制台风格 UI 设计规范 SSOT（2026-10-17 自 product/ 迁入）
 - `product/` — 产品设计
   - [product/architecture.md](product/architecture.md) — 双角色 MCP 中枢产品架构（ADR-001~005 已归档）
   - [product/requirements.md](product/requirements.md) — 客户端需求清单
   - [product/future-considerations.md](product/future-considerations.md) — 未来演进考量（FC1-FC5 扩展卡点锚点）
-  - [product/ui-design.md](product/ui-design.md) — 运行时控制台风格 UI 设计规范 SSOT
   - [product/chat-interaction.md](product/chat-interaction.md) — 聊天页双轨消息流交互 SSOT（m4/T3 立）
 - `design/` — 大功能设计稿
   - [design/m2-5-skill-refstore.md](design/m2-5-skill-refstore.md) — M2.5 技能引用存储设计
@@ -33,3 +34,4 @@ updated: 2026-10-17
   - [design/archive-memory-claim.md](design/archive-memory-claim.md) — 会话归档与记忆认领设计（Archive 生命周期与配额）
   - [design/p0-security-correctness.md](design/p0-security-correctness.md) — P0 缺陷修复施工稿：文件级写互斥 / 网关 per-session 安全上下文与装配句柄释放 / 依赖护栏与门禁加固
   - [design/window-slim.md](design/window-slim.md) — 窗口层瘦身与编排下沉（P1 结构盘点账实核对版：窗口过厚/双实现/降级不可见/释放不幂等，draft）
+  - [design/page-beautify.md](design/page-beautify.md) — 聊天页美学与交互美化（page-revamp/ux-hardening 归档后的第三批：空态引导/黑话/双 FAB/字体资产/动效，draft）

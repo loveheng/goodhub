@@ -135,12 +135,12 @@ if [ "$BUILD_DEBUG" = 1 ]; then
   ARTIFACTS="build/app/outputs/flutter-apk/app-debug.apk"
   STEP_NAME="debug 包（全架构）"
 elif [ "$BUILD_FAT" = 1 ]; then
-  BUILD_CMD="flutter build apk --release"
+  BUILD_CMD="flutter build apk --release --no-pub"
   ARTIFACTS="build/app/outputs/flutter-apk/app-release.apk"
   STEP_NAME="release 整包（三架构）"
 elif [ "$BUILD_RELEASE" = 1 ]; then
   parse_abis
-  BUILD_CMD="flutter build apk --release --split-per-abi --target-platform=$TP_JOINED"
+  BUILD_CMD="flutter build apk --release --split-per-abi --target-platform=$TP_JOINED --no-pub"
   STEP_NAME="release 分包（$ABI_LABELS）"
 else
   # 默认：debug 包
@@ -156,6 +156,12 @@ STEPS=(
   "$BUILD_CMD"
   "产物校验（aapt 版本/ABI + sha256）"
 )
+# Flutter 3.47.5 坑：dev_dependency 的 integration_test 会被 pub get/analyze 写入
+# GeneratedPluginRegistrant.java，但其原生类不进 release classpath → javac 失败；
+# release 路径须在 analyze 后剔除注册块（debug 不需要：dev 依赖按设计进非 release）
+if [ "$BUILD_RELEASE" = 1 ] || [ "$BUILD_FAT" = 1 ]; then
+  STEPS=("${STEPS[@]::3}" "剔除 registrant 中 integration_test 注册块（release 专用）" "${STEPS[@]:3}")
+fi
 [ "$FRESH_DAEMON" = 1 ] && STEPS=("停掉 gradle 守护进程（--fresh）" "${STEPS[@]}")
 [ "$INSTALL_AFTER" = 1 ] && STEPS+=("adb install -r 到已连接手机")
 
@@ -196,6 +202,35 @@ if [ "$RUN_ANALYZE" = 1 ]; then
     exit 1
   }
   echo "$ANALYZE_OUT" | tail -1
+  i=$((i+1))
+fi
+
+# Flutter 3.47.5 坑（release 专用，与 scripts/release-r2.sh 同解法）：
+# dev_dependency 的 integration_test 被 pub get/analyze 写入 GeneratedPluginRegistrant.java，
+# 但其原生类按设计不进 release classpath → compileReleaseJavaWithJavac 报
+# 「程序包 dev.flutter.plugins.integration_test 不存在」。在最后一次 tooling 生成
+# （analyze）之后剔除该注册块；构建已带 --no-pub 防 build 阶段 pub get 重写。
+if [ "$BUILD_RELEASE" = 1 ] || [ "$BUILD_FAT" = 1 ]; then
+  echo "[$i/$total] 剔除 registrant 中 integration_test 注册块（release 专用）"
+  REGISTRANT="android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java"
+  if [ -f "$REGISTRANT" ] && grep -q 'dev\.flutter\.plugins\.integration_test' "$REGISTRANT"; then
+    python3 - "$REGISTRANT" <<'PYEOF'
+import re, sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+s2 = re.sub(
+    r'\n[ \t]*try \{\n'
+    r'[ \t]*flutterEngine\.getPlugins\(\)\.add\(new dev\.flutter\.plugins\.integration_test\.IntegrationTestPlugin\(\)\);\n'
+    r'[ \t]*\} catch \(Exception e\) \{\n'
+    r'[ \t]*Log\.e\([^\n]*\);\n'
+    r'[ \t]*\}',
+    '', s)
+assert s2 != s, 'registrant patch failed: integration_test block not found'
+open(p, 'w', encoding='utf-8').write(s2)
+PYEOF
+  else
+    echo "  无需剔除（registrant 不含 integration_test 注册块）"
+  fi
   i=$((i+1))
 fi
 

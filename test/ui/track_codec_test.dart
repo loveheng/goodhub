@@ -14,7 +14,8 @@ void main() {
       text,
       TrackCall(tool: 'list_items')
         ..phase = CallCardPhase.success
-        ..preview = 'r1',
+        ..preview = 'r1'
+        ..description = '读取单个收集条目的完整内容（原文 + 机器态）',
       const TrackNote('✓ 收尾', danger: false),
     ];
 
@@ -26,6 +27,8 @@ void main() {
     expect(call.tool, 'list_items');
     expect(call.phase, CallCardPhase.success);
     expect(call.preview, 'r1');
+    expect(call.description, '读取单个收集条目的完整内容（原文 + 机器态）',
+        reason: 'A2：描述全文持久化往返保真（恢复会话人话行不丢）');
     final note = decoded[3] as TrackNote;
     expect(note.text, '✓ 收尾');
   });

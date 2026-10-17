@@ -57,7 +57,7 @@ updated: 2026-10-17
 2. **窗口只持展示态**：领域态字段逐步迁出 settings_page/chat_page，迁移一批验一批（analyze + 全量测试绿为验收线）。
 3. **降级可见性分级**：数据面写失败（memory_kernel 类）→ 升为可观测失败（onNote/回执）；非数据面 → 成文边界划分（与 fail-closed 口径合写进 coding-standards）。
 4. **close 幂等范式推广**：以 McpAssembly.close 为样板，逐个补防重入守卫 + 释放断言测试（arch-hardening 施工验收口径：等价性单测 + 资源释放断言，不靠真机冒烟）。
-5. 红线沿用 work-flow skill「架构依赖纪律」：修复期禁新增反向边，改相关代码前查 goodhub-index。
+5. 红线沿用 coding-standards §1.0 护栏表：修复期禁新增反向边，改相关代码前查 `docs/project/index.md`。
 
 ## 3. 拆解（候选顺序，开工时按 ::next 收敛）
 

@@ -1,6 +1,6 @@
 /// 串行文件写队列 + 临时文件原子替换（File Mutex 降格实现）。
 ///
-/// 规格 SSOT：coding-standards.md §5.1 + architecture.md §4（单 isolate 串行
+/// 规格 SSOT：coding-standards.md §3.2 + architecture.md §4（单 isolate 串行
 /// 写队列，杜绝并发裸写）。跨 App 沙盒不共享文件系统（§11），本队列是进程内
 /// 串行语义，多进程/多实例同写同一文件不受保护（单进程硬约束 F4.7 前提下不成立）。
 ///

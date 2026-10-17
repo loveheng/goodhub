@@ -10,7 +10,7 @@
 # cat: test
 # alias: ag
 #
-# 规则口径见 docs/project/coding-standards.md §1/§2（禁平台污染 / 接口驱动）；
+# 规则口径见 docs/project/coding-standards.md §1.2/§1.3（禁平台污染 / 接口驱动）；
 # 白名单内的条目是**历史例外**，只许减少不许增加（迁移一个删一行）。
 
 set -uo pipefail
@@ -72,13 +72,14 @@ EOF
 scan_all() {
   COUNT=0
   HITS=""
-  # R1 UI 层禁 dart:io —— 平台污染（coding-standards §1/§2：文件系统统一走 core/storage 或抽象接口）
-  # 白名单（均为历史例外，待收敛到抽象接口后逐个删除）：
-  # - services_hall_page.dart / chat_page.dart / memory_board_page.dart：M4 期间 UI 内联文件操作（导出/日志读取），待收敛
+  # R1 UI 层禁 dart:io —— 平台污染（coding-standards §1.3：文件系统统一走 core/storage 或抽象接口）
+  # 白名单（只减不增）：三处历史例外已于 2026-10-17 全部清零（store 经 app/service_directory
+  # 装配 / update_page 改持路径 String / error_copy 判定下沉 core/errors/transport_error_kind），
+  # 按「迁移一个删一行」清空——再出现新违例是修，不是加白名单。
   scan_pattern "R1-ui-dart-io" "lib/ui" \
     "UI 层 import dart:io（平台污染），文件系统能力须走 core/storage 或抽象接口注入" \
-    "import 'dart:io'" "lib/ui/services_hall_page.dart lib/ui/chat_page.dart lib/ui/memory_board_page.dart"
-  # R2 UI 层禁止平台分支（coding-standards §1：平台差异收敛到接口实现/工厂）
+    "import 'dart:io'" ""
+  # R2 UI 层禁止平台分支（coding-standards §1.3：平台差异收敛到接口实现/工厂）
   scan_pattern "R2-ui-platform" "lib/ui" \
     "UI 层出现 Platform.isX 分支，平台差异须收敛到接口实现/工厂" \
     'Platform\.is[A-Z]' ""
@@ -88,7 +89,7 @@ scan_all() {
     'MethodChannel\(' ""
   # —— 2026-10-17 P0-C 补齐：依赖方向红灯（镜像 test/architecture/dependency_rules_test.dart
   #    R1~R6；shell 秒级版供 pre-commit 钩子用，flutter test 版跑一次 ~12s 超 10s 预算）——
-  # R4 core 零出向（coding-standards §1.1：core 是叶层，只被依赖不依赖任何域）
+  # R4 core 零出向（coding-standards §1.2：core 是叶层，只被依赖不依赖任何域）
   scan_pattern "R4-core-outbound" "lib/core" \
     "core 域出现出向 import（package:goodhub/ 或 ../），core 是叶层须零出向；跨域类型下沉 core 或改由上层注入" \
     "import '(package:goodhub/|\.\./)" ""
@@ -120,7 +121,7 @@ report_text() {
   printf '%b' "$HITS"
   echo "----"
   echo "FAIL: $COUNT 处违规"
-  echo "[remedy] 逐条对照 docs/project/coding-standards.md §1/§2 修正；"
+  echo "[remedy] 逐条对照 docs/project/coding-standards.md §1.2/§1.3 修正；"
   echo "[remedy] 确认是历史遗留且暂不迁移的，加进脚本白名单并注明原因（只减不增）"
   return 1
 }
@@ -132,7 +133,7 @@ report_json() {
     return 0
   fi
   msg="arch-guard: $COUNT 处架构硬约束违规（R1 UI dart:io / R2 UI 平台分支 / R3 UI MethodChannel / R4 core 零出向 / R5 mcp·sandbox 不依赖 coordinator / R6 mcp·sandbox 不依赖 llm / R7 ui 不直连 gateway_controller / R8 禁引 mcp/tool_router.dart）"
-  remedy="裸跑 toolbox run arch-guard 看逐条明细；对照 docs/project/coding-standards.md §1/§2 修正，历史遗留加白名单并注明原因"
+  remedy="裸跑 toolbox run arch-guard 看逐条明细；对照 docs/project/coding-standards.md §1.2/§1.3 修正，历史遗留加白名单并注明原因"
   printf '{"status":"FAIL","severity":"error","message":"%s","remedy":"%s"}\n' "$msg" "$remedy"
   return 1
 }

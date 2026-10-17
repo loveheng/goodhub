@@ -11,6 +11,7 @@ library;
 import 'package:flutter/material.dart';
 
 import '../tokens/console_tokens.dart';
+import 'status_strip.dart';
 
 /// 卡片生命周期相位（ui-design §3.2 左侧状态竖条语义色的映射源）。
 enum CallCardPhase {
@@ -38,6 +39,7 @@ class CallCard extends StatelessWidget {
     this.progressNote,
     this.preview = '',
     this.fullResult,
+    this.description,
   });
 
   final String tool;
@@ -53,6 +55,10 @@ class CallCard extends StatelessWidget {
 
   /// 终态结果全文（非空且长于预览时可展开查看）。
   final String? fullResult;
+
+  /// A2（page-beautify）：服务端工具描述（人话化展示；null/空 = 不渲染描述行）。
+  /// 收起态显示首子句短标签，长描述可展开全文（SelectableText 便于复制）。
+  final String? description;
 
   @override
   Widget build(BuildContext context) {
@@ -105,6 +111,10 @@ class CallCard extends StatelessWidget {
                           : stripe,
                     ),
                   ),
+                  // A2：人话描述行——工具名（等宽遥测轨）下方的灰阶动作说明，
+                  // 各相位均在位（执行中即告知「在干什么」，终态保留审计上下文）。
+                  if (description != null && description!.trim().isNotEmpty)
+                    _DescriptionLine(description: description!),
                   const SizedBox(height: 2),
                   if (isTerminal)
                     _ExpandableResult(
@@ -124,6 +134,59 @@ class CallCard extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// A2 人话描述行（page-beautify）：收起态 = description 首子句短标签（灰阶
+/// note 字号）；长于短标签时可展开全文（SelectableText 便于复制）——形态与
+/// [_ExpandableResult] 同族（展开/收起 TextButton 口径一致）。
+class _DescriptionLine extends StatefulWidget {
+  const _DescriptionLine({required this.description});
+
+  final String description;
+
+  @override
+  State<_DescriptionLine> createState() => _DescriptionLineState();
+}
+
+class _DescriptionLineState extends State<_DescriptionLine> {
+  var _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = consoleTokens(context);
+    final style = TextStyle(fontSize: Fsz.note, color: t.terminalMuted);
+    final full = widget.description.trim();
+    final short = StatusStrip.shortClause(full);
+    if (full == short) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 2),
+        child: Text(short, style: style),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.only(top: 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SelectableText(_expanded ? full : short, style: style),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton(
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                minimumSize: const Size(0, 28),
+              ),
+              onPressed: () => setState(() => _expanded = !_expanded),
+              child: Text(
+                _expanded ? '收起' : '展开',
+                style: TextStyle(fontSize: Fsz.micro, color: t.terminalMuted),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
