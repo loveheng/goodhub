@@ -51,7 +51,7 @@ updated: 2026-10-17
 | 网关背压（per-server 并发上限 4 + FIFO 排队） | `lib/gateway/gateway_backpressure.dart` | thirdconnect §9.6；只包真实执行段（L2 确认等待不占槽）；无 429 语义（有界队列 429 已显式关闭，见 architecture 待拍板清单） |
 | 本地插件发现（PackageManager 扫描 + 包变更广播 → 运行时自动挂载） | `lib/mcp/local_plugin_discovery.dart` | 产出「系统托管端点」= 装配期运行时 face（不落用户 JSON store，区别于 `server_endpoints.dart`） |
 | 同机插件信任（签名 SHA-256 白名单持久化 + 信任卡片 UI） | `lib/mcp/trusted_plugins.dart` + `lib/ui/trust_plugin_dialog.dart` | 同签名零弹窗 + 开发者模式第三方信任卡；gateway headless 跳过；真机自动化 `integration_test/trust_gate_test.dart` |
-| Sampling 反向请求（宿主收端 + 反向在途表 + `answerReverse`） | `lib/mcp/sampling.dart` | 宿主推理侧闭环待推理源 |
+| Sampling 反向请求（宿主收端 + 反向在途表 + `answerReverse`） | `lib/mcp/sampling.dart` | 配额分池（2026-10-17 instant-sampling 一期）：`pool` params 平级字段（Tier 1 私有，缺省/非 String/未登记名 = 默认池）→ 配额 key `serverKey`/`serverKey:pool`；默认池 20 次/60min、instant 池 60 次/60min；内存态不落盘（restoreHits 跨 pool key 兼容）；caps 白名单单点防伪造池名绕过限额；契约 = goodshare 仓 ai-app-split.md §3.11 |
 | 同机 Binder 传输（AIDL 通道 / 状态机 / 挂起队列 / DeathRecipient / 事件回传） | `lib/mcp/transport/`（Dart `BinderTransport`）+ `android/`（AIDL + MethodChannel 桥） | TC9 控制面；插件侧 SDK = `android/plugin-core`；≥128KB 的 `mcp-blob://` 数据面未落地（thirdconnect 待办） |
 | 多 Server 路由与 JIT 元工具（前缀隔离 / 激活集 / `get_connected_apps` / `activate_server_tools` / `use_server`） | `lib/coordinator/tool_router.dart` + `lib/coordinator/discovery_executor.dart` | `<server_id>__<tool>`；装配在 `chat_page._send`；**注意** `lib/mcp/tool_router.dart` 为孤立件（仅测试引用，海关过滤在其中，待收编） |
 | `$ref` 暂存池（内存/文件双介质 / TTL 30min / Session 即焚 / 启动幂等清池） | `lib/coordinator/ref_store.dart` | architecture §9；启动清池 `sweepStartupOrphans` 挂 `main.dart`；单测 `test/coordinator/ref_store_test.dart` |

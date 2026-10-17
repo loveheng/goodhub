@@ -645,7 +645,12 @@ class McpRuntime {
     McpToolFace face,
     RuntimeDelegates delegates,
   ) {
-    final conn = McpConnection(client: client, face: face, serverId: serverId)
+    final conn = McpConnection(
+      client: client,
+      face: face,
+      serverId: serverId,
+      isAlive: () => face.hasRecentStreamActivity,
+    )
       ..onDisconnectReport = (r) {
         delegates.connectionReport
             ?.call(ConnectionReport.disconnect(inFlightCancelled: r.inFlightCancelled));

@@ -17,7 +17,6 @@ import java.security.MessageDigest
 import com.zzh.goodhub.mcp.IMcpCallback
 import com.zzh.goodhub.mcp.IMcpChannel
 import io.flutter.plugin.common.BinaryMessenger
-import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
@@ -46,7 +45,6 @@ object BinderTransportBridge {
 
     private const val TAG = "BinderTransport"
     private const val CHANNEL = "goodhub/binder_mcp"
-    private const val EVENTS = "goodhub/binder_mcp_events"
     private const val DISCOVERY_CHANNEL = "goodhub/binder_discovery"
     private const val DISCOVERY_ACTION = "com.zzh.goodhub.action.MCP_SERVER"
     private const val META_SERVER_ID = "com.zzh.goodhub.SERVER_ID"
@@ -55,9 +53,30 @@ object BinderTransportBridge {
 
     private val executor = Executors.newCachedThreadPool()
     private val transports = ConcurrentHashMap<String, HostTransport>()
-    private val eventSinks = ConcurrentHashMap<String, EventChannel.EventSink>()
     private lateinit var appContext: Context
+    private lateinit var methodChannel: MethodChannel
     private lateinit var discoveryChannel: MethodChannel
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    /// 原生→Dart 事件投递 ACK 回调：Dart 路由表按 transportId 命中才回
+    /// `delivered=true`。EventChannel 只能单向无脑发、丢件无感知；
+    /// MethodChannel 推挽让原生精确知道帧是否抵达 Dart isolate（消费级
+    /// 确认仍由上层 120s 看门狗保证，ACK 只证明「到达路由表」）。
+    /// 丢件不静默：debug 留痕（正常路径恒不触发）。
+    private val eventAck = object : MethodChannel.Result {
+        override fun success(result: Any?) {
+            val delivered = result is Map<*, *> && result["delivered"] == true
+            if (!delivered) Log.d(TAG, "event dropped (routed miss): $result")
+        }
+
+        override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) {
+            Log.d(TAG, "event dropped (dart error): $errorCode $errorMessage")
+        }
+
+        override fun notImplemented() {
+            Log.d(TAG, "event dropped (no dart handler)")
+        }
+    }
 
     /// 本地插件包变更广播（安装/卸载/替换 → 通知 Dart 重扫，§1.2.4）。
     private val packageChangeReceiver = object : BroadcastReceiver() {
@@ -73,54 +92,56 @@ object BinderTransportBridge {
 
     fun register(context: Context, messenger: BinaryMessenger) {
         appContext = context.applicationContext
-        MethodChannel(messenger, CHANNEL).setMethodCallHandler { call, result ->
-            try {
-                when (call.method) {
-                    "bind" -> {
-                        val id = call.argument<String>("transportId")!!
-                        val pkg = call.argument<String>("packageName")!!
-                        val svc = call.argument<String>("serviceClassName")!!
-                        bind(id, pkg, svc)
-                        result.success(null)
-                    }
-                    "send" -> {
-                        val id = call.argument<String>("transportId")!!
-                        val body = call.argument<String>("requestBody")!!
-                        send(id, body) { resp, err ->
-                            if (err != null) result.error("binder_error", err.message, null)
-                            else result.success(resp)
+        methodChannel = MethodChannel(messenger, CHANNEL).also { ch ->
+            ch.setMethodCallHandler { call, result ->
+                try {
+                    when (call.method) {
+                        "bind" -> {
+                            val id = call.argument<String>("transportId")!!
+                            val pkg = call.argument<String>("packageName")!!
+                            val svc = call.argument<String>("serviceClassName")!!
+                            bind(id, pkg, svc)
+                            result.success(null)
                         }
+                        "send" -> {
+                            val id = call.argument<String>("transportId")!!
+                            val body = call.argument<String>("requestBody")!!
+                            send(id, body) { resp, err ->
+                                if (err != null) result.error("binder_error", err.message, null)
+                                else result.success(resp)
+                            }
+                        }
+                        "answerReverse" -> {
+                            val id = call.argument<String>("transportId")!!
+                            val body = call.argument<String>("responseBody")!!
+                            transports[id]?.answerReverse(body)
+                            result.success(null)
+                        }
+                        "close" -> {
+                            val id = call.argument<String>("transportId")!!
+                            transports.remove(id)?.close()
+                            result.success(null)
+                        }
+                        "resetAllTransports" -> {
+                            // Hot Restart / isolate 重建对齐（#3）：清空上一轮
+                            // isolate 遗留的僵尸 Client 与 Callback，原生与 Dart
+                            // 状态机对齐。前置条件：全进程仅一个 isolate 创建
+                            // BinderTransport（现网事实，多 isolate 场景需先改
+                            // 此约定，否则会清掉他 isolate 的连接）。
+                            for (t in transports.values) {
+                                runCatching { t.close() }
+                            }
+                            transports.clear()
+                            result.success(null)
+                        }
+                        "discover" -> result.success(scanLocalPlugins())
+                        else -> result.notImplemented()
                     }
-                    "answerReverse" -> {
-                        val id = call.argument<String>("transportId")!!
-                        val body = call.argument<String>("responseBody")!!
-                        transports[id]?.answerReverse(body)
-                        result.success(null)
-                    }
-                    "close" -> {
-                        val id = call.argument<String>("transportId")!!
-                        transports.remove(id)?.close()
-                        eventSinks.remove(id)
-                        result.success(null)
-                    }
-                    "discover" -> result.success(scanLocalPlugins())
-                    else -> result.notImplemented()
+                } catch (e: Throwable) {
+                    result.error("binder_error", e.message, null)
                 }
-            } catch (e: Throwable) {
-                result.error("binder_error", e.message, null)
             }
         }
-        EventChannel(messenger, EVENTS).setStreamHandler(object : EventChannel.StreamHandler {
-            override fun onListen(args: Any?, sink: EventChannel.EventSink?) {
-                val tid = (args as? String) ?: ""
-                if (sink != null) eventSinks[tid] = sink else eventSinks.remove(tid)
-            }
-
-            override fun onCancel(args: Any?) {
-                val tid = (args as? String) ?: ""
-                eventSinks.remove(tid)
-            }
-        })
         // 本地插件发现：Dart 侧拉扫 + 系统包变更通知（§1.2.4）。
         discoveryChannel = MethodChannel(messenger, DISCOVERY_CHANNEL)
         runCatching {
@@ -214,6 +235,39 @@ object BinderTransportBridge {
         }
     }
 
+    /// 原生→Dart 事件推送（T-trans-3 回程，全量 MethodChannel 推挽化）：
+    /// 调用方已在本 transport 的保序专线上，此处转主线程经 MethodChannel
+    /// invokeMethod 推给 Dart 路由表（按 transportId 分发），Dart 回 ACK。
+    /// 与 EventChannel 的本质区别：无按频道名的全局 handler 状态机——
+    /// 多实例 listen/cancel 互不干扰（2026-10-17 卡死根因的根治）。
+    private fun dispatchEvent(tid: String, msg: String) {
+        mainHandler.post {
+            runCatching {
+                methodChannel.invokeMethod(
+                    "onNativeEvent",
+                    mapOf("transportId" to tid, "message" to msg),
+                    eventAck,
+                )
+            }.onFailure { Log.w(TAG, "dispatchEvent failed: $it") }
+        }
+    }
+
+    /// 连接死亡信封推送（binderDied → Dart 秒级收敛在途，拒绝 120s 干等）。
+    private fun dispatchTransportError(tid: String, code: String, message: String) {
+        mainHandler.post {
+            runCatching {
+                methodChannel.invokeMethod(
+                    "onTransportError",
+                    mapOf(
+                        "transportId" to tid,
+                        "error" to mapOf("code" to code, "message" to message),
+                    ),
+                    eventAck,
+                )
+            }.onFailure { Log.w(TAG, "dispatchTransportError failed: $it") }
+        }
+    }
+
     private class HostTransport(
         val context: Context,
         val id: String,
@@ -235,17 +289,37 @@ object BinderTransportBridge {
 
         private val mainHandler = Handler(Looper.getMainLooper())
 
+        /// 事件保序专线（乱序防御）：Binder 回调在系统 Binder 线程池并发执行，
+        /// 两个线程各自 `mainHandler.post` 不保序（进度帧可能晚于终帧入主线程
+        /// 队列）——单线程串行化后，本 transport 的事件严格按到达顺序 post。
+        /// 死亡信封与 JSON-RPC 事件同走此线，保证「终帧 → 死亡」相对有序。
+        private val eventExecutor = Executors.newSingleThreadExecutor { r ->
+            Thread(r, "binder-events-$id")
+        }
+
         private val callback = object : IMcpCallback.Stub() {
             override fun onEvent(jsonRpcMessage: String) {
-                // 透传插件事件到 Dart（progress/反向请求消费在 Dart 侧完成）。
-                // §1.2.3：onEvent 在 Binder 线程触发，须 post 回主线程再经 EventChannel 发 Dart。
+                // 透传插件事件到 Dart（progress / 异步终帧 / 反向请求在 Dart 侧完成）。
+                // §1.2.3：Binder 线程触发 → 保序专线串行化 → 主线程 MethodChannel 推送。
                 val tid = id
                 val msg = jsonRpcMessage
-                mainHandler.post {
-                    eventSinks[tid]?.success(
-                        mapOf("transportId" to tid, "message" to msg)
-                    )
+                eventExecutor.execute {
+                    dispatchEvent(tid, msg)
                 }
+            }
+        }
+
+        /// 推送连接死亡信封（binderDied → Dart 秒级收敛在途）：`_async` 占位后
+        /// 干等终帧的调用拒绝 120s 看门狗兜底。与 D18 断连语义合流
+        /// （connection_manager 预留的 DeathRecipient 显式驱动位）。
+        private fun pushTransportDied() {
+            val tid = id
+            eventExecutor.execute {
+                dispatchTransportError(
+                    tid,
+                    "SERVER_DIED",
+                    "remote MCP server process terminated",
+                )
             }
         }
 
@@ -376,6 +450,12 @@ object BinderTransportBridge {
                 state = State.DEAD
                 channel = null
             }
+            // ① 排队中的调用秒级失败（不留给冷启动超时兜底）；
+            // ② 死亡信封推 Dart：_async 占位后干等终帧的调用秒级收敛。
+            //    同步在途的 ch.call 自身会抛 DeadObjectException（submitCall 已
+            //    收敛），此处补的正是「占位已回、终帧永不到达」的盲区。
+            failPending(RuntimeException("plugin died (binderDied)"))
+            pushTransportDied()
         }
 
         fun answerReverse(body: String) {
@@ -397,6 +477,7 @@ object BinderTransportBridge {
                 state = State.IDLE
                 failPending(RuntimeException("transport closed"))
             }
+            eventExecutor.shutdown()
         }
     }
 }

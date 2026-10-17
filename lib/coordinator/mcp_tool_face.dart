@@ -54,6 +54,19 @@ class McpToolFace implements ToolExecutor, ConnectionFace {
   /// 在途流式请求 id 集合（M3-T2）：[cancelActiveRequest] 的取消目标。
   final Set<int> _streamingIds = {};
 
+  /// 最近一次流式进度帧到达时刻（心跳「忙时免判」A 的活跃度信号源）。
+  DateTime? _lastStreamActivityAt;
+
+  /// 「近期活跃」窗口：最近进度帧落在此窗口内 = 连接仍被在途请求推进。
+  static const Duration kStreamActivityWindow = Duration(seconds: 60);
+
+  /// 是否存在近期进度推进的在途流式请求（[ConnectionHealth] 忙时免判读此信号；
+  /// 纯计算无副作用，server 无 progress 帧时退回旧判定口径）。
+  bool get hasRecentStreamActivity {
+    final t = _lastStreamActivityAt;
+    return t != null && DateTime.now().difference(t) < kStreamActivityWindow;
+  }
+
   /// tools/list → 引擎工具声明。description/inputSchema 可缺省（防御解析），
   /// name 缺失 = 契约违规立即抛。结果缓存于 [cachedSchemas]（T6 ToolRouter
   /// 前缀改写 / JIT 静态摘要消费——能力目录随 tools/list 变更全量刷新，§8）。
@@ -169,6 +182,7 @@ class McpToolFace implements ToolExecutor, ConnectionFace {
               'tools/call',
               params: params,
               onProgress: (p) {
+                _lastStreamActivityAt = DateTime.now(); // 活跃度信号（心跳忙时免判）
                 final cb = onProgress;
                 if (cb == null) return; // sampling 流式但无进度消费：帧只作通道
                 if (p is Map<String, Object?> && p['progress'] is num) {

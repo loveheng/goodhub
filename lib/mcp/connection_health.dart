@@ -14,6 +14,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart' show debugPrint;
 
+import '../core/errors/mcp_error.dart';
 import 'mcp_client.dart';
 import 'transport/mcp_transport.dart';
 
@@ -27,6 +28,7 @@ class ConnectionHealth {
     this.timeout = const Duration(seconds: 5),
     this.maxConsecutiveFailures = 2,
     this.ping,
+    this.isAlive,
   });
 
   final McpClient client;
@@ -42,6 +44,11 @@ class ConnectionHealth {
 
   /// 可注入的探活实现（默认 [McpClient.ping]）。测试注入以断言调度与状态机而不触网。
   Future<void> Function()? ping;
+
+  /// 忙时免判探针（心跳修复 A）：返回 true = 连接上有近期进度推进的在途流式
+  /// 请求（server 忙而非死）——探活超时不计入 offline 判据，避免并行负载下
+  /// 心跳误判离线级联 D18 取消在途。null = 未接线（维持旧行为）。
+  final bool Function()? isAlive;
 
   /// 仅远端 HTTP 连接可轮询（D16：Binder 靠 DeathRecipient 事件感知，严禁轮询）。
   static bool pollable(McpClient client) => client.transport is HttpTransport;
@@ -84,12 +91,26 @@ class ConnectionHealth {
       await probe().timeout(timeout);
       _failures = 0;
       _emit(ConnectionState.online);
+    } on TimeoutException {
+      _countFailure(busyExempt: true);
+    } on McpNetworkException catch (e) {
+      // 传输层把自身超时包成 transport timeout 文案的 McpNetworkException——
+      // 与连接级失败（拒绝/复位）分级（修复 B）。
+      _countFailure(busyExempt: e.message.contains('timeout'));
     } on Object {
-      _failures++;
-      _emit(_failures >= maxConsecutiveFailures
-          ? ConnectionState.offline
-          : ConnectionState.degraded);
+      _countFailure(busyExempt: false);
     }
+  }
+
+  /// 探活失败分级（修复 A+B）：连接级错误恒计数；超时仅在「无近期进度推进的
+  /// 在途请求」时计数——忙 = server 活着，跳过本次，不判离线；空闲超时仍计数
+  /// （真不可达，保留 offline 判定能力）。
+  void _countFailure({required bool busyExempt}) {
+    if (busyExempt && (isAlive?.call() ?? false)) return;
+    _failures++;
+    _emit(_failures >= maxConsecutiveFailures
+        ? ConnectionState.offline
+        : ConnectionState.degraded);
   }
 
   /// 停止心跳并释放定时器（无 pending timer 泄漏）。

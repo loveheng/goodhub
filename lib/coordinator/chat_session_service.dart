@@ -47,19 +47,27 @@ class ChatSessionService {
 
   /// Run 收尾/绑定即存快照。[trackJson] 由 UI 层经 `TrackEntryCodec` 编码后传入
   /// （本服务不依赖 ui 的 [TrackEntry]）。返回是否保存成功，失败由 UI 出轨道提示。
+  ///
+  /// **无当前会话 = 无需落盘 = 成功（true）**——与事实 owner
+  /// [ConversationArchive.saveCurrent] 早退口径对齐（该处有单测钉死）：init
+  /// 未完成 / 首个任务懒建未起时，composer 即时绑定（chat_page
+  /// ._bindSessionServer）等调用方也会触发持久化，禁把「无快照可存」误报成
+  /// 保存失败——窗口会出红色 DEGRADE 提示，而日志并无实错（从未发起落盘，
+  /// 「见日志」无可查，2026-10-17 用户报障回归）。
   Future<bool> persistCurrent(
       {required List<Map<String, Object?>> trackJson}) async {
     final a = _archive;
-    if (a == null || !a.hasCurrent) return false;
+    if (a == null || !a.hasCurrent) return true;
     final ok = await a.saveCurrent(trackJson: trackJson, session: _session);
     if (ok) await a.saveQuota(_session.samplingQuota);
     await refresh();
     return ok;
   }
 
+  /// 切换/删除前的当前会话保底（无当前会话时 [persistCurrent] 自身 no-op）。
   Future<void> persistIfAny(
       {required List<Map<String, Object?>> trackJson}) async {
-    if (_archive?.hasCurrent ?? false) await persistCurrent(trackJson: trackJson);
+    await persistCurrent(trackJson: trackJson);
   }
 
   /// 会话内核态重置（**不含** UI/Run 态——由调用方负责清轨道/卡死监视/状态带）。

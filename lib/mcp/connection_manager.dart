@@ -84,6 +84,7 @@ class McpConnection {
     ConnectionFace Function(McpClient client)? faceFactory,
     ExponentialBackoff? backoff,
     ConnectionHealth? health,
+    this.isAlive,
     this.serverId = 'goodshare',
   })  : _face = face ??
             (faceFactory != null
@@ -93,7 +94,7 @@ class McpConnection {
                     '（生命周期 Owner 契约，见 connection_face.dart；'
                     '禁止隐式回退到 coordinator 具体类型）')),
         backoff = backoff ?? const ExponentialBackoff(),
-        health = health ?? ConnectionHealth(client) {
+        health = health ?? ConnectionHealth(client, isAlive: isAlive) {
     // T4-5：server→client 资源变更通知转发到本连接的 D19 回告回调。
     client.onResourceUpdated = (uri) => onResourceUpdated?.call(uri);
   }
@@ -115,6 +116,10 @@ class McpConnection {
 
   /// 心跳状态机（T4-2）：健康信号唯一来源。
   final ConnectionHealth health;
+
+  /// 忙时免判探针（心跳修复 A 透传）：装配方接 face 的「近期有进度推进的在途
+  /// 流式请求」信号，见 [ConnectionHealth.isAlive]。
+  final bool Function()? isAlive;
 
   /// JIT 激活集（D17）：当前被激活（JIT activate）的工具名集合。重连后与最新
   /// listTools 做交集过滤，下线工具自动剔除。由 activate_server_tools 等调用方
