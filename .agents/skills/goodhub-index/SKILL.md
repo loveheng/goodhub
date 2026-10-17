@@ -21,6 +21,7 @@ description: goodhub（AI 宿主 App）的「功能 → 代码落点 + 文档落
 | 两步熔断+步数墙排查卡契约 | `lib/coordinator/tool_breaker.dart` + `agent_loop.dart` | M2-T4b；BlockDelegate 三操作，拍板 C1/C3 语义 |
 | 上下文治理（滑动窗口/工具结果摘要化） | `lib/coordinator/context_governor.dart` + `agent_loop.dart` | M2-T6；发送边界窗口化（本地历史不裁）+ 回填前端侧摘要化，拍板 E1（摘要化失败保留原文 DEGRADE 留痕）；端侧摘要器 `OnDeviceResultSummarizer` |
 | UI 组件（design tokens/药丸/确认卡/排查卡/围栏拦截卡） | `lib/ui/tokens/` + `lib/ui/components/` + `lib/ui/gateway_loop_debug_page.dart` | M2-T4c/T5c；tokens 唯一出处（goodhub-ui skill），debug 页全链接线（拍板 C4 边界） |
+| 网关/熔断联调页（L1/L2 网关 + 熔断排查卡验证 + 故障注入 + 脚本引擎 + 跨源/CoW 调试） | `lib/ui/gateway_loop_debug_page.dart`（**窗口层**：开关收集 + 四 UI 端口 + 事件流→轨道映射；852 行）+ `lib/coordinator/debug_run_orchestrator.dart`（2026-10-17 window-slim P1-B 下沉：挂载→协商→记忆面→网关→注水→引擎→sampling→故障注入→Skills/CoW→AgentLoop 全编排，纯编排零 UI；`_FaultInjector`/`_ScriptedEngine` 随迁成可单测件；clientFactory/目录解析器/五 UI 端口全注入位；**不并回 McpRuntime.assemble**——生产多 Server 前缀路由+JIT 发现 vs 联调单 Server 裸名+静态 tools 语义不兼容） | M2-T4c/T5c；单测 `test/coordinator/debug_run_orchestrator_test.dart`（事件流契约/故障注入/释放卫生/异常路径 4 例，纯 Dart 假传输） |
 | 应用装配入口（引擎预热/记忆清扫/首页挂载） | `lib/main.dart` | M4-T3/D9 收敛纯装配；M1 壳迁 `lib/ui/claim_loop_page.dart`（debug 入口） |
 | 聊天主页（AgentLoop 正式宿主面） | `lib/ui/chat_page.dart` | M4-T3/D9 首页接管；交互 SSOT `docs/product/chat-interaction.md`；连接配置 SharedPreferences 过渡态 |
 | 双轨消息流组件（TrackEntry/渲染映射） | `lib/ui/components/dual_track_stream.dart` | M4-T3；卡片全量复用 M2/M3；T3b 恢复装配复用；阅读轨文本走 StreamingRichText（stream-perf P1） |
