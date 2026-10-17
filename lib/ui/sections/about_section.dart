@@ -14,7 +14,6 @@ import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
-import '../claim_loop_page.dart';
 import '../gateway_loop_debug_page.dart';
 import '../tokens/console_tokens.dart';
 import '../update_page.dart';
@@ -75,18 +74,6 @@ class _AboutSectionState extends State<AboutSection>
                 Navigator.of(context).push(
                   MaterialPageRoute<void>(
                     builder: (_) => const GatewayLoopDebugPage(),
-                  ),
-                );
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.repeat_outlined),
-              title: const Text('M1 任务循环（claim/apply）'),
-              onTap: () {
-                Navigator.pop(ctx);
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => const ClaimLoopPage(),
                   ),
                 );
               },

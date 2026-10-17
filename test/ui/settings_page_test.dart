@@ -229,7 +229,8 @@ void main() {
     await tester.longPress(find.byKey(const Key('about-title')));
     await tester.pumpAndSettle();
     expect(find.text('网关/熔断联调'), findsOneWidget);
-    expect(find.text('M1 任务循环（claim/apply）'), findsOneWidget);
+    // 注：M1 任务循环（ClaimLoopPage）已于 2026-10-17 归档至 archive/，
+    // 其 debug 入口同步从本菜单摘除——菜单仅保留网关/熔断联调。
   });
 
   testWidgets('面板级错误隔离 + 重试恢复（ux-hardening P0-3）：一处初始化失败不再打死整页', (

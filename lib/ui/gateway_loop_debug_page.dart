@@ -102,7 +102,7 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
 
   final _urlCtrl = TextEditingController(text: 'http://127.0.0.1:8765/mcp');
 
-  /// MCP 令牌（goodshare「MCP 服务」页可查；与主入口 ClaimLoopPage 同口径，
+  /// MCP 令牌（goodshare「MCP 服务」页可查；与已归档的 ClaimLoopPage（archive/）
   /// 不持久化——debug 页不留凭据）。
   final _keyCtrl = TextEditingController();
 

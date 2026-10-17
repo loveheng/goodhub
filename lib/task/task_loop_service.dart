@@ -1,7 +1,8 @@
 /// 任务闭环服务层（仿 goodshare 双入口范式：业务住 service，入口只做薄适配）。
 ///
 /// 双入口对称（同一方法，两个调用方，零双语义）：
-/// - **人类入口**：UI 按钮（main.dart `ClaimLoopPage`）手动触发；
+/// - **人类入口**：曾由 `ClaimLoopPage`（已归档至 archive/，2026-10-17）手动
+///   触发；现人类手动触发入口摘除，仅保留 AI 入口与复用价值；
 /// - **AI 入口**：M2 Agent Loop（coordinator）自动触发——同一 `runOnce`，
 ///   进度经 `onEvent` 回调上报，入口方自行决定渲染或记遥测。
 ///
