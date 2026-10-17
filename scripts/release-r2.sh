@@ -76,10 +76,19 @@ APP_ID="$(grep -m1 'applicationId' android/app/build.gradle.kts | sed -E 's/.*ap
 CHANGELOG_ESC="${CHANGELOG//\\/\\\\}"
 CHANGELOG_ESC="${CHANGELOG_ESC//\"/\\\"}"
 
+# 读取旧清单中的上一个 APK 键，发布成功后删除，避免版本化文件越攒越多
+OLD_APK_KEY=""
+if [ -f updates/goodhub-update.json ]; then
+  _OLD_APK_URL="$(grep -oE '"apkUrl"[[:space:]]*:[[:space:]]*"[^"]+"' updates/goodhub-update.json | sed -E 's/.*"([^"]+)".*/\1/')"
+  if [ -n "$_OLD_APK_URL" ]; then
+    OLD_APK_KEY="${_OLD_APK_URL#*/${REMOTE_PREFIX}/}"   # 取前缀之后的对象键名
+  fi
+fi
+
 APK="build/app/outputs/flutter-apk/app-arm64-v8a-release.apk"
 ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 PUBLIC_BASE="https://${R2_PUBLIC_DOMAIN}"
-APK_URL="${PUBLIC_BASE}/${REMOTE_PREFIX}/app-release.apk"
+APK_URL="${PUBLIC_BASE}/${REMOTE_PREFIX}/app-release-${VERSION_CODE}.apk"
 SRC_URL="${PUBLIC_BASE}/${REMOTE_PREFIX}"
 
 echo "版本: v${VERSION_NAME} (build ${VERSION_CODE})"
@@ -93,8 +102,11 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "  flutter build apk --release --split-per-abi --target-platform android-arm64 --dart-define=UPDATE_SOURCE_URL=\"$SRC_URL\" --no-pub"
   echo "  sha256sum $APK"
   echo "  生成 updates/goodhub-update.json (apkUrl=$APK_URL)"
-  echo "  node scripts/upload-r2.mjs $APK $REMOTE_PREFIX/app-release.apk application/vnd.android.package-archive"
+  echo "  node scripts/upload-r2.mjs $APK $REMOTE_PREFIX/app-release-${VERSION_CODE}.apk application/vnd.android.package-archive"
   echo "  node scripts/upload-r2.mjs updates/goodhub-update.json $REMOTE_PREFIX/goodhub-update.json application/json"
+  if [ -n "$OLD_APK_KEY" ] && [ "$OLD_APK_KEY" != "app-release-${VERSION_CODE}.apk" ]; then
+    echo "  node scripts/upload-r2.mjs delete $OLD_APK_KEY   # 清理上一个版本 APK"
+  fi
   exit 0
 fi
 
@@ -146,10 +158,16 @@ EOF
 echo "清单已生成: updates/goodhub-update.json"
 
 # ---- 上传（零依赖 Node 脚本，AWS SigV4 直传 R2）----
-echo "上传 APK → s3://$R2_BUCKET/$REMOTE_PREFIX/app-release.apk"
-node scripts/upload-r2.mjs "$APK" "$REMOTE_PREFIX/app-release.apk" "application/vnd.android.package-archive"
+echo "上传 APK → s3://$R2_BUCKET/$REMOTE_PREFIX/app-release-${VERSION_CODE}.apk"
+node scripts/upload-r2.mjs "$APK" "$REMOTE_PREFIX/app-release-${VERSION_CODE}.apk" "application/vnd.android.package-archive"
 echo "上传清单 → s3://$R2_BUCKET/$REMOTE_PREFIX/goodhub-update.json"
 node scripts/upload-r2.mjs updates/goodhub-update.json "$REMOTE_PREFIX/goodhub-update.json" "application/json"
+
+# 清理上一个版本的 APK（版本化文件名会随时间堆积，删旧留新）
+if [ -n "$OLD_APK_KEY" ] && [ "$OLD_APK_KEY" != "app-release-${VERSION_CODE}.apk" ]; then
+  echo "清理旧版本 APK → s3://$R2_BUCKET/$OLD_APK_KEY"
+  node scripts/upload-r2.mjs delete "$OLD_APK_KEY" || echo "WARN: 删除旧 APK 失败（可忽略，稍后手动清理）"
+fi
 
 echo "OK: 发布完成"
 echo "  更新源 URL（App 更新页填写）: ${SRC_URL}"

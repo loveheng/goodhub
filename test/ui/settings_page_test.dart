@@ -56,6 +56,9 @@ void main() {
       maxIteration: 50,
     );
     await tester.pumpAndSettle();
+    // 真实文件 I/O 不经 fake async，须 runAsync 让路（本文件纪律）。Cow 面板
+    // 滚动入场后才触发 _bootstrap 读盘——此处 flush，免其加载态卡住断言。
+    await settleIo(tester);
   }
 
   /// 目标可能落在 ListView 懒构建视口外：已构建 → ensureVisible；未构建 →

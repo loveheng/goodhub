@@ -42,6 +42,7 @@ import 'sections/cross_source_section.dart';
 import 'sections/gateway_section.dart';
 import 'sections/local_plugins_section.dart';
 import 'sections/nodes_section.dart';
+import 'sections/appearance_section.dart';
 import 'tokens/console_tokens.dart';
 
 /// 测试兼容位：既有节点卡面板测试经 `ui/settings_page.dart` 引用探活入口类型
@@ -187,6 +188,9 @@ class _SettingsPageState extends State<SettingsPage> {
       body: ListView(
         padding: const EdgeInsets.all(12),
         children: [
+          // 全局外观（暗/亮/暖）置于顶部：跨段、最先被用户调整。
+          const AppearanceSection(),
+          const SizedBox(height: 12),
           // 顺序按使用频率：先选引擎，再接服务，后管放行与覆写。
           ByokSection(
             store: widget.byokStoreOverride ?? ByokStore(),

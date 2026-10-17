@@ -13,9 +13,14 @@ import 'llm/llm.dart';
 import 'sandbox/memory_store.dart';
 import 'ui/chat_page.dart';
 import 'ui/navigator_key.dart';
-import 'ui/tokens/console_tokens.dart';
+import 'ui/tokens/app_theme.dart';
 
-void main() {
+void main() async {
+  // 三态主题（暗/亮/暖）持久化于 SharedPreferences，启动期读取后注入单例，
+  // 再 runApp——避免首帧用错主题闪一下。
+  WidgetsFlutterBinding.ensureInitialized();
+  final initial = await readAppTheme();
+  AppThemeController.instance = AppThemeController(initial);
   runApp(const GoodHubApp());
 }
 
@@ -91,62 +96,29 @@ class _GoodHubAppState extends State<GoodHubApp> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    // page-revamp P0：tokens 唯一在 App 级注入（浅/深双套随系统），页面不再
+    // page-revamp P0：tokens 唯一在 App 级注入（三套主题随用户选择），页面不再
     // 自拼 ThemeData（goodhub-ui skill 纪律：consoleTokens 从 Theme 取值）。
     //
     // C2（page-beautify）：统一色彩源——原 ColorScheme.fromSeed(indigo) 派生
     // 的 primary 与 ConsoleTokens.dataRef（Indigo 400）过近，用户轮卡的数据
     // 指针竖条被误读为「选中态」；且默认 Material 组件（FilledButton/AppBar/
     // ListTile selected） indigo 主色与「语义色只给系统状态」的 ui-design §1
-    // 纪律冲突。修法 = seed 降中性 Zinc 500 + surface 系列显式贴 §1 底色表
-    // （浅 Slate 50/100，深 Zinc 900/950）；业务语义色唯一出处仍是
-    // ConsoleTokens，Material scheme 只承担中性基底与默认组件外观。
-    return MaterialApp(
-      title: 'GoodHub',
-      navigatorKey: appNavigatorKey, // 网关 L2 远程确认卡等后台弹层入口
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: _consoleScheme(Brightness.light),
-        extensions: [ConsoleTokens.light],
+    // 纪律冲突。修法 = seed 降中性 Zinc 500（暖=Stone 500）+ surface 系列显式
+    // 贴 §1 底色表；业务语义色唯一出处仍是 ConsoleTokens，Material scheme 只
+    // 承担中性基底与默认组件外观。主题装配见 `ui/tokens/app_theme.dart`。
+    //
+    // 三态主题（暗/亮/暖）由 [AppThemeController] 驱动：监听其变化重建
+    // MaterialApp，themeMode 恒为 light（theme 已含正确 brightness 与 surface），
+    // 故单套 theme 即可覆盖三态，无需 darkTheme 分流。
+    return AnimatedBuilder(
+      animation: AppThemeController.instance,
+      builder: (context, _) => MaterialApp(
+        title: 'GoodHub',
+        navigatorKey: appNavigatorKey, // 网关 L2 远程确认卡等后台弹层入口
+        theme: buildAppTheme(AppThemeController.instance.value),
+        themeMode: ThemeMode.light,
+        home: const ChatPage(),
       ),
-      darkTheme: ThemeData(
-        useMaterial3: true,
-        colorScheme: _consoleScheme(Brightness.dark),
-        extensions: [ConsoleTokens.dark],
-      ),
-      themeMode: ThemeMode.system,
-      home: const ChatPage(),
-    );
-  }
-
-  /// C2（page-beautify）：中性控制台基底——Zinc 500 中性种子（交互色由种子
-  /// 派生的近灰阶，杜绝「两个 indigo」）+ surface 家族贴 ui-design §1：
-  /// 浅色 Slate 50/100（白卡 Slate 100），深色 Zinc 950 底 / Zinc 900 容器。
-  static ColorScheme _consoleScheme(Brightness brightness) {
-    final seeded = ColorScheme.fromSeed(
-      seedColor: const Color(0xFF71717A), // Zinc 500
-      brightness: brightness,
-    );
-    final light = brightness == Brightness.light;
-    return seeded.copyWith(
-      surface: light ? const Color(0xFFF8FAFC) : const Color(0xFF09090B),
-      surfaceContainerLowest:
-          light ? Colors.white : const Color(0xFF09090B),
-      surfaceContainerLow:
-          light ? const Color(0xFFF1F5F9) : const Color(0xFF18181B),
-      surfaceContainer:
-          light ? const Color(0xFFF1F5F9) : const Color(0xFF18181B),
-      surfaceContainerHigh:
-          light ? const Color(0xFFE2E8F0) : const Color(0xFF27272A),
-      surfaceContainerHighest:
-          light ? const Color(0xFFE2E8F0) : const Color(0xFF27272A),
-      onSurface:
-          light ? const Color(0xFF0F172A) : const Color(0xFFFAFAFA),
-      onSurfaceVariant:
-          light ? const Color(0xFF475569) : const Color(0xFFA1A1AA),
-      outline: light ? const Color(0xFFCBD5E1) : const Color(0xFF3F3F46),
-      outlineVariant:
-          light ? const Color(0xFFE2E8F0) : const Color(0xFF27272A),
     );
   }
 }

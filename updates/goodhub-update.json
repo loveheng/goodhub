@@ -1,8 +1,8 @@
 {
-  "versionCode": 2004,
-  "versionName": "1.0.2",
+  "versionCode": 2005,
+  "versionName": "1.0.3",
   "applicationId": "com.zzh.goodhub",
-  "apkUrl": "https://r2.oklhj.eu.org/updates/goodhub/app-release.apk",
-  "sha256": "79089f35b090db52cdb063fff3ceaf9cc41bca3690e7b6339642c51050e94cee",
-  "changelog": "v1.0.2：窗口瘦身（状态条/双轨流/会话抽屉重构）与页面美化；更新源目录与清单校验不变"
+  "apkUrl": "https://r2.oklhj.eu.org/updates/goodhub/app-release-2005.apk",
+  "sha256": "90d79c59f290bbe5644a7d51364ef0695dd084e40803c03bed05cf121b199a21",
+  "changelog": "v1.0.3：更新应用图标 + 三态主题（暗色/亮色/暖色）"
 }

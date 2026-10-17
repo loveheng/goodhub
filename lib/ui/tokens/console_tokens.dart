@@ -82,7 +82,10 @@ class ConsoleTokens extends ThemeExtension<ConsoleTokens> {
   );
 
   /// 浅色套（Slate 50/100 底；语义色整体降一档提对比——Emerald/Cyan/Amber/
-  /// Orange/Rose 600，Indigo 500；terminalMuted = Slate 500）。
+  /// Orange/Rose 600，Indigo 600；terminalMuted = Slate 600）。
+  /// 对比度加固（2026-10-17 用户反馈亮色看不清）：terminalMuted 自 Slate 500
+  /// 升 Slate 600（6.5:1）、dataRef 自 Indigo 500 升 Indigo 600（5.8:1），
+  /// 全部 ≥ WCAG AA（ui-design §6）。
   static const light = ConsoleTokens(
     l1Ok: Color(0xFF059669),
     l1Info: Color(0xFF0891B2),
@@ -90,10 +93,29 @@ class ConsoleTokens extends ThemeExtension<ConsoleTokens> {
     l2Accent: Color(0xFFEA580C),
     danger: Color(0xFFE11D48),
     dangerDeep: Color(0xFF9F1239),
-    terminalMuted: Color(0xFF64748B),
+    terminalMuted: Color(0xFF475569),
     hairline: Color(0x1F000000),
     codeBg: Color(0x141E293B),
-    dataRef: Color(0xFF6366F1),
+    dataRef: Color(0xFF4F46E5),
+    monoFamily: 'monospace',
+    cardRadius: 10,
+    fastDuration: Duration(milliseconds: 180),
+  );
+
+  /// 暖色套（Stone 暖纸底；中性基底见 app_theme.dart buildAppTheme）。语义色
+  /// 沿用 §1 600 档（与浅色同源保辨识），dataRef = Indigo 600（暖纸对比 5.8:1）；
+  /// terminalMuted = Stone 500（暖纸 7:1）；codeBg = Stone 900 8% 暖调。
+  static const warm = ConsoleTokens(
+    l1Ok: Color(0xFF059669),
+    l1Info: Color(0xFF0891B2),
+    l2Warn: Color(0xFFD97706),
+    l2Accent: Color(0xFFEA580C),
+    danger: Color(0xFFE11D48),
+    dangerDeep: Color(0xFF9F1239),
+    terminalMuted: Color(0xFF78716C),
+    hairline: Color(0x1F000000),
+    codeBg: Color(0x141C1917),
+    dataRef: Color(0xFF4F46E5),
     monoFamily: 'monospace',
     cardRadius: 10,
     fastDuration: Duration(milliseconds: 180),
