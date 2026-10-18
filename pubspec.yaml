@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.3+2007 # R2 已发布 2005（v1.0.3，新应用图标 + 三态主题）；覆盖安装须 ≥2006
+version: 1.0.4+2008 # R2 已发布 2005（v1.0.3，新应用图标 + 三态主题）；覆盖安装须 ≥2006
 
 environment:
   sdk: ^3.13.4
