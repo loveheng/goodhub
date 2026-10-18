@@ -31,7 +31,7 @@ enum CallCardPhase {
   cancelled,
 }
 
-class CallCard extends StatelessWidget {
+class CallCard extends StatefulWidget {
   const CallCard({
     super.key,
     required this.tool,
@@ -61,23 +61,45 @@ class CallCard extends StatelessWidget {
   final String? description;
 
   @override
+  State<CallCard> createState() => _CallCardState();
+}
+
+class _CallCardState extends State<CallCard> {
+  /// 终态压缩单行（2026-10-18，用户拍板）：success/failed/cancelled 默认收成
+  /// 「✓/✕/⊘ + 人话动作」一行——对话流默认只留「做了什么」，请求/返回细节
+  /// （工具名遥测/描述/结果 JSON）点击才展开；running/stuck 保持完整呈现。
+  var _expanded = false;
+
+  @override
   Widget build(BuildContext context) {
     final t = consoleTokens(context);
     final isTerminal =
-        phase == CallCardPhase.success ||
-        phase == CallCardPhase.failed ||
-        phase == CallCardPhase.cancelled;
-    final Color stripe = switch (phase) {
+        widget.phase == CallCardPhase.success ||
+        widget.phase == CallCardPhase.failed ||
+        widget.phase == CallCardPhase.cancelled;
+    final Color stripe = switch (widget.phase) {
       CallCardPhase.running || CallCardPhase.success => t.l1Ok,
       CallCardPhase.stuck => t.l2Warn,
       CallCardPhase.failed || CallCardPhase.cancelled => t.danger,
     };
-    final String statusLine = switch (phase) {
-      CallCardPhase.running => progressNote ?? '执行中…',
-      CallCardPhase.stuck => '${progressNote ?? '执行中…'} ｜ ⚠ 响应停滞，可用顶部 [ABORT] 中止',
+    final String statusLine = switch (widget.phase) {
+      CallCardPhase.running => widget.progressNote ?? '执行中…',
+      CallCardPhase.stuck =>
+        '${widget.progressNote ?? '执行中…'} ｜ ⚠ 响应停滞，可用顶部 [ABORT] 中止',
       CallCardPhase.cancelled =>
-        progressNote ?? (preview.isEmpty ? '(无文本返回)' : preview),
-      _ => preview.isEmpty ? '(无文本返回)' : preview,
+        widget.progressNote ??
+            (widget.preview.isEmpty ? '(无文本返回)' : widget.preview),
+      _ => widget.preview.isEmpty ? '(无文本返回)' : widget.preview,
+    };
+    // 终态单行人话摘要：描述首子句优先，无描述回退裸工具名。
+    final description = widget.description?.trim() ?? '';
+    final summary = StatusStrip.shortClause(
+      description.isNotEmpty ? description : widget.tool,
+    );
+    final symbol = switch (widget.phase) {
+      CallCardPhase.success => '✓',
+      CallCardPhase.failed => '✕',
+      _ => '⊘',
     };
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 4),
@@ -98,39 +120,120 @@ class CallCard extends StatelessWidget {
             ),
             const SizedBox(width: 8),
             Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    tool,
-                    style: TextStyle(
-                      fontFamily: t.monoFamily,
-                      fontSize: Fsz.telemetry,
-                      color: isTerminal && phase != CallCardPhase.failed
-                          ? t.l1Ok
-                          : stripe,
-                    ),
-                  ),
-                  // A2：人话描述行——工具名（等宽遥测轨）下方的灰阶动作说明，
-                  // 各相位均在位（执行中即告知「在干什么」，终态保留审计上下文）。
-                  if (description != null && description!.trim().isNotEmpty)
-                    _DescriptionLine(description: description!),
-                  const SizedBox(height: 2),
-                  if (isTerminal)
-                    _ExpandableResult(
-                      preview: statusLine,
-                      fullResult: fullResult,
-                    )
-                  else
-                    Text(
-                      statusLine,
-                      style: TextStyle(
-                        fontSize: Fsz.telemetry,
-                        color: Theme.of(context).hintColor,
+              child: (isTerminal && !_expanded)
+                  ? InkWell(
+                      onTap: () => setState(() => _expanded = true),
+                      child: Padding(
+                        // 热区补足（§4.4）：单行文本 + 上下 padding ≈ 44dp。
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        child: Row(
+                          children: [
+                            Text(
+                              symbol,
+                              style: TextStyle(
+                                fontSize: Fsz.telemetry,
+                                color: t.terminalMuted,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                summary,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: Fsz.telemetry,
+                                  color: t.terminalMuted, // 终态灰阶审计感
+                                ),
+                              ),
+                            ),
+                            Icon(
+                              Icons.expand_more,
+                              size: 14,
+                              color: t.terminalMuted,
+                            ),
+                          ],
+                        ),
                       ),
+                    )
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // 整卡单一开关（2026-10-18 用户拍板）：头部行任意点按
+                        // = 全展开/全收起，箭头随态翻转（expand_more↔less）；
+                        // running 态头部不可点（无收起语义）。
+                        InkWell(
+                          onTap: isTerminal
+                              ? () => setState(() => _expanded = !_expanded)
+                              : null,
+                          child: Padding(
+                            // 热区补足（§4.4）：头部行 + 上下 padding ≈ 44dp。
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    widget.tool,
+                                    style: TextStyle(
+                                      fontFamily: t.monoFamily,
+                                      fontSize: Fsz.telemetry,
+                                      color: isTerminal &&
+                                              widget.phase !=
+                                                  CallCardPhase.failed
+                                          ? t.l1Ok
+                                          : stripe,
+                                    ),
+                                  ),
+                                ),
+                                if (isTerminal)
+                                  Icon(
+                                    _expanded
+                                        ? Icons.expand_less
+                                        : Icons.expand_more,
+                                    size: 14,
+                                    color: t.terminalMuted,
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        // A2：人话描述行——工具名（等宽遥测轨）下方的灰阶动作
+                        // 说明；整卡展开态即全文直出（SelectableText 便于复制），
+                        // 不再独立折叠。
+                        if (description.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: SelectableText(
+                              description,
+                              style: TextStyle(
+                                fontSize: Fsz.note,
+                                color: t.terminalMuted,
+                              ),
+                            ),
+                          ),
+                        const SizedBox(height: 2),
+                        // 终态结果区：展开态全文直出（无 fullResult 时仅预览）。
+                        if (isTerminal)
+                          SelectableText(
+                            (widget.fullResult?.trim().isNotEmpty ?? false)
+                                ? widget.fullResult!
+                                : statusLine,
+                            style: TextStyle(
+                              fontSize: Fsz.telemetry,
+                              fontFamily: t.monoFamily,
+                              color: t.terminalMuted, // 终态锁定灰阶审计感
+                            ),
+                          )
+                        else
+                          Text(
+                            statusLine,
+                            style: TextStyle(
+                              fontSize: Fsz.telemetry,
+                              color: Theme.of(context).hintColor,
+                            ),
+                          ),
+                      ],
                     ),
-                ],
-              ),
             ),
           ],
         ),
@@ -139,110 +242,4 @@ class CallCard extends StatelessWidget {
   }
 }
 
-/// A2 人话描述行（page-beautify）：收起态 = description 首子句短标签（灰阶
-/// note 字号）；长于短标签时可展开全文（SelectableText 便于复制）——形态与
-/// [_ExpandableResult] 同族（展开/收起 TextButton 口径一致）。
-class _DescriptionLine extends StatefulWidget {
-  const _DescriptionLine({required this.description});
 
-  final String description;
-
-  @override
-  State<_DescriptionLine> createState() => _DescriptionLineState();
-}
-
-class _DescriptionLineState extends State<_DescriptionLine> {
-  var _expanded = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = consoleTokens(context);
-    final style = TextStyle(fontSize: Fsz.note, color: t.terminalMuted);
-    final full = widget.description.trim();
-    final short = StatusStrip.shortClause(full);
-    if (full == short) {
-      return Padding(
-        padding: const EdgeInsets.only(top: 2),
-        child: Text(short, style: style),
-      );
-    }
-    return Padding(
-      padding: const EdgeInsets.only(top: 2),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SelectableText(_expanded ? full : short, style: style),
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton(
-              style: TextButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                minimumSize: const Size(0, 28),
-              ),
-              onPressed: () => setState(() => _expanded = !_expanded),
-              child: Text(
-                _expanded ? '收起' : '展开',
-                style: TextStyle(fontSize: Fsz.micro, color: t.terminalMuted),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// 终态结果区：默认两行截断预览，可展开全文（SelectableText 便于复制排障）。
-class _ExpandableResult extends StatefulWidget {
-  const _ExpandableResult({required this.preview, this.fullResult});
-
-  final String preview;
-  final String? fullResult;
-
-  @override
-  State<_ExpandableResult> createState() => _ExpandableResultState();
-}
-
-class _ExpandableResultState extends State<_ExpandableResult> {
-  var _expanded = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = consoleTokens(context);
-    final style = TextStyle(
-      fontSize: Fsz.telemetry,
-      fontFamily: t.monoFamily,
-      color: t.terminalMuted, // 终态锁定灰阶审计感
-    );
-    final full = widget.fullResult?.trim() ?? '';
-    final canExpand =
-        full.isNotEmpty && full != widget.preview.trim();
-    if (!canExpand) {
-      return Text(widget.preview, style: style);
-    }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SelectableText(
-          _expanded ? widget.fullResult! : widget.preview,
-          style: style,
-          maxLines: _expanded ? null : 2,
-        ),
-        Align(
-          alignment: Alignment.centerRight,
-          child: TextButton(
-            style: TextButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 4),
-              minimumSize: const Size(0, 28),
-            ),
-            onPressed: () => setState(() => _expanded = !_expanded),
-            child: Text(
-              _expanded ? '收起' : '展开全文',
-              style: TextStyle(fontSize: Fsz.micro, color: t.terminalMuted),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}

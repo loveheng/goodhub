@@ -33,11 +33,21 @@ class QueueIdle extends TaskLoopEvent {
 }
 
 class TaskClaimed extends TaskLoopEvent {
-  const TaskClaimed(this.taskId, this.taskAction, this.textLength, this.version);
+  const TaskClaimed(
+    this.taskId,
+    this.taskAction,
+    this.textLength,
+    this.version, {
+    required this.itemId,
+  });
+
   final String taskId;
   final String taskAction;
   final int textLength;
   final int? version;
+
+  /// 条目 id（M4-2 对账锚点：用户据此确认「我那条笔记处理了没有」）。
+  final String itemId;
 }
 
 class HeartbeatSent extends TaskLoopEvent {
@@ -58,8 +68,13 @@ class NotFoundClosed extends TaskLoopEvent {
 
 /// 闭环失败（M2 起真实发出：runOnce 捕获全部异常 → 通告 → 原样上抛）。
 class LoopFailed extends TaskLoopEvent {
-  const LoopFailed(this.error);
+  const LoopFailed(this.error, {this.taskId, this.itemId});
+
   final Object error;
+
+  /// 对账锚点（已认领任务才有；claim 本身失败时为 null）。
+  final String? taskId;
+  final String? itemId;
 }
 
 /// claim → 心跳 → apply 一次闭环。
@@ -91,11 +106,15 @@ class TaskLoopService {
 
   /// 单次闭环。返回是否实际处理了任务（false = idle）。
   /// 任何异常：先发 [LoopFailed] 通告（AI 入口的遥测依赖），再原样上抛。
+  /// 当前认领任务（对账锚点：LoopFailed 需带 taskId/itemId）。
+  ClaimedTask? _current;
+
   Future<bool> runOnce() async {
     try {
       return await _runOnceInner();
     } on Object catch (e) {
-      _emit(LoopFailed(e));
+      _emit(LoopFailed(e, taskId: _current?.taskId, itemId: _current?.itemId));
+      _current = null;
       rethrow;
     }
   }
@@ -117,10 +136,17 @@ class TaskLoopService {
       _emit(NotFoundClosed(task.taskId, task.notFoundNote ?? '条目已不可见'));
       return true;
     }
-    _emit(TaskClaimed(task.taskId, task.taskAction, task.text.length, task.version));
+    _current = task;
+    _emit(TaskClaimed(
+      task.taskId,
+      task.taskAction,
+      task.text.length,
+      task.version,
+      itemId: task.itemId,
+    ));
     await api.touch(task.taskId);
     _emit(const HeartbeatSent());
-    final note = await _inferWithHeartbeat(task);
+    final note = await _inferGuarded(task);
     final snapshot = await api.apply(_payloadFor(task, note));
     _emit(Applied(
       task.taskId,
@@ -184,6 +210,33 @@ class TaskLoopService {
         .where((s) => s.isNotEmpty && !existing.contains(s))
         .toSet();
     return [...existing, ...extracted];
+  }
+
+  /// 推理（毒丸防护，ai-app-split.md §3.12.2-6）：失败须**主动**回写 failed
+  /// 终态——否则任务留 `processing`，30s 后被 goodshare `reclaimStaleTasks`
+  /// 重置 pending 反复认领 = 无限重试烧额度（既有实现缺口，随 M4 一并修）。
+  /// 收尾后异常仍上抛：LoopFailed 通告与上层失败计数照旧，但任务已终结。
+  Future<String> _inferGuarded(ClaimedTask task) async {
+    try {
+      return await _inferWithHeartbeat(task);
+    } on Object catch (e) {
+      await _closeTask(task, '推理失败：$e');
+      rethrow;
+    }
+  }
+
+  /// failed 终态收尾（best-effort）：收尾本身失败只留痕——本轮已不可能产出，
+  /// 交由 goodshare 僵尸回收兜底（不静默吞：debugPrint 可观测）。
+  Future<void> _closeTask(ClaimedTask task, String note) async {
+    try {
+      await api.apply(ApplyPayload(
+        taskId: task.taskId,
+        itemId: task.itemId,
+        note: note,
+      ));
+    } on Object catch (e) {
+      debugPrint('[DEGRADE] task-close failed: $e');
+    }
   }
 
   /// 推理期间心跳（契约 §3.3：每 [heartbeatInterval] 一次，含模型加载期）。

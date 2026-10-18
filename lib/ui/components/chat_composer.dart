@@ -48,20 +48,42 @@ class _ChatComposerState extends State<ChatComposer> {
   /// l1Info 180ms 过渡（原恒 hairline：输入态无任何视觉确认，focus 反馈缺失）。
   final _focusNode = FocusNode(debugLabel: 'chat-composer-input');
 
+  /// §3.1（2026-10-18 修订）：主操作槽三态感知——空输入/可发送/中止。
+  bool _hasText = false;
+
   @override
   void initState() {
     super.initState();
     _focusNode.addListener(_onFocusChanged);
+    widget.inputCtrl.addListener(_onInputChanged);
+    _hasText = widget.inputCtrl.text.trim().isNotEmpty;
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatComposer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.inputCtrl != widget.inputCtrl) {
+      oldWidget.inputCtrl.removeListener(_onInputChanged);
+      widget.inputCtrl.addListener(_onInputChanged);
+      _hasText = widget.inputCtrl.text.trim().isNotEmpty;
+    }
   }
 
   @override
   void dispose() {
     _focusNode.removeListener(_onFocusChanged);
     _focusNode.dispose();
+    widget.inputCtrl.removeListener(_onInputChanged);
     super.dispose();
   }
 
   void _onFocusChanged() => setState(() {});
+
+  /// 输入非空 ⇄ 空 → 主操作槽「不可发送 ⇄ 可发送」换色（只重绘本集群）。
+  void _onInputChanged() {
+    final has = widget.inputCtrl.text.trim().isNotEmpty;
+    if (has != _hasText) setState(() => _hasText = has);
+  }
 
   // build 体沿用原字段名读取：经 getter 转发 widget（避免大段前缀改写，
   // 保持 B1/B4 施工痕迹的行号稳定）。
@@ -195,47 +217,19 @@ class _ChatComposerState extends State<ChatComposer> {
                               ),
                             ),
                             const SizedBox(width: 4),
-                            // §3.1 复用发送钮：运行态形变为主操作「中止」键，
-                            // 单一槽位内切换 发送↔中止，避免右侧另起红键挤占输入区。
-                            // P1-4（§1 高反差拍板）：Crimson 实底 + 白图标 +
-                            // 40×40——filledTonal 的 tonal 底在运行态不足以让
-                            // 普通用户一眼找到「停止」。
-                            // B4（page-beautify P2）：形变过程可感知——底色
-                            // 180ms 过渡 + 图标交叉缩放淡入（替代原瞬时切换；
-                            // 「任务已启动/已停止」应在动效中被确认，§4.2）。
-                            // 视觉对齐 M3 filledTonal 默认（Stadium 形 +
-                            // secondaryContainer/onSecondaryContainer，运行态
-                            // 覆写 dangerDeep + 白图标）；Material 作 ink 面
-                            // 保涟漪，TweenAnimationBuilder 只动画其 color。
-                            Tooltip(
-                              message: running ? '中止' : '发送',
-                              child: TweenAnimationBuilder<Color?>(
-                                tween: ColorTween(
-                                  end: running
-                                      ? t.dangerDeep
-                                      : Theme.of(context)
-                                          .colorScheme
-                                          .secondaryContainer,
-                                ),
-                                duration: t.fastDuration,
-                                curve: Curves.easeOut,
-                                builder: (context, color, _) => Material(
-                                  color: color,
-                                  shape: const StadiumBorder(),
-                                  clipBehavior: Clip.antiAlias,
-                                  child: InkWell(
-                                    customBorder: const StadiumBorder(),
-                                    onTap: running ? onAbort : onSend,
-                                    child: SizedBox(
-                                      width: 40,
-                                      height: 40,
-                                      child: Center(
-                                        child: _SendAbortIcon(running: running),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
+                            // §3.1（2026-10-18 二次修订，用户拍板）：主操作槽
+                            // 与左端「+」对称——无独立容器，图标融入药丸
+                            //（同 48×48 热区）。三态只换图标与颜色：
+                            // 空输入=terminalMuted（不可发送）、有输入=l1Info
+                            //（可发送）、运行=danger（中止）。色彩 180ms 紧凑
+                            // 过渡确认相位（作废 P1-4 Crimson 实底高反差拍板）。
+                            IconButton(
+                              tooltip: running ? '中止' : '发送',
+                              icon: _MainActionIcon(abort: running, ready: _hasText),
+                              onPressed: running ? onAbort : onSend,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                  minWidth: 48, minHeight: 48),
                             ),
                           ],
                         ),
@@ -252,34 +246,42 @@ class _ChatComposerState extends State<ChatComposer> {
   }
 }
 
-/// B4（page-beautify P2）：发送↔中止图标交叉缩放淡入（180ms，与底色过渡
-/// 同期）——相位切换的「形变」应在动效中被确认，而非瞬时替换（ui-design
-/// §4.2：紧凑减速，禁 Spring）。颜色对齐原 filledTonal 口径：idle =
-/// onSecondaryContainer，running = 白（Crimson 实底上）。
-class _SendAbortIcon extends StatelessWidget {
-  const _SendAbortIcon({required this.running});
+/// §3.1（2026-10-18 二次修订）主操作槽图标：无独立容器融入药丸，与「+」
+/// 对称（同 48×48 热区）；三态只换色与图标——空输入=terminalMuted（不可
+/// 发送）、有输入=l1Info（可发送）、运行=danger（中止）。中止↔发送交叉
+/// 缩放淡入（180ms）；空输入⇄可发送仅色过渡（glyph 不变，无缩放脉冲）。
+/// 双通道（§6）：图标形状即第二通道，禁用态另有置灰。
+class _MainActionIcon extends StatelessWidget {
+  const _MainActionIcon({required this.abort, required this.ready});
 
-  final bool running;
+  final bool abort;
+  final bool ready;
 
   @override
   Widget build(BuildContext context) {
     final t = consoleTokens(context);
-    return AnimatedSwitcher(
+    final color = abort
+        ? t.danger
+        : (ready ? t.l1Info : t.terminalMuted);
+    return TweenAnimationBuilder<Color?>(
+      tween: ColorTween(end: color),
       duration: t.fastDuration,
-      transitionBuilder: (child, animation) => FadeTransition(
-        opacity: animation,
-        child: ScaleTransition(
-          scale: Tween<double>(begin: 0.75, end: 1).animate(animation),
-          child: child,
+      curve: Curves.easeOut,
+      builder: (context, c, _) => AnimatedSwitcher(
+        duration: t.fastDuration,
+        transitionBuilder: (child, animation) => FadeTransition(
+          opacity: animation,
+          child: ScaleTransition(
+            scale: Tween<double>(begin: 0.75, end: 1).animate(animation),
+            child: child,
+          ),
         ),
-      ),
-      child: Icon(
-        running ? Icons.stop : Icons.arrow_upward,
-        key: ValueKey(running),
-        size: 20,
-        color: running
-            ? Colors.white
-            : Theme.of(context).colorScheme.onSecondaryContainer,
+        child: Icon(
+          abort ? Icons.stop : Icons.arrow_upward,
+          key: ValueKey(abort), // 仅中止↔发送换 glyph 时交叉过渡
+          size: 20,
+          color: c,
+        ),
       ),
     );
   }

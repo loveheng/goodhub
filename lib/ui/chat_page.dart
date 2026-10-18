@@ -20,6 +20,7 @@ import 'components/chat_gate_delegates.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../app/service_directory.dart';
+import '../app/task_consume_bootstrap.dart';
 import '../coordinator/agent_loop.dart';
 import '../coordinator/conversation_archive.dart';
 import '../coordinator/chat_session_service.dart';
@@ -137,7 +138,8 @@ class _ChatPageState extends State<ChatPage>
   // 本地插件缓存（零配置自动发现；系统托管、始终挂载；供状态带/菜单展示）。
   List<LocalPluginInfo> _localPlugins = const <LocalPluginInfo>[];
   // 统一默认私有服务 id（设置页钉选，覆盖手动端点 + 本地插件）；null = 无默认。
-  // 开会话回退链以本键为准（见 _resolveBinding）。
+  // 2026-10-18（二次修正，用户拍板）：新会话跟随钉选默认（无默认则公共起步）
+  // ——「首个 private」遗留回退废除；钉选在弹层仍显只读快捷提示。
   String? _defaultPrivateId;
 
   /// 上一句发送的任务文本（ux-hardening P0-2：错误卡「重试」重跑语料）。
@@ -157,6 +159,9 @@ class _ChatPageState extends State<ChatPage>
     _status.attachScroll(_scrollCtrl);
     _scrollCtrl.addListener(_onUserScroll);
     WidgetsBinding.instance.addObserver(this);
+    // 算力让路端口（契约 §3.12.2-2）：后台批处理遇前台对话进行中即暂缓。
+    // 窗口层只注入运行态，装配与消费逻辑在 app 层装配件。
+    taskConsumeBootstrap.isHostBusy = () => _status.running;
     unawaited(_loadConfig());
     unawaited(_initConversations());
     unawaited(_loadEndpoints());
@@ -165,6 +170,7 @@ class _ChatPageState extends State<ChatPage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    taskConsumeBootstrap.isHostBusy = null; // 解绑运行态端口（防悬空引用）
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
     _streamBuf.dispose(); // P0：取消节拍定时器（widget 已销毁，残余无处可刷）
@@ -473,9 +479,9 @@ class _ChatPageState extends State<ChatPage>
     _status.setPill(label, tone);
   }
 
-  /// 端点缓存预热（供 composer menu / 默认回退；首屏即可列服务）。
-  /// 同时完成「新会话默认锁定」（①）：未显式绑定时按默认回退锁定首个启用的
-  /// private（已显式绑定/纯公共 '' 则沿用），确保状态带与菜单开屏即正确。
+  /// 端点缓存预热（供 composer menu 展示；首屏即可列服务）。
+  /// 新会话绑定解析（2026-10-18 二次修正）：有钉选默认 → 绑定默认；无默认
+  /// → 公共起步（''）；已显式绑定的会话（含历史恢复）沿用原值。
   Future<void> _loadEndpoints() async {
     final all = await (await _resolveEpStore()).load();
     // 本地插件零配置自动发现（系统托管、始终挂载；与 _send 装配同口径）。
@@ -494,8 +500,9 @@ class _ChatPageState extends State<ChatPage>
       _localPlugins = locals;
       _defaultPrivateId = def;
     });
-    // 先刷新端点/插件缓存，再按统一默认回退解析本会话绑定。
-    final bound = _session.activePrivateServerId ?? _resolveBinding(all);
+    // 新会话（未显式绑定）：有设置页钉选默认且仍存在 → 绑定默认；无默认 →
+    // 公共起步（''）。历史恢复的显式绑定沿用原值。
+    final bound = _session.activePrivateServerId ?? _defaultBinding(all);
     setState(() => _session.bindPrivateServer(bound));
     // MO6 阶段一：端点预热/默认锁定后 → 网关投影同步宿主当前激活私有域。
     syncGatewayActivePrivate(_session.activePrivateServerId);
@@ -550,28 +557,19 @@ class _ChatPageState extends State<ChatPage>
       _session.activePrivateServerId != null &&
       _session.activePrivateServerId!.isNotEmpty;
 
-  /// 会话绑定默认回退：已显式绑定直接用（'' → null = 显式公共）→ 统一默认
-  /// 私有服务（设置页钉选，覆盖手动端点 + 本地插件，须当前仍存在）→ 首个手动
-  /// private 端点（遗留回退）→ null（纯公共）。
-  String? _resolveBinding(List<ServerEndpoint> eps) {
-    final bound = _session.activePrivateServerId;
-    if (bound != null) return bound.isEmpty ? null : bound;
+  /// 新会话绑定解析（2026-10-18 二次修正，用户拍板）：有设置页钉选默认
+  /// 且当前仍存在（启用 private 端点或已发现本地插件）→ 绑定默认；否则
+  /// 公共起步（''）。原回退链的「首个 private」遗留尾级废除——无默认即公共。
+  String? _defaultBinding(List<ServerEndpoint> eps) {
     final def = _defaultPrivateId;
-    if (def != null && def.isNotEmpty) {
-      final exists =
-          eps.any(
-            (e) =>
-                e.enabled && e.tier == ServerPrivacyTier.private && e.id == def,
-          ) ||
-          _localPlugins.any((lp) => lp.serverId == def);
-      if (exists) return def;
-    }
-    String? firstPrivate;
-    for (final e in eps) {
-      if (e.tier != ServerPrivacyTier.private) continue;
-      firstPrivate ??= e.id;
-    }
-    return firstPrivate;
+    if (def == null || def.isEmpty) return '';
+    final exists =
+        eps.any(
+          (e) =>
+              e.enabled && e.tier == ServerPrivacyTier.private && e.id == def,
+        ) ||
+        _localPlugins.any((lp) => lp.serverId == def);
+    return exists ? def : '';
   }
 
   /// 即时绑定（composer menu 调用）：写会话态（三态写回契约）+ 落会话元数据。

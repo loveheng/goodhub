@@ -94,8 +94,40 @@ void main() {
     await tester.pumpWidget(
       harness(onSend: () {}, onAbort: () {}),
     );
-    // composer 内唯一 IconButton（B4 后主操作钮为自定义 Material+InkWell）。
-    expect(tester.getSize(find.byType(IconButton)), const Size(48, 48));
+    // 2026-10-18 融合药丸后主操作钮也是 IconButton——按图标定位「+」钮。
+    final addBtn = tester.widget<IconButton>(
+      find.widgetWithIcon(IconButton, Icons.add),
+    );
+    expect(addBtn.constraints, const BoxConstraints(minWidth: 48, minHeight: 48));
+  });
+
+  testWidgets('三态换色（融入药丸，2026-10-18）：空输入灰 / 有输入 l1Info / 运行 danger',
+      (tester) async {
+    final t = ConsoleTokens.fallback;
+    await tester.pumpWidget(harness(onSend: () {}, onAbort: () {}));
+
+    Color sendIconColor() => tester
+        .widget<Icon>(find.byIcon(Icons.arrow_upward))
+        .color!;
+    expect(sendIconColor(), t.terminalMuted, reason: '空输入=禁用置灰');
+
+    await tester.enterText(find.byType(TextField), '你好');
+    await tester.pumpAndSettle();
+    expect(sendIconColor(), t.l1Info, reason: '有输入=可发送强调');
+
+    // 清空回灰（跟随输入双向）。
+    await tester.enterText(find.byType(TextField), '');
+    await tester.pumpAndSettle();
+    expect(sendIconColor(), t.terminalMuted);
+
+    // running 态：glyph 换 stop、色转 danger。
+    await tester.pumpWidget(harness(onSend: () {}, onAbort: () {}, running: true));
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(
+      tester.widget<Icon>(find.byIcon(Icons.stop)).color!,
+      t.danger,
+      reason: '运行=中止警示色',
+    );
   });
 
   testWidgets('B4：主操作钮单槽形变——idle 发送 / running 中止，图标随相位切换',

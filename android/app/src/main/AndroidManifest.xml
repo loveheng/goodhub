@@ -17,7 +17,7 @@
     <!-- 应用内自更新（self-update epic）：拉起系统安装器（Android 8+ 首次引导「安装未知应用」授权） -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <application
-        android:label="goodhub"
+        android:label="拾圆"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

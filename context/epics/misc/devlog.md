@@ -56,3 +56,21 @@ last-merge: 2026-10-11
 - [2026-10-17] [验证]: flutter analyze 0 issue；flutter test --timeout 180s → 781/781 全绿（含 5 枚事件路由钉子：多实例投递/ACK 精准度/死亡信封秒级失败/close 收敛+丢帧无害/乱序守卫）；真机三场景验证通过（正常路径全流程 / binderDied 自动重连 / 冷启动首轮装配）
 - [2026-10-18] [变更]: Binder 传输收尾两项（#3 reset 启动握手已随 C 落地，本轮确认 + #5 静态强引用轻量治理）：#3 由 `_ensureMethodCallHandler`（首次构造、进程级一次）**先于 bind 入队**下发 `resetAllTransports`，原生清空上一轮 isolate 遗留的僵尸 Client/Callback，Hot Restart 后原生↔Dart 状态机对齐（前置条件：单 isolate 创建 BinderTransport，已注释钉死）；#5 不上 WeakReference/Finalizer（弱引用取值与「对象已回收但事件正到达」竞态复杂度高于收益），改契约+守卫——`close()` 首行摘除注册（先于任何 await/抛异常，成败无关）以硬契约注释钉死，注册表加 debug 尺寸守卫（count>10 告警留痕；本地插件连接正常个位数，不误报）
 - [2026-10-18] [验证]: flutter analyze 0 issue；arch-guard OK（foundation debugPrint 属 mcp 层既有例外）；flutter test --timeout 180s → 781/781 全绿；真机冒烟：冷启动 + 一轮任务完成，无挂载失败、无泄漏告警
+- [2026-10-18] [变更]: 聊天页输入条主操作槽三态改造：空输入=codeBg底+hairline描边灰图标(不可发)/有输入=l1Info实底白图标(可发)/运行=dangerDeep中止；形态 40×40 视觉圆角方(cardRadius 10)+44×44 透明热区(补 §4.4 违规)，禁形状形变；ui-design.md §3.1 同轮修订(SSOT)
+- [2026-10-18] [验证]: arch-guard OK；flutter analyze 0 issue；flutter test test/ui/chat_composer_test.dart + chat_page_smoke_test.dart 全绿
+- [2026-10-18] [变更]: [SSOT 修正]: 主操作槽形态 旧 40×40 圆角方实底槽三态（同日早版；再前为 P1-4 Crimson 实底圆形槽，一并作废） ➔ 新 无容器图标钮融入药丸与「+」对称（48×48 热区），三态只换图标与颜色：空输入=terminalMuted/有输入=l1Info/运行=danger stop；ui-design.md §3.1 同轮二次修订
+- [2026-10-18] [验证]: flutter analyze：本轮改动 0 issue（settings_page 2 条 unused_import 为 task-consume-loop 遗留，非本轮文件）；flutter test test/ui/chat_composer_test.dart + chat_page_smoke_test.dart 全绿(11/11)
+- [2026-10-18] [变更]: 聊天页发送钮融合药丸落地：chat_composer 主操作钮改 IconButton 与「+」对称，_SendAbortIcon→_MainActionIcon 三态换色（色随输入实时变化保留）；chat_composer_test 补三态断言、B3 定位改 widgetWithIcon
+- [2026-10-18] [验证]: 同上
+- [2026-10-18] [变更]: [SSOT 修正]: 会话绑定模型 旧 三态绑定+默认回退链锁定（新会话自动锁定默认私有服务，弹层底部「清空」行解除） ➔ 新 单选列表恒有一项选中：「公共」常驻首项不可取消；选中服务再点=回显式公共（清空行移除）；新会话一律公共起步，设置页钉选降级为弹层只读提示；遗留 null 值弹层按公共显示。chat-interaction.md §2 同轮立法，nodes_section 图钉文案同步
+- [2026-10-18] [验证]: flutter analyze → 0 issue；flutter test session_context_sheet_test + mcp_runtime_test + chat_page_smoke_test → 23/23 全绿
+- [2026-10-18] [变更]: 会话上下文弹层单选改造落地：session_context_sheet 公共常驻项+再点取消（onClear 回公共）；chat_page 废除 _resolveBinding 回退链（新会话 bind ''）；新增 test/ui/session_context_sheet_test.dart 三锚（公共常驻/再点取消/公共不可再点）
+- [2026-10-18] [变更]: [SSOT 修正]: 新会话绑定解析 旧 一律公共起步（同日早版拍板） ➔ 新 有设置页钉选默认且仍存在→跟随默认绑定；无默认→公共起步；「首个 private」遗留尾级废除。chat_page _defaultBinding + chat-interaction.md §2 + nodes_section 图钉文案同轮二次修正；弹层单选语义（公共常驻/再点取消）不变
+- [2026-10-18] [验证]: flutter analyze → 0 issue；flutter test session_context_sheet_test + chat_page_smoke_test → 8/8 全绿
+- [2026-10-18] [变更]: CallCard 终态压缩单行落地（用户拍板）：success/failed/cancelled 默认收成「✓/✕/⊘ + 人话动作摘要」一行（灰阶+ellipsis，点击展开详情：工具名遥测/描述/结果全文，附「收起」回入口）；running/stuck 保持完整呈现；请求参数本就仅在 L2 确认卡折叠呈现、不变。ui-design.md §3.2 终态呈现条款同轮修订（SSOT）；dual_track_stream_test 终态断言改新形态+新增压缩单行锚
+- [2026-10-18] [验证]: flutter analyze → 0 issue；flutter test dual_track_stream_test + chat_page_smoke_test + chat_status_controller_test → 31/31 全绿
+- [2026-10-18] [变更]: 应用启动图标替换（用户供图 1024×1024 白底橙红鱼雷插画）：Android mipmap 5 档（48/72/96/144/192）+ iOS AppIcon 15 档按原规格 LANCZOS 重采样，manifest/Contents.json 未变、无新增资产目录
+- [2026-10-18] [变更]: CallCard 终态展开态头部整行可点收回单行（免滚到底找收起按钮），头部加 expand_less 箭头指示
+- [2026-10-18] [验证]: toolbox run arch-guard ✓ + flutter analyze 0 issue + flutter test test/ui/dual_track_stream_test.dart 16/16 绿
+- [2026-10-18] [变更]: CallCard 改整卡单一开关（用户拍板）：头部任意点按=全展开/全收起，箭头随态翻转；删除分段展开/收起按钮与底部收起钮，展开态描述/结果全文直出（SelectableText），删 _DescriptionLine/_ExpandableResult
+- [2026-10-18] [验证]: toolbox run arch-guard ✓ + flutter analyze 0 issue + flutter test dual_track_stream/track_codec 25/25 绿

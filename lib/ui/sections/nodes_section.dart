@@ -305,7 +305,8 @@ class _NodesSectionState extends State<NodesSection>
             Text(
               '已配置的 MCP 服务节点。卸载开关只把节点摘出会话装配，配置与'
               '令牌保留；鉴权被拒（403）用红色标注，与离线区分。'
-              '图钉 = 钉选为默认私有服务（新会话默认锁定，聊天页可临时改本次会话）。',
+              '图钉 = 钉选为默认私有服务（新会话跟随默认绑定，无钉选则公共'
+              '起步；聊天页弹层可即时改本次会话）。',
               style: TextStyle(
                 fontSize: Fsz.telemetrySm,
                 color: Theme.of(context).hintColor,

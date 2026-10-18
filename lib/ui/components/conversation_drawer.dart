@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import '../../sandbox/conversation_store.dart';
 import '../memory_board_page.dart';
 import '../settings_page.dart';
+import '../task_ledger_page.dart';
 import '../tokens/console_tokens.dart';
 
 class ConversationDrawer extends StatefulWidget {
@@ -238,6 +239,20 @@ class _ConversationDrawerState extends State<ConversationDrawer> {
                 Navigator.of(context).push(
                   MaterialPageRoute<void>(
                     builder: (_) => const SettingsPage(),
+                  ),
+                );
+              },
+            ),
+            // M4-2 对账入口（用户拍板：设置下边——goodshare 点完任务后来此
+            // 确认「被处理了没有」）。
+            ListTile(
+              leading: const Icon(Icons.fact_check_outlined),
+              title: const Text('任务对账'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const TaskLedgerPage(),
                   ),
                 );
               },

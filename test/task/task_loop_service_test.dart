@@ -126,7 +126,8 @@ void main() {
     expect(api.applied.single.note, '笔记');
   });
 
-  test('推理失败：LoopFailed 通告 + 异常上抛 + 不 apply', () async {
+  test('推理失败：LoopFailed 通告 + 异常上抛 + **回写 failed 终态**（毒丸防护，§3.12.2-6）',
+      () async {
     final api = FakeApi(claimResult: claimed());
     final inf = FakeInference()..throwNext = const InferenceException('引擎全灭');
     final events = <TaskLoopEvent>[];
@@ -134,7 +135,11 @@ void main() {
       ..onEvent = events.add;
     await expectLater(service.runOnce(), throwsA(isA<InferenceException>()));
     expect(events.whereType<LoopFailed>(), isNotEmpty);
-    expect(api.applied, isEmpty);
+    // 变更（M4）：原断言「不 apply」——任务会留 processing，30s 后被
+    // reclaimStaleTasks 重置 pending 反复认领（毒丸循环）。现须 apply failed 收尾。
+    expect(api.applied, hasLength(1));
+    expect(api.applied.single.note, contains('推理失败'));
+    expect(api.applied.single.summaryMd, isNull, reason: 'note-only = failed 终态');
   });
 
   test('not_found 分支：apply 收尾不受推理影响', () async {

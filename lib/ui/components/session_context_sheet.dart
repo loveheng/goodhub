@@ -46,6 +46,10 @@ class SessionContextSheetBody extends StatelessWidget {
   /// true = 绑定/清空项置灰 + 说明行；查看信息不受影响。
   final bool bindLocked;
 
+  /// 当前是否处于公共态（''=显式公共；null=遗留「未绑定」，2026-10-18 起
+  /// 新会话一律公共起步，null 在弹层按公共显示）。公共项据此不可再点。
+  bool get _isPublic => bound == null || bound!.isEmpty;
+
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -91,6 +95,17 @@ class SessionContextSheetBody extends StatelessWidget {
             if (privEndpoints.isEmpty && localPlugins.isEmpty)
               Text('无可用私有服务（私有端点请在侧边栏 → 设置页添加）',
                   style: TextStyle(fontSize: Fsz.note, color: t.terminalMuted)),
+            // 2026-10-18（用户拍板）：「公共」为常驻首项、单选语义、不可取消
+            // ——列表恒有一项选中（消灭空选态）；绑定服务后再点一次 = 回显式
+            // 公共（解除覆盖），底部「清空」行随之移除（接近性：取消动作回到
+            // 对象本身）。
+            ListTile(
+              leading: const Icon(Icons.public),
+              title: const Text('公共'),
+              trailing: _isPublic ? const Icon(Icons.check, size: 18) : null,
+              enabled: !bindLocked,
+              onTap: _isPublic ? null : () => onBind(''),
+            ),
             for (final e in privEndpoints)
               ListTile(
                 leading: const Icon(Icons.lock_outline),
@@ -100,7 +115,10 @@ class SessionContextSheetBody extends StatelessWidget {
                     ? const Icon(Icons.check, size: 18)
                     : null,
                 enabled: !bindLocked,
-                onTap: () => onBind(e.id),
+                // 选中项再点 = 取消回公共；未选中 = 绑定（radio 语义）。
+                onTap: () => (bound != null && bound == e.id)
+                    ? onClear()
+                    : onBind(e.id),
               ),
             if (localPlugins.isNotEmpty) ...[
               const Divider(height: 16),
@@ -120,26 +138,23 @@ class SessionContextSheetBody extends StatelessWidget {
                       ? const Icon(Icons.check, size: 18)
                       : null,
                   enabled: !bindLocked,
-                  onTap: () => onBind(lp.serverId),
+                  // 选中项再点 = 取消回公共；未选中 = 绑定（radio 语义）。
+                  onTap: () => (bound != null && bound == lp.serverId)
+                      ? onClear()
+                      : onBind(lp.serverId),
                 ),
             ],
-            if (bound != null && bound!.isNotEmpty) ...[
-              if (defaultId != null && defaultId != bound)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 4),
-                  child: Text(
-                    '已为本会话覆盖默认：${endpointName(defaultId!)}',
-                    style:
-                        TextStyle(fontSize: Fsz.note, color: t.terminalMuted),
-                  ),
+            if (bound != null &&
+                bound!.isNotEmpty &&
+                defaultId != null &&
+                defaultId != bound)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4, top: 2),
+                child: Text(
+                  '已为本会话覆盖默认：${endpointName(defaultId!)}',
+                  style: TextStyle(fontSize: Fsz.note, color: t.terminalMuted),
                 ),
-              ListTile(
-                leading: const Icon(Icons.public),
-                title: const Text('清空（纯公共）'),
-                enabled: !bindLocked,
-                onTap: onClear,
               ),
-            ],
             const SizedBox(height: 8),
             Align(
               alignment: Alignment.centerRight,

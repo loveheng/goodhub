@@ -17,7 +17,11 @@ updated: 2026-10-17
 | LLM 引擎（端侧 LiteRT-LM / 云端） | `lib/llm/` + `android/`（LlmBridge.kt） | M2 自 goodshare 随迁；proguard keep 教训查 `context/lessons.md` |
 | 云端 BYOK 引擎（双协议/SSE 流式/BYOK 配置） | `lib/llm/cloud/` | 密钥走 `core/security/` SecureKeyValue；装配入口 `engineFor` |
 | 混合编排 Coordinator（降级状态机/云↔端路由/Agent Loop/MCP 工具面） | `lib/coordinator/` | `HybridCloudEngine` 路由 + `AgentLoop` 工具环（maxTurns=10）+ `McpToolFace`；默认装配 `assembleDefaultHybridEngine` |
-| 任务循环（认领→心跳→回写） | `lib/task/`（TaskLoopService + TaskInference 接口） | 推理期 5s 心跳（契约 §3.3）；apply 产出按 task_action 分叉 summary_md/tags/note |
+| 任务循环（认领→心跳→回写） | `lib/task/`（TaskLoopService + TaskInference 接口） | 推理期 5s 心跳（契约 §3.3）；apply 产出按 task_action 分叉 summary_md/tags/note；**毒丸防护（§3.12.2-6）**：推理失败须 apply failed 终态，不留 processing 等 30s 回收反复认领 |
+| 宿主侧任务消费循环（catch-up / 单飞 dirty / 达顶继续 / 空拉终止 / 熔断 / 算力让路 / 生命周期解绑） | `lib/task/task_consume_loop.dart`（新，2026-10-18） | 契约 = goodshare 仓 ai-app-split.md §3.12（宿主侧消费纪律 8 条）；通道存活与前台忙碌为注入端口（不 import ui/gateway） |
+| 任务消费对账账本（按来源服务分组列表 + 自然日过滤，跨会话持久化） | `lib/task/task_consume_ledger.dart`（新，2026-10-18；`underSupportDir` + SequentialFileWriter 原子写） | 条目含 `serverId`（按 MCP 服务领域划分的键，当前恒 goodshare 包名，预留多 server）；`recentEntries`（自然日过滤，>今天隐藏但持久化全量保留）+ `groupedByServer`；聚合降级为组头元信息（不抢眼）；损坏文件返空账 + DEGRADE |
+| 任务对账页（侧边栏「设置」下入口直达；按服务分组列表为主 + 自然日过滤 + 清空） | `lib/ui/task_ledger_page.dart`（新，2026-10-18）+ `lib/ui/sections/task_ledger_section.dart`（内容 widget，注入位传入账本） | 列表为主、聚合降级为组头元信息（域名 + 组今日计数小字）；按 MCP 服务分组（serverId）；自然日过滤（>今天隐藏）；goodhub-ui §2：零魔法值（ConsoleTokens/Fsz/monoFamily）、内容 widget 有状态段混 `AutomaticKeepAliveClientMixin` |
+| 应用级装配：宿主上线接管 goodshare 任务消费（插件识别 / 装配 / catch-up 触发 / 解绑 + 对账记账） | `lib/app/task_consume_bootstrap.dart`（新，2026-10-18；进程级单例 `taskConsumeBootstrap`） | 拉模型地基（§3.12 catch-up）：`main` 启动触发、**非常驻轮询**；窗口层只注入 `isHostBusy` 运行态（chat_page initState/dispose 各 1 行）；识别常量 `kGoodsharePackage`；失败一律 DEGRADE 不阻断启动 |
 | L1/L2 权限网关（分类矩阵/确认卡会话豁免/拒绝回填） | `lib/coordinator/permission_gateway.dart` | 装饰 ToolExecutor；拍板 C2/C5/C7 语义 |
 | N7 PII 出站围栏内核（正则遮蔽/反向映射/流式还原） | `lib/coordinator/pii_fence.dart` | 拍板 D1-D5；挂点=云引擎装饰器，失败→PiiMaskException 禁静默放行 |
 | N7 围栏云引擎装饰器（出站遮蔽/流式还原/拦截分派） | `lib/coordinator/fenced_cloud_engine.dart` + `hybrid_assembly.dart` 接线 | 一次装配=一次 Run 映射会话（调用方按 Run 装配）；PiiFenceDelegate 缺省 null=无人值守 fail-closed，debug 页接 FenceBlockCard 双选项卡 |
@@ -61,7 +65,7 @@ updated: 2026-10-17
 
 | 主题 | 落点 | 状态 |
 |---|---|---|
-| MCP 接缝契约（SSOT） | goodshare 仓 `docs/design/ai-app-split.md` | active（跨仓只读引用） |
+| MCP 接缝契约（SSOT） | goodshare 仓 `docs/design/ai-app-split.md` | active（跨仓只读引用）；§3.12 任务通知接缝（2026-10-18 新增）= 宿主侧消费循环契约 |
 | 宿主自身交互产品设计（聊天/决策卡片/双轨流） | 本仓 `docs/product/chat-interaction.md` | active（交互 SSOT） |
 | UI 设计规范（控制台风格 SSOT） | 本仓 `docs/project/ui-design.md`；落点纪律见 `.agents/skills/goodhub-ui/SKILL.md` | active |
 | 工程编码基准（规则契约 SSOT，含 MCP 对 AI 接口契约 §5） | 本仓 `docs/project/coding-standards.md`；项目基线数据（内核登记/白名单/超标清单）= 本文件「工程基线数据」 | active |

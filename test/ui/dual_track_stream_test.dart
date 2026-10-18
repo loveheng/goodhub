@@ -27,7 +27,9 @@ void main() {
     expect(find.text('把行动项写进 todo'), findsOneWidget);
     expect(find.text('你'), findsOneWidget, reason: '用户轮次标签（D9 同轴卡片族）');
     expect(find.byType(CallCard), findsOneWidget);
-    expect(find.text('r1 ⏎ r2'), findsOneWidget, reason: '终态预览');
+    // 2026-10-18 终态压缩单行：默认只见「✓ + 人话摘要」，结果预览点开才见。
+    expect(find.text('✓'), findsOneWidget, reason: '终态状态符号（双通道之一）');
+    expect(find.text('r1 ⏎ r2'), findsNothing, reason: '终态默认收起，不直出结果 JSON');
     expect(find.text('✓ 收尾（1 轮）'), findsOneWidget);
   });
 
@@ -38,9 +40,43 @@ void main() {
       // 终态 preview（在途调用真实完成后由页面回填真结果）。
       TrackCall(tool: 'add_item')..phase = CallCardPhase.cancelled,
     ]);
+    // 终态压缩单行：⊘ + 工具名摘要；详情（(无文本返回)）展开后可见。
+    expect(find.text('⊘'), findsOneWidget);
+    expect(find.text('add_item'), findsOneWidget, reason: '无描述回退裸工具名');
+    expect(find.text('(无文本返回)'), findsNothing);
+    await tester.tap(find.text('add_item'));
+    await tester.pump();
     expect(find.text('(无文本返回)'), findsOneWidget,
-        reason: 'cancelled 中间态渲染终态灰阶；真结果到达后换 preview');
-    expect(find.byType(CallCard), findsOneWidget);
+        reason: '展开详情：cancelled 中间态渲染终态灰阶；真结果到达后换 preview');
+  });
+
+  testWidgets('终态压缩单行（2026-10-18）：默认一行摘要，展开见详情可收回',
+      (tester) async {
+    await pump(tester, [
+      TrackCall(tool: 'list_items')
+        ..phase = CallCardPhase.success
+        ..description = '列出全部条目；返回 JSON 数组'
+        ..preview = 'r1 ⏎ r2'
+        ..resultText = 'r1 ⏎ r2',
+    ]);
+    // 默认：✓ + 描述首子句；工具名遥测与结果预览均不可见。
+    expect(find.text('✓'), findsOneWidget);
+    expect(find.text('列出全部条目'), findsOneWidget, reason: '单行 = 描述首子句');
+    expect(find.text('list_items'), findsNothing);
+    expect(find.text('r1 ⏎ r2'), findsNothing);
+
+    // 点击单行 → 展开详情（工具名遥测轨 + 描述行 + 结果预览 + 收起）。
+    await tester.tap(find.text('列出全部条目'));
+    await tester.pump();
+    expect(find.text('list_items'), findsOneWidget, reason: '原始前缀名归详情遥测轨');
+    expect(find.text('r1 ⏎ r2'), findsOneWidget, reason: '终态预览（详情态）');
+
+    // 再点头部 = 全收起 → 回单行（整卡单一开关，无独立「收起」按钮）。
+    expect(find.text('收起'), findsNothing);
+    await tester.tap(find.text('list_items'));
+    await tester.pump();
+    expect(find.text('r1 ⏎ r2'), findsNothing);
+    expect(find.text('列出全部条目'), findsOneWidget);
   });
 
   testWidgets('A2：CallCard 人话描述行——原名遥测轨在位 + 首子句 + 可展开全文',
@@ -51,22 +87,30 @@ void main() {
         ..description = '读取单个收集条目的完整内容（原文 + 人类态/机器态）；图片小图返回 base64',
     ]);
 
+    // 终态压缩单行（2026-10-18）：单行摘要 = 描述首子句；点击展开进详情。
+    expect(find.text('读取单个收集条目的完整内容'), findsOneWidget,
+        reason: '单行摘要 = description 首子句');
+    await tester.tap(find.text('读取单个收集条目的完整内容'));
+    await tester.pump();
+
     expect(find.text('goodshare__get_item'), findsOneWidget,
         reason: '原始前缀名留遥测轨（CallCard 头部等宽）');
-    expect(find.text('读取单个收集条目的完整内容'), findsOneWidget,
-        reason: '收起态 = description 首子句（灰阶人话行）');
-    expect(find.text('图片小图返回 base64'), findsNothing, reason: '长描述默认收起');
-
-    await tester.tap(find.text('展开'));
-    await tester.pump();
+    // 整卡单一开关（2026-10-18）：展开态全文直出，不再有分段「展开/收起」按钮。
     expect(
       find.text('读取单个收集条目的完整内容（原文 + 人类态/机器态）；图片小图返回 base64'),
       findsOneWidget,
-      reason: '展开后全文（SelectableText 便于复制）',
+      reason: '展开态描述全文直出（SelectableText 便于复制）',
     );
-    await tester.tap(find.text('收起'));
+    expect(find.text('展开'), findsNothing, reason: '整卡单一开关，无分段展开按钮');
+
+    // 再点头部 = 全收起，回单行摘要。
+    await tester.tap(find.text('goodshare__get_item'));
     await tester.pump();
     expect(find.text('读取单个收集条目的完整内容'), findsOneWidget);
+    expect(
+      find.text('读取单个收集条目的完整内容（原文 + 人类态/机器态）；图片小图返回 base64'),
+      findsNothing,
+    );
   });
 
   testWidgets('A2：无描述的 CallCard 不渲染人话行（旧数据零痕迹）', (tester) async {

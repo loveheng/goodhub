@@ -3,8 +3,8 @@
 ///
 /// 回退链（plan.md §2.1 B2，「最易改错的一段」）：
 /// 已显式绑定直接用（'' → null = 显式公共）→ 全局钉选 isDefault →
-/// 首个 private → null。与 `chat_page._resolveBinding` 逐行同构（步 3 接线
-/// 替换，等价性由此钉住）。
+/// 首个 private → null。（2026-10-18：chat_page 的同名回退链已随「新会话
+/// 一律公共起步」废除；本纯函数保留为遗留兜底语义锚。）
 library;
 
 import 'dart:async';

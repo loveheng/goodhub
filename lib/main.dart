@@ -8,7 +8,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'app/task_consume_bootstrap.dart';
 import 'coordinator/ref_store.dart';
+import 'task/task_consume_ledger.dart';
 import 'llm/llm.dart';
 import 'sandbox/memory_store.dart';
 import 'ui/chat_page.dart';
@@ -42,10 +44,12 @@ class _GoodHubAppState extends State<GoodHubApp> with WidgetsBindingObserver {
     _warmEngine();
     _sweepMemoryStartup();
     _sweepRefStoreStartup();
+    _startTaskConsume();
   }
 
   @override
   void dispose() {
+    taskConsumeBootstrap.dispose(); // §3.12.2-7 生命周期解绑（清定时器 + 释放 client）
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -82,6 +86,25 @@ class _GoodHubAppState extends State<GoodHubApp> with WidgetsBindingObserver {
     }
   }
 
+  /// M4-2：宿主上线即接管 goodshare 任务消费（契约 §3.12「catch-up 是地基」）。
+  /// 拉模型下 goodshare 不推任务——宿主不主动 claim 则任务永久滞留 pending。
+  /// 启动触发一次 catch-up（后续由跨仓通知加速，无通知也能靠本路径工作）。
+  /// 失败仅 DEGRADE 留痕（插件未安装 / 未发现 / 引擎未配置均不阻断启动）。
+  Future<void> _startTaskConsume() async {
+    // 对账账本（跨会话持久化）：支持目录异步获取后再装配，与设置页对账分区
+    // 共享同一实例；装配失败仅 DEGRADE（不记账不影响消费）。
+    try {
+      final support = await getApplicationSupportDirectory();
+      taskConsumeBootstrap.ledger =
+          TaskConsumeLedger.underSupportDir(support.path);
+    } on Object catch (e) {
+      debugPrint('[DEGRADE] task-ledger attach: $e');
+    }
+    unawaited(taskConsumeBootstrap.start().then((loop) {
+      debugPrint('[task-consume] ${loop == null ? 'skip' : 'started'}');
+    }));
+  }
+
   /// §9 启动幂等清池（C-3 定案 + 对账轮 #10 闭环）：`sweepStartupOrphans`
   /// API 与单测早就在位但从未挂启动——进程被杀（OOM/系统清理）后 TTL GC 停摆，
   /// 残留 `ref_*.tmp` 孤儿由冷启动兜底全清。维护性动作，失败 DEGRADE 留痕。
@@ -113,7 +136,7 @@ class _GoodHubAppState extends State<GoodHubApp> with WidgetsBindingObserver {
     return AnimatedBuilder(
       animation: AppThemeController.instance,
       builder: (context, _) => MaterialApp(
-        title: 'GoodHub',
+        title: '拾圆',
         navigatorKey: appNavigatorKey, // 网关 L2 远程确认卡等后台弹层入口
         theme: buildAppTheme(AppThemeController.instance.value),
         themeMode: ThemeMode.light,
