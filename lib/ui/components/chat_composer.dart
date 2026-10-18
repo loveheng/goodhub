@@ -23,6 +23,9 @@ class ChatComposer extends StatefulWidget {
     required this.onOpenMenu,
     required this.onSend,
     required this.onAbort,
+    this.pendingResources = const [],
+    this.onPickResource,
+    this.onRemoveResource,
   });
 
   final TextEditingController inputCtrl;
@@ -38,6 +41,15 @@ class ChatComposer extends StatefulWidget {
   final VoidCallback onOpenMenu;
   final VoidCallback onSend;
   final VoidCallback onAbort;
+
+  /// 已附加资源药丸（resource-center M1-T3；record 类型零 resources 域依赖）。
+  final List<({String id, String name})> pendingResources;
+
+  /// 附件入口回调（null = 不显示资源行）；选择 sheet 在 chat_page 侧弹出。
+  final VoidCallback? onPickResource;
+
+  /// 移除附件（仅注销本次会话的附件待发项，严禁触资源库删除）。
+  final ValueChanged<String>? onRemoveResource;
 
   @override
   State<ChatComposer> createState() => _ChatComposerState();
@@ -175,6 +187,53 @@ class _ChatComposerState extends State<ChatComposer> {
                             onOpenMenu: onOpenMenu,
                           ),
                         ),
+                        // 资源附件行（2026-10-19 修订）：**按需展开**——仅有待发项
+                        // 时展开（AnimatedContainer 0→44）；空态入口收进 composer
+                        // 左端「+」统一挂载菜单。守住 B6「输入行只保留 + + 文本 +
+                        // 发送」的拍板实质：药丸默认 1 行，不因新增能力持续占位。
+                        AnimatedContainer(
+                          duration: t.fastDuration,
+                          curve: Curves.easeOut,
+                          height: widget.pendingResources.isEmpty ? 0 : 44,
+                          decoration:
+                              const BoxDecoration(), // Container 断言：clip 需 decoration。
+                          clipBehavior: Clip.antiAlias,
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: ListView(
+                                  scrollDirection: Axis.horizontal,
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 14),
+                                  children: [
+                                    for (final r in widget.pendingResources)
+                                      Padding(
+                                        key: ValueKey('attach-${r.id}'),
+                                        padding: const EdgeInsets.symmetric(
+                                            vertical: 6),
+                                        child: _ResourceChip(
+                                          t: t,
+                                          name: r.name,
+                                          onDelete: () =>
+                                              widget.onRemoveResource
+                                                  ?.call(r.id),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                              IconButton(
+                                key: const ValueKey('composer-attach'),
+                                tooltip: '附加资源…（资源中心 / 本地文件）',
+                                icon: const Icon(Icons.attach_file, size: 20),
+                                onPressed: widget.onPickResource,
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(
+                                    minWidth: 48, minHeight: 44),
+                              ),
+                            ],
+                          ),
+                        ),
                         Row(
                           children: [
                             // B3（page-beautify P2）：触达区 36→48dp——原 36dp
@@ -282,6 +341,63 @@ class _MainActionIcon extends StatelessWidget {
           size: 20,
           color: c,
         ),
+      ),
+    );
+  }
+}
+
+/// 附件药丸（挂载点复盘 #7）：弃 Material 默认 `InputChip`（自带 delete 皮与
+/// 默认间距，与控制台件族不同源），改自绘——hairline 边框 + `cardRadius` +
+/// `codeBg` 微深底 + `dataRef` 文件图标，与 `StatusCapsule` / `ContextChip`
+/// 同族（ui-design §3.2 卡片规格 + §4.7 零魔法值）。
+class _ResourceChip extends StatelessWidget {
+  const _ResourceChip({
+    required this.t,
+    required this.name,
+    required this.onDelete,
+  });
+
+  final ConsoleTokens t;
+  final String name;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final fg = Theme.of(context).textTheme.bodyMedium?.color;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(8, 3, 2, 3),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(t.cardRadius),
+        border: Border.all(color: t.hairline),
+        color: t.codeBg,
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.description_outlined, size: 12, color: t.dataRef),
+          const SizedBox(width: 4),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 132),
+            child: Text(
+              name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: Fsz.telemetry, color: fg),
+            ),
+          ),
+          // 热区 32×32：受 44dp 行高约束，未达 §4.4 的 44 红线——偏差已
+          // 登记（待办：改长按或行内菜单删除，勿再单独提行高）。
+          SizedBox(
+            width: 32,
+            height: 32,
+            child: IconButton(
+              tooltip: '移除附件（不删资源库）',
+              onPressed: onDelete,
+              padding: EdgeInsets.zero,
+              icon: Icon(Icons.close, size: 14, color: t.terminalMuted),
+            ),
+          ),
+        ],
       ),
     );
   }

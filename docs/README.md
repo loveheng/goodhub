@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-17
+updated: 2026-10-18
 ---
 # docs
 
@@ -35,3 +35,4 @@ updated: 2026-10-17
   - [design/p0-security-correctness.md](design/p0-security-correctness.md) — P0 缺陷修复施工稿：文件级写互斥 / 网关 per-session 安全上下文与装配句柄释放 / 依赖护栏与门禁加固
   - [design/window-slim.md](design/window-slim.md) — 窗口层瘦身与编排下沉（P1 结构盘点账实核对版：窗口过厚/双实现/降级不可见/释放不幂等，draft）
   - [design/page-beautify.md](design/page-beautify.md) — 聊天页美学与交互美化（page-revamp/ux-hardening 归档后的第三批：空态引导/黑话/双 FAB/字体资产/动效，draft）
+  - [design/resource-center.md](design/resource-center.md) — 资源中心设计（本地文件库一期：ResourceStore 内核 / $ref 句柄注入对话 / read_local_resource 工具，draft）

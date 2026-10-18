@@ -42,8 +42,11 @@ import '../mcp/sampling.dart' show SamplingQuota, samplingRequestHandler;
 import '../mcp/server_capabilities.dart';
 import '../mcp/server_endpoints.dart';
 import '../mcp/server_probe.dart' show McpClientFactory;
+import '../resources/resource_store.dart';
 import '../sandbox/memory_store.dart';
 import '../sandbox/workspace_state_store.dart';
+import 'local_resource_tool_executor.dart';
+import 'resource_attachment_binder.dart' show ResourceAttachment, bindResourceAttachments;
 
 // ---------------------------------------------------------------------------
 // T1 · SessionContext —— 纯不可变快照（§8.1-4：不含配额）
@@ -207,12 +210,17 @@ class McpAssembly {
     required Map<String, String> serverSummaries,
     required List<McpToolFace> faces,
     required List<McpConnection> connections,
+    this.resourceContextFooter,
   })  : _faces = List<McpToolFace>.unmodifiable(faces),
         _connections = List<McpConnection>.unmodifiable(connections),
         serverSummaries = Map<String, String>.unmodifiable(serverSummaries);
 
   final AgentLoop loop;
   final ToolRouter router;
+
+  /// 资源附件上下文块（M1-T3）：装配期绑定产物，窗口拼进 userPrompt 前部；
+  /// null = 本轮无附件（或 store 未注入）。
+  final String? resourceContextFooter;
 
   /// 服务摘要快照（`<id> → 'Name Tier n'`）：窗口合成「## 已挂载服务」段用
   /// （值快照非活引用，Run 内不变）。
@@ -344,6 +352,13 @@ class McpRuntime {
     CloudLlmEngine? engine,
     Future<Directory> Function()? tempDirResolver,
     Future<Directory> Function()? documentsDirResolver,
+
+    /// 资源中心附件（M1-T3）：非空且 [resourceStore] 就绪时，装配期把全文
+    /// 落 run 级 $ref 池并产出上下文 footer（[McpAssembly.resourceContextFooter]）。
+    List<ResourceAttachment> resourceAttachments = const [],
+
+    /// 测试注入位 / 生产由窗口经 lib/app 装配传入；null = 不注册本地资源工具面。
+    ResourceStore? resourceStore,
   }) async {
     // 装配中途失败（如第 N 个端点 negotiate 抛）：回收已建连接/客户端/RefStore
     // 再上抛——原 chat_page 实现里这些资源都在 _send 的 try-finally 保护下，
@@ -367,6 +382,8 @@ class McpRuntime {
         engine: engine,
         tempDirResolver: tempDirResolver,
         documentsDirResolver: documentsDirResolver,
+        resourceAttachments: resourceAttachments,
+        resourceStore: resourceStore,
         partialConns: partialConns,
         partialClients: partialClients,
         partialRefStore: (rs) => partialRefStore = rs,
@@ -411,6 +428,8 @@ class McpRuntime {
     required CloudLlmEngine? engine,
     required Future<Directory> Function()? tempDirResolver,
     required Future<Directory> Function()? documentsDirResolver,
+    required List<ResourceAttachment> resourceAttachments,
+    required ResourceStore? resourceStore,
     required List<McpConnection> partialConns,
     required List<McpClient> partialClients,
     required void Function(RefStore refStore) partialRefStore,
@@ -518,20 +537,34 @@ class McpRuntime {
     // —— 链路序（T6 设计）：Loop → Discovery → SkillActivation → MemoryTool
     // → Hydration → Gateway → ToolRouter → faces ——
     final memoryTool = MemoryToolExecutor(inner: router, store: memoryStore);
+    // 本地资源工具（M1-T3）挂 Gateway 内侧：L2 裁决先于执行（对齐 memoryTool）。
+    final localResource = resourceStore == null
+        ? null
+        : LocalResourceToolExecutor(inner: memoryTool, store: resourceStore);
     final gateway = PermissionGateway(
-      inner: memoryTool,
+      inner: localResource ?? memoryTool,
       delegate: delegates.gateDelegate, // null = headless fail-closed（§8.1-2）
       onNotice: (n) => delegates.onNotice?.call(n),
     );
     gateway.loadCatalog([
       ...router.focusedSchemas(),
       ...MemoryToolExecutor.toolSchemas(),
+      if (localResource != null) ...LocalResourceToolExecutor.toolSchemas(),
     ]);
     final refStore = RefStore(
       cacheDir: await (tempDirResolver ?? getTemporaryDirectory)(),
       gcInterval: null, // 短会话，close 即焚
     );
     partialRefStore(refStore);
+    // 资源附件绑定（M1-T3）：全文落 run 级 $ref 池 + 产出上下文 footer。
+    String? resourceContextFooter;
+    if (resourceAttachments.isNotEmpty && resourceStore != null) {
+      resourceContextFooter = await bindResourceAttachments(
+        resourceStore,
+        refStore,
+        resourceAttachments,
+      );
+    }
     final hydration = HydratingExecutor(
       inner: gateway,
       refStore: refStore,
@@ -624,6 +657,7 @@ class McpRuntime {
         ...DiscoveryExecutor.staticSchemas(),
         skills.activationToolSchema(),
         ...MemoryToolExecutor.toolSchemas(),
+        if (resourceStore != null) ...LocalResourceToolExecutor.toolSchemas(),
       ],
     );
     loopBox = loop;
@@ -632,6 +666,7 @@ class McpRuntime {
       router: router,
       refStore: refStore,
       serverSummaries: summaries,
+      resourceContextFooter: resourceContextFooter,
       faces: faces.values.toList(),
       connections: connections.values.toList(),
     );

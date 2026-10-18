@@ -16,6 +16,9 @@ import 'package:flutter/services.dart';
 import 'trust_plugin_dialog.dart';
 import 'components/chat_composer.dart';
 import 'components/chat_gate_delegates.dart';
+import 'sections/resource_center_section.dart'
+    show showResourcePickerSheet, undoResourceCollect;
+
 
 import 'package:path_provider/path_provider.dart';
 
@@ -54,6 +57,7 @@ import 'chat_status_controller.dart';
 import 'components/stream_text_buffer.dart';
 import 'tokens/console_tokens.dart';
 import 'components/stuck_watcher.dart';
+import 'resource_center_page.dart';
 import 'settings_page.dart';
 
 /// 连接配置持久化（T6-2）：改走 [ServerEndpointStore]（多端点 JSON + apiKey
@@ -137,6 +141,11 @@ class _ChatPageState extends State<ChatPage>
   List<ServerEndpoint> _endpoints = <ServerEndpoint>[];
   // 本地插件缓存（零配置自动发现；系统托管、始终挂载；供状态带/菜单展示）。
   List<LocalPluginInfo> _localPlugins = const <LocalPluginInfo>[];
+
+  // 附件待发项（resource-center M1-T3）：composer 药丸展示；_send 装配期传
+  // McpRuntime 落 run 级 $ref 池，发送起步即清（附件属单次发送；移除药丸仅
+  // 注销本行，严禁触资源库删除——设计稿 §2 附件退回口径）。
+  final List<({String id, String name})> _pendingResources = [];
   // 统一默认私有服务 id（设置页钉选，覆盖手动端点 + 本地插件）；null = 无默认。
   // 2026-10-18（二次修正，用户拍板）：新会话跟随钉选默认（无默认则公共起步）
   // ——「首个 private」遗留回退废除；钉选在弹层仍显只读快捷提示。
@@ -629,9 +638,63 @@ class _ChatPageState extends State<ChatPage>
             setSheet(() {});
           },
           onDone: () => Navigator.pop(ctx),
+          // 资源挂载 = 本次会话挂载物的一类，与「服务绑定」同挂「+」下：
+          // 空态无独立附件行，靠本菜单发现（消「功能堆砌」的物理痕迹）。
+          onPickResource: _pickResource,
+          onManageResources: _openResourceCenter,
         ),
       ),
     );
+  }
+
+  /// 附件入口（M1-T3，RC6）：资源选择 sheet → 加入待发项。选择 sheet 落在
+  /// resource_center_section（ui→resources 白名单内文件），本页零 resources 域
+  /// import——只持 record 数据。
+  Future<void> _pickResource() async {
+    // 运行守卫走 _guardRunning（非静默 return）：否则入口常驻却点了没反应
+    // = 死控件，违反交互 SSOT §1「禁止静默禁用」。
+    if (!_guardRunning('附加资源')) return;
+    final picked = await showResourcePickerSheet(context);
+    if (picked == null || !mounted) return;
+    if (_pendingResources.any((r) => r.id == picked.id)) return; // 幂等。
+    setState(() => _pendingResources.add((id: picked.id, name: picked.name)));
+    // 选择即收集：新入库条目明示 + 提供撤销；命中同内容复用只给选用回执
+    // （撤销 = 删本次收集，复选既有条目不属收集，不给撤销）。
+    if (picked.collected) {
+      _flashCollected(picked.id, picked.name);
+    } else {
+      _toast('✓ 已选用资源：《${picked.name}》');
+    }
+  }
+
+  /// 资源中心管理页（composer「+」菜单直达；与抽屉入口同一页面）——导入/
+  /// 改名/删除/外部打开属高频动作，不该藏在二级配置页。
+  Future<void> _openResourceCenter() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const ResourceCenterPage(),
+      ),
+    );
+  }
+
+  /// 收集明示 + 撤销通道——复用记忆胶囊「已记录 · 撤销」的既有交互语法
+  /// （page-beautify B2 先例），不新造反馈模式。
+  void _flashCollected(String id, String name) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text('已收入资源中心：$name'),
+          duration: const Duration(seconds: 4),
+          action: SnackBarAction(
+            label: '撤销',
+            onPressed: () {
+              setState(() => _pendingResources.removeWhere((r) => r.id == id));
+              unawaited(undoResourceCollect(id));
+            },
+          ),
+        ),
+      );
   }
 
   /// M4-T3 发送（D11 多轮）：上轮 transcript 作 history 续接；一次一个 Run。
@@ -755,8 +818,10 @@ class _ChatPageState extends State<ChatPage>
       // 全文）——onProgress/onNotice 等委托先于 assembly 建成，故此处持可变
       // 映射由委托闭包捕获，装配完成后（下方 router 就绪即 run 起步前）填充。
       final toolDescriptions = <String, String>{};
+      final attachmentsSnapshot = List.of(_pendingResources);
       assembly = await const McpRuntime().assemble(
         engine: widget.engineOverride,
+        resourceAttachments: attachmentsSnapshot,
         context: SessionContext(
           activePrivateServerId: _session.activePrivateServerId,
           conversationId: convId,
@@ -901,13 +966,18 @@ class _ChatPageState extends State<ChatPage>
         ),
       );
       _setPill('thinking', CapsuleTone.l1);
+      // 附件属单次发送（M1-T3）：装配已消费快照，起步即清药丸。
+      if (_pendingResources.isNotEmpty && mounted) {
+        setState(_pendingResources.clear);
+      }
       await for (final e in assembly.loop.run(
         systemPrompt: plan.systemPrompt, // 静态前缀（P1-3b 断点 A，编排件组装）
         systemTail: plan.memSection,
         // 记忆增量区沉底（context-stepped-pruning §6.5）：周期内提取的变更
         // 只追加在稳定前缀之后、本轮提问之前，不推移快照+窗口原文。
         contextFooter: plan.contextFooter,
-        userPrompt: prompt,
+        // 资源附件 footer（M1-T3）拼在用户文本之前（模型先见附件再见图）。
+        userPrompt: (assembly.resourceContextFooter ?? '') + prompt,
         history: List.of(_session.transcript), // D11：上轮 transcript 续接
         workspaceFilter: plan.workspaceFilter, // P2-6：In-band 分流+胶囊
         maskTool: plan.maskTool, // P3-2：让位私有域发送边界脱敏
@@ -1249,6 +1319,13 @@ class _ChatPageState extends State<ChatPage>
                         pillLabel: _status.pillLabel,
                         runStartedAt: _status.runStartedAt,
                         onOpenMenu: _openComposerMenu,
+                        // 资源附件（M1-T3）：药丸展示 + 选择/移除回调；数据
+                        // 流出，零依赖本页私有态（composer 头部口径）。
+                        pendingResources:
+                            List.unmodifiable(_pendingResources),
+                        onPickResource: _pickResource,
+                        onRemoveResource: (id) => setState(() =>
+                            _pendingResources.removeWhere((r) => r.id == id)),
                         // 回车与发送钮统一走 guard（非 running 时 guard 通过→等价原
                         // 按钮直发；running 时按钮已变中止键，此处拦下并给 SnackBar）。
                         onSend: () {

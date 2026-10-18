@@ -23,6 +23,8 @@ class SessionContextSheetBody extends StatelessWidget {
     required this.onBind,
     required this.onClear,
     required this.onDone,
+    this.onPickResource,
+    this.onManageResources,
     this.bindLocked = false,
   });
 
@@ -40,6 +42,12 @@ class SessionContextSheetBody extends StatelessWidget {
   final ValueChanged<String> onBind;
   final VoidCallback onClear;
   final VoidCallback onDone;
+
+  /// 附加资源（composer「+」统一挂载菜单入口）；null = 不渲染该项。
+  final VoidCallback? onPickResource;
+
+  /// 跳转资源中心管理页（导入/改名/删除/外部打开）；null = 不渲染该项。
+  final VoidCallback? onManageResources;
 
   /// A5（page-beautify P3）：运行中菜单**可查看不可切换**——原一刀切
   /// guard 连只读查看都弹「需等待」（查看当前绑定零收益被禁、纯添堵）。
@@ -155,6 +163,29 @@ class SessionContextSheetBody extends StatelessWidget {
                   style: TextStyle(fontSize: Fsz.note, color: t.terminalMuted),
                 ),
               ),
+            // 2026-10-19：单一挂载入口收口——「附加资源 / 管理资源中心」一并
+            // 挂在 composer「+」下；原常驻附件行撤掉，药丸仅在有待发项时展开。
+            const Divider(height: 16),
+            ListTile(
+              key: const ValueKey('menu-attach'),
+              leading: const Icon(Icons.attach_file),
+              title: const Text('附加资源…'),
+              subtitle: const Text('从资源中心或系统文件选择，随本次发送'),
+              enabled: !bindLocked,
+              onTap: () {
+                Navigator.pop(context);
+                onPickResource?.call();
+              },
+            ),
+            ListTile(
+              key: const ValueKey('menu-resource-center'),
+              leading: const Icon(Icons.folder_open_outlined),
+              title: const Text('管理资源中心…'),
+              onTap: () {
+                Navigator.pop(context);
+                onManageResources?.call();
+              },
+            ),
             const SizedBox(height: 8),
             Align(
               alignment: Alignment.centerRight,

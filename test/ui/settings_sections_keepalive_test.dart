@@ -9,6 +9,10 @@
 /// 口径说明：Flutter 对「何时真的销毁 child」受 cacheExtent/布局时序影响，用
 /// 滚动手势复现不稳定；本用例改为**直接闸住不变式本身**——段 State 必须自行申请
 /// keepAlive（白盒但确定），行为侧另有 `settings_page_test` 的错误隔离用例兜底。
+///
+/// **2026-10-19**：资源中心段（`ResourceCenterSection`）迁出设置页、独立为
+/// `ui/resource_center_page.dart`，不再处于本页 ListView 滚动复用场景，故从
+/// 本闸移除——断言对象 = 设置页**在册**的有状态段。
 library;
 
 import 'dart:io';

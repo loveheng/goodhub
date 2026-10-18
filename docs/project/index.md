@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-17
+updated: 2026-10-18
 ---
 
 # goodhub · 功能落点索引（数据）
@@ -27,10 +27,10 @@ updated: 2026-10-17
 | N7 围栏云引擎装饰器（出站遮蔽/流式还原/拦截分派） | `lib/coordinator/fenced_cloud_engine.dart` + `hybrid_assembly.dart` 接线 | 一次装配=一次 Run 映射会话（调用方按 Run 装配）；PiiFenceDelegate 缺省 null=无人值守 fail-closed，debug 页接 FenceBlockCard 双选项卡 |
 | 两步熔断+步数墙排查卡契约 | `lib/coordinator/tool_breaker.dart` + `agent_loop.dart` | BlockDelegate 三操作；拍板 C1/C3 语义 |
 | 上下文治理（滑动窗口/工具结果摘要化） | `lib/coordinator/context_governor.dart` + `agent_loop.dart` | 发送边界窗口化（本地历史不裁）+ 回填前端侧摘要化（拍板 E1：摘要化失败保留原文 DEGRADE 留痕）；端侧摘要器 `OnDeviceResultSummarizer` |
-| UI 组件（design tokens/药丸/确认卡/排查卡/围栏拦截卡） | `lib/ui/tokens/` + `lib/ui/components/` + `lib/ui/gateway_loop_debug_page.dart` | tokens 唯一出处（goodhub-ui skill），debug 页全链接线（拍板 C4 边界） |
+| UI 组件（design tokens/药丸/确认卡/排查卡/围栏拦截卡/面板错误行） | `lib/ui/tokens/` + `lib/ui/components/`（含 `panel_error_row.dart` = 面板级错误行唯一实现，设置页与资源中心页共用）+ `lib/ui/gateway_loop_debug_page.dart` | tokens 唯一出处（goodhub-ui skill），debug 页全链接线（拍板 C4 边界） |
 | 网关/熔断联调页（L1/L2 网关 + 熔断排查卡验证 + 故障注入 + 脚本引擎 + 跨源/CoW 调试） | `lib/ui/gateway_loop_debug_page.dart`（窗口层：开关收集 + 四 UI 端口 + 事件流→轨道映射）+ `lib/coordinator/debug_run_orchestrator.dart`（挂载→协商→记忆面→网关→注水→引擎→sampling→故障注入→Skills/CoW→AgentLoop 全编排，纯编排零 UI；`_FaultInjector`/`_ScriptedEngine` 可单测件；clientFactory/目录解析器/五 UI 端口注入位） | **红线**：不并回 `McpRuntime.assemble`——生产多 Server 前缀路由+JIT 发现 vs 联调单 Server 裸名+静态 tools 语义不兼容；单测 `test/coordinator/debug_run_orchestrator_test.dart`（事件流契约/故障注入/释放卫生/异常路径） |
 | 应用装配入口（引擎预热/记忆清扫/首页挂载） | `lib/main.dart` | 纯装配；M1 壳迁 `lib/ui/claim_loop_page.dart`（debug 入口） |
-| 聊天主页（AgentLoop 正式宿主面） | `lib/ui/chat_page.dart`（视图交互与装配）+ `lib/ui/components/chat_composer.dart`（底部输入集群，传数据+回调零依赖私有态）+ `lib/ui/chat_status_controller.dart`（状态带 pill/运行态/已耗时 + 轨道列表 + 滚动锚定/键盘/会话切换生命周期；status/tracks 双 Listenable）+ `lib/ui/components/dual_track_stream.dart`（`TrackText`/`TrackCall` 自管局部渲染）+ `lib/ui/components/status_strip.dart`/`status_capsule.dart` | 交互 SSOT `docs/product/chat-interaction.md`；运行态·轨道·40ms 流控已下沉 controller/组件；**红线**：离开运行中任务有 `PopScope` 确认拦截（abort 即停 + mounted 内落盘部分进度）；回归 `test/ui/chat_status_controller_test.dart` |
+| 聊天主页（AgentLoop 正式宿主面） | `lib/ui/chat_page.dart`（视图交互与装配）+ `lib/ui/components/chat_composer.dart`（底部输入集群，传数据+回调零依赖私有态）+ `lib/ui/chat_status_controller.dart`（状态带 pill/运行态/已耗时 + 轨道列表 + 滚动锚定/键盘/会话切换生命周期；status/tracks 双 Listenable）+ `lib/ui/components/dual_track_stream.dart`（`TrackText`/`TrackCall` 自管局部渲染）+ `lib/ui/components/status_strip.dart`/`status_capsule.dart` | 交互 SSOT `docs/product/chat-interaction.md`；运行态·轨道·40ms 流控已下沉 controller/组件；**composer「+」= 本次会话统一挂载菜单**（服务绑定 + 附加资源 / 管理资源中心，2026-10-19 收口）；附件行按需展开（仅有待发项时 44dp，空态收 0），药丸默认 1 行不因新增能力占位；**红线**：离开运行中任务有 `PopScope` 确认拦截（abort 即停 + mounted 内落盘部分进度）；回归 `test/ui/chat_status_controller_test.dart` |
 | 双轨消息流组件（TrackEntry/渲染映射） | `lib/ui/components/dual_track_stream.dart` | 卡片复用 M2/M3 组件；阅读轨文本走 StreamingRichText；TrackEntry 编解码在 UI 层（静态） |
 | Markdown 子集解析器（跨仓共享包） | 外部包 `/home/zzh/app/rich_text/`（`rich_text.dart` 抽象 + `markdown_subset.dart` 实现） | goodhub 渲染器只依赖抽象（`List<RichBlock>`），parse 移调用点 |
 | 阅读轨只读渲染器（console tokens 对齐） | `lib/ui/rich_text_view.dart` | 媒体块降级不吞内容；todo 只读字形；MathBlock/InlineMath 降级等宽呈现 |
@@ -43,7 +43,7 @@ updated: 2026-10-17
 | 节点探活（握手+工具计数计时 / 401/403 鉴权态与离线区分） | `lib/mcp/server_probe.dart`（`ServerProber`/`NodeProbeResult`） | `McpClientFactory` 注入位；探活一次性建 client 用完即弃；单测 `test/mcp/server_probe_test.dart` |
 | Server 节点卡面板（端口/延迟/在线点/工具计数/鉴权态/挂载开关/增删改/默认私有钉选渲染） | `lib/ui/sections/nodes_section.dart`（`NodesSection`） | 增删改同 `mcp_servers.json`；探活按需不自动网络化；注入位 `endpointStoreOverride`/`probeOverride`/`autoProbe`；钉选 owner 在 settings_page（`isDefaultPrivate`/`onPinToggle` 透传）；段 State 混合 `AutomaticKeepAliveClientMixin`（滚动不丢态，闸见 `test/ui/settings_sections_keepalive_test.dart`）；单测 `test/ui/server_nodes_panel_test.dart` |
 | 本地插件面板（Binder 发现项渲染/信任态 pill/信任卡片入口；零配置自动挂载，不落用户 JSON） | `lib/ui/sections/local_plugins_section.dart`（`LocalPluginsSection`） | 注入位 `localScanOverride`/`localChangesOverride`；单测 `test/ui/local_plugins_panel_test.dart` |
-| 设置页（原服务大厅：Skill 覆写管理/BYOK/跨源授权/PC 远程网关/本地插件撤销信任/关于段） | `lib/ui/settings_page.dart`（页面骨架 + 跨段 owner：ListView 顺序/toast/错误行/默认私有钉选持久读写）+ 七段各自落在 `lib/ui/sections/{byok,nodes,local_plugins,gateway,cow,cross_source,about}_section.dart`（文件头有 scope 边界声明与各段迁移语义） | BYOK 多 profile 增删改 + 置顶切换生效（首位=生效对齐 hybrid_assembly；apiKey 走 SecureKeyValue）；「关于」段 = 版本 + 检查更新常驻 + 长按标题进 debug 联调（kDebugMode）；**红线**：入口只在聊天页侧边栏（AppBar 无设置按钮）；单测 `test/ui/byok_panel_test.dart` + `settings_page_test.dart`（关于面板/长按联调） |
+| 设置页（原服务大厅：Skill 覆写管理/BYOK/跨源授权/PC 远程网关/本地插件撤销信任/关于段） | `lib/ui/settings_page.dart`（页面骨架 + 跨段 owner：ListView 顺序/toast/错误行/默认私有钉选持久读写）+ 八段各自落在 `lib/ui/sections/{appearance,byok,nodes,local_plugins,gateway,cow,cross_source,about}_section.dart`（文件头有 scope 边界声明与各段迁移语义）；面板级错误行口径统一于 `lib/ui/components/panel_error_row.dart` | BYOK 多 profile 增删改 + 置顶切换生效（首位=生效对齐 hybrid_assembly；apiKey 走 SecureKeyValue）；「关于」段 = 版本 + 检查更新常驻 + 长按标题进 debug 联调（kDebugMode）；**红线**：入口只在聊天页侧边栏（AppBar 无设置按钮）；单测 `test/ui/byok_panel_test.dart` + `settings_page_test.dart`（关于面板/长按联调） |
 | 记忆看板（三 Tab 查看/编辑/导出/粉碎 + ops.log 人类可读渲染） | `lib/ui/memory_board_page.dart` | store 编辑面 `updateEntry/deleteEntry/purgeUserScope/listOpsLog/exportAll`（memory_store.dart）；ChatPage 侧边栏入口；单测 `test/ui/memory_board_page_test.dart` + `test/sandbox/memory_board_store_test.dart` |
 | token 字符级粗估口径 SSOT | `lib/core/tokens.dart` | 自 context_governor 下沉（层级纪律），governor 原位 re-export |
 | 应用内自更新（清单模型/下载校验/安装器/更新页） | `lib/update/` + `lib/ui/update_page.dart` | 入口 = chat_page ⚙ 调试菜单「检查更新」；设计 SSOT `docs/design/self-update.md` |
@@ -59,6 +59,9 @@ updated: 2026-10-17
 | 同机 Binder 传输（AIDL 通道 / 状态机 / 挂起队列 / DeathRecipient / 事件回传） | `lib/mcp/transport/`（Dart `BinderTransport`）+ `android/`（AIDL + MethodChannel 桥） | TC9 控制面；插件侧 SDK = `android/plugin-core`；≥128KB 的 `mcp-blob://` 数据面未落地（thirdconnect 待办） |
 | 多 Server 路由与 JIT 元工具（前缀隔离 / 激活集 / `get_connected_apps` / `activate_server_tools` / `use_server`） | `lib/coordinator/tool_router.dart` + `lib/coordinator/discovery_executor.dart` | `<server_id>__<tool>`；装配在 `chat_page._send`；**注意** `lib/mcp/tool_router.dart` 为孤立件（仅测试引用，海关过滤在其中，待收编） |
 | `$ref` 暂存池（内存/文件双介质 / TTL 30min / Session 即焚 / 启动幂等清池） | `lib/coordinator/ref_store.dart` | architecture §9；启动清池 `sweepStartupOrphans` 挂 `main.dart`；单测 `test/coordinator/ref_store_test.dart` |
+| 资源中心内核（本地文件库：导入/清单/读全文/改名/删除；text-only + 10MB 上限 + 内容判重复用） | `lib/resources/resource_store.dart`（新，2026-10-18；判重 2026-10-19） | 规格 SSOT `docs/design/resource-center.md`；生命周期=应用级 `underSupportDir/resource_center`；清单 SequentialFileWriter 原子写、损坏返空库 DEGRADE；错误契约 `ResourceStoreException`（code+hint）；**判重两级**：同名加 `(n)` 序号 + 同内容（sha256 字节级，记 `contentHash`）复用既有条目（`import` 返回 `ResourceImportResult` record = `{entry, reused}`；空哈希不参与复用）；与 `coordinator/ref_store.dart` 合流不合并（resourceUri=`local://resource/<uuid>`）；单测 `test/resources/resource_store_test.dart` |
+| 资源中心管理页（独立页；导入/改名/删除/外部打开/占用展示/对账接线） | `lib/ui/resource_center_page.dart`（页壳，2026-10-19 自设置页迁出）+ `lib/ui/sections/resource_center_section.dart`（内容 widget，2026-10-18）+ `lib/app/external_open.dart`（open_filex 平台收敛件） | 入口 = 会话侧边栏底部（紧随「设置」，对齐 TaskLedgerPage 先例）；段文件原地保留（在 ui→resources 直连白名单内，迁走会新增白名单文件）；注入位 storeOverride/cachePathOverride/externalOpenerOverride/filePickerOverride（§8.1）；RC5 占用展示、RC6 外部打开（prepareExternalOpen 唯一副本）；reconcileOrphans 进入段触发（extraDirs=cache external）；单测 `test/ui/resource_center_section_test.dart` |
+| 本地资源读取工具 + 附件绑定（`read_local_resource`；Gateway 内侧 L2 / 64KB 窗口 / 防死循环契约） | `lib/coordinator/local_resource_tool_executor.dart` + `resource_attachment_binder.dart`（新，2026-10-19） | T3：装配期附件全文落 run 级 `$ref` 池（句柄仅合流记账，工具入参=resource_id 防注水击穿窗口）；schema 进 gateway.loadCatalog + toolsProvider；**附件 picker 支持「从系统选择…」直选即收集**（返回 `collected` 标志，入库经 `import` 闸门不旁路，宿主明示 + 可撤销）；单测 `test/coordinator/local_resource_tool_test.dart` + `test/ui/resource_center_section_test.dart` |
 | 端侧模型管理链（目录/下载/清单缓存） | `archive/local_model/`（**已归档，非 lib 代码**） | 零接线零测试，端侧推迟拍板未翻转前不复活；复活步骤见该目录 `README.md`；`lib/llm/llm_model.dart` 仍为活代码（被 `llm.dart` 引用） |
 
 ## 文档落点
@@ -119,7 +122,7 @@ updated: 2026-10-17
 
 ### 直连白名单基线（standards §1.4 · 只减不增）
 
-- **配置类窗口现状边**：`byok_section→llm/cloud`、`nodes_section→mcp`、`local_plugins_section→mcp`、`trust_plugin_dialog→mcp`、`memory_board_page→sandbox`、`gateway_consent_dialog→gateway`。配置类窗口清单：`settings_page` + `ui/sections/*`、`memory_board_page`、`update_page`、`trust_plugin_dialog`、`components/server_endpoint_forms`、`gateway_consent_dialog`。
+- **配置类窗口现状边**：`byok_section→llm/cloud`、`nodes_section→mcp`、`local_plugins_section→mcp`、`trust_plugin_dialog→mcp`、`memory_board_page→sandbox`、`gateway_consent_dialog→gateway`、`resource_center_section→resources`。配置类窗口清单：`settings_page` + `ui/sections/*`、`memory_board_page`、`update_page`、`trust_plugin_dialog`、`components/server_endpoint_forms`、`gateway_consent_dialog`。
 - **聊天窗口存量直连（遗留债，12 边）**：
 
 | 源文件 | 目标 |

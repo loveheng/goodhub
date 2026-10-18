@@ -7,23 +7,29 @@
 /// 「图钉按钮 + 默认私有 pill」，存储键 `default.private.server` 与回退链不变。
 ///
 /// **本页 scope（边界声明——防无边界膨胀）**：设置 = **服务与引擎配置**，仅收纳
-/// 下列六段。记忆看板（`MemoryBoardPage`）、应用更新（`UpdatePage`）、会话历史
-/// 均为独立页，入口在聊天页侧边栏 / AppBar，**不并入本页**——名字变宽不等于
-/// 职责变宽。
+/// 下列八段。记忆看板（`MemoryBoardPage`）、资源中心（`ResourceCenterPage`）、
+/// 任务对账（`TaskLedgerPage`）、应用更新（`UpdatePage`）、会话历史均为独立页，
+/// 入口在聊天页侧边栏 / AppBar，**不并入本页**——名字变宽不等于职责变宽。
 ///
-/// ① **云端模型（BYOK）**——段 widget `sections/byok_section.dart`；
-/// ② **MCP 服务端点（节点卡）**——段 widget `sections/nodes_section.dart`；
-/// ③ **本地插件**——段 widget `sections/local_plugins_section.dart`；
-/// ④ **PC 远程网关**——段 widget `sections/gateway_section.dart`；
-/// ⑤ **Skill 覆写（CoW 编辑面）**——段 widget `sections/cow_section.dart`；
-/// ⑥ **跨源授权语义**——段 widget `sections/cross_source_section.dart`；
-/// ⑦ **关于**——段 widget `sections/about_section.dart`。
+/// 本页 ListView 顺序（自上而下）与各段落点：
+/// ① **全局外观**——段 widget `sections/appearance_section.dart`；
+/// ② **云端模型（BYOK）**——段 widget `sections/byok_section.dart`；
+/// ③ **MCP 服务端点（节点卡）**——段 widget `sections/nodes_section.dart`；
+/// ④ **本地插件**——段 widget `sections/local_plugins_section.dart`；
+/// ⑤ **PC 远程网关**——段 widget `sections/gateway_section.dart`；
+/// ⑥ **Skill 覆写（CoW 编辑面）**——段 widget `sections/cow_section.dart`；
+/// ⑦ **跨源授权语义**——段 widget `sections/cross_source_section.dart`；
+/// ⑧ **关于**——段 widget `sections/about_section.dart`。
 ///
-/// **window-slim P1-A（2026-10-17）：六段全部抽出，本页只留两类职责**——
+/// **window-slim P1-A（2026-10-17）：八段全部抽出，本页只留两类职责**——
 /// ① 页面骨架（ListView 顺序/间距 + AppBar）；② **跨段共享 owner**：默认私有
-/// 服务钉选的持久读写（②③ 共用同一默认键）与 toast/错误行口径。各段自持领域
+/// 服务钉选的持久读写（③④ 共用同一默认键）与 toast/错误行口径。各段自持领域
 /// 态与编排，页面不再持有任何 TextEditingController / store / 探活状态。
 /// 详见各段文件头的「迁移语义原样保留」声明与 `docs/design/window-slim.md`。
+///
+/// **2026-10-19 资源中心迁出**：原第七段 `ResourceCenterSection` 移出本页，
+/// 独立为 `lib/ui/resource_center_page.dart`（数据管理面）——高频管理动作不该
+/// 沉在二级配置页；入口在会话侧边栏底部，紧随「设置」。
 library;
 
 import 'dart:async';
@@ -42,6 +48,7 @@ import 'sections/cross_source_section.dart';
 import 'sections/gateway_section.dart';
 import 'sections/local_plugins_section.dart';
 import 'sections/nodes_section.dart';
+import 'components/panel_error_row.dart';
 import 'sections/appearance_section.dart';
 import 'tokens/console_tokens.dart';
 
@@ -144,39 +151,15 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  /// 面板级错误态（ux-hardening P0-3）：Rose 文案 + 重试按钮。替代两种历史
-  /// 病：一处初始化失败打死整页（其余面板可用被替换）；store 读取失败后
-  /// `store == null` 永显「读取中…」（错误不可见、无恢复入口）。
+  /// 面板级错误态（ux-hardening P0-3 口径）：统一收敛至 [panelErrorRow]，本页
+  /// 只注入自己的 onRetry——避免设置页与资源中心独立页各抄一份实现。
   Widget _panelError(
     ConsoleTokens t,
     String message,
     VoidCallback onRetry, {
     ValueKey<String>? key,
-  }) {
-    return Padding(
-      key: key,
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '⚠ $message',
-            style: TextStyle(fontSize: Fsz.telemetry, color: t.danger),
-          ),
-          const SizedBox(height: 2),
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton.icon(
-              key: key == null ? null : ValueKey('${key.value}-retry'),
-              onPressed: onRetry,
-              icon: const Icon(Icons.refresh, size: 16),
-              label: const Text('重试'),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  }) =>
+      panelErrorRow(t, message, onRetry, key: key);
 
   @override
   Widget build(BuildContext context) {

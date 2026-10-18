@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-17
+updated: 2026-10-18
 ---
 
 # GoodHub 工程规范（Engineering Specification / Architecture SSOT）
@@ -15,7 +15,7 @@ updated: 2026-10-17
 
 ### 1.0 分层依赖矩阵（权威）
 
-拓扑 = **扁平域目录**。`lib/` 一级域共 11 个，依赖方向**严格自底向上，无文件级环**（`test/architecture/dependency_rules_test.dart` 持续守护）。
+拓扑 = **扁平域目录**。`lib/` 一级域共 12 个，依赖方向**严格自底向上，无文件级环**（`test/architecture/dependency_rules_test.dart` 持续守护）。
 
 | 域 | 角色 | 允许的域内出向（内部 import） |
 |---|---|---|
@@ -24,8 +24,9 @@ updated: 2026-10-17
 | `mcp/` | MCP 客户端域（json_rpc/client/transport/端点/探活/信任/sampling/`goodshare_task_api`） | `core` |
 | `sandbox/` | 记忆沙盒域（memory/conversation/workspace 三 store） | `core` |
 | `task/` | 任务循环域（goodshare 远程任务 claim→推理→apply） | `mcp` |
+| `resources/` | 资源中心内核域（本地文件库 ResourceStore；resource-center M1） | `core` |
 | `app/` | 装配容器（依赖注入 seed，`service_directory.dart`） | `mcp`（装配目标域） |
-| `coordinator/` | 编排域（AgentLoop/权限/熔断/PII/上下文治理/`$ref`/内核四件套/Run 装配核） | `core`、`llm`、`mcp`、`sandbox`、`task` |
+| `coordinator/` | 编排域（AgentLoop/权限/熔断/PII/上下文治理/`$ref`/内核四件套/Run 装配核） | `core`、`llm`、`mcp`、`sandbox`、`task`、`resources` |
 | `gateway/` | 聚合网关域（Server 角色，`:8766/mcp`；headless 窗口） | `coordinator` **执行面白名单**（§1.4）、`mcp`、`llm`、`sandbox`、`app`；**禁 `ui`**（红灯） |
 | `gateway_api/` | 网关 API 薄面 | `gateway` |
 | `ui/` | 窗口层（聊天/设置/看板/更新/联调页 + components/sections） | `coordinator`、`core`、`app`、`gateway`（仅窗口→窗口面，如 consent 弹层）、`gateway_api`、`update`；对 `mcp`/`sandbox`/`llm` 仅**白名单直连**（§1.4，只减不增） |
@@ -42,6 +43,7 @@ flowchart TD
     mcp[mcp 客户端域]
     sandbox[sandbox 沙盒域]
     task[task 任务循环域]
+    resources[resources 资源中心域]
     coord[coordinator 编排域]
     gateway[gateway 网关域·headless 窗口]
     gwapi[gateway_api 薄面]
@@ -52,6 +54,7 @@ flowchart TD
     mcp --> core
     sandbox --> core
     task --> mcp
+    resources --> core
     app --> mcp
     llm -. 实现 SamplingEngine 端口 .-> mcp
     coord --> core
@@ -59,6 +62,7 @@ flowchart TD
     coord --> mcp
     coord --> sandbox
     coord --> task
+    coord --> resources
     gateway --> coord
     gateway --> mcp
     gateway --> llm

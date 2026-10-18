@@ -1,6 +1,7 @@
 /// 会话侧边栏（D13，步 4 对账 Epic C 外提）：会话历史列表 + 标题搜索 +
-/// 重命名 + 删除 + 设置/记忆看板入口。交互经回调回页面（运行守卫/删除确认
-/// 对话框/导航编排留窗口）；搜索词与重命名对话框为本地 UI 态。
+/// 重命名 + 删除 + 全局入口（设置 / 资源中心 / 任务对账 / 记忆库）。交互经
+/// 回调回页面（运行守卫/删除确认对话框/导航编排留窗口）；搜索词与重命名
+/// 对话框为本地 UI 态。
 ///
 /// ux-hardening P1-5：补重命名 + 搜索 + 列表元信息（时间 · 条数）——原仅
 /// 删除，标题自动截首句导致会话一多无法辨认。
@@ -10,6 +11,7 @@ import 'package:flutter/material.dart';
 
 import '../../sandbox/conversation_store.dart';
 import '../memory_board_page.dart';
+import '../resource_center_page.dart';
 import '../settings_page.dart';
 import '../task_ledger_page.dart';
 import '../tokens/console_tokens.dart';
@@ -239,6 +241,21 @@ class _ConversationDrawerState extends State<ConversationDrawer> {
                 Navigator.of(context).push(
                   MaterialPageRoute<void>(
                     builder: (_) => const SettingsPage(),
+                  ),
+                );
+              },
+            ),
+            // 资源中心（resource-center，2026-10-19 自设置页第七段迁出为独立页）：
+            // 本地文件库的**管理面**（导入/改名/删除/外部打开/占用展示），属用户资产
+            // 数据面而非配置项；紧随「设置」保心智连续（原宿主位置）。
+            ListTile(
+              leading: const Icon(Icons.folder_open_outlined),
+              title: const Text('资源中心'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const ResourceCenterPage(),
                   ),
                 );
               },
