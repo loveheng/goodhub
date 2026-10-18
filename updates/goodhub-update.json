@@ -1,8 +1,8 @@
 {
-  "versionCode": 2008,
+  "versionCode": 2009,
   "versionName": "1.0.4",
   "applicationId": "com.zzh.goodhub",
-  "apkUrl": "https://r2.oklhj.eu.org/updates/goodhub/app-release-2008.apk",
-  "sha256": "cc4a59127ec854fdfb339ea675442d386073d31c2439804edf61fad0bdd3ea13",
+  "apkUrl": "https://r2.oklhj.eu.org/updates/goodhub/app-release-2009.apk",
+  "sha256": "1033387b86fb29e847e1923cba56428ef774b0f8e2cc026b61819f49affb83fb",
   "changelog": "v1.0.2：窗口瘦身（状态条/双轨流/会话抽屉重构）与页面美化；更新源目录与清单校验不变"
 }
