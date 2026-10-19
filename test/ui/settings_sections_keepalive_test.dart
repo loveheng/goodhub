@@ -20,6 +20,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/coordinator/cow_sync.dart';
+import 'package:goodhub/coordinator/user_prompt_store.dart';
 import 'package:goodhub/core/security/secure_key_value.dart';
 import 'package:goodhub/llm/cloud/byok_store.dart';
 import 'package:goodhub/mcp/local_plugin_discovery.dart';
@@ -30,6 +31,7 @@ import 'package:goodhub/ui/sections/cow_section.dart';
 import 'package:goodhub/ui/sections/gateway_section.dart';
 import 'package:goodhub/ui/sections/local_plugins_section.dart';
 import 'package:goodhub/ui/sections/nodes_section.dart';
+import 'package:goodhub/ui/sections/user_prompts_section.dart';
 import 'package:goodhub/ui/tokens/console_tokens.dart';
 
 void main() {
@@ -58,7 +60,7 @@ void main() {
     return (state as dynamic).wantKeepAlive as bool;
   }
 
-  testWidgets('六个有状态段全部申请 keepAlive（滚动不丢领域态）', (tester) async {
+  testWidgets('七个有状态段全部申请 keepAlive（滚动不丢领域态）', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
         home: SingleChildScrollView(
@@ -94,6 +96,11 @@ void main() {
                 onFlash: (_) {},
                 errorRowBuilder: errorRow,
               ),
+              UserPromptsSection(
+                storeOverride: UserGlobalPromptsStore(dir: tempDir),
+                onFlash: (_) {},
+                errorRowBuilder: errorRow,
+              ),
               const AboutSection(),
             ],
           ),
@@ -108,6 +115,7 @@ void main() {
       LocalPluginsSection,
       GatewaySection,
       CowSection,
+      UserPromptsSection,
       AboutSection,
     ]) {
       expect(

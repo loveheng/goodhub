@@ -18,8 +18,9 @@
 /// ④ **本地插件**——段 widget `sections/local_plugins_section.dart`；
 /// ⑤ **PC 远程网关**——段 widget `sections/gateway_section.dart`；
 /// ⑥ **Skill 覆写（CoW 编辑面）**——段 widget `sections/cow_section.dart`；
-/// ⑦ **跨源授权语义**——段 widget `sections/cross_source_section.dart`；
-/// ⑧ **关于**——段 widget `sections/about_section.dart`。
+/// ⑦ **全局 Prompt（user 来源管理面）**——段 widget `sections/user_prompts_section.dart`；
+/// ⑧ **跨源授权语义**——段 widget `sections/cross_source_section.dart`；
+/// ⑨ **关于**——段 widget `sections/about_section.dart`。
 ///
 /// **window-slim P1-A（2026-10-17）：八段全部抽出，本页只留两类职责**——
 /// ① 页面骨架（ListView 顺序/间距 + AppBar）；② **跨段共享 owner**：默认私有
@@ -37,6 +38,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../coordinator/cow_sync.dart';
+import '../../coordinator/user_prompt_store.dart';
 import '../../llm/cloud/byok_store.dart';
 import '../../mcp/default_private_server.dart';
 import '../../mcp/local_plugin_discovery.dart';
@@ -48,6 +50,7 @@ import 'sections/cross_source_section.dart';
 import 'sections/gateway_section.dart';
 import 'sections/local_plugins_section.dart';
 import 'sections/nodes_section.dart';
+import 'sections/user_prompts_section.dart';
 import 'components/panel_error_row.dart';
 import 'sections/appearance_section.dart';
 import 'tokens/console_tokens.dart';
@@ -61,6 +64,7 @@ class SettingsPage extends StatefulWidget {
   const SettingsPage({
     super.key,
     this.storeOverride,
+    this.userPromptsStoreOverride,
     this.byokStoreOverride,
     this.endpointStoreOverride,
     this.probeOverride,
@@ -71,6 +75,10 @@ class SettingsPage extends StatefulWidget {
 
   /// 测试注入位；null = 生产路径（应用文档目录）。透传 CoW 段。
   final CowOverridesStore? storeOverride;
+
+  /// 测试注入位（prompt-mgmt §3.3）；null = 生产路径（应用文档目录
+  /// /user_global_prompts.json，与 chat_page 装配同一文件）。透传全局 Prompt 段。
+  final UserGlobalPromptsStore? userPromptsStoreOverride;
 
   /// 测试注入位（M4-T5 BYOK 面板）；null = 生产路径（默认安全存储装配）。
   /// 透传云端引擎段。
@@ -206,6 +214,14 @@ class _SettingsPageState extends State<SettingsPage> {
           const SizedBox(height: 12),
           CowSection(
             storeOverride: widget.storeOverride,
+            onFlash: _flash,
+            errorRowBuilder: _panelError,
+          ),
+          const SizedBox(height: 12),
+          // 全局 Prompt（user 来源）：⑥ CoW 管 server 模板覆写，本段管 user
+          // 全局 prompt（prompt-mgmt §3.3）——注册名 user/<name>，新会话生效。
+          UserPromptsSection(
+            storeOverride: widget.userPromptsStoreOverride,
             onFlash: _flash,
             errorRowBuilder: _panelError,
           ),

@@ -199,12 +199,16 @@ void main() {
       expect(router.activatedServers, containsAll(['s1', 's2']));
     });
 
-    test('private use_server：抢占单一槽位，公共前缀不动、只动尾部块', () async {
+    test('private use_server：pending 请求 + 提交点后槽位切换，公共前缀不动', () async {
       router.activatedServers.addAll(['s1', 's2']);
       final r1 = await disc.execute(AssembledToolCall(
           id: '1', name: DiscoveryExecutor.useServer,
           argumentsJson: jsonEncode({'server_id': 'p1'})));
       expect(r1.isError, isFalse);
+      expect(router.activePrivateServerId, isNull,
+          reason: '执行期只写 pending（提交点 = ToolResultMessage 落历史后）');
+      expect(r1.content, contains('下一轮生效'));
+      router.commitPendingSlot();
       expect(router.activePrivateServerId, 'p1');
       final names1 = router.focusedSchemas().map((s) => s.name).toList();
       expect(names1,
@@ -215,6 +219,7 @@ void main() {
           id: '2', name: DiscoveryExecutor.useServer,
           argumentsJson: jsonEncode({'server_id': 'p2'})));
       expect(r2.isError, isFalse);
+      router.commitPendingSlot();
       expect(router.activePrivateServerId, 'p2');
       final names2 = router.focusedSchemas().map((s) => s.name).toList();
       expect(names2.sublist(0, 3),
@@ -222,22 +227,24 @@ void main() {
       expect(names2.last, 'p2__private_b');
     });
 
-    test('activate_server_tools 私有服务：占槽不进公共激活集', () async {
+    test('activate_server_tools 私有服务：pending 占槽，提交后不进公共激活集', () async {
       final res = await disc.execute(AssembledToolCall(
           id: '1', name: DiscoveryExecutor.activateServerTools,
           argumentsJson: jsonEncode({'server_id': 'p1'})));
       expect(res.isError, isFalse);
+      router.commitPendingSlot();
       expect(router.activePrivateServerId, 'p1');
       expect(router.activatedServers, isNot(contains('p1')));
     });
 
-    test('"all" 清空私有槽位，公共面不变', () async {
+    test('"all" 清空私有槽位（pending），公共面不变', () async {
       router.activatedServers.addAll(['s1', 's2']);
       router.activePrivateServerId = 'p1';
       final res = await disc.execute(AssembledToolCall(
           id: '1', name: DiscoveryExecutor.useServer,
           argumentsJson: jsonEncode({'server_id': 'all'})));
       expect(res.isError, isFalse);
+      router.commitPendingSlot();
       expect(router.activePrivateServerId, isNull);
       expect(router.focusedSchemas().map((s) => s.name),
           everyElement(isNot(contains('p1'))));
@@ -302,6 +309,7 @@ void main() {
           id: '1', name: DiscoveryExecutor.useServer,
           argumentsJson: jsonEncode({'server_id': 'all'})));
       expect(res.isError, isFalse);
+      router.commitPendingSlot();
       expect(router.activePrivateServerId, isNull);
     });
   });

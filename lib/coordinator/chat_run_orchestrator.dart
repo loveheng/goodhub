@@ -31,6 +31,7 @@ class ChatRunPlan {
     required this.maskTool,
     required this.memoryEntries,
     required this.droppedCount,
+    this.slotNotice,
   });
 
   /// In-band 提取面（P2-6）：落盘在内核，胶囊/写失败经构造期回调回窗口。
@@ -49,6 +50,11 @@ class ChatRunPlan {
   /// 归因轨道数据（展示 only）：本轮注入的记忆与超限丢弃数。
   final List<MemoryEntry> memoryEntries;
   final int droppedCount;
+
+  /// 断连降级通告（prompt-mgmt §8.2.1）：Run 边界收敛发现激活私有服务掉线 →
+  /// 槽位置 null 降级纯公共模式，通告文本经本位回窗口（TrackNote）。
+  /// null = 无降级。
+  final String? slotNotice;
 }
 
 /// Run 编排 owner：每次 Run 由窗口经 [plan] 取编排产物、经 [writebackSlot]
@@ -74,6 +80,12 @@ class ChatRunOrchestrator {
     required void Function(String key, String scope)? onWriteFailure,
   }) async {
     final router = assembly.router;
+    // Run 边界收敛（prompt-mgmt §8.2.1）：断连 pending 降级生效 + 未提交
+    // pending 兜底收敛 + 捕获本 Run 不可变槽位快照——快照后 focusedSchemas()
+    // （toolsProvider 经 effectiveSlot）与本处 composeSystemPrompt / maskTool
+    // 同源同拍，本 Run 内任何中途变异（切域/断连）不再撕裂投影。
+    final slotNotice = router.beginRun();
+    final slot = router.effectiveSlot;
     // In-band 提取面（archive-memory-claim 步 2）：session 域落 wsStates
     //（所有权仍在 Session，按调用传入）；user/srv 域走 MemoryStore keyed 映射
     //（G1）；UI 胶囊与写失败经回调回窗口（window-slim P1-C 通道）。
@@ -134,23 +146,30 @@ class ChatRunOrchestrator {
       // P1-3b（§8.1 断点 A）：静态角色+skills+mountedSection 为静态前缀
       //（挂 ephemeral 断点），记忆区走 systemTail 置尾。P2-4（§3.2）：
       // workspace_update 提取指令为固定静态区追加（含「tool-call 轮严禁输出」铁律）。
+      // prompt-mgmt Phase 2 接入点：投影三元与 focusedSchemas() 同源同拍——
+      // 公共集 = 已挂载非私有；私有槽位 = 激活私有（null 即纯公共模式）。
       systemPrompt: skills.composeSystemPrompt(
             baseSystemPrompt,
-            connectedServerIds: router.serverIds,
+            publicServerIds: router.serverIds
+                .where((id) => !router.privateServerIds.contains(id))
+                .toList(),
+            activePrivateSlotId: slot,
+            mountedSection: mountedSection,
           ) +
-          mountedSection +
           WorkspaceStreamFilter.promptInstructions,
       memSection: memSection,
       contextFooter: contextFooter.isEmpty ? null : contextFooter,
       // P3-2（D-H/§9.1）：已让位私有域的历史调用发送边界合成桩脱敏。
+      // 判定源 = Run 启动快照（§8.2.1）——Run 中途切域不改写本 Run 投影。
       maskTool: (name) {
         final sid = router.serverFor(name);
         return sid != null &&
             router.privateServerIds.contains(sid) &&
-            router.activePrivateServerId != sid;
+            slot != sid;
       },
       memoryEntries: memView.entries,
       droppedCount: memView.droppedCount,
+      slotNotice: slotNotice,
     );
   }
 
@@ -160,6 +179,7 @@ class ChatRunOrchestrator {
     required ToolRouter router,
     required ConversationSession session,
   }) {
+    router.endRun(); // Run 收尾：丢快照 + 丢弃未提交 pending（§8.2.2 前置 Abort）
     final slot = router.activePrivateServerId;
     if (slot != null) {
       session.bindPrivateServer(slot);

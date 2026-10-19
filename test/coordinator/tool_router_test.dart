@@ -63,6 +63,101 @@ ToolRouter _router() => ToolRouter(
     );
 
 void main() {
+  group('ToolRouter 切域事务与 Run 快照（prompt-mgmt Phase 2）', () {
+    test('requestSlot 只写 pending：活跃槽位在 commitPendingSlot 前不变', () {
+      final router = _router();
+      router.requestSlot('lp1');
+      expect(router.activePrivateServerId, isNull, reason: '提交点前活跃槽位不变');
+      router.commitPendingSlot();
+      expect(router.activePrivateServerId, 'lp1');
+    });
+
+    test('提交点前 endRun 丢弃 pending（Abort 前槽位保持原状）', () {
+      final router = _router();
+      router.beginRun();
+      router.requestSlot('lp1');
+      router.endRun(); // Run 收尾：未提交 pending 丢弃
+      expect(router.activePrivateServerId, isNull, reason: '提交前 Abort 不切换');
+      router.commitPendingSlot(); // endRun 后无 pending，幂等 no-op
+      expect(router.activePrivateServerId, isNull);
+    });
+
+    test('提交点后不回滚：commitPendingSlot 单向，endRun 不撤', () {
+      final router = _router();
+      router.beginRun();
+      router.requestSlot('lp1');
+      router.commitPendingSlot(); // ToolResultMessage 落历史后提交
+      expect(router.activePrivateServerId, 'lp1');
+      router.endRun(); // 提交后 Abort/收尾
+      expect(router.activePrivateServerId, 'lp1', reason: '切换是显式意图，不回滚');
+    });
+
+    test('Run 快照隔离：Run 内 focusedSchemas/execute 消费启动快照', () async {
+      final router = _router();
+      router.activePrivateServerId = 'lp1';
+      router.beginRun(); // 快照 = lp1
+      router.requestSlot('lp2');
+      router.commitPendingSlot(); // Run 中途提交
+      expect(router.activePrivateServerId, 'lp2');
+      expect(router.focusedSchemas().map((s) => s.name).toList(),
+          ['pub__a', 'lp1__x'],
+          reason: 'Run 内工具面仍按启动快照 lp1（同拍同源，防撕裂）');
+      // Run 内幻觉调用新槽位 lp2：按快照被拦（新工具面下一 Run 生效）。
+      final blocked = await router.execute(
+          AssembledToolCall(id: '1', name: 'lp2__y', argumentsJson: '{}'));
+      expect(blocked.isError, isTrue);
+      router.endRun();
+      expect(router.focusedSchemas().map((s) => s.name).toList(),
+          ['pub__a', 'lp2__y'], reason: '下一 Run 消费新槽位');
+    });
+
+    test('无快照时 effectiveSlot 回落活跃槽位（未 beginRun 的直用路径）', () {
+      final router = _router();
+      router.activePrivateServerId = 'lp1';
+      expect(router.effectiveSlot, 'lp1');
+    });
+
+    test('断连降级：激活私有掉线 → pending 标记 → beginRun 置空 + 通告', () {
+      final router = _router();
+      router.activePrivateServerId = 'lp1';
+      router.markPrivateServerOffline('lp1');
+      // Run 中途标记不影响本 Run：beginRun 前槽位不变。
+      expect(router.activePrivateServerId, 'lp1');
+      final notice = router.beginRun();
+      expect(router.activePrivateServerId, isNull, reason: '僵尸槽位自愈置空');
+      expect(notice, contains('lp1'), reason: '降级可见通告');
+      expect(notice, contains('纯公共'));
+      router.endRun();
+    });
+
+    test('断连降级不影响未激活的私有服务与公共面', () {
+      final router = _router();
+      router.activePrivateServerId = 'lp1';
+      router.markPrivateServerOffline('lp2'); // 掉线的是未激活私有
+      expect(router.beginRun(), isNull);
+      expect(router.activePrivateServerId, 'lp1', reason: '非激活私有掉线不动槽位');
+      router.endRun();
+    });
+
+    test('掉线 + 显式切域并存：显式切域请求优先于降级', () {
+      final router = _router();
+      router.activePrivateServerId = 'lp1';
+      router.markPrivateServerOffline('lp1');
+      router.requestSlot('lp2'); // 用户显式意图
+      final notice = router.beginRun();
+      expect(router.activePrivateServerId, 'lp2', reason: '显式切域优先');
+      expect(notice, isNull);
+      router.endRun();
+    });
+
+    test('无激活槽位时掉线标记不产生降级通告', () {
+      final router = _router();
+      router.markPrivateServerOffline('lp1'); // 当前无槽位
+      expect(router.beginRun(), isNull);
+      router.endRun();
+    });
+  });
+
   group('ToolRouter 单槽私有门控（本地插件=私有 tier）', () {
     test('私有（含本地插件 id）未激活：不在工具面，execute 拦截', () async {
       final router = _router();

@@ -449,6 +449,7 @@ class McpRuntime {
     for (final ep in endpoints) {
       final key = await apiKeyReader(ep.id);
       final client = factory(ep.endpoint, key);
+      client.samplingEnabled = true; // 托管 server：声明 sampling（§3.11 消费面）
       final caps = await client.negotiate();
       serverCaps[ep.id] = caps;
       note?.call(
@@ -481,6 +482,7 @@ class McpRuntime {
       if (info.serverId.isEmpty || faces.containsKey(info.serverId)) continue;
       try {
         final client = localPluginDiscovery.createClient(info);
+        client.samplingEnabled = true; // 托管 server：声明 sampling（§3.11 消费面）
         final caps = await client.negotiate();
         serverCaps[info.serverId] = caps;
         final face = McpToolFace(
@@ -533,6 +535,19 @@ class McpRuntime {
     // （全局钉选 isDefault → 首个启用的 private → null）。
     router.activePrivateServerId =
         resolveBinding(endpoints, bound: context.activePrivateServerId);
+
+    // 断连联动（prompt-mgmt §8.2.1）：掉线的是当前激活私有服务 → 只写
+    // pending 降级标记，Run 边界（ChatRunOrchestrator.plan）统一收敛生效，
+    // 正在执行的 Run 快照不受影响。连接建于 router 之前（_startConnection 无
+    // router 可见性），故在 router 就绪后包一层回告（保留原 connectionReport
+    // 广播语义，不替换 _startConnection 已挂的闭包）。
+    for (final entry in connections.entries) {
+      final prev = entry.value.onDisconnectReport;
+      entry.value.onDisconnectReport = (r) {
+        router.markPrivateServerOffline(entry.key);
+        prev?.call(r);
+      };
+    }
 
     // —— 链路序（T6 设计）：Loop → Discovery → SkillActivation → MemoryTool
     // → Hydration → Gateway → ToolRouter → faces ——
@@ -652,6 +667,9 @@ class McpRuntime {
           ? router.serverIds.first
           : 'goodshare',
       serverResolver: router.serverFor,
+      // 切域事务提交点（prompt-mgmt §8.2.2）：ToolResultMessage 落历史后提交
+      // pending 槽位请求——前 Abort 槽位不变，后 Abort 不回滚。
+      onRoundCommitted: router.commitPendingSlot,
       toolsProvider: () => [
         ...router.focusedSchemas(),
         ...DiscoveryExecutor.staticSchemas(),
@@ -720,6 +738,9 @@ class McpRuntime {
     ToolProgressCallback? onProgress,
     void Function()? release,
   }) async {
+    // 托管挂载原语：声明 sampling capability（§3.11）——gateway / 联调页 /
+    // mountEndpoint 均经此，其调用方随后接采样 handler；诊断探针不走此原语故不声明。
+    client.samplingEnabled = true;
     final caps = await client.negotiate();
     final face = McpToolFace(
       client: client,

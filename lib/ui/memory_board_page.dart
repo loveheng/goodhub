@@ -1,28 +1,52 @@
 /// 记忆看板（M4-T5，F5.3+F4.3：查看/编辑/导出/粉碎；D7 ops.log 人类可读
-/// 渲染位）。形态 = ui-design §3.3 控制台式卡片，三 Tab：
+/// 渲染位）。形态 = ui-design §3.3 控制台式卡片，四 Tab：
 /// ① **记忆条目**——memory.md 全量（落盘态直读，无缓存）；条目级编辑
 ///    （锚点保留，防破坏 D8 作用域与 FC1 迁移锚）与删除；
 /// ② **踩坑教训**——lessons.md 同构（D5 同解析器）；
 /// ③ **操作审计**——ops.log JSONL 最新优先渲染（D7 拍板：机器可查可筛的
-///    人类可读面在此）。
+///    人类可读面在此）；
+/// ④ **提示词**（prompt-mgmt §3.3 透明面）——全局 Prompt（user 来源落盘）
+///    + MCP 服务 Prompt（appScoped：活态注册面 / CoW 落盘基线）只读总览，
+///    编辑归设置页两段，防双入口漂移。
 /// AppBar 动作：**导出**（全量原文含锚点进剪贴板，FC1 备份可恢复）+
 /// **粉碎**（user 级全清，srv 绑定条目保留——danger 二次确认）。
 /// UI 层零 dart:io（Rule 1）：store 经 [MemoryStore.underSupportDir] 装配，
-/// 测试注入 [storeOverride]。
+/// 测试注入 [storeOverride]；提示词 Tab 的 store/活态注册表同样走注入位
+/// （[userStoreOverride]/[cowStoreOverride]/[skillsProvider]）。
 library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../coordinator/cow_sync.dart';
+import '../coordinator/skill_registry.dart';
+import '../coordinator/user_prompt_store.dart';
 import '../sandbox/memory_store.dart';
+import 'components/panel_error_row.dart';
+import 'sections/prompts_overview_section.dart';
 import 'tokens/console_tokens.dart';
 
 class MemoryBoardPage extends StatefulWidget {
-  const MemoryBoardPage({super.key, this.storeOverride});
+  const MemoryBoardPage({
+    super.key,
+    this.storeOverride,
+    this.userStoreOverride,
+    this.cowStoreOverride,
+    this.skillsProvider,
+  });
 
   /// 测试注入位；null = 生产路径（应用支持目录/memory）。
   final MemoryStore? storeOverride;
+
+  /// 提示词 Tab 注入位（null = 生产路径自解析文档目录；见段文件头）。
+  final UserGlobalPromptsStore? userStoreOverride;
+  final CowOverridesStore? cowStoreOverride;
+
+  /// 连接态 SkillRegistry 提供者（窗口注入 `() => session.skills`，其
+  /// globals()/appScoped() 反映当前已连接服务与静态预置，与具体会话无关）；
+  /// null = 注册表不可用 → 提示词 Tab 展示离线基线（非会话概念）。
+  final SkillRegistry? Function()? skillsProvider;
 
   @override
   State<MemoryBoardPage> createState() => _MemoryBoardPageState();
@@ -31,7 +55,7 @@ class MemoryBoardPage extends StatefulWidget {
 class _MemoryBoardPageState extends State<MemoryBoardPage>
     with SingleTickerProviderStateMixin {
   MemoryStore? _store;
-  late final TabController _tabs = TabController(length: 3, vsync: this);
+  late final TabController _tabs = TabController(length: 4, vsync: this);
   var _memories = const <MemoryEntry>[];
   var _lessons = const <MemoryEntry>[];
   var _ops = const <OpsLogLine>[];
@@ -116,6 +140,7 @@ class _MemoryBoardPageState extends State<MemoryBoardPage>
             Tab(text: '记忆条目'),
             Tab(text: '踩坑教训'),
             Tab(text: '操作审计'),
+            Tab(text: '提示词'),
           ],
         ),
       ),
@@ -153,6 +178,7 @@ class _MemoryBoardPageState extends State<MemoryBoardPage>
                 _entriesTab(t, _memories, lessons: false),
                 _entriesTab(t, _lessons, lessons: true),
                 _opsTab(t),
+                _promptsTab(),
               ],
             ),
     );
@@ -435,6 +461,18 @@ class _MemoryBoardPageState extends State<MemoryBoardPage>
           ),
         ),
       ],
+    );
+  }
+
+  // —— Tab ④：提示词总览面（prompt-mgmt §3.3 透明面；只读，编辑归设置页）——
+
+  Widget _promptsTab() {
+    return PromptsOverviewSection(
+      userStoreOverride: widget.userStoreOverride,
+      cowStoreOverride: widget.cowStoreOverride,
+      skillsProvider: widget.skillsProvider,
+      onFlash: _flash,
+      errorRowBuilder: panelErrorRow,
     );
   }
 

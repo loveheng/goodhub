@@ -116,6 +116,16 @@ void main() {
       final reopened = CowOverridesStore(dir: tmpDir);
       expect(await reopened.overrideOf('p1'), isNull);
     });
+
+    test('knownNames() 与 overrideNames() 对称（落盘基线名单，升序）', () async {
+      expect(await store.knownNames(), isEmpty);
+      await store.setKnownVersion('p2', '1.0.0');
+      await store.setKnownVersion('p1', '2.0.0');
+      await store.setOverride('p1', '本地覆写正文');
+      expect(await store.knownNames(), ['p1', 'p2'],
+          reason: 'known_versions 段键集升序（与覆写名单独立）');
+      expect(await store.overrideNames(), ['p1']);
+    });
   });
 
   group('CowSyncService.sync 六态', () {
@@ -150,8 +160,9 @@ void main() {
       final items = await CowSyncService(store: store)
           .sync(client, serverId: 'goodshare');
       expect(items.single.action, CowSyncAction.keptLocal);
-      expect(items.single.content, isNull);
-      expect(raw, isEmpty, reason: '本地版生效时不拉原文');
+      expect(items.single.content, '我的本地版',
+          reason: '覆写正文即生效内容——产物须可注册，否则覆写永不进 system prompt');
+      expect(raw, isEmpty, reason: '本地版生效时不拉 server 原文');
     });
 
     test(
@@ -185,6 +196,8 @@ void main() {
       );
       final items = await svc.sync(client, serverId: 'goodshare');
       expect(items.single.action, CowSyncAction.keptLocal);
+      expect(items.single.content, '旧本地版',
+          reason: 'major 跃迁选保留本地 → 覆写正文仍是生效内容');
       expect(await store.overrideOf('item_digest'), '旧本地版');
       expect(await store.knownVersion('item_digest'), '2.0.0');
       final again = await svc.sync(client, serverId: 'goodshare');
@@ -228,7 +241,7 @@ void main() {
         registry.register(skill);
         final out = registry.composeSystemPrompt(
           'base',
-          connectedServerIds: const ['goodshare'],
+          publicServerIds: const ['goodshare'],
         );
         expect(out, contains('模板正文'));
       },

@@ -9,6 +9,7 @@ library;
 
 import 'package:flutter/material.dart';
 
+import '../../coordinator/skill_registry.dart';
 import '../../sandbox/conversation_store.dart';
 import '../memory_board_page.dart';
 import '../resource_center_page.dart';
@@ -25,6 +26,7 @@ class ConversationDrawer extends StatefulWidget {
     required this.onLoad,
     required this.onDelete,
     required this.onRename,
+    this.skillsProvider,
   });
 
   /// 会话列表快照（updatedAt 倒序，页面侧边栏投影）。
@@ -39,6 +41,11 @@ class ConversationDrawer extends StatefulWidget {
 
   /// 重命名（meta + 对话框内已 trim 的新标题）；空标题由对话框挡掉。
   final void Function(ConversationMeta meta, String newTitle) onRename;
+
+  /// 连接态 SkillRegistry 提供者（页面注入 `() => session.skills`，其
+  /// globals()/appScoped() 反映当前已连接服务与静态预置，与具体会话无关）——
+  /// 透传给记忆看板「提示词」Tab；null = 注册表不可用，看板展示离线基线。
+  final SkillRegistry? Function()? skillsProvider;
 
   /// epoch 毫秒 → 人话时间（今天 HH:mm，否则 M/d HH:mm）。
   static String fmtTime(int epochMs) {
@@ -222,7 +229,10 @@ class _ConversationDrawerState extends State<ConversationDrawer> {
                                 },
                               ),
                               IconButton(
-                                icon: const Icon(Icons.delete_outline, size: 18),
+                                icon: const Icon(
+                                  Icons.delete_outline,
+                                  size: 18,
+                                ),
                                 tooltip: '删除会话',
                                 onPressed: () => widget.onDelete(meta),
                               ),
@@ -239,9 +249,7 @@ class _ConversationDrawerState extends State<ConversationDrawer> {
               onTap: () {
                 Navigator.pop(context);
                 Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => const SettingsPage(),
-                  ),
+                  MaterialPageRoute<void>(builder: (_) => const SettingsPage()),
                 );
               },
             ),
@@ -284,7 +292,10 @@ class _ConversationDrawerState extends State<ConversationDrawer> {
                 Navigator.pop(context);
                 Navigator.of(context).push(
                   MaterialPageRoute<void>(
-                    builder: (_) => const MemoryBoardPage(),
+                    builder: (_) =>
+                        MemoryBoardPage(
+                          skillsProvider: widget.skillsProvider,
+                        ),
                   ),
                 );
               },

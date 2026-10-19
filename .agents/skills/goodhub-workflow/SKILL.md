@@ -16,6 +16,19 @@ description: goodhub（AI 宿主 App，Flutter/MCP 客户端）工作流事实�
 
 lib/ 的分层结构与 11 域清单**不在本表登记**——见 `docs/project/coding-standards.md` §1.0（矩阵与护栏）与 `docs/project/index.md`（域内文件与功能落点）。现行 epic 与过程态查 `context/CURRENT` / `context/epics/`，本 skill 不登记。
 
+## 读码纪律（省 token 与正确性兼得）
+
+文档比代码省 token，但文档**有损且可能失真**（实证：mcp-orchestration 阶段一 memory.md 声称「toolsList 已实现」与代码不符，照文档下手会建在错误前提上）。三段式读法：
+
+| 阶段 | 动作 | 成本量级 |
+|---|---|---|
+| ① 文档建图 | 先读 index.md 落点 + memory.md 决策 + devlog 变更记录，拿「为什么 / 边界 / 落点」 | 几十~几百 token |
+| ② 定向读码 | LSP / semantic search 只读相关符号与区域（readSymbol / 行号范围），**禁整文件通读** | 几百 token/次 |
+| ③ 关键断言实证 | 文档每个「已实现」结论动手前抽查一处代码确认；行号引用须实测（会漂移，实证：`settings_page.dart:19 → :35`） | 一次性 |
+
+- 「文档 + 定向读码」比「通读代码」省 token；「只读文档」省的是阅读成本、付的是正确性风险（返工远超省下的 token）
+- 本纪律即 devlog「背景核查（关键）」惯例的形式化——评估设计动笔前先实证，不当文档复读机
+
 ## 规范数据维护触发器（发现即维护，不当旁观者）
 
 **判据三问**（决定要不要写）：① 是架构分流/准入规则？② 变更频率是月/季度或重大架构变更级？③ 缺了它 CI 扫描或 Review 是否失去判定依据？——三问命中即按下表维护；日常需求流水账禁写。

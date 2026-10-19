@@ -4,6 +4,9 @@
 ///
 /// - **来源收敛**：Skill 来源三分支之一（官方预置 + CoW 同步 + 用户编辑）——
 ///   同步产物以 `cow/<name>` 注册进 SkillRegistry（name 唯一闸天然防撞）；
+///   keptLocal 产物携 **override 正文**（本地覆写最高优先级——覆写是生效
+///   内容，不是「仅阻止重导」；调用方按 content 非空注册，故覆写模板必须
+///   带正文，否则覆写永不进 system prompt）；
 /// - **CoW 合并策略（评审部分采纳）**：本地覆写副本最高优先级；`min_hub_version`
 ///   兼容闸（宿主版本低于声明 → 跳过不导入）；`template_version` **大版本
 ///   （major）跃迁 → 强制告警**（用户选重置/保留）；否决三路合并引擎；
@@ -175,6 +178,16 @@ class CowOverridesStore {
     return names;
   }
 
+  /// 已知版本名单（与 [overrideNames] 对称——known_versions 段键集，升序）：
+  /// 曾同步过的 server 模板全集。无活态会话时（记忆看板 Prompt 总览）作
+  /// 落盘同步基线展示；有活态注册表时以 SkillRegistry 实际注册面为准。
+  Future<List<String>> knownNames() async {
+    await _load();
+    final k = _section('known_versions');
+    if (k == null) return const [];
+    return k.keys.toList()..sort();
+  }
+
   /// 覆写时间（M3-T4 编辑面展示；无记录 null）。
   Future<DateTime?> overriddenAt(String promptName) async {
     await _load();
@@ -264,6 +277,10 @@ class CowSyncService {
             action: CowSyncAction.keptLocal,
             serverVersion: version,
             fromVersion: known,
+            // 覆写正文即生效内容（「本地覆写最高优先级」）——不拉 server
+            // 原文，但产物必须可注册，否则覆写永不进 system prompt。
+            content: override,
+            description: p['description'] is String ? p['description'] as String : null,
           ));
           continue;
         }
@@ -273,6 +290,8 @@ class CowSyncService {
           action: CowSyncAction.keptLocal,
           serverVersion: version,
           fromVersion: known,
+          content: override,
+          description: p['description'] is String ? p['description'] as String : null,
         ));
         await store.setKnownVersion(name, version);
         continue;

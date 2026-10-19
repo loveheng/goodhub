@@ -19,7 +19,6 @@ import 'components/chat_gate_delegates.dart';
 import 'sections/resource_center_section.dart'
     show showResourcePickerSheet, undoResourceCollect;
 
-
 import 'package:path_provider/path_provider.dart';
 
 import '../app/service_directory.dart';
@@ -33,7 +32,7 @@ import '../coordinator/chat_run_orchestrator.dart';
 import '../coordinator/mcp_runtime.dart';
 import '../llm/cloud/cloud_llm.dart';
 
-import '../coordinator/skill_registry.dart';
+import '../coordinator/user_prompt_store.dart';
 
 import '../mcp/connection_manager.dart';
 import '../mcp/local_plugin_discovery.dart';
@@ -631,7 +630,7 @@ class _ChatPageState extends State<ChatPage>
           builder: (ctx, setSheet) => SessionContextSheetBody(
             t: t,
             scrollController: scrollCtrl,
-              bound: _session.activePrivateServerId,
+            bound: _session.activePrivateServerId,
             privEndpoints: _endpoints
                 .where((e) => e.enabled && e.tier == ServerPrivacyTier.private)
                 .toList(),
@@ -683,11 +682,9 @@ class _ChatPageState extends State<ChatPage>
   /// 资源中心管理页（composer「+」菜单直达；与抽屉入口同一页面）——导入/
   /// 改名/删除/外部打开属高频动作，不该藏在二级配置页。
   Future<void> _openResourceCenter() async {
-    await Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => const ResourceCenterPage(),
-      ),
-    );
+    await Navigator.of(
+      context,
+    ).push(MaterialPageRoute<void>(builder: (_) => const ResourceCenterPage()));
   }
 
   /// 收集明示 + 撤销通道——复用记忆胶囊「已记录 · 撤销」的既有交互语法
@@ -774,8 +771,9 @@ class _ChatPageState extends State<ChatPage>
         // A4（page-beautify P3）：首颗记忆胶囊入轨前插一条事前说明——模型
         // 「何时会记/记了什么/去哪管」须可解释，而非静默出现（幂等：本会话
         // 只插一次；恢复会话经 note 序列化还原、不再触发本回调）。
-        if (!_status.tracks.any((e) =>
-            e is TrackNote && e.text == kMemoryFirstNotice)) {
+        if (!_status.tracks.any(
+          (e) => e is TrackNote && e.text == kMemoryFirstNotice,
+        )) {
           _add(const TrackNote(kMemoryFirstNotice, danger: false));
         }
         final capsule = TrackMemoryCapsule(key: key, value: value);
@@ -823,9 +821,18 @@ class _ChatPageState extends State<ChatPage>
       }
       _watcher = StuckWatcher(onStuck: _markActiveCallStuck);
       // 步 3-T4：激活集/降级判据懒建收编进 session（新会话 = 新实例 = 重开）。
-      _session.bindSkills(
-        _session.skills ?? (SkillRegistry()..registerAll(builtinSkills())),
-      );
+      // prompt-mgmt §3.3：user 全局 prompt 随基础注册表落盘装载——注册闸
+      // （300 Token/重名）fail-fast 跳过项可见通告，不阻断装配。
+      final existingSkills = _session.skills;
+      final BaseSkillRegistry baseSkills = existingSkills != null
+          ? BaseSkillRegistry(registry: existingSkills, skipped: const [])
+          : await buildBaseSkillRegistry(
+              dirResolver: () async => await getApplicationDocumentsDirectory(),
+            );
+      for (final skip in baseSkills.skipped) {
+        _add(TrackNote('⚠ 全局 Prompt 注册跳过: $skip', danger: true));
+      }
+      _session.bindSkills(baseSkills.registry);
       _session.bindDegradation(_session.degradation ?? DegradationController());
       // A2（page-beautify）：工具名人话化映射（前缀名 → 服务端 description
       // 全文）——onProgress/onNotice 等委托先于 assembly 建成，故此处持可变
@@ -960,6 +967,11 @@ class _ChatPageState extends State<ChatPage>
         onCapsule: onCapsule,
         onWriteFailure: onWriteFailure,
       );
+      // 断连降级通告（prompt-mgmt §8.2.1）：激活私有服务掉线，本 Run 已收敛
+      // 降级纯公共模式——可见通告，禁幽灵上下文静默。
+      if (plan.slotNotice != null) {
+        _add(TrackNote(plan.slotNotice!, danger: true));
+      }
       // 上下文归因（展示 only）：本轮注入的记忆/服务快照挂轨道，点开 BottomSheet
       // 查详情。「本轮排除」为预留钩子——当前不接线（onItemExclude=null）。
       _add(
@@ -1141,6 +1153,11 @@ class _ChatPageState extends State<ChatPage>
       onLoad: _loadConversation,
       onDelete: (meta) => unawaited(_deleteConversation(meta)),
       onRename: (meta, title) => unawaited(_renameConversation(meta, title)),
+      // prompt-mgmt §3.3：记忆看板「提示词」Tab 展示 SkillRegistry 的
+      // appScoped 注入面（官方预置 + CoW 同步）；其 globals()/appScoped()
+      // 反映当前已连接服务与静态预置，与具体会话内容无关（看板先于连接
+      // 打开时回落离线基线）。
+      skillsProvider: () => _session.skills,
     );
   }
 
@@ -1282,10 +1299,7 @@ class _ChatPageState extends State<ChatPage>
                         child: AnimatedSwitcher(
                           duration: t.fastDuration,
                           transitionBuilder: (child, animation) =>
-                              FadeTransition(
-                            opacity: animation,
-                            child: child,
-                          ),
+                              FadeTransition(opacity: animation, child: child),
                           child: FloatingActionButton.small(
                             key: const ValueKey('chat-scroll-bottom'),
                             heroTag: 'chat-scroll-bottom',
@@ -1334,11 +1348,12 @@ class _ChatPageState extends State<ChatPage>
                         onOpenMenu: _openComposerMenu,
                         // 资源附件（M1-T3）：药丸展示 + 选择/移除回调；数据
                         // 流出，零依赖本页私有态（composer 头部口径）。
-                        pendingResources:
-                            List.unmodifiable(_pendingResources),
+                        pendingResources: List.unmodifiable(_pendingResources),
                         onPickResource: _pickResource,
-                        onRemoveResource: (id) => setState(() =>
-                            _pendingResources.removeWhere((r) => r.id == id)),
+                        onRemoveResource: (id) => setState(
+                          () =>
+                              _pendingResources.removeWhere((r) => r.id == id),
+                        ),
                         // 回车与发送钮统一走 guard（非 running 时 guard 通过→等价原
                         // 按钮直发；running 时按钮已变中止键，此处拦下并给 SnackBar）。
                         onSend: () {

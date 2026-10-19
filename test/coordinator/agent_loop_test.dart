@@ -61,6 +61,48 @@ Stream<CloudStreamEvent> textStream(String s) async* {
 }
 
 void main() {
+  group('onRoundCommitted 切域事务提交点（prompt-mgmt §8.2.2）', () {
+    test('ToolResultMessage 全量回填历史之后触发（每工具轮一次）', () async {
+      final engine = ScriptedEngine();
+      final executor = RecordingExecutor();
+      final commits = <int>[];
+      var round = 0;
+      // 脚本：轮1 工具调用 → 轮2 工具调用 → 轮3 自然结算。
+      engine.script
+        ..add(() => toolCallStream('call_1', 'f', '{}'))
+        ..add(() => toolCallStream('call_2', 'f', '{}'))
+        ..add(() => textStream('done'));
+      final loop = AgentLoop(
+        engine: engine,
+        executor: executor,
+        onRoundCommitted: () => commits.add(++round),
+      );
+      await loop.run(systemPrompt: 's', userPrompt: 'u').toList();
+      expect(commits, [1, 2], reason: '两个工具轮各提交一次，自然结算轮不触发');
+    });
+
+    test('abort 于引擎流中途（无工具轮结算）→ 不触发提交', () async {
+      final engine = ScriptedEngine();
+      final executor = RecordingExecutor();
+      var committed = 0;
+      engine.script.add(() => textStream('被打断'));
+      final loop = AgentLoop(
+        engine: engine,
+        executor: executor,
+        onRoundCommitted: () => committed++,
+      );
+      final events = <AgentLoopEvent>[];
+      await for (final e in loop.run(systemPrompt: 's', userPrompt: 'u')) {
+        events.add(e);
+        if (e is LoopTextDelta) loop.abort(); // 引擎流中途中止：无工具轮结算
+      }
+      expect(committed, 0, reason: '无 ToolResultMessage 落历史则无提交');
+      expect(executor.executed, isEmpty);
+      final done = events.whereType<LoopFinished>().single;
+      expect(done.transcript.whereType<ToolResultMessage>(), isEmpty);
+    });
+  });
+
   late ScriptedEngine engine;
   late RecordingExecutor executor;
   late AgentLoop loop;

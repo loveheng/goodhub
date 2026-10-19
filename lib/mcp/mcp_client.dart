@@ -74,6 +74,15 @@ class McpClient {
   /// 响应按 id POST 回端点（Streamable HTTP 回程序径）。null = 未启用反向
   /// 请求（server 请求收到 -32601 error 帧，不悬挂）；处理器抛 McpRpcException
   /// 转 error 帧（配额超限等结构化拒绝），其他异常转 -32603。
+  /// 客户端能力声明：initialize 握手中是否向 server 声明 `sampling` capability。
+  /// MCP 2025-06-18：server 依据 client capabilities 决定是否发起反向请求
+  /// （sampling/createMessage）——声明了但 [onServerRequest] 未接线时，server
+  /// 发来的请求按 -32601 优雅拒绝（见 [_answerServerRequest]），不悬挂。
+  /// 置位契约：须在 [negotiate]（含重连重握手）前由装配层置位——capabilities
+  /// 在 initialize 一次成型；托管挂载（[McpRuntime.mount] / `assemble`）置 true
+  /// （其调用方均接采样 handler），诊断裸 client（server_probe）保持 false。
+  bool samplingEnabled = false;
+
   Future<Map<String, Object?>?> Function(String method, Object? params)? onServerRequest;
 
   /// server→client 主动通知分发（T4-5，§3.10）：当前仅消费
@@ -105,7 +114,9 @@ class McpClient {
   Future<ServerCapabilities> _doNegotiate() async {
     final result = await call('initialize', params: {
       'protocolVersion': kMcpProtocolVersion,
-      'capabilities': <String, Object?>{},
+      'capabilities': samplingEnabled
+          ? <String, Object?>{'sampling': <String, Object?>{}}
+          : <String, Object?>{},
       'clientInfo': {'name': 'goodhub', 'version': '0.1.0'},
     });
     final caps = ServerCapabilities.parse(result);

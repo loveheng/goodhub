@@ -178,5 +178,34 @@ void main() {
       expect(caps.hasTools, isTrue);
       expect(initializeCalls, 2, reason: '首次失败缓存置空 → 重试重新握手');
     });
+
+    test('sampling capability 声明（§3.11 规范不符修）：samplingEnabled 门控 initialize', () async {
+      String? body;
+      MockClient router() => MockClient((req) async {
+        if (req.body.contains('"method":"initialize"')) {
+          body = req.body;
+          return _ok({
+            'protocolVersion': '2025-06-18',
+            'capabilities': {'tools': {}},
+          });
+        }
+        return http.Response('', 202); // notifications/initialized
+      });
+
+      // 默认 false（诊断裸 client 口径）：capabilities 空对象，不声明 sampling
+      await McpClient.http(
+          baseUrl: 'http://127.0.0.1:8765/mcp', httpClient: router())
+          .negotiate();
+      expect(body, contains('"capabilities":{}'), reason: '默认不声明客户端能力');
+
+      // samplingEnabled=true：initialize 声明 sampling capability（宿主实现反向推理）
+      await (McpClient.http(
+        baseUrl: 'http://127.0.0.1:8765/mcp',
+        httpClient: router(),
+      )..samplingEnabled = true)
+          .negotiate();
+      expect(body, contains('"capabilities":{"sampling":{}}'),
+          reason: 'samplingEnabled=true → initialize 声明 sampling');
+    });
   });
 }

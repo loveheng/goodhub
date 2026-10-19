@@ -117,6 +117,7 @@ class AgentLoop {
     this.refServerId = 'goodshare',
     this.serverResolver,
     this.toolsProvider,
+    this.onRoundCommitted,
   });
 
   final CloudLlmEngine engine;
@@ -164,6 +165,12 @@ class AgentLoop {
   /// 接 `ToolRouter.activatedSchemas()` + JIT 元工具静态声明；null = 用 [run]
   /// 传入的静态 [tools]）。
   final List<CloudToolSchema> Function()? toolsProvider;
+
+  /// 工具轮结算回调（prompt-mgmt §8.2.2 切域事务提交点）：一轮全部
+  /// ToolResultMessage 回填进历史之后触发——装配层挂 `router.commitPendingSlot`
+  /// 把 use_server 的 pending 槽位请求落到活跃槽位。提交前 Abort/失败不触发
+  /// （槽位保持原状），提交后不回滚（切换是显式意图）。null = 无事务需求。
+  final void Function()? onRoundCommitted;
 
   /// 步数墙人工批准的单次放宽步长（C3 拍板：+10 续跑）。
   static const int stepWallRelaxStep = 10;
@@ -426,6 +433,9 @@ class AgentLoop {
           isError: s.result.isError,
         ));
       }
+      // 切域事务提交点（§8.2.2）：ToolResultMessage 已全量落历史快照 →
+      // 允许 pending 槽位请求提交（此后取消/失败不回滚）。
+      onRoundCommitted?.call();
       if (turn >= wallLimit) {
         final delegate = blockDelegate;
         if (delegate == null) {

@@ -51,7 +51,99 @@ class ToolRouter implements ToolExecutor {
 
   /// 单一私有槽位（D-C）：私有+私有互斥由本槽位构造保证——抢占即替换，无需
   /// 额外闸门；null = 当前无激活私有域。public 不进槽位（常驻）。
+  ///
+  /// **写入纪律（prompt-mgmt §8.2）**：执行环内不直接写本字段——use_server 经
+  /// [requestSlot] 写 pending，提交点在 ToolResultMessage 落历史之后
+  /// （[commitPendingSlot]）；Run 内消费走 [effectiveSlot] 快照；断连降级经
+  /// [markPrivateServerOffline] 只写 pending 标记，Run 边界收敛。
   String? activePrivateServerId;
+
+  // ---- Run 边界快照隔离（prompt-mgmt §8.2.1）----
+  // 正在执行的 Run 内部始终消费其启动时捕获的不可变槽位快照，严禁 Run 中途
+  // 变异造成状态撕裂（tools 尾块与 system skill 尾块同拍同源）。
+
+  String? _runSlot;
+  bool _hasRunSlot = false;
+
+  // ---- pending 切域事务（§8.2.2 提交点 = ToolResultMessage 落历史之后）----
+
+  String? _pendingSlot;
+  bool _hasPending = false;
+
+  // ---- 断连降级 pending 标记（§8.2.1 僵尸槽位自愈）----
+
+  bool _pendingSlotInvalid = false;
+
+  /// 生效槽位：Run 内恒为启动快照（防 Run 中途变异撕裂）；Run 外 = 活跃槽位。
+  String? get effectiveSlot => _hasRunSlot ? _runSlot : activePrivateServerId;
+
+  /// Run 边界收敛 + 快照捕获（编排件 plan() 启动时调用）：① 断连 pending
+  /// 标记生效——激活私有已掉线且无更新切域请求 → 槽位置 null（僵尸槽位自愈，
+  /// 下一 Run 纯公共模式）；② 应用未提交切域 pending（正常路径已在提交点
+  /// 收敛，此处只兜底 Run 末未提交的场景不残留）；③ 捕获本 Run 槽位快照。
+  /// 返回降级通告文本（null = 无降级）。
+  String? beginRun() {
+    String? notice;
+    if (_pendingSlotInvalid) {
+      final current = activePrivateServerId;
+      if (_hasPending) {
+        // 显式切域请求优先：提交到新槽位（新槽存活与否由下一 Run 实测）。
+        activePrivateServerId = _pendingSlot;
+      } else if (current != null) {
+        activePrivateServerId = null;
+        notice = '⚠ 私有服务 $current 已掉线，本会话降级纯公共模式'
+            '（私有工具面已摘除，恢复后需重新 use_server）';
+      }
+      _hasPending = false;
+      _pendingSlot = null;
+      _pendingSlotInvalid = false;
+    } else if (_hasPending) {
+      activePrivateServerId = _pendingSlot;
+      _hasPending = false;
+      _pendingSlot = null;
+    }
+    _runSlot = activePrivateServerId;
+    _hasRunSlot = true;
+    return notice;
+  }
+
+  /// Run 收尾：丢弃快照与未提交 pending（提交前 Abort → 槽位保持原状）。
+  void endRun() {
+    _hasRunSlot = false;
+    _runSlot = null;
+    _hasPending = false;
+    _pendingSlot = null;
+  }
+
+  /// use_server/activate 的槽位请求入口（DiscoveryExecutor 调）：只写 pending，
+  /// 不动活跃槽位——提交点 [commitPendingSlot] 由装配层挂在 AgentLoop
+  /// 「ToolResultMessage 落历史之后」。null = 清空槽位（use_server "all"）。
+  void requestSlot(String? serverId) {
+    _pendingSlot = serverId;
+    _hasPending = true;
+  }
+
+  /// 切域事务提交点：已 pending 的槽位请求落到活跃槽位。由 AgentLoop 在
+  /// ToolResultMessage 全量回填进历史后调用；提交前取消/失败不调用本方法
+  /// （pending 随 [endRun] 丢弃），提交后取消/失败不回滚（切换是显式意图）。
+  void commitPendingSlot() {
+    if (!_hasPending) return;
+    activePrivateServerId = _pendingSlot;
+    _hasPending = false;
+    _pendingSlot = null;
+    _pendingSlotInvalid = false; // 新槽位 = 显式意图，撤销僵尸降级标记
+  }
+
+  /// 断连联动（§8.2.1）：掉线的是当前激活私有服务 → 只写 pending 降级标记，
+  /// Run 边界（[beginRun]）统一收敛生效——正在执行的 Run 快照不受影响；
+  /// 禁幽灵上下文（死服务的 prompt + 空工具继续注入）。
+  void markPrivateServerOffline(String serverId) {
+    if (activePrivateServerId == serverId &&
+        !_hasPending &&
+        !_pendingSlotInvalid) {
+      _pendingSlotInvalid = true;
+    }
+  }
 
   int get serverCount => _faces.length;
   List<String> get serverIds => _faces.keys.toList(growable: false);
@@ -88,7 +180,8 @@ class ToolRouter implements ToolExecutor {
   /// 工具面三段式确定序（P1-4 / SSOT §7.4 / §8.2）：
   /// `[全部 public 按 (serverId, toolName) 排序] → [单一 active private 尾部]`
   /// ——公共前缀恒定命中缓存，切换私有域只重排尾部块（meta/skill/memory
-  /// 固定尾由装配层在 router 之外追加）。
+  /// 固定尾由装配层在 router 之外追加）。槽位读 [effectiveSlot]（Run 内 = 启动
+  /// 快照，与 composeSystemPrompt 同源同拍）。
   List<CloudToolSchema> focusedSchemas() {
     final publics = [
       for (final id in _faces.keys
@@ -97,7 +190,7 @@ class ToolRouter implements ToolExecutor {
             ..sort())
         ..._sortedSchemasFor(id),
     ];
-    final priv = activePrivateServerId;
+    final priv = effectiveSlot;
     if (priv == null || !_faces.containsKey(priv)) return publics;
     return [...publics, ..._sortedSchemasFor(priv)];
   }
@@ -137,9 +230,10 @@ class ToolRouter implements ToolExecutor {
           isError: true,
         );
       }
-    } else if (activePrivateServerId != parsed.serverId) {
+    } else if (effectiveSlot != parsed.serverId) {
       // 私有槽位门控（D-C）：未占槽 / 被其他私有域抢占 → 引导 use_server。
-      final holder = activePrivateServerId;
+      // 读快照：Run 内新切域的私有工具下一 Run 才进面，本 Run 幻觉调用被拦。
+      final holder = effectiveSlot;
       return ToolExecutionResult(
         content: holder == null
             ? '私有服务 ${parsed.serverId} 未激活——'

@@ -184,11 +184,11 @@ class DiscoveryExecutor implements ToolExecutor {
       );
     }
     if (serverId == useServerAll) {
-      final cleared = router.activePrivateServerId;
-      router.activePrivateServerId = null;
+      router.requestSlot(null); // pending：提交点 = ToolResultMessage 落历史后
       return ToolExecutionResult(
-        content: cleared != null
-            ? '已清空私有槽位（原私有域 $cleared 工具摘除），公共面常驻不变。'
+        content: router.activePrivateServerId != null
+            ? '已请求清空私有槽位（原私有域 ${router.activePrivateServerId} 工具'
+                '摘除），新工具面自下一轮生效；公共面常驻不变。'
             : '当前无激活私有域，公共面常驻不变。',
       );
     }
@@ -208,16 +208,19 @@ class DiscoveryExecutor implements ToolExecutor {
             '$count 个工具持续可用；此操作仅做激活幂等确认。',
       );
     }
-    // 私有：抢占单一槽位（幂等；替换即摘除前一私有域工具面）。
+    // 私有：pending 切域请求（§8.2.2 提交点 = ToolResultMessage 落历史之后）。
+    // Run 内消费启动快照——新槽位工具面自下一 Run 生效（与 system skill 尾块
+    // 同拍换前缀，单次重前缀）。
     final previous = router.activePrivateServerId;
-    router.activePrivateServerId = serverId;
+    router.requestSlot(serverId);
     final count = router.schemasFor(serverId).length;
     return ToolExecutionResult(
       content: previous == serverId
           ? '私有服务 $serverId 已在槽位（$count 个工具）。'
           : '已切换私有域至 $serverId（$count 个工具）'
               '${previous != null ? '，替换原私有域 $previous' : ''}；'
-              '公共面不受影响。用 use_server(server_id: "all") 清空槽位。',
+              '新工具面自下一轮生效，公共面不受影响。'
+              '用 use_server(server_id: "all") 清空槽位。',
     );
   }
 }

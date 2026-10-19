@@ -48,6 +48,7 @@ import 'ref_store.dart';
 import 'skill_activation_executor.dart';
 import 'skill_registry.dart';
 import 'tool_breaker.dart';
+import 'user_prompt_store.dart';
 
 /// 状态带色调（窗口侧的 `CapsuleTone` 是 UI 枚举，编排件只用三档语义）。
 enum DebugPillTone { idle, busy, danger }
@@ -312,6 +313,17 @@ class DebugRunOrchestrator {
       // M2.5-T5 三级 Skill：注册表会话粒度 + activate_skill 元工具最外层拦截
       // （本地工具不外发 server）；Global/App-Scoped 注入 system prompt 组装。
       final skills = SkillRegistry()..registerAll(builtinSkills());
+      // prompt-mgmt §3.3：user 全局 prompt（注册闸 fail-fast 跳过并通告）。
+      final userStore = UserGlobalPromptsStore(
+        dir: await (cfg.documentsDirResolver ?? getApplicationDocumentsDirectory)(),
+      );
+      for (final p in await userStore.load()) {
+        try {
+          skills.register(p.toSkill());
+        } on ArgumentError catch (e) {
+          yield DebugRunNote('⚠ 全局 Prompt 注册跳过: $e', danger: true);
+        }
+      }
       // M2.5-T6 CoW 继承：Tier 1 prompts 模板 → appScoped Skill（本地覆写
       // 最高优先级 + major 跃迁强制告警 + min_hub_version 兼容闸）。
       if (caps.hasPrompts) {
@@ -370,7 +382,7 @@ class DebugRunOrchestrator {
       await for (final e in loop.run(
         systemPrompt: skills.composeSystemPrompt(
           cfg.systemPrompt,
-          connectedServerIds: [face.serverId],
+          publicServerIds: [face.serverId],
         ),
         userPrompt: cfg.userPrompt,
         tools: [...schemas, skills.activationToolSchema()],

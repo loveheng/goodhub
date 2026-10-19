@@ -76,6 +76,12 @@ class SkillRegistry {
   List<Skill> forServer(String serverId) => _skills.values
       .where((s) => s.scope == SkillScope.appScoped && s.serverId == serverId)
       .toList();
+
+  /// 全部 appScoped Skill（跨 server 全集；与 globals()/onDemand() 同口径的
+  /// 投影——记忆看板「MCP 服务 Prompt」总览列举用，注入过滤仍走
+  /// composeSystemPrompt 的 publicServerIds/activePrivateSlotId 投影）。
+  List<Skill> appScoped() =>
+      _skills.values.where((s) => s.scope == SkillScope.appScoped).toList();
   List<Skill> onDemand() =>
       _skills.values.where((s) => s.scope == SkillScope.onDemand).toList();
 
@@ -104,19 +110,35 @@ class SkillRegistry {
         annotations: {'readOnlyHint': true},
       );
 
-  /// system prompt 组装（纯函数）：base 原样保留在前（前导 System 被滑动窗口
-  /// 裁剪保护），后接 Global 常驻 + 已连 Server 的 App-Scoped + 已激活
-  /// On-Demand，尾部列「可激活」清单（On-Demand 未激活项的名字+描述——模型
-  /// 由此得知可 activate_skill 什么）。
+  /// system prompt 组装（纯函数，prompt-mgmt Phase 1）：base 原样保留在前
+  /// （前导 System 被滑动窗口裁剪保护），后接 Global 常驻 → 公共 server
+  /// appScoped → 激活私有槽位 appScoped（易变度宏序，护前缀缓存）→ 已激活
+  /// On-Demand，尾部列「可激活」清单。确定性铁律：段内按
+  /// `'${s.serverId ?? 'global'}:${s.name}'` 字典序排序（null 归一化，
+  /// 注册序/Set 迭代序不外泄）；无激活私有槽位时私有块严格空串；段间统一
+  /// `\n\n` Join，空列表恒返回 base 原文，禁悬挂换行；禁嵌时间戳等动态量。
   String composeSystemPrompt(String base,
-      {List<String> connectedServerIds = const []}) {
+      {List<String> publicServerIds = const [],
+      String? activePrivateSlotId,
+      String? mountedSection}) {
+    String sortKey(Skill s) => '${s.serverId ?? 'global'}:${s.name}';
+    List<Skill> sorted(Iterable<Skill> skills) =>
+        skills.toList()..sort((a, b) => sortKey(a).compareTo(sortKey(b)));
+    final privateSlot = activePrivateSlotId == null
+        ? const <Skill>[]
+        : forServer(activePrivateSlotId);
+    final publicSkills = [
+      for (final serverId in publicServerIds) ...forServer(serverId),
+    ];
     final sections = <String>[
-      for (final s in globals())
-        '### Skill: ${s.name}\n${s.content}',
-      for (final serverId in connectedServerIds)
-        for (final s in forServer(serverId))
-          '### Skill: ${s.name}（[${s.serverId}]）\n${s.content}',
-      for (final name in activated)
+      for (final s in sorted(globals())) '### Skill: ${s.name}\n${s.content}',
+      // 易变度序（§3.1）：mountedSection/workspace 指令在公共 appScoped 之前。
+      if (mountedSection != null && mountedSection.isNotEmpty) mountedSection,
+      for (final s in sorted(publicSkills))
+        '### Skill: ${s.name}（[${s.serverId}]）\n${s.content}',
+      for (final s in sorted(privateSlot))
+        '### Skill: ${s.name}（[${s.serverId}]）\n${s.content}',
+      for (final name in activated.toList()..sort())
         if (_skills[name] != null)
           '### Skill: ${_skills[name]!.name}（已激活）\n${_skills[name]!.content}',
     ];

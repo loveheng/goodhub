@@ -4,5 +4,5 @@
   "applicationId": "com.zzh.goodhub",
   "apkUrl": "https://r2.oklhj.eu.org/updates/goodhub/app-release-2009.apk",
   "sha256": "1033387b86fb29e847e1923cba56428ef774b0f8e2cc026b61819f49affb83fb",
-  "changelog": "v1.0.2：窗口瘦身（状态条/双轨流/会话抽屉重构）与页面美化；更新源目录与清单校验不变"
+  "changelog": "应用图标替换为拾圆 + 中文名改为拾圆 + 新增任务消费循环"
 }
