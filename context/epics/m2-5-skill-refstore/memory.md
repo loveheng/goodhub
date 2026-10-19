@@ -13,4 +13,5 @@ last-merge: 2026-10-11
 - [结论] T1~T7 全实施（2026-10-11，双仓全绿 goodshare 792 / goodhub 240 + analyze 0）：契约 §3.6~§3.9、ServerCapabilities 防御协商+Polyfill（Tier 1 = prompts+resources 齐）、RefStore（$ref 句柄/30min TTL GC 联动删 tmp/>1MB 落盘 fail-fast）、HydratingExecutor 注水拦截（同源静默/查无立即 isError/跨源 fail-closed）、callWithProgress SSE 分帧收侧+心跳、SkillRegistry 三级+activate_skill 元工具、CoW 同步（CowSyncService+OverridesStore）
 - [结论] 真机联调第一批通过（CPH2767）：Tier 1 协商/资源面 4 条/CoW imported×3/只读任务全链路两轮可视确认；抓真 bug：min_hub_version 占位 1.0.0 vs 宿主 0.1.0 → 修正后 imported
 - [遗留] 第二批联调场景（L2 卡/progress 药丸/$ref 句柄注水真机补测）移交 M3——已随 m3-ui-subs-sampling 落地/移交
-- [断点] 已完结（2026-10-11 ::done 归档）；goodshare M2.5 提交 3e1094f
+## 断点
+- [断点] 下一步：待 AI 回填：该 epic 断点由 ctx-fix 结构重建（专项清理），须下一轮读 devlog 尾部补真实下一步

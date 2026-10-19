@@ -1,3 +1,10 @@
+---
+dev-loop: devlog
+format: v1
+epic: mcp-orchestration
+total-merged: 0
+last-merge: none
+---
 # mcp-orchestration · 开发日志
 
 > 决策底：context/epics/mcp-orchestration/memory.md（MO1~MO7）。

@@ -25,6 +25,7 @@ class SessionContextSheetBody extends StatelessWidget {
     required this.onDone,
     this.onPickResource,
     this.onManageResources,
+    this.scrollController,
     this.bindLocked = false,
   });
 
@@ -45,6 +46,11 @@ class SessionContextSheetBody extends StatelessWidget {
 
   /// 附加资源（composer「+」统一挂载菜单入口）；null = 不渲染该项。
   final VoidCallback? onPickResource;
+
+  /// 2026-10-19：弹层升级半屏起步/可上推全屏——外层 DraggableScrollableSheet
+  /// 把自己的滚动控制器注入进来，内容区拖拽即联动展开/收起；null = 独立滚动
+  /// （测试直渲染时行为不变）。
+  final ScrollController? scrollController;
 
   /// 跳转资源中心管理页（导入/改名/删除/外部打开）；null = 不渲染该项。
   final VoidCallback? onManageResources;
@@ -68,6 +74,7 @@ class SessionContextSheetBody extends StatelessWidget {
         bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
       ),
       child: SingleChildScrollView(
+        controller: scrollController,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,

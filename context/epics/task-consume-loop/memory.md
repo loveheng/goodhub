@@ -1,3 +1,10 @@
+---
+dev-loop: memory
+format: v1
+epic: task-consume-loop
+total-merged: 0
+last-merge: none
+---
 dev-loop: memory
 format: v1
 epic: task-consume-loop
@@ -12,4 +19,5 @@ total-merged: 0
 - [结论] 核心件已落地（2026-10-18）：`lib/task/task_consume_loop.dart`（单飞 dirty / 达顶继续 / idle 终止 / 熔断 / 通道前置 / 让路 / dispose）+ 毒丸修复（`task_loop_service` 推理失败 apply failed 终态，既有「不 apply」断言已随契约改为须 apply）；analyze 0 + 全量 790 绿
 - [结论] M4-2 接线已完成（2026-10-18）：`lib/app/task_consume_bootstrap.dart`（应用级装配件 + 进程级单例）+ `main` 启动触发 catch-up + `chat_page` 2 行注入 `isHostBusy`
 - [结论] 对账能力已完成（2026-10-18 用户拍板三项）：`lib/task/task_consume_ledger.dart`（文件持久化账本）+ 设置页「任务对账」段 + 事件扩展（`TaskClaimed.itemId`/`LoopFailed.taskId`）；analyze 0 + 全量 801 绿
-- [断点] **真机验收（唯一剩余）**：① 打开 goodhub → goodshare 积压 `pending` 任务被消化（验证 catch-up 地基，不依赖跨仓通知）；② 若 logcat 见 `SecurityException` → 签名不一致（goodshare release 走 debug keystore，两包须同签才能 bind `signature` 权限），配同份 keystore 后重验；③ 验收通过后 → goodshare 侧叠加 §3.12 通知（只优化延迟）+ §3.12.3 形态 B 徽标唤起（含补 `<queries><package>`）
+## 断点
+- [断点] 下一步：待 AI 回填：该 epic 断点由 ctx-fix 结构重建（专项清理），须下一轮读 devlog 尾部补真实下一步

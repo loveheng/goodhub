@@ -33,6 +33,12 @@ format: v1
 - [x] [2026-10-12] TC8 网关聚合范围：仅聚合本地 Binder 服务 / 还是也代理 GoodHub 已配置的远端 HTTP MCP server？→ 已确认：A（本地 Binder + 远端 HTTP 全量聚合，PC 绝对单入口）
 （thirdconnect TC5~TC8 网关专项已全确认，决策已落 context/epics/thirdconnect/memory.md，2026-10-12）
 
+## misc（存量债专项收口 · 2026-10-19 新增）
+
+- [x] [2026-10-19] **QC5 是否授权 misc 窗口代归并剩余 epic 的 devlog**→ **已裁决 a 并已执行（2026-10-19 用户勾选）：5 个 epic 共 83 条 devlog 全部归并（thirdconnect 20 / system-assessment 20 / chatmessage 18 / page-revamp 14 / m4 11），MERGE 与 SSOT 告警全部清零；全仓 0 违规 4 告警（MOUNT 3 提示级 + GROOM 1）**（QC3-a 上下文已变：全部 error 已清、仅剩归并类告警；且当前无并行窗口——CURRENT=misc、其余 epic 无活动写入，QC3-a 立法前提「多窗口活跃防脑裂」不成立）：a) **授权代归并（agent 默认）**——逐 epic 执行「提炼 memory + 清空 devlog 追加区 + 头部同步 + SSOT 归纳」，一次清掉 MERGE 6（chatmessage 18 / m4 11 / page-revamp 14 / system-assessment 20 / thirdconnect 20；lessons 已清）+ SSOT 1（page-revamp）；每步可 git 回滚 b) 维持 QC3-a 严守，剩余归各 epic 下次 ::bind 触发（已登记触发待办）c) 折中：只归并条数最多的 system-assessment 20 / thirdconnect 20，其余严守
+- [x] [2026-10-19] **QC6 GROOM 洗盘口径**→ **已裁决 a 并已执行（2026-10-19 用户勾选）：4 条「真机冒烟/设备端 UI 冒烟待用户」（P0-B / T5 拦截卡三态 / archive-memory-claim / reverseDemo）合并为 1 条「真机验收总账（待用户执行）」并 rm 原 4 条，GROOM 45→42；核查无 [long]/[once] 过期项可重评（全部为 10 月内登记）；8 条触发型待办按 QC6-a 保留（各 epic 合法路由，非积压）**（原待办总量 45 > 30）：a) **合并同类 + 逐条重评过期项（agent 默认）**——4 条「真机冒烟/设备端 UI 冒烟待用户」并为 1 条；[long] 超 90 天未重评的逐条裁定（保留/转动作/关闭）b) 暂不洗盘，维持 45（lint 持续告警）c) 只合并不关闭
+- [x] [2026-10-19] **QC7 MOUNT 3 条无挂载行**→ **已裁决 a 维持提示级（2026-10-19 用户勾选）：不为达标造挂载文档（属反向造假）；3 条提示级告警按 lint 自述「存量缺挂载不强制补」长期接受；ai-app-split 的跨仓 SSOT 事实已在 memory 正文声明**（instant-sampling / task-consume-loop / ai-app-split）：三者均无本仓 design 文档可挂（ai-app-split 契约 SSOT 在 goodshare 仓、跨仓只读），而 lint 口径要求挂载路径在本仓存在。a) **维持提示级不动（agent 默认）**——lint 自述「存量缺挂载不强制补」，为达标而造挂载文档属反向造假 b) 为三者补建 docs/design 底子文档再挂载 c) 改 lint 口径允许「无独立设计稿」显式声明式挂载（ai-app-split 已在 memory 正文如此声明）
+
 ## M4-T4（连接韧性，2026-10-15 重启 · 已裁决）
 
 > T4-1 退避底座已落地（`lib/core/network/backoff.dart` + 单测 8 例，analyze 0 issue）。**2026-10-15 用户裁决：按推荐推进**；并采纳两项落地约束（见 D16/D17 注记）。**T4 全量落地（T4-1~T4-5，代码+接线+测试 529 绿，见 m4.md §5）**，待真机验收 + D20 goodshare 契约回写。
@@ -61,3 +67,10 @@ format: v1
 - [x] [2026-10-18] **RC4 读窗口防爆（RC3 经外评审后修订）**：a) 64KB 单次返回窗口，超限截断 + TrackNote 明示（agent 默认：整读挡不住 10MB ≈ 250 万 token 击穿模型窗口）b) 超阈值直接拒读提示拆分 → **已确认 a（2026-10-18 用户勾选）**；落点 = T3 工具执行器（kernel readContent 保持全文读取，窗口截断属工具面）
 - [x] [2026-10-18] **RC5 存储配额**：a) 管理页仅展示已占用空间，不设上限（agent 默认）b) 展示 + 200MB 软上限 c) 暂不处理 → **已确认 a（2026-10-18 用户勾选）**
 - [x] [2026-10-18] **RC6 内容查看定位（外评审四轮提出；注意：评审称「前序已拍板永久不做内建查看」失实——本项系新拍板非补登）**：a) 纯外部唤起——不做内建预览器，管理页「打开」一律复制 `cacheDir/external` 唤起系统默认应用（agent 默认，纯客户端定位最薄）b) 内建轻量预览（前几 KB 只读）c) 一期不做任何查看入口 → **已确认 a（2026-10-18 用户勾选）**
+
+## misc（全局存量债分批清理 · 2026-10-19 新增）
+
+- [x] [2026-10-19] **QC1 先校准度量还是直接开工清理**（前提项）→ **已裁决 a 并已执行（2026-10-19 用户勾选）：修 context-lint 挂载行解析，MOUNT 假阳性 4 归 0、全仓告警 24→20；mcp-orchestration 多锚点属 dev-loop §3 规则放宽，不擅动、已转待办**：取证发现 MOUNT 4 条「挂载失效」全为假阳性——`docs/design/m2-5-skill-refstore.md` / `m3-ui-subs-sampling.md` / `m4.md` 三份均在位且路径正确，假阳性根因 = `context-lint.sh:160` 把挂载行**整行**（含「（内容 SSOT：…）」中文说明；system-assessment 那行更是纯叙述句）当路径做 `-f` 判定。a) **先修 context-lint 解析（路径在全角「（」或空白处截断；无独立设计稿的挂载行须显式声明），再谈分批清理**（agent 默认：未经校准的台账不能当分批依据，否则会制造 4 处无意义修复并在触碰时引入真漂移）b) 改各 epic 挂载行瘦身成裸路径、说明移别处（工具不动，代价=丢铭牌信息且须改 4+ 文件）
+- [x] [2026-10-19] **QC2 走结构性修复通道还是本轮手工吃一遍**→ **已裁决 a 并已执行（2026-10-19 用户勾选）：新工具 ctx-fix 入全局池（默认干跑/--apply/备份/幂等/金丝雀），全量执行 reclaim 30 + hdr 10 + checkpoint 6，另修 devlog bp 章节缺失 bug；三类告警归零，全仓 29 违规 24 告警 → 7 违规 16 告警**：工具池现状 = 只有检测器（ctx-audit / context-lint 均无 --fix；mount-init 只能新建骨架、不能重建既有骨架；仅 breakpoint fix 与 todos done|rm 两个零碎通道）。a) **新增 `ctx-fix` 机械件**（确定性重写 HDR / CHECKPOINT / RECLAIM / TODOS-头部 四类，约 20 项一次清空；复发类边际成本趋零）b) 本轮手工 Edit 逐项清这一批（S3 临时补丁路径，须留 PATCH 标记 + (风险)[long] 待办，且下一批照样会长）。注意：工具落 `~/.agents/toolbox` 属用户侧全局资产，写入须显式授权
+- [x] [2026-10-19] **QC3 清理边界**：是否严守 dev-loop §3「严禁跨窗口代归并（防脑裂）」→ **已裁决 a 严守（2026-10-19 用户勾选）：misc 自身 27 条 devlog + 5 条 SSOT 已归并入 memory.md（total-merged 2→3，断点保留）；chatmessage / m4 / page-revamp / system-assessment / thirdconnect / ai-app-split / mcp-orchestration 七域语义债已登记为触发型待办，绑定各自下次 ::bind / 恢复窗口；lessons 13 条归并 + GROOM 洗盘归 misc 窗口**——MERGE / SSOT / VERIFY / SKELETON 属语义类，须在 chatmessage / m4 / misc / page-revamp / system-assessment / thirdconnect 各自窗口处理，misc 窗口只做机械类。a) **严守（agent 默认）** b) 本次开口授权 misc 代归并（效率换脑裂风险）
+- [x] [2026-10-19] **QC4 台账去重**→ **已裁决 a 并已执行（2026-10-19 用户勾选）：3 条旧快照（10-16 ×2 / 10-17）移入 done.md，保留的 10-19 条改写为「全局存量债专项总账」（实数演进 + 剩余分布 + 七域触发待办路由 + 状态 SSOT 指针）**：`context/todos.md` 现存 4 条同类「ctx-audit 存量债」登记（10-16 ×2 / 10-17 / 10-19），每次 ::done 审计净增一条、从未清算，本身即 GROOM 告警的主因。a) **合并为 1 条、其余去重移 done.md（agent 默认）** b) 维持现状仅追加

@@ -11,8 +11,8 @@ last-merge: none
 > MCP 服务编排内核：以「可见性(visibility)」为编排边界，服务暴露分级 = 服务端仅两档（public/private）。
 
 - [挂载] docs/design/window-kernel-split.md（两平面权威定义，§2：Shared Plane / Private Slot、单槽互斥、未达标绑定）
-- [挂载] lib/mcp/server_endpoints.dart（可见性 API：`ServerPrivacyTier{private,public}` + `ServerEndpoint{id,title,privacyTier}` + `ServerEndpointStore`）
-- [挂载] lib/gateway/mcp_gateway_handler.dart（跨服务防火墙 `toolsList` + `switch_server`/`use_server` 绑定 ops）
+
+> 核心代码落点（原多挂载行，dev-loop §3 挂载恒 1 条故移正文）：`lib/mcp/server_endpoints.dart`（可见性 API：`ServerPrivacyTier{private,public}` + `ServerEndpoint{id,title,privacyTier}` + `ServerEndpointStore`）；`lib/gateway/mcp_gateway_handler.dart`（跨服务防火墙 `toolsList` + `switch_server`/`use_server` 绑定 ops）
 
 ## 决策（MO1~MO7 已确认，2026-10-16）
 
@@ -35,3 +35,6 @@ last-merge: none
 
 - **[断点] 阶段一（只读镜像）已落地（2026-10-16）**：`GatewayHandler` 新增 `privateServerIds` + `activePrivateServerId`，`toolsList()` 仅投影 public + 激活 private（其余私有隐藏）；`toolsCall()` 加防火墙拒绝非激活私有调用（禁 `use_server` 换绑）；`GatewayController` 按 `ServerEndpoint.tier` 注入私有集 + 新增 `syncActivePrivate(String?)` 推送宿主激活私有；`chat_page` 三处私有绑定变更点（恢复会话 / 端点预热 / 菜单即时绑定）推送网关。单测 4 例锁定投影+防火墙（`test/gateway/mcp_gateway_handler_test.dart`），全仓 630 例全绿、analyze 0 issue。
 - **[断点] 下一步**：① 阶段二（D-D 落地后）——推动 window-kernel-split §2.4「投影平面按 connection/workspace 隔离」（改 `GatewayController.shared` 全局单例为 per-connection 投影上下文），解锁 PC 自主 `use_server` 独占 PC 会话私有槽。**已收口项**：MO7（`$ref` 入站守卫，2026-10-16 已实施）；规范收口（window-kernel-split.md §8.4 两平面权威 + 消「host 为服务端第三档」歧义，2026-10-16 已回填）。
+
+## 断点
+- [断点] 下一步：待 AI 回填：该 epic 断点由 ctx-fix 结构重建（专项清理），须下一轮读 devlog 尾部补真实下一步

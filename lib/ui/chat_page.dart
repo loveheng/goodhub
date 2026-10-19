@@ -615,33 +615,46 @@ class _ChatPageState extends State<ChatPage>
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      builder: (ctx) => StatefulBuilder(
-        // live 快照每次 setSheet 重建重读；交互经回调回页面（步 4 Epic C 外提）
-        builder: (ctx, setSheet) => SessionContextSheetBody(
-          t: t,
-          bound: _session.activePrivateServerId,
-          privEndpoints: _endpoints
-              .where((e) => e.enabled && e.tier == ServerPrivacyTier.private)
-              .toList(),
-          localPlugins: _localPlugins,
-          defaultId: _defaultPrivateId,
-          endpointName: _endpointName,
-          bindLocked: _status.running,
-          onBind: (id) {
-            if (!_guardRunning('切换会话绑定')) return;
-            _bindSessionServer(id);
-            setSheet(() {});
-          },
-          onClear: () {
-            if (!_guardRunning('切换会话绑定')) return;
-            _bindSessionServer('');
-            setSheet(() {});
-          },
-          onDone: () => Navigator.pop(ctx),
-          // 资源挂载 = 本次会话挂载物的一类，与「服务绑定」同挂「+」下：
-          // 空态无独立附件行，靠本菜单发现（消「功能堆砌」的物理痕迹）。
-          onPickResource: _pickResource,
-          onManageResources: _openResourceCenter,
+      showDragHandle: true,
+      // 2026-10-19（用户拍板）：半屏起步、可上推全屏（0.5 ↔ 0.95 双档吸附）
+      // ——空间诉求走弹层内扩容，不升正式页（使用面不升页判据）；snap 让
+      // 半屏/全屏两档有明确停驻感，内容区拖拽经注入的 scrollController 联动。
+      builder: (ctx) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.5,
+        minChildSize: 0.5,
+        maxChildSize: 0.95,
+        snap: true,
+        snapSizes: const [0.5],
+        builder: (ctx, scrollCtrl) => StatefulBuilder(
+          // live 快照每次 setSheet 重建重读；交互经回调回页面（步 4 Epic C 外提）
+          builder: (ctx, setSheet) => SessionContextSheetBody(
+            t: t,
+            scrollController: scrollCtrl,
+              bound: _session.activePrivateServerId,
+            privEndpoints: _endpoints
+                .where((e) => e.enabled && e.tier == ServerPrivacyTier.private)
+                .toList(),
+            localPlugins: _localPlugins,
+            defaultId: _defaultPrivateId,
+            endpointName: _endpointName,
+            bindLocked: _status.running,
+            onBind: (id) {
+              if (!_guardRunning('切换会话绑定')) return;
+              _bindSessionServer(id);
+              setSheet(() {});
+            },
+            onClear: () {
+              if (!_guardRunning('切换会话绑定')) return;
+              _bindSessionServer('');
+              setSheet(() {});
+            },
+            onDone: () => Navigator.pop(ctx),
+            // 资源挂载 = 本次会话挂载物的一类，与「服务绑定」同挂「+」下：
+            // 空态无独立附件行，靠本菜单发现（消「功能堆砌」的物理痕迹）。
+            onPickResource: _pickResource,
+            onManageResources: _openResourceCenter,
+          ),
         ),
       ),
     );

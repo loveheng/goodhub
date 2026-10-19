@@ -2,16 +2,19 @@
 dev-loop: memory
 format: v1
 epic: misc
-total-merged: 2
-last-merge: 2026-10-11
+total-merged: 3
+last-merge: 2026-10-19
 ---
 
 # misc
 
 ## 要点
-- 2026-10-10 goodhub 项目接入完成（dev-init 全流程）：scaffold 骨架 + goodhub-workflow/goodhub-index skill + AGENTS.md 落盘；自 goodshare 迁移 build-apk.sh/bump-version.sh（PKG=com.zzh.goodhub 待首次构建核对），mcp-bridge 不迁（goodhub 自身即 MCP 客户端）；ctx-audit --init 8✓1⚠（skill-verify ⚠ 属空壳预期：lib/ 未建）。
-- [决策] 纯本地项目不推远端（用户拍板）；MCP 接缝契约 SSOT 留 goodshare 仓 docs/design/ai-app-split.md，本仓只读引用。
-- 2026-10-11 仓库首次提交入库（M1~M3 全量 + context 记忆体系 + docs/.agents，147 文件）；goodshare M3 契约扩展提交 2524da5；清理 epics/m2-5 僵尸副本（::done 已于当日 11:07 归档、副本经 diff 证实零独有内容，备份 /tmp/goodhub-zombie-bak）；M3 归档断点补录提交号。
+- 项目接入定型（2026-10-10 dev-init 全流程）：scaffold 骨架 + goodhub-workflow / goodhub-index skill + AGENTS.md；MCP 接缝契约 SSOT 留 goodshare 仓 `docs/design/ai-app-split.md` 本仓只读引用；**纯本地项目不推远端**（用户拍板）。
+- 工具链池（自 goodshare 移植、按本仓 coding-standards 重写）：`arch-guard`（UI 禁 dart:io / 平台分支，R1 白名单已清零、只减不增）、`docs-lint`、`commit-msg-gate`、`pre-commit-gate`、`build-apk` / `bump-version`（PKG=com.zzh.goodhub）、`release-r2` 薄包装入 toolbox（deploy 类）。发布链 = bump-version → `release-r2 --json` 预检 → dry-run → `--commit`；Flutter 3.47.5 registrant 坑（release 构建须 analyze 后剔除 integration_test 注册块 + `--no-pub`）已修入 build-apk / release-r2。
+- 规范结构定型：工程事实住 `docs/project/`（coding-standards §1~§9 + index.md 五节数据），skill 只放规约、零业务数据；workflow skill 终态 = 分工表 + 阶段锚定 + 触发器 + 命令环境 + lessons 指针；触发器只维护 standards，index/代码枚举归 goodhub-index；经验教训四段式显式标签单行落 lessons（归并门禁 = 四段齐备）。
+- 交互 SSOT 当前口径：输入行只留「+ + 文本 + 发送」三件式（选中/本地工具信息在输入框上方状态带）；主操作槽 = 无容器图标钮融于药丸与「+」对称（48×48 热区），三态换色（空输入 terminalMuted / 有输入 l1Info / 运行 dangerDeep）；会话绑定 = 单选列表恒有一项选中、「公共」常驻首项不可取消，新会话有钉选默认则跟随、无则公共；CallCard 终态默认压缩单行、头部整行可点展开/收回。
+- 传输与状态机修复范式：EventChannel 频道名全局 handler 踩踏（多实例 close 互相杀死投递）→ Binder 事件全量收敛 MethodChannel 推挽合一 + 进程级静态路由表；心跳忙时免判探活 + 失败分级；「无会话静默早退」口径服务层与 archive owner 对齐（无当前会话/无 archive = 无需落盘 = true）。
+- 全局存量债专项（2026-10-19 挂 misc，QC1~QC6 全部裁决并执行完毕）：QC1 修 context-lint 挂载行整行当路径的假阳性（MOUNT 4→0）；QC2 新工具 `ctx-fix` 入全局池（reclaim/hdr/checkpoint 确定性修复，默认干跑、--apply 落盘、自动备份、幂等、金丝雀）并全量执行，另修 devlog bp「有断点行但缺 `## 断点` 章节时永远补不上」bug；QC3 严守跨窗口纪律（七域语义债登记触发型待办）；QC4 台账去重（4 条同类快照并为 1 条专项总账）；QC5 授权代归并——5 个 epic 共 83 条 devlog 归并（thirdconnect 20 / system-assessment 20 / chatmessage 18 / page-revamp 14 / m4 11），MERGE 与 SSOT 全清；QC6 GROOM 洗盘（4 条真机验收同类并为 1 条总账，45→42；无 [long]/[once] 过期项可重评）。另修两个度量 bug：context-lint 的 lessons 归并口径（原 count `^- \[` 把正文四段式条目当待归并，归并后恒 ≥5 永误报 → 改为只数「## 待归并」节）+ devlog lesson 落点（原裸 append 落进上一主题节内致漏计 → 改入 inbox 节）。**全仓结论：29 违规 24 告警 → 0 违规；仅存告警 = GROOM 42>30 + MOUNT 3 提示级（无本仓设计稿可挂）**。
 
 ## 断点
-- [断点] 下一步：下一步: 真机并行工具调用场景验证心跳不再误判离线(观察无「在途 N 个已取消」回告)
+- [断点] 下一步：QC1~QC7 全部裁决并执行完毕，专项收口：全仓 0 违规、仅存 GROOM 42>30 + MOUNT 3 提示级（QC7 裁决长期接受）；GROOM 进一步收敛需用户对具体条目存废做价值判断（非机械范畴）

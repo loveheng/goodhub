@@ -38,7 +38,7 @@ last-merge: none
 - TC14 通用插件接入 SDK：把 AIDL/1MB 分包对第三方透明化，封装为 `goodhub-mcp-plugin-core.aar`（Tier A 官方接入通道，对齐 TC10）。第三方继承 `GoodHubPluginService` + `@McpTool` 注解 + Manifest 一行即接入，零手写 AIDL。SDK 仅实现 `IMcpChannel.Stub`（server 端）；client 端连接生命周期（§9.1 状态机/PendingRequestQueue）仍属 GoodHub 宿主。SDK 必满足 §1.2.7 四条红线：`_async` 透明降级（§1.2.2）、URI 统一 `mcp-blob://`（TC9）、命名不上仲裁（§9.3）、安全闸门无关（TC4）。跨平台三档：Android SDK / Flutter bridge（MethodChannel 包装）/ 非 Android 走 TC7 HTTP。属 net-new 插件侧交付物，独立于 T-trans/G 系列。
 
 ## 断点
-- [断点] 下一步：手动真机验证 UI 流（信任卡片 / FSI 全屏确认）+ 电池优化白名单（视真机）；核心 Binder/gateway 链路已设备 e2e 通过（2026-10-13）
+- [断点] 下一步：唯一挂起 = reverseDemo 宿主推理闭环真机验证（手机配置端侧模型或 BYOK 后重跑，推理方=宿主引擎）；手动验收①信任卡片②FSI/L2 全屏呼叫③电池白名单已于 2026-10-13 全部闭环
   - [已完成] T-sdk-1：插件侧 SDK MVP 骨架 + sample-dummy-plugin 靶子 APK（assembleDebug 通过）
   - [已完成] T-trans-2：宿主 BinderTransport（状态机/挂起队列/5s/DeathRecipient + Dart BinderTransport + McpClient.binder）；真机同步链路联调待设备
   - [已完成] T-trans-3：宿主事件回传（onEvent→onProgress + _async 终帧唤醒 + 反向→answerReverse）；宿主收端代码已落，flutter analyze lib/ 0 错误
@@ -58,3 +58,11 @@ last-merge: none
   - [已完成] 真机黑屏修复（2026-10-13，CPH2767/Oppo-ColorOS）：Impeller(Vulkan) 该 GPU 静默不出首帧→启动闪屏不移除→黑屏；AndroidManifest 加 `io.flutter.embedding.android.EnableImpeller=false` 回退 Skia，截屏确认 UI 完整渲染（上机启动前置条件已解除）
   - [已完成] 开 PC 远程网关闪退修复（2026-10-13，G4 FGS）：`GatewayForegroundService.onStartCommand` 缺 `createChannel()` 即 startForeground→Android12+ IllegalArgumentException 崩宿主；已在 startForeground 前补建通道。uiautomator 真机点开关验证：进程存活+前台通知 goodhub_gateway 正常+:8766 initialize 合法响应，无崩溃
   - ✅ 存量债已清（2026-10-13，[test]）：8 个旧测试文件 + integration_test/gateway_external_probe 共 67 issue（66 error + 1 warning）全修复——`McpClient(baseUrl:/httpClient:)` 命名构造改 `McpClient.http(...)` 工厂。`flutter analyze test/ integration_test/` → No issues found，受影响单测实跑 31 例全过。全仓 analyze 仅剩 lib/ui/gateway_loop_debug_page.dart:635 `value` deprecated 警告（pre-existing，非测试债）
+
+## 归并补充（2026-10-19 · 自 devlog 20 条提炼，memory 此前缺失项）
+
+- **流内间隙超时误杀思考修复（2026-10-15）**：`HybridCloudEngine._cloudSend` 原以「两事件静默 > interEventGapTimeout(30s)」判卡流，思考期模型不产 token 即误触发 TimeoutException 中断任务。改为「传输层字节活体 + 自适应预算」：`parseSse` / `sendSseRequest` 暴露 `onActivity`（任意行到达，含 SSE `:` 心跳注释帧）→ `CloudLlmEngine.send({onActivity})` 透传至 Anthropic/OpenAI 客户端与 Fenced 装饰器；看门狗由字节活体与事件共同重置（**心跳帧只作存活证据、不作工作推进**）；预算自适应 = 首字节前 `firstTokenTimeout`(8s) 快速判死连接，已有活体后随 `elapsed*0.5` 放宽（下限 interEventGapTimeout、上限新增 `maxThinkingGap`=5min）。`DegradationController.interEventGapTimeout` 默认 30s→120s（仅作死连接兜底下限）。接口增可选命名参 `onActivity`，11 个实现（含 6 测试 fake、debug 页 `_ScriptedEngine`）同步；`flutter analyze` 0 issue、全仓 585 测试通过。
+- **网关 SSE 缓冲 bug**：`gateway_server.dart` 两处 SSE 起点漏 `bufferOutput=false`，progress 4 帧挤压到收尾 1ms（AtomCode 真网流式实测抓到；loopback e2e 用 `join()` 读完再断言故未暴露）。已修 + 逐帧计时回归钉子 `test/gateway/gateway_server_test.dart`「SSE 进度帧即达」（撤修复验证能咬人）；真网复测 gaps≈0.4s 逐条即达。曾误归因「网关冷启动瞬态」已驳回（response 级确定性缓冲、两次跑不同构建、缺修复前干净复跑对照）。
+- **reverseDemo「反向请求未达 PC」= 预期架构非 bug**：网关模式下本地插件 sampling 反向请求由宿主 `gateway_controller._assemble` 的 `samplingRequestHandler` 闭环（走宿主自身引擎，TC8/§15 临时会话隔离），不经外部 PC 客户端。「端侧生成失败：未下载模型包（云端未配置）」= 该机无可用推理源，属环境未就绪；`isError:false` + 结构化失败 status 符合 M3 降级语义（防熔断误计数）。
+- **thirdconnect.md 增补**：§9 运行时鲁棒性守则（6 暗坑：冷启动挂起队列/状态机、list_changed 下行、SERVER_ID 命名仲裁、多用户 MATCH_CURRENT_USER、hop_count/_meta 防环、背压信号量 max_concurrent=4）+ 红线速查表 + 落点映射；§10 架构重构（控制/数据面分离 / Dual-Stack stdio / 原生 200ms 节流 + 旁路直通 / Keep-Alive 15s+L2 45s 熔断 / 双进程 :gateway/:main 隔离）；§11 插件接入 SDK（接入体验 + SDK 脏活 + 五处纠正 + 跨平台三档 + 工程约束）。
+- **信任闸门两修复**：① 信任卡片抽公共件 `lib/ui/trust_plugin_dialog.dart`（`showTrustCard` + `TrustPluginDialog`，chat_page 复用、删内联 51 行，调用点补 `mounted` 守卫）；② TrustedPlugins 空白名单首次信任必崩——`_map()` 白名单空/损坏时返回 `const {}` 不可变，`add`/`remove` 原地变更抛 `UnsupportedError`，改为一律 `Map.of` 可变副本；由 `integration_test/trust_gate_test.dart` 真机钉死（**绕过闸门的 e2e 对闸门自身路径零覆盖，故闸门必须独立集成测试**）。

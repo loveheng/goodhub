@@ -1,3 +1,10 @@
+---
+dev-loop: devlog
+format: v1
+epic: instant-sampling
+total-merged: 0
+last-merge: none
+---
 dev-loop: devlog
 format: v1
 epic: instant-sampling
