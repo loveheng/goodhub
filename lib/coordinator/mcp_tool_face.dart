@@ -71,19 +71,11 @@ class McpToolFace implements ToolExecutor, ConnectionFace {
   /// name 缺失 = 契约违规立即抛。结果缓存于 [cachedSchemas]（T6 ToolRouter
   /// 前缀改写 / JIT 静态摘要消费——能力目录随 tools/list 变更全量刷新，§8）。
   Future<List<CloudToolSchema>> listTools() async {
-    final result = await client.call('tools/list');
-    if (result is! Map) {
-      throw const McpProtocolException('tools/list result is not an object');
-    }
-    final tools = result['tools'];
-    if (tools is! List) {
-      throw const McpProtocolException('tools/list missing tools array');
-    }
+    final tools = await client.listTools();
     final out = <CloudToolSchema>[];
     for (final t in tools) {
-      if (t is! Map) {
-        throw const McpProtocolException('tool entry is not an object');
-      }
+      // 元素类型已由 client.listTools()（_listPaginated 逐条 Map 过滤）保证
+      // 为 Map<String, Object?>——此处不再做 is! Map 死检查，仅校验契约必填项。
       final name = t['name'];
       if (name is! String || name.isEmpty) {
         throw const McpProtocolException('tool entry missing name');

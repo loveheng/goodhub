@@ -107,6 +107,57 @@ void main() {
     });
   });
 
+  group('ChatStatusController · 流式文本保序（stream-perf §3 尾帧铁律）', () {
+    test('addEntry 先刷空文本缓冲：note 不甩尾帧（真机「任务完成插正文中间」回归）', () {
+      final c = ChatStatusController();
+      // 复现真机时序：尾帧 delta 还在 40ms 缓冲里，LoopFinished 的 note 已
+      // 同步入轨——保序铁律要求 note 之前先把文本刷盘。
+      c.appendStreamText('有什么想做的');
+      c.appendStreamText('吗？');
+      c.addEntry(const TrackNote('✓ 任务完成', danger: false));
+      expect(c.tracks.map((e) => e.runtimeType).toList(), [TrackText, TrackNote]);
+      expect((c.tracks[0] as TrackText).text.toString(), '有什么想做的吗？');
+    });
+
+    test('flush 后续接同一气泡；breakTextStream 后另起', () {
+      final c = ChatStatusController();
+      c.appendStreamText('你');
+      c.flushStreamText();
+      c.appendStreamText('好');
+      c.flushStreamText();
+      expect(c.tracks, hasLength(1), reason: '活动条目续接，不分裂气泡');
+      expect((c.tracks.single as TrackText).text.toString(), '你好');
+      c.breakTextStream();
+      c.appendStreamText('下一段');
+      c.flushStreamText();
+      expect(c.tracks, hasLength(2));
+      expect((c.tracks.last as TrackText).text.toString(), '下一段');
+    });
+
+    test('工具卡入轨同样先刷盘：文本尾帧落在卡前（卡不甩文本）', () {
+      final c = ChatStatusController();
+      c.appendStreamText('先说话');
+      c.breakTextStream(); // LoopToolCallStarted 语义：刷盘残余 + 断流
+      c.addEntry(TrackCall(tool: 'f'));
+      c.appendStreamText('卡后文本');
+      c.flushStreamText();
+      expect(c.tracks.map((e) => e.runtimeType).toList(),
+          [TrackText, TrackCall, TrackText]);
+    });
+
+    test('resetForSession 先刷盘再清轨：尾帧不漏进新会话', () {
+      final c = ChatStatusController();
+      c.appendStreamText('旧会话尾巴');
+      c.resetForSession();
+      expect(c.tracks, isEmpty);
+      c.appendStreamText('新会话');
+      c.flushStreamText();
+      expect(c.tracks, hasLength(1));
+      expect((c.tracks.single as TrackText).text.toString(), '新会话',
+          reason: '节拍定时器迟到的 flush 不得把旧尾帧写进新会话');
+    });
+  });
+
   group('切片 C · TrackText/TrackCall 自管机制', () {
     test('TrackText.append 写 delta 且仅自身通知（细粒度局部重绘前提）', () {
       final t = TrackText('');

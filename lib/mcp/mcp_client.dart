@@ -83,7 +83,20 @@ class McpClient {
   /// （其调用方均接采样 handler），诊断裸 client（server_probe）保持 false。
   bool samplingEnabled = false;
 
+  /// 客户端能力声明：initialize 握手中是否向 server 声明 `elicitation` capability。
+  /// MCP 2025-06-18：server 依据 client capabilities 决定是否发起反向请求
+  /// （elicitation/create）。声明了但 [onElicitation] 未接线 → 按 -32601 拒绝；
+  /// 未声明 → 优雅 decline（server 不应向未声明客户端发 elicitation）。
+  /// 置位契约同 [samplingEnabled]：装配层注入 [ElicitationDelegate] 时置 true。
+  bool elicitationEnabled = false;
+
   Future<Map<String, Object?>?> Function(String method, Object? params)? onServerRequest;
+
+  /// elicitation 反向请求处理器（MCP 2025-06-18 §3.11）：server 经反向请求
+  /// 向宿主收集结构化输入（[ElicitationDelegate] 弹交互卡）。null = 未启用
+  /// elicitation（server 请求收到 decline 帧，不悬挂）。入参为 server 反向请求的
+  /// 原始 params；返回 result 直接序列化进 JSON-RPC result 帧（[ElicitationAnswer.toResult]）。
+  Future<Map<String, Object?>?>? Function(Object? params)? onElicitation;
 
   /// server→client 主动通知分发（T4-5，§3.10）：当前仅消费
   /// [notifications/resources/updated] → [onResourceUpdated]（D19 失效感知：
@@ -114,9 +127,10 @@ class McpClient {
   Future<ServerCapabilities> _doNegotiate() async {
     final result = await call('initialize', params: {
       'protocolVersion': kMcpProtocolVersion,
-      'capabilities': samplingEnabled
-          ? <String, Object?>{'sampling': <String, Object?>{}}
-          : <String, Object?>{},
+      'capabilities': <String, Object?>{
+        if (samplingEnabled) 'sampling': const <String, Object?>{},
+        if (elicitationEnabled) 'elicitation': const <String, Object?>{},
+      },
       'clientInfo': {'name': 'goodhub', 'version': '0.1.0'},
     });
     final caps = ServerCapabilities.parse(result);
@@ -237,6 +251,10 @@ class McpClient {
   /// 失败仅 [DEGRADE] 留痕——流仍在读终帧，严禁让帧读取中断（server 侧按
   /// 超时兜底）。无论成败 server 侧 completer 必被唤醒，不悬挂。
   Future<void> _answerServerRequest(String method, Object id, Object? params) async {
+    if (method == 'elicitation/create') {
+      await _answerElicitation(id, params);
+      return;
+    }
     Map<String, Object?> frame;
     final handler = onServerRequest;
     if (handler == null) {
@@ -274,6 +292,56 @@ class McpClient {
     }
   }
 
+  /// elicitation 反向请求回程（MCP 2025-06-18 §3.11）：[onElicitation] 未接线时，
+  /// 声明了能力 → -32601 拒绝；未声明 → 优雅 decline（server 不应向未声明客户端
+  /// 发起）；handler 异常转 error 帧（McpRpcException 原样 / 其他 -32603）。
+  Future<void> _answerElicitation(Object id, Object? params) async {
+    final handler = onElicitation;
+    Map<String, Object?> frame;
+    if (handler == null) {
+      frame = elicitationEnabled
+          ? {
+              'jsonrpc': '2.0',
+              'id': id,
+              'error': {
+                'code': -32601,
+                'message': '宿主未启用 elicitation 处理',
+              },
+            }
+          : {
+              'jsonrpc': '2.0',
+              'id': id,
+              'result': {'action': 'decline'},
+            };
+    } else {
+      try {
+        final result = await handler(params);
+        frame = {'jsonrpc': '2.0', 'id': id, 'result': result};
+      } on McpRpcException catch (e) {
+        frame = {
+          'jsonrpc': '2.0',
+          'id': id,
+          'error': {
+            'code': e.code,
+            'message': e.message,
+            if (e.data != null) 'data': e.data,
+          },
+        };
+      } catch (e) {
+        frame = {
+          'jsonrpc': '2.0',
+          'id': id,
+          'error': {'code': -32603, 'message': '宿主 elicitation 处理失败: $e'},
+        };
+      }
+    }
+    try {
+      await transport.send(json.jsonEncode(frame));
+    } catch (e) {
+      debugPrint('[DEGRADE] mcp-client: elicitation answer send failed: $e');
+    }
+  }
+
   /// 兼容 JSON 与 SSE 两种响应体（Streamable HTTP 允许服务端回 SSE 帧）。
   Object? _decodePayload(String body, String contentType) {
     if (contentType.contains('text/event-stream')) {
@@ -305,22 +373,40 @@ class McpClient {
   /// 失败（网络/4xx/旧 server 不支持 -32601）由连接健康层按口径处理，不在此抛。
   Future<void> ping() => call('ping');
 
-  /// resources/list（ai-app-split.md §3.8）：只读数据面清单。Tier 2 Server
-  /// 无此能力——调用方按 capabilities（hasPrompts/hasResources）先判再调。
-  Future<List<Map<String, Object?>>> listResources() async {
-    final result = await call('resources/list');
-    if (result is! Map) {
-      throw const McpProtocolException('resources/list result is not an object');
-    }
-    final resources = result['resources'];
-    if (resources is! List) {
-      throw const McpProtocolException('resources/list missing resources array');
-    }
-    return [
-      for (final r in resources)
-        if (r is Map<String, Object?>) r,
-    ];
+  /// 通用分页拉取（MCP 2025-06-18 cursor）：循环发 [method] 带 `cursor` 直到响应
+  /// 无 `nextCursor`；逐页累积 [itemsKey] 数组。server 不支持分页时单次返回全量 +
+  /// 无 nextCursor，自然一轮结束（向后兼容 Tier 2 / 旧 server）。
+  Future<List<Map<String, Object?>>> _listPaginated(
+    String method,
+    String itemsKey,
+  ) async {
+    final out = <Map<String, Object?>>[];
+    String? cursor;
+    do {
+      final params =
+          cursor != null ? <String, Object?>{'cursor': cursor} : null;
+      final result = await call(method, params: params);
+      if (result is! Map<String, Object?>) {
+        throw const McpProtocolException('list result is not an object');
+      }
+      final items = result[itemsKey];
+      if (items is! List) {
+        throw McpProtocolException('$method missing $itemsKey array');
+      }
+      for (final e in items) {
+        if (e is Map<String, Object?>) out.add(e);
+      }
+      final next = result['nextCursor'];
+      cursor = next is String && next.isNotEmpty ? next : null;
+    } while (cursor != null);
+    return out;
   }
+
+  /// resources/list（ai-app-split.md §3.8）：只读数据面清单；支持服务端分页
+  /// （nextCursor 循环拉全）。Tier 2 Server 无此能力——调用方按 capabilities
+  /// （hasPrompts/hasResources）先判再调。
+  Future<List<Map<String, Object?>>> listResources() =>
+      _listPaginated('resources/list', 'resources');
 
   /// resources/read：返回首个 text 内容块的文本（同 claim text 基线的只读注入）。
   /// T4-5 收官（读后自动订阅）：读取成功后 best-effort 订阅该 uri（D8/D19 数据
@@ -356,22 +442,16 @@ class McpClient {
     }
   }
 
-  /// prompts/list（ai-app-split.md §3.7）：CoW 模板源清单（含版本元数据）。
-  /// Tier 2 无此能力——调用方按 capabilities（hasPrompts）先判再调。
-  Future<List<Map<String, Object?>>> listPrompts() async {
-    final result = await call('prompts/list');
-    if (result is! Map) {
-      throw const McpProtocolException('prompts/list result is not an object');
-    }
-    final prompts = result['prompts'];
-    if (prompts is! List) {
-      throw const McpProtocolException('prompts/list missing prompts array');
-    }
-    return [
-      for (final p in prompts)
-        if (p is Map<String, Object?>) p,
-    ];
-  }
+  /// prompts/list（ai-app-split.md §3.7）：CoW 模板源清单（含版本元数据）；
+  /// 支持服务端分页（nextCursor 循环拉全）。Tier 2 无此能力——调用方按
+  /// capabilities（hasPrompts）先判再调。
+  Future<List<Map<String, Object?>>> listPrompts() =>
+      _listPaginated('prompts/list', 'prompts');
+
+  /// tools/list：工具声明清单；支持服务端分页（nextCursor 循环拉全）。此前调用方
+  /// 直接 [call]('tools/list')，现统一走分页（[McpToolFace.listTools] 经此）。
+  Future<List<Map<String, Object?>>> listTools() =>
+      _listPaginated('tools/list', 'tools');
 
   /// prompts/get 原文通道（不传 arguments → server 回未渲染模板，CoW 同步用）。
   Future<String> getPromptRaw(String name) async {

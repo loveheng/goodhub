@@ -37,3 +37,4 @@ updated: 2026-10-18
   - [design/page-beautify.md](design/page-beautify.md) — 聊天页美学与交互美化（page-revamp/ux-hardening 归档后的第三批：空态引导/黑话/双 FAB/字体资产/动效，draft）
   - [design/resource-center.md](design/resource-center.md) — 资源中心设计（本地文件库一期：ResourceStore 内核 / $ref 句柄注入对话 / read_local_resource 工具，draft）
   - [design/prompt-mgmt.md](design/prompt-mgmt.md) — Prompt 管理设计（全局 + 按服务 + 切换联动：私有槽位 appScoped 注入过滤 / user 全局 prompt 入口，draft）
+  - [design/mcp-standard-eval.md](design/mcp-standard-eval.md) — goodhub MCP 实现对照官方 2025-06-18 标准合规评估（client + gateway 双角色能力矩阵 + 取舍原因）

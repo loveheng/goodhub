@@ -39,6 +39,8 @@ import '../mcp/local_plugin_discovery.dart';
 import '../mcp/mcp_client.dart';
 import '../llm/cloud/sampling_engine.dart';
 import '../mcp/sampling.dart' show SamplingQuota, samplingRequestHandler;
+import '../mcp/elicitation.dart'
+    show ElicitationDelegate, elicitationRequestHandler;
 import '../mcp/server_capabilities.dart';
 import '../mcp/server_endpoints.dart';
 import '../mcp/server_probe.dart' show McpClientFactory;
@@ -148,6 +150,7 @@ class RuntimeDelegates {
     this.blockDelegate,
     this.consentDelegate,
     this.majorJumpDelegate,
+    this.elicitationDelegate,
     this.onNote,
     this.onProgress,
     this.onNotice,
@@ -170,6 +173,9 @@ class RuntimeDelegates {
 
   /// CoW 大版本跃迁确认。
   final CowMajorJumpDelegate? majorJumpDelegate;
+
+  /// elicitation 交互卡委托（server→宿主结构化提问；null = 无人值守 decline）。
+  final ElicitationDelegate? elicitationDelegate;
 
   // —— 广播（void）——
 
@@ -606,6 +612,16 @@ class McpRuntime {
         onSamplingBegin?.call();
         return sampling(method, params).whenComplete(() => onSamplingEnd?.call());
       };
+    }
+    // —— T6：elicitation 反向请求（server→宿主结构化提问）；仅当装配层注入了
+    // 委托（有人值守 UI）时声明能力并接线，否则保持 false（无委托 → decline）。
+    final elicitation = delegates.elicitationDelegate;
+    if (elicitation != null) {
+      for (final entry in clients.entries) {
+        entry.value.elicitationEnabled = true;
+        entry.value.onElicitation =
+            elicitationRequestHandler(delegate: elicitation);
+      }
     }
 
     // —— T6：逐 server CoW 同步（有 prompts 能力者）；skill 名保持

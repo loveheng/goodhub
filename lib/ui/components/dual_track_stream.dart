@@ -27,6 +27,9 @@ import 'fence_block_card.dart';
 import 'streaming_rich_text.dart';
 import '../tokens/console_tokens.dart';
 
+import '../../mcp/elicitation.dart';
+import 'elicitation_card.dart';
+
 /// 轨道条目（页面编排记录；sealed 供渲染穷举）。
 sealed class TrackEntry {
   const TrackEntry();
@@ -230,6 +233,17 @@ class TrackContextAttribution extends TrackEntry {
 
   /// 预留：单条排除回调（null = 不渲染排除按钮；当前页面不接线）。
   void Function(ContextAttributionItem item)? onItemExclude;
+}
+
+/// elicitation 交互卡（server→宿主结构化提问；MCP 2025-06-18 elicitation/create）。
+/// 未决态（answer == null）弹表单；已决态（answer != null）锁定呈现。
+class TrackElicitation extends TrackEntry {
+  TrackElicitation({required this.request});
+
+  final ElicitationRequest request;
+  final Completer<ElicitationAnswer> completer = Completer<ElicitationAnswer>();
+  ElicitationAnswer? answer;
+  DateTime? decidedAt;
 }
 
 class DualTrackStream extends StatelessWidget {
@@ -493,6 +507,24 @@ class DualTrackStream extends StatelessWidget {
                 }
               : null,
           lockedSendRaw: decision,
+          lockedAt: decidedAt,
+        );
+      case TrackElicitation(
+        :final request,
+        :final answer,
+        :final decidedAt,
+        :final completer,
+      ):
+        return ElicitationCard(
+          request: request,
+          onDecision: answer == null
+              ? (a) {
+                  entry.answer = a;
+                  entry.decidedAt = DateTime.now();
+                  completer.complete(a);
+                }
+              : null,
+          lockedAnswer: answer,
           lockedAt: decidedAt,
         );
       case TrackNote(:final text, :final danger):
@@ -1002,6 +1034,15 @@ extension TrackEntryCodec on TrackEntry {
       'sendRaw': ?decision,
       'decidedAt': ?decidedAt?.millisecondsSinceEpoch,
     },
+    TrackElicitation(:final request, :final answer, :final decidedAt) => {
+      'type': 'elicitation',
+      'message': request.message,
+      'schema': request.schema,
+      'action': answer?.accepted == true ? 'accept' : 'decline',
+      'content': answer?.content,
+      'reason': answer?.reason,
+      'decidedAt': ?decidedAt?.millisecondsSinceEpoch,
+    },
     TrackNote(:final text, :final danger) => {
       'type': 'note',
       'text': text,
@@ -1183,6 +1224,30 @@ extension TrackEntryCodec on TrackEntry {
               )
               ..decision = sendRaw
               ..decidedAt = decidedAt,
+          );
+        case 'elicitation':
+          final action = m['action'] as String?;
+          if (action == null) {
+            out.add(_interruptedNote(m['message'] as String? ?? 'elicitation'));
+            continue;
+          }
+          out.add(
+            TrackElicitation(
+              request: ElicitationRequest(
+                message: m['message'] as String? ?? '',
+                schema: m['schema'] is Map<String, Object?>
+                    ? m['schema'] as Map<String, Object?>
+                    : const {},
+              ),
+            )
+              ..answer = action == 'accept'
+                  ? ElicitationAnswer(
+                      accepted: true,
+                      content: m['content'] is Map<String, Object?>
+                          ? m['content'] as Map<String, Object?>
+                          : const {},
+                    )
+                  : ElicitationAnswer(accepted: false, reason: m['reason'] as String?),
           );
         default:
           out.add(const TrackNote('⚠ 存在无法恢复的轨道条目（类型未知）', danger: true));

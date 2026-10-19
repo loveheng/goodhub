@@ -50,4 +50,33 @@ void main() {
       ..add(const CloudToolCallDelta(index: 0, argumentsDelta: '{}'));
     expect(() => acc.toolCalls, throwsA(isA<CloudProtocolException>()));
   });
+
+  test('空名 tool_call 丢弃不抛错，同轮有效调用照常结算', () {
+    final acc = CloudStreamAccumulator()
+      ..add(const CloudToolCallDelta(index: 0, id: 'bad', name: ''))
+      ..add(const CloudToolCallDelta(index: 0, argumentsDelta: '{"a":1}'))
+      ..add(const CloudToolCallDelta(index: 1, id: 'ok', name: 'f'))
+      ..add(const CloudToolCallDelta(index: 1, argumentsDelta: '{}'))
+      ..add(const CloudDone(finishReason: CloudFinishReason.toolCalls));
+
+    final calls = acc.toolCalls;
+    expect(calls, hasLength(1), reason: '空名畸形调用不计入成品');
+    expect(calls.single.id, 'ok');
+    expect(calls.single.name, 'f');
+    // toAssistantMessage 同口径：历史不同步空名调用（回放无失配 tool 消息）。
+    expect(acc.toAssistantMessage().toolCalls.map((c) => c.name), ['f']);
+  });
+
+  test('纯空白名同样丢弃；缺 name 仍按协议违规抛错（不扩大化）', () {
+    final blank = CloudStreamAccumulator()
+      ..add(const CloudToolCallDelta(index: 0, id: 'bad', name: '   '))
+      ..add(const CloudDone(finishReason: CloudFinishReason.toolCalls));
+    expect(blank.toolCalls, isEmpty, reason: 'trim 后为空即丢弃');
+
+    final missing = CloudStreamAccumulator()
+      ..add(const CloudToolCallDelta(index: 0, id: 'x'))
+      ..add(const CloudDone(finishReason: CloudFinishReason.toolCalls));
+    expect(() => missing.toolCalls, throwsA(isA<CloudProtocolException>()),
+        reason: '缺 name（null）与空名是两回事：前者仍是协议违规');
+  });
 }

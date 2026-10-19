@@ -192,19 +192,59 @@ class ChatRunOrchestrator {
   void markRunEnded() => memGovernor.markRunEnded();
 
   /// T6 静态首级摘要「## 已挂载服务」（原 chat_page 静态助手上收）。
+  ///
+  /// 状态分叉（2026-10-19，防幻觉直调熔断链）：只列服务不给状态，模型会以为
+  /// 「挂载即可调」——私有服务未占槽时其工具根本不在工具面，直调被前缀守门
+  /// 拦成 isError，两次相同失败即两步熔断。故完全无锁槽时按**纯聊天模式**
+  /// 定性（用户拍板：未选中私有服务就当纯聊天，挂载的插件只是背景里可锁定
+  /// 的选项，提供给模型的仅基础服务；其余未锁私有由行级标记 + router 单槽
+  /// 守门话术覆盖）：
+  /// ① 明示「工具不可用 + 可直接纯对话」，给模型「什么工具都不调」的正向
+  /// 出路（基础 system prompt 同向解压）；② 服务行按私有看槽位、公共看
+  /// 激活集标注状态；③ 尾句动词对齐（私有 = use_server 锁定）。
   static String mountedServicesSection(
     ToolRouter router,
     Map<String, String> summaries,
   ) {
+    final slot = router.effectiveSlot;
     final lines = [
       for (final id in router.serverIds)
-        '- $id: ${summaries[id] ?? '(无摘要)'}'
-            '${router.activatedServers.contains(id) ? '' : ' ［未激活，需 activate_server_tools］'}',
+        '- $id: ${summaries[id] ?? '(无摘要)'}${_lockMark(router, id)}',
     ];
+    final unboundPrivate = router.serverIds
+        .where((id) => router.privateServerIds.contains(id) && id != slot)
+        .toList();
+    // 纯对话出路段仅在「完全无锁槽」时注入：有槽位 = 私有域已定、工具面
+    // 非空，模型该用工具而非被劝退；其余未锁私有由行级标记 + router 单槽
+    // 守门话术覆盖。
+    final noPrivateLocked = slot == null && unboundPrivate.isNotEmpty;
     final first = router.serverIds.isEmpty ? 'server_id' : router.serverIds.first;
-    return '\n\n## 已挂载服务（自动生成）\n'
-        '工具名带服务前缀，格式 `<server_id>__<tool>`，例如 `${first}__get_item`。\n'
-        '服务列表：\n${lines.join('\n')}\n'
-        '未激活服务用 get_connected_apps 查看、activate_server_tools 激活。';
+    final buffer = StringBuffer('\n\n## 已挂载服务（自动生成）\n')
+      ..write('工具名带服务前缀，格式 `<server_id>__<tool>`，'
+          '例如 `${first}__get_item`。\n');
+    if (noPrivateLocked) {
+      buffer.write('当前会话未锁定私有服务，按纯聊天模式处理：能直接回答的'
+          '直接以自然语言文本回答，不主动调用工具；宿主基础能力（公共面'
+          '工具、记忆、技能）常驻可用。仅当任务确需某插件能力时，才用 '
+          'use_server(server_id) 锁定其中一个后调用。\n');
+    }
+    buffer
+      ..write('服务列表：\n${lines.join('\n')}\n')
+      ..write(noPrivateLocked
+          ? '未锁定服务用 get_connected_apps 查看、use_server 锁定。'
+          : '未激活服务用 get_connected_apps 查看、activate_server_tools 激活。');
+    return buffer.toString();
+  }
+
+  /// 服务行状态标记：私有看槽位（占槽无标记；未锁 = use_server），公共看
+  /// 激活集（挂载即默认全激活，异常未激活才标）。快照读 [ToolRouter.effectiveSlot]
+  /// ——与 composeSystemPrompt 同拍同源（Run 启动后调用）。
+  static String _lockMark(ToolRouter router, String id) {
+    if (router.privateServerIds.contains(id)) {
+      return router.effectiveSlot == id ? '' : ' ［未锁定，需 use_server］';
+    }
+    return router.activatedServers.contains(id)
+        ? ''
+        : ' ［未激活，需 activate_server_tools］';
   }
 }

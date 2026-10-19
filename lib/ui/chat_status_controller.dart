@@ -11,14 +11,24 @@
 ///
 /// 双 `Listenable` 切分是「状态流转/UI 分离」的关键：pill/elapsed 高频变更不牵连
 /// 轨道列表重建，轨道新增/删除也不牵连底部输入集群——只有真正相关的子树重绘。
+///
+/// **流式文本缓冲（stream-perf §3，2026-10-19 下沉）**：delta 经 40ms 节拍批量
+/// 刷盘；保序铁律——**任何非文本条目入轨（addEntry）前必须先刷空文本缓冲**。
+/// 否则缓冲期内到达的尾帧会被同步入轨的 note/工具卡/错误卡甩到后面（真机实证：
+/// 「✓ 任务完成」插到回复正文中间，尾帧「吗？」另起气泡落到标记之后）。
 library;
 
 import 'package:flutter/material.dart';
 
 import 'components/dual_track_stream.dart';
 import 'components/status_capsule.dart';
+import 'components/stream_text_buffer.dart';
 
 class ChatStatusController extends ChangeNotifier {
+  ChatStatusController() {
+    _streamBuf.onFlush = _onStreamFlush;
+  }
+
   // —— 状态带（statusListenable）—————————————————————————————
   String _pillLabel = 'idle';
   CapsuleTone _pillTone = CapsuleTone.idle;
@@ -88,6 +98,10 @@ class ChatStatusController extends ChangeNotifier {
   final ChangeNotifier _tracksNc = ChangeNotifier();
 
   void addEntry(TrackEntry entry) {
+    // 保序铁律（stream-perf §3）：非文本条目入轨前先刷空文本缓冲——delta 走
+    // 40ms 节拍，note/工具卡/错误卡/胶囊是同步入轨的，不先刷盘尾帧就会被甩到
+    // 条目之后（真机实证：「✓ 任务完成」插到回复正文中间）。
+    _streamBuf.flush();
     tracks.add(entry);
     _tracksNc.notifyListeners();
   }
@@ -112,7 +126,11 @@ class ChatStatusController extends ChangeNotifier {
   }
 
   /// 会话切换/重置：清轨道 + 复位状态带到 idle + 复位自动跟随（D：生命周期归拢）。
+  /// 流控残余先刷盘（落旧轨随 clear 一并弃）——禁直接丢缓冲：节拍定时器迟到
+  /// 的 flush 会把旧会话尾帧写进新会话轨道。
   void resetForSession() {
+    _streamBuf.flush();
+    _activeTextEntry = null;
     tracks.clear();
     _pillLabel = 'idle';
     _pillTone = CapsuleTone.idle;
@@ -121,6 +139,39 @@ class ChatStatusController extends ChangeNotifier {
     _autoFollow = true;
     _statusNc.notifyListeners();
     _tracksNc.notifyListeners();
+  }
+
+  // —— 流式文本（stream-perf §3）———————————————————————————
+  final _streamBuf = StreamTextBuffer();
+
+  /// 活动文本条目（自管重绘）；null = 文本流中断（工具卡/会话边界），下一段
+  /// 文本另起气泡。
+  TrackText? _activeTextEntry;
+
+  /// delta 入池（40ms 节拍批量刷盘）。dispose 后静默丢弃（终态语义）。
+  void appendStreamText(String delta) => _streamBuf.add(delta);
+
+  /// 强制刷盘（Run 收尾/中止/异常三路径）：取消节拍，残余立即落地。
+  void flushStreamText() => _streamBuf.flush();
+
+  /// 文本流中断（工具卡插入 / Run 收尾）：先刷盘残余保序，再断活动条目——
+  /// 已入轨文本不被后续条目重排，后续文本另起气泡。
+  void breakTextStream() {
+    _streamBuf.flush();
+    _activeTextEntry = null;
+  }
+
+  /// 刷盘回调（缓冲装配期一次性设置）：有活动条目则续接（仅自身重绘），
+  /// 无则新建并入轨（结构性新增 → tracksListenable 通知）。
+  void _onStreamFlush(String text) {
+    final active = _activeTextEntry;
+    if (active != null) {
+      active.append(text);
+    } else {
+      _activeTextEntry = TrackText(text);
+      addEntry(_activeTextEntry!); // 缓冲已在 drain 后为空，无重入递归
+    }
+    pinToBottom();
   }
 
   // —— 滚动锚定 / 键盘（D）———————————————————————————————————
@@ -153,6 +204,7 @@ class ChatStatusController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _streamBuf.dispose(); // 取消节拍定时器（widget 已销毁，残余无处可刷）
     _statusNc.dispose();
     _tracksNc.dispose();
     _scrollCtrl = null;

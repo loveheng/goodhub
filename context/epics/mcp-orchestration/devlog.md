@@ -90,3 +90,18 @@ last-merge: none
 - **运行时自洽**：`mcp_runtime.resolveBinding`（顶层纯函数，测试钉住 isDefault 语义）签名不动；聊天页在 init 即把统一默认绑定进 `ConversationSession.activePrivateServerId`，装配时 `bound` 非空直接生效——统一默认（含本地插件）经会话态进运行时，isDefault 分支仅作遗留兜底。
 - **测试**：`flutter analyze`（4 改动文件）0 issue；`test/coordinator/mcp_runtime_test.dart` + `test/ui/chat_page_smoke_test.dart` + `test/mcp/server_endpoints_test.dart` 33 例绿；`test/ui/settings_page_test.dart` + `test/ui/local_plugins_panel_test.dart` 11 例绿（测试环境 SharedPreferences 不可用 → default-private 按无默认 DEGRADE，与 gateway-token/about-panel 同模式非致命）。
 - **行为变化**：本地插件现可被钉选为持久默认（原 no-op 修复）；聊天菜单不再能改持久默认（只能本会话覆盖）；旧 `isDefault` 字段保留（JSON 兼容 + resolveBinding 遗留兜底），不再有写入入口。
+
+## 2026-10-19 · elicitation 交互卡移动端美学/人机改造（P0+P1）
+
+- **背景**：`ElicitationCard`（server→宿主结构化提问，MCP 2025-06-18 `elicitation/create`；未决态弹表单、已决态锁定）与同族交互卡（ConfirmationCard/BreakerCard/FenceBlockCard）存在三处落差——无卡片底色（dark 主题下透明浮于阅读轨、信息层级弱）、无入场触觉反馈、状态仅靠单一琥珀色传达；且表单嵌在双轨流 ListView 内，移动端弹键盘时字段与提交按钮可能被遮挡。
+- **裁决（用户拍板 P0+P1）**：先修「美学 + 人机」P0/P1；P2（optional 空字段省略提交等）缓做。
+- **改动**：
+  - `lib/ui/components/elicitation_card.dart`：
+    - P0-1：`_frame` 补 `color: Theme.of(context).cardColor` + `ClipRRect` + `Material(transparency)` 包裹，与 ConfirmationCard 范本同族（内部按钮/开关 ink 与主题继承一致）；竖条宽 3→4、字段间距 4→6 顺带对齐范本。
+    - P0-2：`initState` 连发两次 `HapticFeedback.heavyImpact()`（L2 中断双击震动，§4.1 口径；仅交互态触发，终态锁定态不震）。
+    - P0-3：交互态顶部新增 `Icons.input` + 「需要你的输入」琥珀标题——语义色第二通道（ui-design §6 双通道状态，色弱/强光可判态）。
+    - P1：TextFormField 挂 `FocusNode`，聚焦即 `Scrollable.ensureVisible(alignment: 0.3)` 滚动入视——聚焦字段略偏视口上方，露出后续字段与提交按钮。
+  - `lib/ui/chat_page.dart`：Scaffold 显式 `resizeToAvoidBottomInset: true`（原本依赖默认值，现显式锁定）。
+- **验证**：`flutter analyze` 全量 **0 issue**（首轮 3 条已修：`elicitation_card.dart` 的 `DropdownButtonFormField.value` 废弃 → `initialValue`（SDK 3.47.5 支持）；`mcp_tool_face.dart:77` 既有 `t is! Map` 恒 false + throw 死代码 2 条 warning → 删除，元素 Map 性由 `client.listTools()`（`_listPaginated` 逐条过滤）保证，保留有意义的 `name is! String` 契约检查）。`flutter test`（coordinator/mcp/ui）640 例全绿。无单测直接引用 `ElicitationCard`/`TrackElicitation`，回归风险低；改动纯视觉/交互层，未跑 widget 测试。
+- **备注**：`_scrollIntoView` 依赖 ListView 祖先（`DualTrackStream` 的 `ListView.builder`）——卡片嵌在消息流内成立；若单测脱离滚动容器 pump 并触发聚焦，`ensureVisible` 无 Scrollable 祖先会抛，后续补 widget 测试时需包 `ListView`/`SingleChildScrollView`。
+- **待办（P2，未做）**：optional 空字段提交时从 `content` 省略（现为全字段提交）。

@@ -104,10 +104,22 @@ class DiscoveryExecutor implements ToolExecutor {
     }
     final lines = [
       for (final id in router.serverIds)
-        '- $id: ${serverSummaries[id] ?? '(无摘要)'}'
-        '${router.activatedServers.contains(id) ? '' : ' ［未激活，需 activate_server_tools］'}',
+        '- $id: ${serverSummaries[id] ?? '(无摘要)'}${_stateMark(id)}',
     ];
     return ToolExecutionResult(content: '已挂载服务：\n${lines.join('\n')}');
+  }
+
+  /// 行尾状态标记（与 ChatRunOrchestrator.mountedServicesSection 同口径，
+  /// 2026-10-19 对齐）：私有看槽位——占槽无标记，未锁 = use_server（私有域
+  /// 不进激活集，旧「未激活，需 activate_server_tools」对占槽私有是错标）；
+  /// 公共看激活集（挂载即默认全激活，异常未激活才标）。
+  String _stateMark(String id) {
+    if (router.privateServerIds.contains(id)) {
+      return router.effectiveSlot == id ? '' : ' ［未锁定，需 use_server］';
+    }
+    return router.activatedServers.contains(id)
+        ? ''
+        : ' ［未激活，需 activate_server_tools］';
   }
 
   Future<ToolExecutionResult> _activate(AssembledToolCall call) async {

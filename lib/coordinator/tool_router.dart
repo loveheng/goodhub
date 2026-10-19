@@ -206,9 +206,15 @@ class ToolRouter implements ToolExecutor {
   Future<ToolExecutionResult> execute(AssembledToolCall call) async {
     final parsed = parsePrefixedToolName(call.name);
     if (parsed == null) {
+      // 空名调用已在 accumulator 结算层丢弃（DEGRADE 留痕），能到达这里的
+      // 必是非空裸名 = 幻觉服务工具（宿主工具裸名由前置执行器拦截，到不了
+      // 本层）。话术双受众：回填模型上下文 + 熔断卡 lastError 给用户看。
       return ToolExecutionResult(
-        content: '工具名 ${call.name} 不含 $kToolNamespaceSep 服务前缀——'
-            '服务工具经 get_connected_apps 查看并用 activate_server_tools 激活',
+        content: '工具名 ${call.name} 不是可用工具——服务工具名须带 '
+            '<server_id>$kToolNamespaceSep<tool> 前缀（如 '
+            'misc${kToolNamespaceSep}foo）；不确定可用工具时先用 '
+            'get_connected_apps 查看、use_server 锁定服务；'
+            '无需工具时直接回复文本即可',
         isError: true,
       );
     }

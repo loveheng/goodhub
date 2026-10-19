@@ -391,6 +391,13 @@ class AgentLoop {
         final settledText = filter == null ? acc.text : filteredText.toString();
         if (settledText.isNotEmpty) {
           messages.add(AssistantMessage(content: settledText));
+        } else if (acc.finishReason == CloudFinishReason.toolCalls) {
+          // 防静默洞：模型声明了工具调用但全部是空名畸形调用（accumulator 已
+          // 丢弃并 DEGRADE 留痕）——既无执行也无文本，静默结算 = 用户零反馈
+          // （比熔断更糟）。上抛走窗口白话错误卡（P0-2 重试入口），与步数墙
+          // 终止同径；abort 路径与此无关（用户主动中止，允许空产出）。
+          throw InferenceException(
+              '模型本轮仅有无效工具调用（空名 tool_call），未产出可用内容');
         }
         emit(LoopFinished(
           text: settledText,

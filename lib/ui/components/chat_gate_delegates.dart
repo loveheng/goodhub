@@ -4,6 +4,8 @@ import '../../coordinator/permission_gateway.dart'
     show GateDelegate, ToolPendingConfirmation, GateDecision;
 import '../../coordinator/tool_breaker.dart'
     show BlockDelegate, BreakerReport, StepWallReport, BreakerResolution;
+import '../../mcp/elicitation.dart'
+    show ElicitationDelegate, ElicitationRequest, ElicitationAnswer;
 
 import 'dual_track_stream.dart';
 import 'status_capsule.dart';
@@ -59,6 +61,20 @@ class ChatFenceDelegate implements PiiFenceDelegate {
   Future<bool> onMaskBlocked(PiiMaskBlockInfo info) {
     host.setPill('fence', CapsuleTone.danger);
     final entry = TrackFence(info);
+    host.addTrack(entry);
+    return entry.completer.future;
+  }
+}
+
+/// elicitation 交互卡委托（MCP 2025-06-18 server→宿主结构化提问）：轨道插待决卡
+/// 并 await 用户填表，用户操作即 completion（与 ChatGateDelegate 同口径）。
+class ChatElicitationDelegate implements ElicitationDelegate {
+  ChatElicitationDelegate(this.host);
+  final ChatTrackSink host;
+
+  @override
+  Future<ElicitationAnswer> request(ElicitationRequest req) {
+    final entry = TrackElicitation(request: req);
     host.addTrack(entry);
     return entry.completer.future;
   }

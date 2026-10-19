@@ -191,4 +191,26 @@ void main() {
           reason: '被互斥的私有 lp2 调用须拦截');
     });
   });
+
+  group('ToolRouter 无前缀裸名守门（幻觉直调防线）', () {
+    test('非空裸名：isError + 新话术（不是可用工具/前缀格式/可直接回文本）', () async {
+      final router = _router();
+      final blocked = await router.execute(
+          AssembledToolCall(id: '1', name: 'get_item', argumentsJson: '{}'));
+      expect(blocked.isError, isTrue);
+      expect(blocked.content, contains('不是可用工具'));
+      expect(blocked.content, contains('get_connected_apps'));
+      expect(blocked.content, contains('use_server'));
+      expect(blocked.content, contains('直接回复文本'));
+    });
+
+    test('空名双保险：accumulator 丢弃后若仍直达 router，按无前缀拦截', () async {
+      final router = _router();
+      final blocked = await router.execute(
+          AssembledToolCall(id: '1', name: '', argumentsJson: '{}'));
+      expect(blocked.isError, isTrue,
+          reason: '空名在结算层已丢弃；直达本层仍须拦截（防线不依赖单点）');
+      expect(blocked.content, contains('不是可用工具'));
+    });
+  });
 }

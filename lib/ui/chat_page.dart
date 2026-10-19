@@ -53,7 +53,6 @@ import 'components/status_capsule.dart';
 import 'components/status_strip.dart';
 
 import 'chat_status_controller.dart';
-import 'components/stream_text_buffer.dart';
 import 'tokens/console_tokens.dart';
 import 'components/stuck_watcher.dart';
 import 'resource_center_page.dart';
@@ -88,14 +87,13 @@ class _ChatPageState extends State<ChatPage>
 
   /// 状态/副作用收敛件（window-slim P1-B/C/D）：pill/运行态/已耗时/轨道列表/
   /// 滚动锚定/键盘/会话切换生命周期全部收口此处；窗口只持配置缓存与编排句柄。
+  /// 流式文本缓冲（stream-perf §3）亦归口其中——保序铁律：非文本条目入轨前
+  /// 先刷空缓冲（防「✓ 任务完成」插到正文中间，2026-10-19 真机实证修复）。
   final ChatStatusController _status = ChatStatusController();
-
-  /// 运行期阅读轨文本活动条目（C：TrackText 自管，append 仅自身重绘）；插非文本
-  /// 条目（工具卡等）时清空，使下一段文本另起条目（与原「last is TrackText」同义）。
-  TrackText? _activeTextEntry;
 
   static const _systemPrompt =
       '你是 GoodHub 宿主助手，调度已挂载服务与宿主能力完成用户任务。'
+      '任务能直接回答的直接以自然语言回答，不强行调用工具；'
       '只读工具会静默执行，写操作需用户在确认卡批准；用户偏好可写入宿主记忆'
       '（只记稳定事实，禁记临时数据），回答使用中文。';
 
@@ -157,13 +155,9 @@ class _ChatPageState extends State<ChatPage>
   TrackCall? _activeCallEntry;
   StuckWatcher? _watcher;
 
-  // P0 流控层（stream-perf §3）：阅读轨文本 delta 缓冲池（40ms 节拍批量刷盘）。
-  final _streamBuf = StreamTextBuffer();
-
   @override
   void initState() {
     super.initState();
-    _streamBuf.onFlush = _onStreamFlush;
     _status.attachScroll(_scrollCtrl);
     _scrollCtrl.addListener(_onUserScroll);
     WidgetsBinding.instance.addObserver(this);
@@ -181,8 +175,7 @@ class _ChatPageState extends State<ChatPage>
     taskConsumeBootstrap.isHostBusy = null; // 解绑运行态端口（防悬空引用）
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
-    _streamBuf.dispose(); // P0：取消节拍定时器（widget 已销毁，残余无处可刷）
-    _status.dispose();
+    _status.dispose(); // 含流控缓冲定时器取消（P0：widget 已销毁，残余无处可刷）
     super.dispose();
   }
 
@@ -248,7 +241,6 @@ class _ChatPageState extends State<ChatPage>
   /// **切会话即重置配额** = 行为变更①，原为页面级「重启清零」）。
   void _resetSessionState() {
     _activeCallEntry = null;
-    _activeTextEntry = null;
     // 记忆治理器随会话生灭（§6.2：传输态切会话即弃，重置周期锚点）——
     // governor 随编排件（window-slim P1-A），本页只触发重置。
     _runOrchestrator.memGovernor.reset();
@@ -423,23 +415,9 @@ class _ChatPageState extends State<ChatPage>
   void _appendText(String delta) {
     if (!mounted) return;
     // P0 流控层（stream-perf §3）：delta 入池，40ms 节拍批量刷盘；流结束/中止/
-    // 异常路径由 _send 的 finally 强制 flush，尾帧不丢。
-    _streamBuf.add(delta);
-  }
-
-  /// 流控刷盘回调：40ms 节拍批量落地（切片 C：消整页 setState）。活动文本条目自管
-  /// append 仅自身重绘；无活动条目则新建并结构性入轨（tracksListenable 通知双轨流）。
-  void _onStreamFlush(String text) {
-    if (!mounted) return;
-    final active = _activeTextEntry;
-    if (active != null) {
-      active.append(text); // 自管：仅 TrackText 局部重绘，无整页 setState
-    } else {
-      final entry = TrackText(text);
-      _activeTextEntry = entry;
-      _status.addEntry(entry); // 结构性新增 → tracksListenable 通知双轨流
-    }
-    _pinToBottom();
+    // 异常路径由 _send 的 finally 强制 flush，尾帧不丢。缓冲与保序铁律
+    // （非文本条目入轨前先刷盘）归口 ChatStatusController。
+    _status.appendStreamText(delta);
   }
 
   /// 用户滚动监听：离开底部即暂停自动跟随（流式输出不劫持滚动），回到
@@ -897,6 +875,7 @@ class _ChatPageState extends State<ChatPage>
             );
             return r == true;
           },
+          elicitationDelegate: ChatElicitationDelegate(this),
           onNote: (message, {danger = false}) =>
               _add(TrackNote(message, danger: danger)),
           onProgress: (tool, progress, total, message) {
@@ -1021,7 +1000,9 @@ class _ChatPageState extends State<ChatPage>
             final entry = TrackCall(tool: call.name)
               ..description = toolDescriptions[call.name];
             _activeCallEntry = entry;
-            _activeTextEntry = null; // 工具卡插入打断文本流：下一段文本另起条目
+            // 工具卡插入打断文本流：先刷盘残余保序（尾帧不被卡甩后），后续
+            // 文本另起条目。
+            _status.breakTextStream();
             _add(entry);
             _watcher?.start();
           case LoopToolProgress(
@@ -1094,13 +1075,12 @@ class _ChatPageState extends State<ChatPage>
       _watcher?.stop();
       _watcher = null;
       _activeCallEntry = null;
-      _activeTextEntry = null;
       // §6.4 TTL 机会主义压实的判定起点：本 Run 结束时刻（governor 持有，
       // 随编排件——window-slim P1-A）。
       _runOrchestrator.markRunEnded();
       // P0 尾帧铁律（stream-perf §3）：快照与终态渲染前强制清空流控缓冲——
       // 覆盖正常收尾 / Abort / 异常三条路径，缓冲期内到达的尾帧不得丢失。
-      _streamBuf.flush();
+      _status.breakTextStream();
       // 资源释放内核化（谁持资源谁释放）：connections stop + client.close +
       // refStore 焚，全部在内核 close() 内（幂等；失败 DEGRADE 不抛穿 finally）。
       await assembly?.close();
@@ -1233,6 +1213,8 @@ class _ChatPageState extends State<ChatPage>
         Navigator.of(this.context).pop();
       },
       child: Scaffold(
+        // P1：弹键盘时收起主区，避免遮挡表单（默认 true，此处显式锁定）。
+        resizeToAvoidBottomInset: true,
         drawer: _buildDrawer(),
         appBar: AppBar(
           // 会话标题进 AppBar（D13 多会话：切会话后知道自己所在会话）。

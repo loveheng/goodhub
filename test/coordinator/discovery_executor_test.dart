@@ -115,6 +115,34 @@ void main() {
       expect(res.content, contains('s1'));
       expect(res.content, contains('goodshare Tier1'));
     });
+    test('get_connected_apps 标记口径：私有未锁 = use_server，占槽无标记', () async {
+      router = ToolRouter(
+        faces: {'s1': _fakeFace('s1'), 'p1': _fakeFace('p1')},
+        privateServerIds: const {'p1'},
+      );
+      disc = DiscoveryExecutor(
+        router: router,
+        inner: inner,
+        serverSummaries: const {'s1': '公共服务', 'p1': '私有插件'},
+        onActivation: (id) => activations.add(id),
+      );
+      var res = await disc.execute(AssembledToolCall(
+          id: '1',
+          name: DiscoveryExecutor.getConnectedApps,
+          argumentsJson: '{}'));
+      expect(res.content, contains('p1: 私有插件 ［未锁定，需 use_server］'),
+          reason: '私有不进激活集，未锁槽时引导 use_server（纠偏旧「未激活」错标）');
+      router.activePrivateServerId = 'p1';
+      res = await disc.execute(AssembledToolCall(
+          id: '2',
+          name: DiscoveryExecutor.getConnectedApps,
+          argumentsJson: '{}'));
+      expect(res.content, contains('p1: 私有插件'));
+      expect(res.content, isNot(contains('p1: 私有插件 ［')),
+          reason: '占槽私有行尾无标记（末行无换行，禁按 \n 断言）');
+      expect(res.content, isNot(contains('私有插件 ［未激活')),
+          reason: '占槽私有不再错标「未激活」（公共行 s1 未激活标记不受影响）');
+    });
     test('activate_server_tools 激活 + 回调触发', () async {
       final res = await disc.execute(AssembledToolCall(
           id: '1',

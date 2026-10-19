@@ -49,7 +49,7 @@ class ContextChip extends StatelessWidget {
     final chipIcon = isPrivate ? Icons.lock_outline : Icons.public;
     final chipText = hasCtx
         ? endpointName(contextId!)
-        : (hasLocal ? '本地×$localPluginCount' : '公共');
+        : (hasLocal ? '本地×$localPluginCount · 未锁定' : '公共');
     return GestureDetector(
       // B3：轻触觉确认（点击已被接收的确定感）。
       onTap: () {

@@ -884,4 +884,49 @@ void main() {
       expect(sent.whereType<UserMessage>().map((m) => m.content), ['u']);
     });
   });
+
+  group('空名 tool_call 防静默洞（2026-10-19）', () {
+    Stream<CloudStreamEvent> emptyNameCallStream(String id) async* {
+      yield CloudToolCallDelta(index: 0, id: id, name: '');
+      yield const CloudToolCallDelta(index: 0, argumentsDelta: '{}');
+      yield const CloudDone(finishReason: CloudFinishReason.toolCalls);
+    }
+
+    test('仅空名调用无文本 → InferenceException（禁静默空结算）', () async {
+      engine.script.add(() => emptyNameCallStream('bad'));
+      expect(
+        loop.run(systemPrompt: 's', userPrompt: 'u').toList(),
+        throwsA(isA<InferenceException>()),
+      );
+      expect(executor.executed, isEmpty,
+          reason: '畸形调用不得派发给执行器/计入熔断');
+    });
+
+    test('空名调用 + 同轮文本 → 丢弃后按纯文本自然结算', () async {
+      engine.script.add(() async* {
+        yield const CloudTextDelta('直接回答');
+        yield* emptyNameCallStream('bad');
+      });
+      final events =
+          await loop.run(systemPrompt: 's', userPrompt: 'u').toList();
+      final done = events.whereType<LoopFinished>().single;
+      expect(done.text, '直接回答');
+      expect(executor.executed, isEmpty);
+    });
+
+    test('空名 + 有效调用并存 → 只执行有效调用', () async {
+      engine.script
+        ..add(() async* {
+          yield* emptyNameCallStream('bad');
+          yield const CloudToolCallDelta(index: 1, id: 'ok', name: 'f');
+          yield const CloudToolCallDelta(index: 1, argumentsDelta: '{}');
+          yield const CloudDone(finishReason: CloudFinishReason.toolCalls);
+        })
+        ..add(() => textStream('ok'));
+      final events =
+          await loop.run(systemPrompt: 's', userPrompt: 'u').toList();
+      expect(executor.executed.map((c) => c.name), ['f']);
+      expect(events.whereType<LoopFinished>().single.text, 'ok');
+    });
+  });
 }
