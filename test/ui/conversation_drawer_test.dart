@@ -1,4 +1,5 @@
 /// ux-hardening P1-5：会话侧边栏——标题搜索 / 重命名对话框 / 列表元信息。
+/// 2026-10-19：全局入口横排工具带（竖排 ListTile → 横排，空间让位会话列表）。
 /// 纯视图件：交互经回调外抛，测试捕获回调参数即可，不触内核。
 library;
 
@@ -72,6 +73,48 @@ void main() {
       findsOneWidget,
     );
     expect(find.textContaining('0 条'), findsNothing);
+  });
+
+  testWidgets('全局入口横排工具带：四项齐备 + 同一横排 + 竖排 ListTile 已移除 + 热区 ≥44dp',
+      (tester) async {
+    await tester.pumpWidget(host(ConversationDrawer(
+      conversations: metas,
+      currentId: 'conv_1',
+      onNew: () {},
+      onLoad: (_) {},
+      onDelete: (_) {},
+      onRename: (m, t) {},
+    )));
+
+    // 四项文字标签各一处：横排双通道（图标 + 文字）保识别，ui-design §6 禁纯图标
+    // （「任务对账 / 记忆库」为领域词汇，无文字不可识别）。
+    const labels = ['设置', '资源中心', '任务对账', '记忆库'];
+    for (final label in labels) {
+      expect(find.text(label), findsOneWidget);
+    }
+
+    // 竖排 ListTile 已移除：ListTile 只剩会话列表项（2 条样本）。
+    expect(find.byType(ListTile), findsNWidgets(metas.length),
+        reason: '全局入口不再以 ListTile 竖排承载');
+
+    // 横排断言：四项同一水平线 + 从左到右顺序原样（保肌肉记忆）。
+    final centers = [
+      for (final label in labels) tester.getCenter(find.text(label)),
+    ];
+    for (final c in centers) {
+      expect(c.dy, centers.first.dy, reason: '四项须落在同一横排');
+    }
+    for (var i = 1; i < centers.length; i++) {
+      expect(centers[i].dx, greaterThan(centers[i - 1].dx));
+    }
+
+    // 热区 ≥44dp（ui-design §4.4）：横排项 InkWell 的渲染高度（视觉 icon/标签
+    // 可小，透明 padding 补足热区——防横排后目标面积缩至 1/4 的误触回退）。
+    final item = find.ancestor(
+      of: find.text('任务对账'),
+      matching: find.byType(InkWell),
+    );
+    expect(tester.getSize(item.first).height, greaterThanOrEqualTo(44));
   });
 
   testWidgets('标题搜索：本地过滤 + 无匹配空态 + 清空恢复', (tester) async {

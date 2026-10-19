@@ -1,5 +1,6 @@
 /// 会话侧边栏（D13，步 4 对账 Epic C 外提）：会话历史列表 + 标题搜索 +
-/// 重命名 + 删除 + 全局入口（设置 / 资源中心 / 任务对账 / 记忆库）。交互经
+/// 重命名 + 删除 + 全局入口（设置 / 资源中心 / 任务对账 / 记忆库，2026-10-19
+/// 起为底部横排工具带——竖排 ListTile 改横排，空间让位会话列表）。交互经
 /// 回调回页面（运行守卫/删除确认对话框/导航编排留窗口）；搜索词与重命名
 /// 对话框为本地 UI 态。
 ///
@@ -243,64 +244,108 @@ class _ConversationDrawerState extends State<ConversationDrawer> {
                     ),
             ),
             const Divider(height: 1),
-            ListTile(
-              leading: const Icon(Icons.settings_outlined),
-              title: const Text('设置'),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(builder: (_) => const SettingsPage()),
-                );
-              },
-            ),
-            // 资源中心（resource-center，2026-10-19 自设置页第七段迁出为独立页）：
-            // 本地文件库的**管理面**（导入/改名/删除/外部打开/占用展示），属用户资产
-            // 数据面而非配置项；紧随「设置」保心智连续（原宿主位置）。
-            ListTile(
-              leading: const Icon(Icons.folder_open_outlined),
-              title: const Text('资源中心'),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => const ResourceCenterPage(),
+            // 全局入口横排工具带（2026-10-19 用户拍板，HCI 评估后实施）：设置 /
+            // 资源中心 / 任务对账 / 记忆库 由竖排 ListTile（4 项约 260dp）改横排
+            // （约 52dp），省出的高度归会话列表——抽屉主任务=会话切换（一级内容），
+            // 全局入口为二级内容，空间分配向一级倾斜。规格走 ui-design：热区
+            // ≥44dp（§4.4，视觉元素可小、透明 padding 补足）；图标 + 文字标签
+            // 双通道保识别（§6，禁纯图标——「任务对账 / 记忆库」为领域词汇）；
+            // 色彩/字号全取 tokens 灰阶弱化（§4.7），不与列表抢视觉重量。
+            // 导航编排不变（关抽屉 → push 目标页），顺序原样保留保肌肉记忆。
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Row(
+                children: [
+                  _DrawerUtilityItem(
+                    icon: Icons.settings_outlined,
+                    label: '设置',
+                    onTap: () => _openPage(const SettingsPage()),
                   ),
-                );
-              },
-            ),
-            // M4-2 对账入口（用户拍板：设置下边——goodshare 点完任务后来此
-            // 确认「被处理了没有」）。
-            ListTile(
-              leading: const Icon(Icons.fact_check_outlined),
-              title: const Text('任务对账'),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => const TaskLedgerPage(),
+                  // 资源中心（resource-center，2026-10-19 自设置页第七段迁出为
+                  // 独立页）：本地文件库的管理面（导入/改名/删除/外部打开/占用
+                  // 展示），属用户资产数据面而非配置项。
+                  _DrawerUtilityItem(
+                    icon: Icons.folder_open_outlined,
+                    label: '资源中心',
+                    onTap: () => _openPage(const ResourceCenterPage()),
                   ),
-                );
-              },
-            ),
-            // A7（page-beautify P3）：命名与聊天页「本轮记忆」区分——原
-            // 「记忆看板」（全局管理）vs「会话记忆」（本轮提取）两套「记忆」
-            // 用户必混；此处=跨会话持久记忆库的统管入口。
-            ListTile(
-              leading: const Icon(Icons.inventory_2_outlined),
-              title: const Text('记忆库'),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) =>
-                        MemoryBoardPage(
-                          skillsProvider: widget.skillsProvider,
-                        ),
+                  // M4-2 对账入口（用户拍板：紧随「设置」——goodshare 点完任务
+                  // 后来此确认「被处理了没有」）。
+                  _DrawerUtilityItem(
+                    icon: Icons.fact_check_outlined,
+                    label: '任务对账',
+                    onTap: () => _openPage(const TaskLedgerPage()),
                   ),
-                );
-              },
+                  // A7（page-beautify P3）：命名与聊天页「本轮记忆」区分——原
+                  // 「记忆看板」（全局管理）vs「会话记忆」（本轮提取）两套「记忆」
+                  // 用户必混；此处=跨会话持久记忆库的统管入口。
+                  _DrawerUtilityItem(
+                    icon: Icons.inventory_2_outlined,
+                    label: '记忆库',
+                    onTap: () => _openPage(
+                      MemoryBoardPage(skillsProvider: widget.skillsProvider),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  /// 关抽屉 → 推目标页（原竖排 ListTile 同款导航编排，横排后不变）。
+  void _openPage(Widget page) {
+    Navigator.pop(context);
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => page),
+    );
+  }
+}
+
+/// 抽屉底部全局入口横排项：图标 + 小字标签双通道（ui-design §6）+ ≥44dp 热区
+/// （§4.4）。`Expanded` 四等分抽屉宽（304dp → 每项 76dp）；标签 10.5sp
+/// （`Fsz.microSm`）micro 遥测轨，四字中文标签（「资源中心」）不换行不截断。
+class _DrawerUtilityItem extends StatelessWidget {
+  const _DrawerUtilityItem({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = consoleTokens(context);
+    return Expanded(
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(t.cardRadius),
+        child: Padding(
+          // 热区补足（§4.4）：icon 20 + 标签 10.5sp 视觉高约 36dp，上下各 8dp
+          // 撑到 ≥44dp；水平 4dp 防相邻 ripple 互贴。
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 20, color: t.terminalMuted),
+              const SizedBox(height: 2),
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontFamily: t.monoFamily,
+                  fontSize: Fsz.microSm,
+                  color: t.terminalMuted,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

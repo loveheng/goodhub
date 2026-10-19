@@ -30,7 +30,7 @@
 ///
 /// **2026-10-19 资源中心迁出**：原第七段 `ResourceCenterSection` 移出本页，
 /// 独立为 `lib/ui/resource_center_page.dart`（数据管理面）——高频管理动作不该
-/// 沉在二级配置页；入口在会话侧边栏底部，紧随「设置」。
+/// 沉在二级配置页；入口在会话侧边栏底部横排工具带（设置右侧）。
 library;
 
 import 'dart:async';
