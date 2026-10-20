@@ -6,5 +6,5 @@
 #   ② android/app/build.gradle.kts 的契约坐标版本
 #   ③ 契约仓 VERSION 文件
 contract_module=com.zzh.goodhub.mcp:goodhub-mcp-contract
-contract_version=0.1.0
+contract_version=0.2.0
 aidl_contract_version=v1

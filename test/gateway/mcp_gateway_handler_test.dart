@@ -138,6 +138,16 @@ Future<McpToolFace> _faceWithTools(List<Map<String, Object?>> tools) async {
   return f;
 }
 
+/// 带 GoodHub 可见性标记的工具条目（`_meta.goodhub.visibility=shared`）。
+Map<String, Object?> _sharedTool(String name) => {
+      'name': name,
+      'description': '',
+      'inputSchema': const {},
+      '_meta': const {
+        'goodhub': {'visibility': 'shared'}
+      },
+    };
+
 /// 假 face（echo 成功路径）：用于跨源 $ref 守卫测试，目标服务任意 serverId。
 /// 无需 listTools——[GatewayHandler.toolsCall] 直接走 face.client.callWithProgress，
 /// 不依赖 cachedSchemas（_annotationsFor 对空 schema 返回 null 即可）。
@@ -275,15 +285,9 @@ void main() {
 
   group('MO6 阶段一：PC 只读镜像投影', () {
     test('toolsList 仅投影 public + 激活 private，其余私有隐藏', () async {
-      final pub = await _faceWithTools([
-        {'name': 'pub_tool', 'description': '', 'inputSchema': {}}
-      ]);
-      final privA = await _faceWithTools([
-        {'name': 'a_tool', 'description': '', 'inputSchema': {}}
-      ]);
-      final privB = await _faceWithTools([
-        {'name': 'b_tool', 'description': '', 'inputSchema': {}}
-      ]);
+      final pub = await _faceWithTools([_sharedTool('pub_tool')]);
+      final privA = await _faceWithTools([_sharedTool('a_tool')]);
+      final privB = await _faceWithTools([_sharedTool('b_tool')]);
       final h = GatewayHandler(
         faces: {'pub': pub, 'privA': privA, 'privB': privB},
         privateServerIds: {'privA', 'privB'},
@@ -296,12 +300,8 @@ void main() {
     });
 
     test('privateServerIds 为空 → 全量投影（向后兼容无私有门控）', () async {
-      final a = await _faceWithTools([
-        {'name': 'a_tool', 'description': '', 'inputSchema': {}}
-      ]);
-      final b = await _faceWithTools([
-        {'name': 'b_tool', 'description': '', 'inputSchema': {}}
-      ]);
+      final a = await _faceWithTools([_sharedTool('a_tool')]);
+      final b = await _faceWithTools([_sharedTool('b_tool')]);
       final h = GatewayHandler(faces: {'a': a, 'b': b});
       final names = h.toolsList().map((e) => e['name']).toList();
       expect(names, contains('a__a_tool'));
@@ -345,6 +345,71 @@ void main() {
       );
       expect(r.isError, isFalse);
       expect(r.content, 'ok');
+    });
+  });
+
+  /// sample-dummy-plugin（serverId=dummy）靶子四工具：仅 echo 声明 shared
+  /// （与 `test/coordinator/mcp_tool_face_test.dart` 同款线级形态）。
+  final dummyTools = [
+    {
+      'name': 'echo',
+      'description': '原样回显输入文本',
+      'inputSchema': {'type': 'object'},
+      'annotations': {'readOnlyHint': true},
+      '_meta': {
+        'goodhub': {'visibility': 'shared'}
+      },
+    },
+    {
+      'name': 'add',
+      'description': '求和',
+      'inputSchema': {'type': 'object'},
+      'annotations': {'readOnlyHint': true},
+    },
+    {
+      'name': 'slowEcho',
+      'description': '异步进度',
+      'inputSchema': {'type': 'object'}
+    },
+    {
+      'name': 'reverseDemo',
+      'description': '反向请求',
+      'inputSchema': {'type': 'object'}
+    },
+  ];
+
+  group('F1.9 海关过滤：对外暴露面只回 shared 工具', () {
+    test('PC 投影只含 echo（private 不向外部 Agent 暴露）', () async {
+      final dummy = await _faceWithTools(dummyTools);
+      final h = GatewayHandler(faces: {'dummy': dummy});
+      final names = h.toolsList().map((e) => e['name']).toList();
+      expect(names, contains('dummy__echo'));
+      expect(names, isNot(contains('dummy__add')));
+      expect(names, isNot(contains('dummy__slowEcho')));
+      expect(names, isNot(contains('dummy__reverseDemo')));
+      // 网关级系统工具恒在（命名空间 gateway__，不属任何业务服务）
+      expect(names, contains(GatewayHandler.kGatewaySelectPrivate));
+    });
+
+    test('未打标服务端的工具不进 PC 投影（缺失即 private，default-deny）',
+        () async {
+      final legacy = await _faceWithTools([
+        {'name': 'list_items', 'description': '', 'inputSchema': {}}
+      ]);
+      final h = GatewayHandler(faces: {'goodshare': legacy});
+      final names = h.toolsList().map((e) => e['name']).toList();
+      expect(names, isNot(contains('goodshare__list_items')));
+    });
+
+    test('可见性不是 ACL：未列出的 private 工具仍可经网关调用', () async {
+      final dummy = await _faceWithTools(dummyTools);
+      final h = GatewayHandler(faces: {'dummy': dummy});
+      final r = await h.toolsCall(
+        name: 'dummy__add',
+        arguments: const {'a': 1},
+        onProgress: (_) {},
+      );
+      expect(r.isError, isFalse, reason: 'private 只影响目录组织，不拦截调用');
     });
   });
 

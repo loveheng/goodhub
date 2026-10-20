@@ -67,6 +67,23 @@ void main() {
     expect(acc.toAssistantMessage().toolCalls.map((c) => c.name), ['f']);
   });
 
+  test('首帧真名 + 后续分片帧重复空名 → 保留真名（GLM 系实测形态）', () {
+    // SiliconFlow `zai-org/GLM-5.3-Flash` 实测：首帧带 name=math_utility，
+    // 其后每个 arguments 分片仍重复携带 name:"" —— 无条件覆盖会把真名冲成
+    // 空串，结算即按畸形调用丢弃（整轮「空名 tool_call」、工具永不执行）。
+    final acc = CloudStreamAccumulator()
+      ..add(const CloudToolCallDelta(index: 0, id: 'a', name: 'math_utility'))
+      ..add(const CloudToolCallDelta(index: 0, name: '', argumentsDelta: '{"ac'))
+      ..add(const CloudToolCallDelta(
+          index: 0, name: '', argumentsDelta: 'tion":"add"}'))
+      ..add(const CloudDone(finishReason: CloudFinishReason.toolCalls));
+
+    final calls = acc.toolCalls;
+    expect(calls, hasLength(1), reason: '真名不得被分片帧空串覆盖成畸形调用');
+    expect(calls.single.name, 'math_utility');
+    expect(calls.single.argumentsJson, '{"action":"add"}');
+  });
+
   test('纯空白名同样丢弃；缺 name 仍按协议违规抛错（不扩大化）', () {
     final blank = CloudStreamAccumulator()
       ..add(const CloudToolCallDelta(index: 0, id: 'bad', name: '   '))

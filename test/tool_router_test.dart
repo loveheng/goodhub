@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:goodhub/core/errors/mcp_error.dart';
+import 'package:goodhub/core/tool_visibility.dart';
 import 'package:goodhub/mcp/mcp_client.dart';
 import 'package:goodhub/mcp/tool_router.dart';
 
@@ -33,34 +34,56 @@ McpClient _fakeClient({
 
 void main() {
   group('ToolRouter 海关门控（F1.9）', () {
-    test('未打标工具不注册，打标工具命名空间化注册', () async {
+    test('未打标工具不注册，`_meta.goodhub.visibility=shared` 才注册', () async {
       final client = _fakeClient(tools: [
         {
           'name': 'list_items',
           'description': '列出条目',
           'inputSchema': {'type': 'object'},
-          'annotations': {'x-mcp-export-to-shared': true}
+          '_meta': {
+            'goodhub': {'visibility': 'shared'}
+          }
         },
         {
           'name': 'internal_tool',
           'description': '私有工具',
           'inputSchema': {'type': 'object'},
-          // 无 annotations = 私有，坚决不收集
+          // 无 _meta = 私有（default-deny），坚决不收集
+        },
+        {
+          'name': 'explicit_private',
+          'description': '显式私有',
+          'inputSchema': {'type': 'object'},
+          '_meta': {
+            'goodhub': {'visibility': 'private'}
+          }
         },
         {
           'name': 'legacy_tool',
-          'description': '裸命名（早期草案）',
+          'description': '旧口径（已作废）',
           'inputSchema': {'type': 'object'},
-          'annotations': {'export_to_shared': true} // 裸命名废弃，不生效
+          // 旧口径 annotations["x-mcp-export-to-shared"]（2026-10-21 作废）
+          // 不再生效——访问控制标记不得塞进 MCP annotations。
+          'annotations': {'x-mcp-export-to-shared': true}
+        },
+        {
+          'name': 'misplaced_tool',
+          'description': '标记放错位置（_meta 顶层）',
+          'inputSchema': {'type': 'object'},
+          // 标记必须在 _meta.goodhub 子树下；_meta 顶层同名键不生效
+          '_meta': {'visibility': 'shared'}
         },
       ]);
       final router = ToolRouter();
       await router.mount(client, 'goodshare');
 
       expect(router.catalog, ['goodshare__list_items']);
-      expect(router.lookup('goodshare__list_items')?.exportToShared, true);
+      expect(router.lookup('goodshare__list_items')?.visibility,
+          ToolVisibility.shared);
       expect(router.lookup('goodshare__internal_tool'), isNull);
+      expect(router.lookup('goodshare__explicit_private'), isNull);
       expect(router.lookup('goodshare__legacy_tool'), isNull);
+      expect(router.lookup('goodshare__misplaced_tool'), isNull);
     });
 
     test('readOnlyHint 只存储不裁决（注解仅建议值）', () async {
@@ -69,9 +92,9 @@ void main() {
           'name': 'get_item',
           'description': '读条目',
           'inputSchema': {'type': 'object'},
-          'annotations': {
-            'readOnlyHint': true,
-            'x-mcp-export-to-shared': true
+          'annotations': {'readOnlyHint': true},
+          '_meta': {
+            'goodhub': {'visibility': 'shared'}
           }
         },
       ]);
@@ -90,7 +113,9 @@ void main() {
               'name': 'list_items',
               'description': 'x',
               'inputSchema': {'type': 'object'},
-              'annotations': {'x-mcp-export-to-shared': true}
+              '_meta': {
+                'goodhub': {'visibility': 'shared'}
+              }
             }
           ],
           onCall: (method, params) => received = method);
@@ -117,7 +142,9 @@ void main() {
           'name': 'get',
           'description': 'a',
           'inputSchema': {'type': 'object'},
-          'annotations': {'x-mcp-export-to-shared': true}
+          '_meta': {
+            'goodhub': {'visibility': 'shared'}
+          }
         }
       ]);
       final b = _fakeClient(tools: [
@@ -125,7 +152,9 @@ void main() {
           'name': 'get',
           'description': 'b',
           'inputSchema': {'type': 'object'},
-          'annotations': {'x-mcp-export-to-shared': true}
+          '_meta': {
+            'goodhub': {'visibility': 'shared'}
+          }
         }
       ]);
       final router = ToolRouter();
@@ -145,7 +174,9 @@ void main() {
           'name': 'get',
           'description': 'a',
           'inputSchema': {'type': 'object'},
-          'annotations': {'x-mcp-export-to-shared': true}
+          '_meta': {
+            'goodhub': {'visibility': 'shared'}
+          }
         }
       ]);
       final router = ToolRouter();

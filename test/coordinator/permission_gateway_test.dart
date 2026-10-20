@@ -43,6 +43,9 @@ CloudToolSchema schema(String name, {Map<String, Object?>? annotations}) =>
       annotations: annotations,
     );
 
+/// 显式写操作 hint（未声明 hints 一律 L1，L2 用例必须显式标注）。
+const writeHint = <String, Object?>{'readOnlyHint': false};
+
 void main() {
   late RecordingExecutor inner;
   late PermissionGateway gateway;
@@ -52,32 +55,39 @@ void main() {
     gateway = PermissionGateway(inner: inner);
   });
 
-  group('classify 裁决矩阵（拍板 C2）', () {
-    test('无 hint：表命中→L1，未命中→L2（未知从严）', () {
+  group('classify 裁决矩阵（按是否显式声明）', () {
+    test('未声明 hints（annotations 缺席）→ L1（「双缺从严」已下线）', () {
+      // hints 选择性下发（SDK 0.2.0）：没有 readOnlyHint ≠ 有副作用。
       expect(gateway.classify('list_items', null), GatewayLevel.l1ReadOnly);
-      expect(gateway.classify('delete_item', null), GatewayLevel.l2Write);
-      expect(gateway.classify('brand_new_tool', null), GatewayLevel.l2Write);
+      expect(gateway.classify('delete_item', null), GatewayLevel.l1ReadOnly);
+      expect(gateway.classify('brand_new_tool', null), GatewayLevel.l1ReadOnly);
     });
 
-    test('仅 hint：hint 裁决（表外新工具可凭 hint 走 L1）', () {
+    test('显式声明：readOnlyHint 定档', () {
       expect(gateway.classify('new_read_tool', const {'readOnlyHint': true}),
           GatewayLevel.l1ReadOnly);
       expect(gateway.classify('new_write_tool', const {'readOnlyHint': false}),
           GatewayLevel.l2Write);
     });
 
-    test('双源冲突按更严格者：表说只读但 hint=false → L2', () {
-      expect(gateway.classify('list_items', const {'readOnlyHint': false}),
+    test('显式 destructiveHint=true → L2（破坏性最严，压过 readOnlyHint）', () {
+      expect(
+          gateway.classify('drop_all', const {
+            'readOnlyHint': true,
+            'destructiveHint': true,
+          }),
           GatewayLevel.l2Write);
-      expect(gateway.classify('list_items', const {'readOnlyHint': true}),
+      expect(gateway.classify('drop_all', const {'destructiveHint': true}),
+          GatewayLevel.l2Write);
+      expect(gateway.classify('safe', const {'destructiveHint': false}),
           GatewayLevel.l1ReadOnly);
     });
 
-    test('hint 非布尔（形状异常）视为缺席', () {
+    test('hint 非布尔（形状异常）视为未声明 → L1', () {
       expect(gateway.classify('list_items', const {'readOnlyHint': 'yes'}),
           GatewayLevel.l1ReadOnly);
       expect(gateway.classify('delete_item', const {'readOnlyHint': 1}),
-          GatewayLevel.l2Write);
+          GatewayLevel.l1ReadOnly);
     });
   });
 
@@ -104,12 +114,12 @@ void main() {
     setUp(() {
       delegate = ScriptedDelegate();
       gateway = PermissionGateway(inner: inner, delegate: delegate);
-      gateway.loadCatalog([schema('update_item')]);
+      gateway.loadCatalog([schema('update_item', annotations: writeHint)]);
     });
 
     PermissionGateway buildGated({void Function(ToolNotice)? onNotice}) {
       final g = PermissionGateway(inner: inner, delegate: delegate, onNotice: onNotice);
-      g.loadCatalog([schema('update_item')]);
+      g.loadCatalog([schema('update_item', annotations: writeHint)]);
       return g;
     }
 
@@ -173,6 +183,7 @@ void main() {
   });
 
   test('无 delegate（无人值守）→ L2 一律拒绝', () async {
+    gateway.loadCatalog([schema('delete_item', annotations: writeHint)]);
     final r = await gateway.execute(call('delete_item'));
     expect(inner.executed, isEmpty);
     expect(r.isError, isFalse);
@@ -182,7 +193,7 @@ void main() {
   test('resetSessionGrants 清空豁免（会话结束/Abort 语义）', () async {
     final delegate = ScriptedDelegate();
     gateway = PermissionGateway(inner: inner, delegate: delegate);
-    gateway.loadCatalog([schema('update_item')]);
+    gateway.loadCatalog([schema('update_item', annotations: writeHint)]);
     delegate.decisions.add(const GateDecision(approved: true, rememberSession: true));
     await gateway.execute(call('update_item'));
     gateway.resetSessionGrants();
@@ -194,8 +205,9 @@ void main() {
   test('loadCatalog 全量刷新（旧目录不留存，§8 缓存失效）', () async {
     gateway.loadCatalog([schema('list_items'), schema('add_item')]);
     gateway.loadCatalog([schema('get_item')]);
-    // 旧目录工具按未知处理（无 hint → 表裁决），刷新不残留
-    expect(gateway.classify('add_item', null), GatewayLevel.l2Write);
+    // 旧目录不留存：刷新后按「未声明」处理（L1），不再从严
+    expect(gateway.classify('add_item', null), GatewayLevel.l1ReadOnly);
+    expect(gateway.classify('add_item', writeHint), GatewayLevel.l2Write);
     final delegate = ScriptedDelegate();
     gateway = PermissionGateway(inner: inner, delegate: delegate);
     gateway.loadCatalog([schema('add_item', annotations: const {'readOnlyHint': true})]);

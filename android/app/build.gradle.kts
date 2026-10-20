@@ -52,7 +52,7 @@ dependencies {
     // 解析路径：复合构建（android/settings.gradle.kts 的 includeBuild，优先）
     // → mavenLocal()（toolbox run sdk-dep 发布）→ 远端 Maven（坐标发布后）。
     // 版本与 contract_version 绑定，见 SDK 仓 VERSION 文件。
-    implementation("com.zzh.goodhub.mcp:goodhub-mcp-contract:0.1.0")
+    implementation("com.zzh.goodhub.mcp:goodhub-mcp-contract:0.2.0")
 }
 
 kotlin {

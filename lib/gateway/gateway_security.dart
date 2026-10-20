@@ -1,8 +1,9 @@
 /// 网关入站安全闭环（G3，thirdconnect.md §7）：Bearer（server 层已有）之上的
 /// 三件套——L1/L2 权限卡片拦截、PII 出站过滤、ops.log 入站审计。
 ///
-/// - **L1/L2 裁决复用宿主 SSOT**：`PermissionGateway.classify`（annotations
-///   `readOnlyHint` + 本地只读白名单双源，双缺从严）；L2 走 `GateDelegate`
+/// - **L1/L2 裁决复用宿主 SSOT**：`PermissionGateway.classify`（按**是否显式
+///   声明**裁决：显式 `destructiveHint`/`readOnlyHint=false` → L2、显式
+///   `readOnlyHint=true` 或未声明 hints → L1；「双缺从严」条款已下线）；L2 走 `GateDelegate`
 ///   确认卡，显式 45s 超时主动拒绝（TC12：PC 立即停转不悬挂）；拒绝包装
 ///   `user_rejected` 正常结果回传（与宿主 §12 同口径：拒绝≠系统错误）；
 /// - **会话豁免（C7 口径）**：确认卡「本网关会话记住」后该工具静默放行，

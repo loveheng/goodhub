@@ -83,6 +83,9 @@ class _CountingTransport implements McpTransport {
 
 const _okResult = GatewayToolResult(content: 'ok', isError: false);
 
+/// 显式写操作 hint（未声明 hints 一律 L1，L2 用例必须显式标注）。
+const _writeHint = <String, Object?>{'readOnlyHint': false};
+
 Future<GatewayToolResult> _ok() async => _okResult;
 
 const _ep = ServerEndpoint(id: 'ep1', name: 'ep1', endpoint: 'http://x/mcp');
@@ -101,7 +104,7 @@ void main() {
       await secA.guard(
         serverId: 'srv',
         tool: 'srv__write',
-        annotations: null, // 双缺从严 → L2
+        annotations: _writeHint, // 显式写 hint → L2（未声明一律 L1）
         argumentsJson: '{}',
         run: _ok,
       );
@@ -110,7 +113,7 @@ void main() {
       await secB.guard(
         serverId: 'srv',
         tool: 'srv__write',
-        annotations: null,
+        annotations: _writeHint,
         argumentsJson: '{}',
         run: _ok,
       );
@@ -126,9 +129,9 @@ void main() {
       final sec = GatewaySecurity(delegate: delegate);
 
       await sec.guard(
-          serverId: 'srvA', tool: 'write', annotations: null, argumentsJson: '{}', run: _ok);
+          serverId: 'srvA', tool: 'write', annotations: _writeHint, argumentsJson: '{}', run: _ok);
       await sec.guard(
-          serverId: 'srvB', tool: 'write', annotations: null, argumentsJson: '{}', run: _ok);
+          serverId: 'srvB', tool: 'write', annotations: _writeHint, argumentsJson: '{}', run: _ok);
 
       expect(delegate.calls, 2,
           reason: '豁免键须为 serverId::tool——只按 tool 名会让 A 服务获批'
@@ -158,12 +161,12 @@ void main() {
       final session = GatewayHandler(faces: const {}, security: sec).forSession();
 
       await session.security!.guard(
-          serverId: 'srv', tool: 'write', annotations: null, argumentsJson: '{}', run: _ok);
+          serverId: 'srv', tool: 'write', annotations: _writeHint, argumentsJson: '{}', run: _ok);
       expect(delegate.calls, 1);
 
       session.disposeSession(); // 模拟连接 idle 回收
       await session.security!.guard(
-          serverId: 'srv', tool: 'write', annotations: null, argumentsJson: '{}', run: _ok);
+          serverId: 'srv', tool: 'write', annotations: _writeHint, argumentsJson: '{}', run: _ok);
       expect(delegate.calls, 2, reason: '新连接（复用 handler 对象）须重新裁决');
     });
   });

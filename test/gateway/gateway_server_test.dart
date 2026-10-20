@@ -34,6 +34,10 @@ class _FakeTransport implements McpTransport {
               'name': 'echo',
               'description': '回声',
               'inputSchema': <String, Object?>{'type': 'object'},
+              // SDK 0.2.0：对外暴露须显式声明 shared（缺失即 private，不投影）
+              '_meta': <String, Object?>{
+                'goodhub': <String, Object?>{'visibility': 'shared'},
+              },
             },
           ],
         };

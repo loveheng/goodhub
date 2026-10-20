@@ -119,24 +119,18 @@ Future<Map<String, Object?>> _call(
 
 void main() {
   test('阶段二 D-D：两连接独立私有投影 + 宿主零污染', () async {
-    final pub = await _face(
-      _ListTransport([
-        {'name': 'common', 'description': '', 'inputSchema': {}},
-      ]),
-      'pub',
-    );
-    final srvA = await _face(
-      _ListTransport([
-        {'name': 'a_tool', 'description': '', 'inputSchema': {}},
-      ]),
-      'srv_a',
-    );
-    final srvB = await _face(
-      _ListTransport([
-        {'name': 'b_tool', 'description': '', 'inputSchema': {}},
-      ]),
-      'srv_b',
-    );
+    // 工具条目带 `_meta.goodhub.visibility=shared`——对外投影只收 shared。
+    Map<String, Object?> shared(String name) => {
+          'name': name,
+          'description': '',
+          'inputSchema': <String, Object?>{},
+          '_meta': <String, Object?>{
+            'goodhub': <String, Object?>{'visibility': 'shared'},
+          },
+        };
+    final pub = await _face(_ListTransport([shared('common')]), 'pub');
+    final srvA = await _face(_ListTransport([shared('a_tool')]), 'srv_a');
+    final srvB = await _face(_ListTransport([shared('b_tool')]), 'srv_b');
     // 模板 handler：宿主默认激活私有 = null（公共面）。
     final template = GatewayHandler(
       faces: {'pub': pub, 'srv_a': srvA, 'srv_b': srvB},

@@ -20,4 +20,4 @@ epic: thirdconnect
 > 把 AIDL / 1MB 分包对第三方透明化（thirdconnect.md §11）。SDK 仅 server 端 Stub；client 生命周期归宿主。详细任务卡：context/epics/thirdconnect/t-sdk-1.md
 
 ## 验收发现的后续项（2026-10-13 手动验收轮）
-- [ ] (功能) SDK `@McpTool` 补 `readOnlyHint` 注解并在 tools/list 下发 `annotations`：当前 SDK 不发注解 → 第三方插件全部工具双缺从严落 L2，PC 每次调用都要手机确认（C2 未知从严口径正确，但生态体验差——echo 类只读工具应能声明 L1 静默放行）；改动点=McpTool.kt 注解字段 + ToolDispatcher.toolsList 输出 annotations + sample 靶子声明
+- [x] (功能) SDK `@McpTool` 补 `readOnlyHint` 注解并在 tools/list 下发 `annotations`：当前 SDK 不发注解 → 第三方插件全部工具双缺从严落 L2，PC 每次调用都要手机确认（C2 未知从严口径正确，但生态体验差——echo 类只读工具应能声明 L1 静默放行）；改动点=McpTool.kt 注解字段 + ToolDispatcher.toolsList 输出 annotations + sample 靶子声明 → **已完成（2026-10-21）**：SDK 0.2.0 已落地 hints（选择性下发，含 `readOnlyHint` / `destructiveHint`），宿主侧解析（`_meta` + annotations）与裁决（按是否显式声明）同步完成，已移入 `context/done.md`

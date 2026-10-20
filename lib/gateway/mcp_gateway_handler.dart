@@ -144,20 +144,27 @@ class GatewayHandler {
     );
   }
 
-  /// tools/list 聚合（G2 + MO6 投影）：仅回 **public 全量 + 本连接激活
-  /// private**（其余私有服务不进本连接投影——阶段二每连接独立私有面），
+  /// tools/list 聚合（G2 + MO6 投影 + F1.9 海关过滤）：仅回 **public 全量 +
+  /// 本连接激活 private**（其余私有服务不进本连接投影——阶段二每连接独立私有面），
+  /// 且**只回 `visibility == shared` 的工具**（SDK 0.2.0 声明式标记；缺失即
+  /// private = 不向外部 Agent 暴露——对外暴露面 default-deny），
   /// 并追加网关级系统工具 [kGatewaySelectPrivate]（连接投影切换）。
+  ///
+  /// **声明非 ACL**：过滤只在目录层收窄（PC 看不见即不可达），`tools/call` 不
+  /// 因可见性额外拦截——调用方可信性由信任白名单 / L2 确认卡独立把关，可见性
+  /// 不是安全边界。
   List<Map<String, Object?>> toolsList() => [
         for (final entry in faces.entries)
           if (!privateServerIds.contains(entry.key) ||
               entry.key == activePrivateServerId)
             for (final s in entry.value.cachedSchemas)
-              {
-                'name': ToolRouter.prefixed(entry.key, s.name),
-                'description': s.description,
-                'inputSchema': s.parametersSchema,
-                if (s.annotations != null) 'annotations': s.annotations,
-              },
+              if (s.isShared)
+                {
+                  'name': ToolRouter.prefixed(entry.key, s.name),
+                  'description': s.description,
+                  'inputSchema': s.parametersSchema,
+                  if (s.annotations != null) 'annotations': s.annotations,
+                },
         // 网关级系统工具：连接私有投影切换（阶段二 D-D，命名空间 gateway__）。
         {
           'name': kGatewaySelectPrivate,

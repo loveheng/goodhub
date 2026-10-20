@@ -55,7 +55,7 @@ void main() {
     final r = await sec.guard(
       serverId: 'demo',
       tool: 'demo__write',
-      annotations: null, // 双缺从严
+      annotations: const {'readOnlyHint': false}, // 显式写 hint（未声明一律 L1）
       argumentsJson: '{}',
       run: () async {
         ran++;
@@ -75,7 +75,7 @@ void main() {
     Future<GatewayToolResult> call() => sec.guard(
           serverId: 'demo',
           tool: 'demo__write',
-          annotations: null,
+          annotations: const {'readOnlyHint': false},
           argumentsJson: '{}',
           run: () async {
             ran++;
@@ -104,7 +104,7 @@ void main() {
     final r = await sec.guard(
       serverId: 'demo',
       tool: 'demo__write',
-      annotations: null,
+      annotations: const {'readOnlyHint': false},
       argumentsJson: '{}',
       run: () async {
         ran++;
@@ -140,7 +140,7 @@ void main() {
     await sec.guard(
       serverId: 'demo',
       tool: 'demo__write',
-      annotations: null,
+      annotations: const {'readOnlyHint': false},
       argumentsJson: '{}',
       run: () async => const GatewayToolResult(content: 'x', isError: false),
     );

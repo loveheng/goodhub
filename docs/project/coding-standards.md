@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-18
+updated: 2026-10-21
 ---
 
 # GoodHub 工程规范（Engineering Specification / Architecture SSOT）
@@ -105,7 +105,10 @@ flowchart TD
    - **编解码归模型所有方**：transcript/协议 codec 住模型域（`llm/cloud/chat_message_codec.dart`），存储层只认 core DTO + JSON Map，**禁止在存储层 import 模型域类型**。
    - **无 UI 裁决 fail-closed**：服务域触达 Human-In-The-Loop 能力（确认卡/弹层）时，UI 实现住窗口层、经端口注入；**桥缺位/超时/异常三路必须恒 `approved: false` 快速拒绝**（范式：`gateway_security.dart` + `ui/gateway_consent_dialog.dart`，reason 前缀 `headless_no_ui_prompt`），严禁悬挂 Completer 或静默放行（详见 §4.3）。
    - **生命周期 Owner 随端口声明**：注入对象「谁创建谁销毁、有无独立 dispose」必须写进端口文件头注释（范式：`connection_face.dart`——face 无独立 dispose，释放唯一入口 = owner 调 `client.close()`）。
-7. **海关过滤保留待接线**：`lib/mcp/tool_router.dart` 的 F1.2 命名空间隔离 + F1.9 海关门控当前**保留待接线**——现网 MCP server 普遍不下发 `x-mcp-export-to-shared`/`readOnlyHint` annotations，启用即把全部未打标工具过滤掉。该文件**不删不引**（机械红灯：§1.0 护栏表），待 SDK 发 annotations 后补强合并进 `coordinator/tool_router.dart` 接线。**三项启用前置条件**（全部满足方可接线启用，任一缺失即红线违例）：① 现网主流 MCP server 普遍下发双 annotations（或网关侧已注入兜底标注）；② 接线后默认开关**必须 fail-closed**（默认不激活海关过滤，仅显式开启 + 双 annotations 命中才过滤）；③ 接线落地须带等价性单测 + 全量工具可见性回归。
+7. **海关过滤（F1.9）：已接线在对外暴露面，本机链路不过滤**（2026-10-21 随插件 SDK 0.2.0 更正）。标记口径 = `tools/list` 条目的 **`_meta.goodhub.visibility`**（`shared` / `private`；缺失 / 形状异常 / 未知取值一律 private）；**旧口径 `annotations["x-mcp-export-to-shared"] 已作废**（不得把访问控制标记塞进 MCP `annotations`——其规范定位是 advisory hints，且 `x-` 顶官方命名空间）。三条纪律：
+   - **声明非 ACL**：服务端 / SDK 不得因标记剔除 `tools/list` 条目或拦截 `tools/call`；过滤只在**目录层**收窄，且**只发生在对外暴露面**（`gateway/mcp_gateway_handler.dart` 的 PC 投影只回 shared）。**本机链路（`coordinator/tool_router.dart` 与宿主聊天装配面）保持能力全集**——未打标服务端在此口径下全量归 private，过滤即生产工具面归零。
+   - **不合成安全边界**：调用方可信性另由同签名 / 信任白名单 / L2 确认卡把关，可见性标记不得与之合并成一套。
+   - `lib/mcp/tool_router.dart` 是规则的独立实现与单测面，**不删不引**（机械红灯：§1.0 护栏表；收编进 `coordinator/tool_router.dart` 记为架构债 #9）。落地须带等价性单测 + 全量工具可见性回归（已随本轮补）。
 
 ### 1.2 core 边界纪律
 

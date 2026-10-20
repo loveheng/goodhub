@@ -5,9 +5,10 @@
 /// - **L2（写操作）**经 [GateDelegate] 弹确认卡：每轮独立 engine.send，轮间
 ///   await 用户不占连接（§10 结算流原则天然兼容）；拒绝包装 user_rejected
 ///   Tool Result 原地回传（§12，isError=false：拒绝≠系统错误，T4b 熔断据此豁免）；
-/// - **裁决双源（2026-10-11 拍板 C2）**：服务端 readOnlyHint 与本地只读白名单表
-///   为两个建议值源——双源齐且冲突按更严格者；单源由该源裁决；双缺按 L2
-///   （未知从严，堵表漂移洞：goodshare 新增未收录工具不可被静默放行）；
+/// - **裁决按「是否显式声明」（2026-10-21 修订，原 C2「双缺从严」条款下线）**：
+///   显式 `destructiveHint: true` / `readOnlyHint: false` → L2，`readOnlyHint:
+///   true` → L1；**未声明 hints → L1**。hints 自 SDK 0.2.0 起选择性下发，
+///   「没有 readOnlyHint」不等于有副作用（[classify] 为裁决 SSOT）；
 /// - **会话豁免（拍板 C7）**：确认卡勾选「本会话记住」后该工具会话内静默放行，
 ///   内存态不落盘、[resetSessionGrants] 供会话结束/Abort 调用；不旁路 N7 围栏；
 /// - **管辖边界（拍板 C5）**：只管 AgentLoop 内模型发起的调用；TaskLoopService
@@ -15,8 +16,6 @@
 library;
 
 import 'dart:convert';
-
-import 'tool_router.dart' show kToolNamespaceSep;
 
 import 'package:flutter/foundation.dart';
 
@@ -85,8 +84,12 @@ class PermissionGateway implements ToolExecutor {
   /// 会话豁免集（C7：内存态，会话结束/Abort 清空）。
   final Set<String> _sessionGrants = {};
 
-  /// 本地只读白名单（goodshare 工具面 2026-10-11 核对：纯查询七项；
-  /// 只列只读，其余一律落 L2 未命中从严）。annotations 就绪后降级为兜底源。
+  /// 本地只读白名单（goodshare 工具面 2026-10-11 核对：纯查询七项）。
+  ///
+  /// **角色变更（2026-10-21）**：原为「无 hint 时的兜底裁决源，表未命中一律
+  /// 从严落 L2」；随 SDK 0.2.0 起 hints 选择性下发，「双缺从严」条款下线后
+  /// 本表**不再参与裁决**（未声明 hints 一律 L1，见 [classify]），仅保留为
+  /// goodshare 只读面台账（审计 / 文档对齐 / 后续 per-tool 策略复用）。
   static const Set<String> localReadOnlyTools = {
     'list_items',
     'get_item',
@@ -107,28 +110,29 @@ class PermissionGateway implements ToolExecutor {
   /// 会话结束 / Abort 时清空豁免（C7：豁免不跨会话存活）。
   void resetSessionGrants() => _sessionGrants.clear();
 
-  /// 裁决矩阵（拍板 C2 / §8 缺口1，公开供单测直测）：
-  /// - hint 与表双源齐：一致取同值，冲突按更严格者；
-  /// - 仅 hint：hint 裁决（hint 优先）；
-  /// - 仅表：表裁决；
-  /// - 双缺：L2（未知从严）。
+  /// 裁决矩阵（§8 缺口1，公开供单测直测）：
+  /// - **显式声明优先**：`destructiveHint: true` → L2（破坏性最严，压过
+  ///   readOnlyHint）；`readOnlyHint: false` → L2；`readOnlyHint: true` → L1；
+  /// - **未声明 hints（`annotations` 整体缺席或无 `readOnlyHint`）→ L1**
+  ///   ——hints 是**选择性下发**（SDK 0.2.0），缺席 ≠ 有副作用。
   ///
-  /// T6 多 Server：外部名 = `<serverId>__<toolName>`——白名单按裸名查
-  /// （两段均不含 `__`，split 安全；宿主本地工具名无前缀原样）。
+  /// **「双缺从严落 L2」条款已下线（2026-10-21）**：原条款在「服务端普遍不发
+  /// annotations」时期把全部工具降 L2，真机取证见 thirdconnect memory（dummy
+  /// 全工具每调用一次都要手机确认）。代价须知：未打标服务端的写操作不再经确认
+  /// 卡——调用方可信性另由信任白名单 / Server 级投影 / PII 围栏独立把关，
+  /// 确认卡不是唯一安全边界。
+  ///
+  /// [toolName] 为保留维度（审计与后续 per-tool 策略扩展点）；当前裁决只消费
+  /// hints。
   GatewayLevel classify(String toolName, Map<String, Object?>? annotations) {
+    final destructive = annotations?['destructiveHint'];
+    if (destructive is bool && destructive) return GatewayLevel.l2Write;
     final hint = annotations?['readOnlyHint'];
     final hintReadOnly = hint is bool ? hint : null;
-    final bareName = toolName.contains(kToolNamespaceSep)
-        ? toolName.split(kToolNamespaceSep).last
-        : toolName;
-    final inTable = localReadOnlyTools.contains(bareName);
-    if (hintReadOnly != null && inTable) {
-      return hintReadOnly ? GatewayLevel.l1ReadOnly : GatewayLevel.l2Write;
-    }
     if (hintReadOnly != null) {
       return hintReadOnly ? GatewayLevel.l1ReadOnly : GatewayLevel.l2Write;
     }
-    return inTable ? GatewayLevel.l1ReadOnly : GatewayLevel.l2Write;
+    return GatewayLevel.l1ReadOnly;
   }
 
   @override

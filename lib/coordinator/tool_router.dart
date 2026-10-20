@@ -158,7 +158,13 @@ class ToolRouter implements ToolExecutor {
       parsePrefixedToolName(prefixedName)?.serverId;
 
   /// 某服务的前缀化 schema 列表（face.listTools 结果 + 前缀改写；annotations
-  /// 原样保留——网关 hint 按 `serverId__tool` 查询）。
+  /// 与 `_meta` 原文原样保留——网关 hint 按 `serverId__tool` 查询；可见性标记
+  /// 一路带到聚合层，不在本层被吃掉）。
+  ///
+  /// **本机链路不过滤**：本清单是「直达该服务」的能力全集（SDK 0.2.0 语义：
+  /// `tools/list` 恒含 private 工具，且 private 照常可调用）。按可见性收窄只
+  /// 发生在**对外暴露面**——`gateway/mcp_gateway_handler.dart` 的 PC 投影目录
+  /// （只回 [ToolVisibility.shared]）。
   List<CloudToolSchema> schemasFor(String serverId) {
     final face = _faces[serverId];
     if (face == null) return const [];
@@ -168,6 +174,8 @@ class ToolRouter implements ToolExecutor {
               description: s.description,
               parametersSchema: s.parametersSchema,
               annotations: s.annotations,
+              meta: s.meta,
+              visibility: s.visibility,
             ))
         .toList(growable: false);
   }

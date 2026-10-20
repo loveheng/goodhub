@@ -144,20 +144,24 @@ flowchart TB
   5. 端侧引擎缺失在 iOS 初期视作「引擎未挂载」既有分支，不新增代码路径。
 - iOS 接入前置条件：macOS 构建环境、Apple 开发者账号、MLX/Core ML 适配实现。
 
-### 8. 声明式能力导出 + 客户端聚合总线（2026-10-10 评估：采纳）
+### 8. 声明式能力导出 + 客户端聚合总线（2026-10-10 评估：采纳；2026-10-21 口径更正）
 
-**模型**：服务端通过 `tools/list` 的 annotations 声明对外开放（`export_to_shared: true`），未打标即私有，客户端坚决不收集；客户端共享层做「海关过滤 → 命名空间隔离 → 虚拟接线管道 → 共享总线 Facade」。
+**模型**：服务端通过 `tools/list` 条目的 **`_meta.goodhub.visibility`** 声明可见性范围（`shared` / `private`），**字段缺失 / 形状异常 / 取值未知一律按 `private` 兜底**；客户端共享层做「海关过滤 → 命名空间隔离 → 虚拟接线管道 → 共享总线 Facade」。
+
+> **口径更正（2026-10-21，随插件 SDK 0.2.0 落地）**：早期方案把访问控制标记塞进 MCP `annotations`（`x-mcp-export-to-shared`）——`annotations` 的规范定位是 advisory hints（提示非保证），且 `x-` 顶了官方命名空间。**现行走 `_meta.goodhub`**：GoodHub 私有命名空间收在 `goodhub` 子树下（为 `hidden` 等正交维度留位置），与标准 `annotations`（`readOnlyHint` / `destructiveHint`）正交分离。
 
 - **采纳且升格为硬约束**：服务端自治权——能力边界由服务端声明决定，客户端零业务入侵；对外暴露（F1.5 Server 角色）的 tools/list **只返回海关过滤后的目录**，第一天即如此，不留全量暴露过渡态。
+- **声明 ≠ 访问控制（责任边界，SDK 侧明确定位）**：SDK 永不因该标记剔除 `tools/list` 条目（目录恒为能力全集）、永不拦截 `tools/call`——「要不要收进共享目录 / 要不要向外部 Agent 暴露」完全是本仓 client 端判断；真正的调用方可信性（同签名 / 信任白名单）是另一条独立维度，不得与本标记合成一套安全边界。
 - **三个缺口修复（落地前提）**：
   1. **权限裁决双源**：`read_only` 注解与客户端 L1/L2 网关冲突时——服务端注解只作建议值，客户端权限网关保持最终裁决权，冲突按更严格者执行（防御性：不信任声明，只信任验证）；
   2. **注解非标准字段**：MCP 规范 annotations 标准字段为 `readOnlyHint`（Hint 后缀=提示非保证，恰好支持裁决建议）；`export_to_shared` 为自定义扩展——落地前核对 goodshare MCP SDK 对 annotations 的透传支持，并将字段组写入接缝契约；
   3. **payloadTransformer 隐式清洗**：接线管道的脱敏/截断对模型不可见，须静默失真风险——transformer 结果必须附带截断/脱敏说明回传（对齐「正文不预截断」契约精神）。
-- **注解命名规范（2026-10-10 评审修正）**：标准字段用 MCP 规范 `readOnlyHint`；自定义扩展统一 `x-` 前缀（`x-mcp-export-to-shared: true`），符合 JSON Schema 扩展惯例，防与官方未来字段撞名——F1.9 早期草案的裸命名 `export_to_shared` 废弃。
-- **缺省分类（2026-10-11 拍板）**：服务端 annotations 就绪前，客户端本地只读白名单表作过渡建议值（goodshare 工具面已核对，纯查询七项：list_items / get_item / query_machine_data / list_workspaces / list_jobs / get_job_status / get_timeline_context）；**表未命中一律按 L2（未知从严，堵表漂移洞）**。annotations 就绪后 hint 优先（表降级为无 hint 工具的兜底），hint 与表冲突按更严格者执行。
-- **缓存失效**：服务端改标（true→false）后客户端共享池不得继续暴露旧能力——能力目录带版本/时间戳，`tools/list` 变更时全量刷新（复用 F1.4 探活心跳时机）。
+- **注解命名规范（2026-10-10 评审修正，2026-10-21 更正）**：标准 hint 用 MCP 规范 `readOnlyHint` / `destructiveHint`；**GoodHub 私有扩展一律收在 `_meta.goodhub` 子树**（不再用 `annotations` 的 `x-` 前缀——`x-` 顶官方命名空间且混淆「提示」与「访问控制」）。早期草案裸命名 `export_to_shared` 与中期 `x-mcp-export-to-shared` 均已作废。
+- **L1/L2 裁决（2026-10-21 修订，「双缺从严」条款下线）**：按**是否显式声明**裁决——显式 `destructiveHint: true` / `readOnlyHint: false` → L2；显式 `readOnlyHint: true` → L1；**未声明 hints（`annotations` 整体缺席或无该字段）→ L1**。hints 自 SDK 0.2.0 起**选择性下发**，没有 `readOnlyHint` 不等于有副作用；原「表未命中一律 L2（未知从严）」是为堵 annotations 未就绪期的表漂移洞，现该前提已消失。本地只读白名单表（goodshare 纯查询七项：list_items / get_item / query_machine_data / list_workspaces / list_jobs / get_job_status / get_timeline_context）**降级为台账，不再参与裁决**。
+- **缓存失效**：服务端改标（shared→private）后客户端共享池不得继续暴露旧能力——能力目录带版本/时间戳，`tools/list` 变更时全量刷新（复用 F1.4 探活心跳时机）。
 - **分期落位**：海关过滤进 M1（ToolRouter 注册表加门控）；`getExportedCatalog()` 作为 Server tools/list 数据源进 M1.5；MeshWireController 接线管道进 M2.5（依赖 `$ref` 暂存池）。
-- **接缝契约扩展**：`export_to_shared` 注解 + 共享池缓存失效语义 → 回写 goodshare 仓 `ai-app-split.md`（与端口规划同批）。
+- **接线状态（2026-10-21）**：工具级海关过滤已接线在**对外暴露面**（`gateway/mcp_gateway_handler.dart` 的 PC 投影 `toolsList()` 只回 shared）；**本机链路（宿主聊天装配面）不过滤**——`coordinator/tool_router.dart` 保持能力全集，private 工具照常发现与调用（见 F1.9 与 `context/pending-confirm.md` SA-Q6）。
+- **接缝契约扩展**：`_meta.goodhub.visibility` 标记 + 共享池缓存失效语义 → 回写 goodshare 仓 `ai-app-split.md`（与端口规划同批）。
 
 ### 9. 暂存池与数据治理（Ref Store Specification，2026-10-10 二轮补齐，三轮瘦身）
 

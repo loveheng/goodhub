@@ -8,6 +8,10 @@
 /// 会吐出 `tool_call(name="")` 这类畸形调用——抛错会炸掉整轮 Run，故与「缺
 /// id/name」的协议违规（仍抛 [CloudProtocolException]）区别对待：**丢弃 +
 /// DEGRADE 留痕**，[toAssistantMessage] 同口径（回放无失配 tool 消息）。
+///
+/// **判别前置（2026-10-21 实测）**：真·空名只可能是「首个 delta 即空」；部分
+/// OpenAI 兼容端（GLM 系）在每个 arguments 分片里重复带 `name:""`，那不是畸形
+/// 调用而是冗余重申——若被写进 [add]，真名会被冲掉、整轮工具全部误判丢弃。
 library;
 
 import 'package:flutter/foundation.dart' show debugPrint;
@@ -35,7 +39,15 @@ class CloudStreamAccumulator {
         ):
         final builder = _calls.putIfAbsent(index, _ToolCallBuilder.new);
         if (id != null) builder.id = id;
-        if (name != null) builder.name = name;
+        // 空名覆盖防御（2026-10-21 实测根因）：OpenAI 兼容端（SiliconFlow
+        // `zai-org/GLM-5.3-Flash`）在首个 delta 给出真名后，**后续每个
+        // arguments 分片仍重复携带 `name:""`**——无条件覆盖会把真名冲成空串，
+        // 结算即按畸形调用丢弃（表现为整轮「空名 tool_call」、工具永不执行）。
+        // 区分两种空名：① 首帧即空（真·畸形调用）→ 照常写入，留给结算层丢弃；
+        // ② 已有真名后重申空串 → 忽略（空串不是"未提供"，是分片的冗余重申）。
+        if (name != null && (name.isNotEmpty || builder.name == null)) {
+          builder.name = name;
+        }
         builder.arguments.write(argumentsDelta);
       case CloudDone(:final finishReason, :final usage):
         this.finishReason = finishReason;

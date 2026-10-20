@@ -126,6 +126,7 @@ Binder 侧经 `Binder.getCallingUid()` 验真——同签名私有生态（`<per
 - **URI scheme 统一（对齐 TC9 / §10.1）**：大结果降级句柄统一用 `mcp-blob://<pkg>/<path>`，**严禁**使用 `$ref://` 等非标前缀；GoodHub 解包按 `mcp-blob://` 解析。
 - **命名不上仲裁（对齐 §9.3）**：SDK 仅把 `SERVER_ID` 上报给 GoodHub，**不做命名主权仲裁**；物理主键与冲突降级完全在主机侧（以 `PackageName` 为主键，§9.3）。
 - **安全无关（对齐 TC4 / §1.2.6）**：SDK 不降低信任门槛——`exported=true` + 公开 Action 下任何 App 均可声明该 Service，非同签名第三方首次接入仍走信任卡片白名单（§1.2.6）。SDK 不持有、不绕过该闸门。
+- **可见性只声明、不做访问控制（SDK 0.2.0，对齐 F1.9 / architecture §8）**：`tools/list` 每个工具条目可携带 **`_meta.goodhub.visibility`**（`shared` / `private`，缺省 `private`），SDK 侧语义恒为**声明**——不得因该标记剔除任何 `tools/list` 条目（目录恒为能力全集）、不得拦截任何 `tools/call`；「收不收进共享目录 / 向不向外部 Agent 暴露」由 GoodHub 客户端判断。同理标准 hints（`readOnlyHint` / `destructiveHint`）**选择性下发**：未声明不补默认值，且不得挪作访问控制。
 
 ---
 

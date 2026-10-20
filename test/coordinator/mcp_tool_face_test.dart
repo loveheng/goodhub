@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/coordinator/mcp_tool_face.dart';
 import 'package:goodhub/core/errors/mcp_error.dart';
+import 'package:goodhub/core/tool_visibility.dart';
 import 'package:goodhub/llm/cloud/cloud_llm.dart';
 import 'package:goodhub/mcp/mcp_client.dart';
 import 'package:http/http.dart' as http;
@@ -54,6 +55,76 @@ void main() {
         face.listTools(),
         throwsA(isA<McpProtocolException>()),
       );
+    });
+  });
+
+  /// SDK 0.2.0 `sample-dummy-plugin`（serverId=dummy）靶子的 tools/list 线级
+  /// 形态：可见性走 `_meta.goodhub.visibility`；hints 选择性下发（`slowEcho` /
+  /// `reverseDemo` 无 `annotations` 节点）。
+  group('SDK 0.2.0 工具可见性标记', () {
+    const dummyTools = [
+      {
+        'name': 'echo',
+        'description': '原样回显输入文本',
+        'inputSchema': {'type': 'object'},
+        'annotations': {'readOnlyHint': true},
+        '_meta': {
+          'goodhub': {'visibility': 'shared'}
+        },
+      },
+      {
+        'name': 'add',
+        'description': '求和',
+        'inputSchema': {'type': 'object'},
+        'annotations': {'readOnlyHint': true},
+        // 无 _meta → private（default-deny）
+      },
+      {
+        'name': 'slowEcho',
+        'description': '异步进度演示',
+        'inputSchema': {'type': 'object'},
+        // 无 annotations 节点（hints 选择性下发）
+      },
+      {
+        'name': 'reverseDemo',
+        'description': '反向请求演示',
+        'inputSchema': {'type': 'object'},
+      },
+    ];
+
+    test('四工具全收（能力全集不剔除）+ visibility 与 hints 解析', () async {
+      final face = McpToolFace(
+        client: client((req) async => okJson({'tools': dummyTools})),
+      );
+      final tools = await face.listTools();
+      expect(tools.map((t) => t.name), ['echo', 'add', 'slowEcho', 'reverseDemo'],
+          reason: 'SDK 不剔除条目，本仓客户端也不得在解析层剔除');
+      expect(tools[0].visibility, ToolVisibility.shared);
+      expect(tools[0].isShared, isTrue);
+      expect(tools[0].annotations, {'readOnlyHint': true});
+      for (final t in tools.skip(1)) {
+        expect(t.visibility, ToolVisibility.private, reason: '${t.name} 未打标即私有');
+        expect(t.isShared, isFalse);
+      }
+      // hints 缺席 = 无信息，不是 false——解析层不补默认值
+      expect(tools[2].annotations, isNull, reason: 'slowEcho 无 annotations 节点');
+      expect(tools[3].annotations, isNull, reason: 'reverseDemo 无 annotations 节点');
+    });
+
+    test('private 工具照常可调用（可见性是声明，不是 ACL）', () async {
+      final face = McpToolFace(
+        client: client((req) async => okJson({
+              'content': [
+                {'type': 'text', 'text': 'ok'}
+              ]
+            })),
+      );
+      for (final name in const ['echo', 'add', 'slowEcho', 'reverseDemo']) {
+        final r = await face.execute(
+          AssembledToolCall(id: 'c-$name', name: name, argumentsJson: '{}'),
+        );
+        expect(r.isError, isFalse, reason: '$name（含 private）必须照常可调用');
+      }
     });
   });
 

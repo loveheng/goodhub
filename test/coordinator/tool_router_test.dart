@@ -15,6 +15,7 @@ import 'package:http/testing.dart';
 import 'package:goodhub/coordinator/agent_loop.dart';
 import 'package:goodhub/coordinator/mcp_tool_face.dart';
 import 'package:goodhub/coordinator/tool_router.dart';
+import 'package:goodhub/core/tool_visibility.dart';
 import 'package:goodhub/llm/cloud/cloud_llm.dart';
 import 'package:goodhub/mcp/mcp_client.dart';
 
@@ -211,6 +212,53 @@ void main() {
       expect(blocked.isError, isTrue,
           reason: '空名在结算层已丢弃；直达本层仍须拦截（防线不依赖单点）');
       expect(blocked.content, contains('不是可用工具'));
+    });
+  });
+
+  group('工具可见性标记（SDK 0.2.0）：本机链路全量携带，过滤只在对外暴露面', () {
+    ToolRouter routerWithVisibility() => ToolRouter(
+          faces: {
+            'dummy': _StubFace(
+              [
+                CloudToolSchema(
+                  name: 'echo',
+                  description: '',
+                  parametersSchema: const {},
+                  meta: const {
+                    'goodhub': {'visibility': 'shared'}
+                  },
+                  visibility: ToolVisibility.shared,
+                ),
+                CloudToolSchema(
+                  name: 'add',
+                  description: '',
+                  parametersSchema: const {},
+                ), // 未打标 → private
+              ],
+              const ToolExecutionResult(content: 'ok'),
+              serverId: 'dummy',
+            ),
+          },
+        );
+
+    test('schemasFor 一路带出 visibility，private 不被吃掉', () {
+      final schemas = routerWithVisibility().schemasFor('dummy');
+      expect(schemas.map((s) => s.name), ['dummy__echo', 'dummy__add']);
+      expect(schemas.first.visibility, ToolVisibility.shared);
+      expect(schemas.first.isShared, isTrue);
+      expect(schemas.last.visibility, ToolVisibility.private);
+      expect(schemas.last.isShared, isFalse);
+    });
+
+    test('本机链路不过滤：private 工具照常进工具面且可调用', () async {
+      final router = routerWithVisibility();
+      router.activatedServers.add('dummy'); // public 常驻激活（JIT 守门面）
+      expect(router.focusedSchemas().map((s) => s.name).toList(),
+          ['dummy__add', 'dummy__echo'],
+          reason: '本机链路是能力全集，可见性只用于对外暴露面收窄');
+      final r = await router.execute(
+          const AssembledToolCall(id: '1', name: 'dummy__add', argumentsJson: '{}'));
+      expect(r.isError, isFalse, reason: 'private 不是 ACL，本机照常可调用');
     });
   });
 }

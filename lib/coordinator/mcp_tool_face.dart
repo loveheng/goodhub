@@ -10,6 +10,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../core/errors/mcp_error.dart';
+import '../core/tool_visibility.dart';
 import '../llm/cloud/cloud_llm.dart';
 import '../mcp/connection_face.dart';
 import '../mcp/mcp_client.dart';
@@ -70,6 +71,9 @@ class McpToolFace implements ToolExecutor, ConnectionFace {
   /// tools/list → 引擎工具声明。description/inputSchema 可缺省（防御解析），
   /// name 缺失 = 契约违规立即抛。结果缓存于 [cachedSchemas]（T6 ToolRouter
   /// 前缀改写 / JIT 静态摘要消费——能力目录随 tools/list 变更全量刷新，§8）。
+  ///
+  /// **能力全集直达**：SDK 0.2.0 起 `tools/list` 恒为能力全集（含 private 工具）
+  /// ——本方法逐条全收，绝不做剔除；可见性只解析不裁决（聚合层按标记组织）。
   Future<List<CloudToolSchema>> listTools() async {
     final tools = await client.listTools();
     final out = <CloudToolSchema>[];
@@ -90,6 +94,9 @@ class McpToolFace implements ToolExecutor, ConnectionFace {
         annotations: t['annotations'] is Map
             ? (t['annotations'] as Map).cast<String, Object?>()
             : null,
+        // SDK 0.2.0 可见性标记：`_meta.goodhub.visibility`（缺失即 private）。
+        meta: t['_meta'] is Map ? (t['_meta'] as Map).cast<String, Object?>() : null,
+        visibility: parseToolVisibility(t['_meta']),
       ));
     }
     _lastSchemas = List.of(out);

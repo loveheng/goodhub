@@ -1,27 +1,31 @@
 /// ToolRouter：多 Server 工具路由（F1.2 命名空间隔离 + F1.9 海关门控）。
-/// 海关规则（architecture §8）：tools/list annotations 声明 `x-mcp-export-to-shared: true`
-/// 才收集；未打标即私有，坚决不收集。`readOnlyHint` 标准注解仅建议值——
-/// 客户端 L1/L2 权限网关终裁在 M2 coordinator，本层只存储不裁决。
 ///
-/// ⚠️ **未接线（2026-10-15 对账标注，勿当死代码删除）**：生产路由走
-/// `coordinator/tool_router.dart`（多 Server 前缀路由，**不带海关过滤**）；
-/// 本文件是 **F1.9（P0 需求）的唯一实现**，当前仅 `test/tool_router_test.dart`
-/// 引用。
+/// **海关规则（SDK 0.2.0 口径，2026-10-21 更正）**：`tools/list` 条目的
+/// `_meta.goodhub.visibility == "shared"` 才收集；**字段缺失 / 形状异常 /
+/// 取值未知一律按 `"private"` 兜底**（default-deny），私有坚决不收集。
+/// 旧口径 `annotations["x-mcp-export-to-shared"]` **已作废**——它把访问控制
+/// 标记塞进 MCP `annotations`（规范定位是 advisory hints）且顶了官方 `x-`
+/// 命名空间。`readOnlyHint` 标准注解仅建议值——客户端 L1/L2 权限网关终裁在
+/// M2 coordinator，本层只存储不裁决。
 ///
-/// **未接线的原因（启用即破坏现状）**：现网服务端（goodshare、本地 Binder
-/// 插件）**普遍不下发 annotations**——真机取证见 thirdconnect memory（dummy
-/// 全工具因 SDK 不发 annotations 双缺从严落 L2）。一旦启用海关过滤，
-/// 未打标工具会被**全部过滤**，生产功能直接归零。
+/// **声明而非访问控制（责任边界）**：SDK 永不因该标记剔除 `tools/list` 条目
+/// （目录恒为能力全集）、永不拦截 `tools/call`；过滤是**客户端组织行为**，
+/// private 工具在本机链路照常发现与调用，只是不进共享目录 / 不向外部 Agent
+/// 暴露。可见性不是安全边界（调用方可信性另由同签名 / 信任白名单把关）。
 ///
-/// **启用前置条件（三者齐备才可接线）**：① 服务端普遍打标（`x-mcp-export-to-shared`
-/// 或标准 `readOnlyHint`）；② 明确「未打标即私有」的降级口径并通告生态；
-/// ③ 接线点 = 装配层（`chat_page._send` 建 face 后）+ 网关对外目录
-/// （`mcp_gateway_handler.toolsList`）两处都要过过滤。
+/// ⚠️ **接线状态（2026-10-21）**：生产路由走 `coordinator/tool_router.dart`
+/// （多 Server 前缀路由）；海关过滤已接线在**对外暴露面**——
+/// `gateway/mcp_gateway_handler.dart` 的 `toolsList()` 只回 shared 工具
+/// （F1.9 / SA-Q6 三项前置条件中「服务端打标 ✅ SDK 0.2.0」「缺失即私有 ✅」
+/// 已成立）。**本机链路（宿主聊天装配面）不过滤**——未打标服务端（如
+/// goodshare）在此口径下全量归 private，过滤即生产工具面归零。
 ///
-/// 处置选项见 `context/pending-confirm.md` SA-Q6（保留待接线 / 归档）。
+/// 本文件 = 海关规则的独立实现与单测面，按 `context/pending-confirm.md`
+/// SA-Q6 拍板**保留**（收编进 `coordinator/tool_router.dart` 记为架构债 #9）。
 library;
 
 import '../core/errors/mcp_error.dart';
+import '../core/tool_visibility.dart';
 import 'mcp_client.dart';
 
 /// tools/list 单个工具条目（强类型解析；Schema 以 JSON 值树保留，禁 dynamic 穿总线）。
@@ -31,7 +35,7 @@ class McpTool {
     required this.description,
     required this.inputSchema,
     this.readOnlyHint = false,
-    this.exportToShared = false,
+    this.visibility = ToolVisibility.private,
   });
 
   factory McpTool.parse(Map<String, Object?> raw) {
@@ -48,12 +52,9 @@ class McpTool {
     final schema = raw['inputSchema'];
     final annotations = raw['annotations'];
     var readOnly = false;
-    var export = false;
     if (annotations is Map<String, Object?>) {
       final ro = annotations['readOnlyHint'];
       if (ro is bool) readOnly = ro;
-      final ex = annotations['x-mcp-export-to-shared'];
-      if (ex is bool) export = ex;
     }
     return McpTool(
       name: name,
@@ -61,7 +62,8 @@ class McpTool {
       inputSchema:
           schema is Map<String, Object?> ? Map.unmodifiable(schema) : const {},
       readOnlyHint: readOnly,
-      exportToShared: export,
+      // 可见性走 GoodHub 私有子树 `_meta.goodhub.visibility`（缺失即 private）。
+      visibility: parseToolVisibility(raw['_meta']),
     );
   }
 
@@ -69,7 +71,9 @@ class McpTool {
   final String description;
   final Map<String, Object?> inputSchema;
   final bool readOnlyHint;
-  final bool exportToShared;
+
+  /// 可见性范围（`_meta.goodhub.visibility`；缺失即私有）。
+  final ToolVisibility visibility;
 }
 
 class _Routed {
@@ -99,7 +103,7 @@ class ToolRouter {
         throw const McpProtocolException('tools/list entry is not an object');
       }
       final tool = McpTool.parse(entry);
-      if (!tool.exportToShared) continue; // 未打标 = 私有，坚决不收集
+      if (tool.visibility != ToolVisibility.shared) continue; // 非 shared = 私有，坚决不收集
       final namespaced = '${serverId}__${tool.name}';
       if (_registry.containsKey(namespaced)) {
         throw McpProtocolException('namespace collision: $namespaced');

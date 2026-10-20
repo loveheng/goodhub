@@ -11,6 +11,8 @@
 /// - 取消 = 调用方 cancel 流订阅（§10 Abort 级联①步的云端路径，T2 接线）。
 library;
 
+import '../../core/tool_visibility.dart';
+
 /// BYOK 协议族。openaiCompatible 一套覆盖 OpenAI / DeepSeek / Qwen
 /// （DashScope compatible-mode）——差异仅 BaseURL 与模型名。
 enum CloudProtocol { openaiCompatible, anthropic }
@@ -127,6 +129,8 @@ class CloudToolSchema {
     required this.description,
     required this.parametersSchema,
     this.annotations,
+    this.meta,
+    this.visibility = ToolVisibility.private,
   });
 
   final String name;
@@ -137,14 +141,31 @@ class CloudToolSchema {
 
   /// MCP annotations 原文（如 readOnlyHint）——客户端权限网关的建议值源，
   /// 不进云端请求序列化（客户端本地裁决用，见 coordinator/permission_gateway）。
+  /// **可能整体缺席**：hints 是选择性下发（SDK 0.2.0），缺席 ≠ 有副作用，
+  /// 严禁拿「有没有 annotations / 里面有没有字段」当判据。
   final Map<String, Object?>? annotations;
+
+  /// MCP `_meta` 原文（GoodHub 私有子树 `goodhub` 等）——客户端本地消费
+  /// （可见性标记与后续正交维度的唯一来源），不进云端请求序列化。
+  final Map<String, Object?>? meta;
+
+  /// 工具可见性范围（SDK 0.2.0 声明式标记）：由 `meta["goodhub"]["visibility"]`
+  /// 解析；缺失 / 形状异常 / 取值未知 = [ToolVisibility.private]（default-deny）。
+  ///
+  /// **声明而非访问控制**：private 工具在本机链路照常发现与调用，只是不进
+  /// 共享目录 / 不向外部 Agent 暴露。
+  final ToolVisibility visibility;
+
+  /// 可否进共享目录 / 对外暴露（[ToolVisibility.shared]）。
+  bool get isShared => visibility == ToolVisibility.shared;
 
   /// 规范云端序列化（G5 / SSOT §8.2，前缀缓存命中的隐藏前提）：
   /// ① 一级键插入序固定 `name → description → input_schema`（Dart jsonEncode
   ///    保 Map 插入序，装配序固定即字节稳定）；
   /// ② `parametersSchema` 经 [canonicalParameters] 递归字典序归一——上游 MCP
   ///    返回的 Map 键序不可控，不归一则单条 schema 字节流不恒定、工具缓存即碎；
-  /// ③ [annotations] 不进云端序列化（仅本地裁决用）。
+  /// ③ [annotations] 不进云端序列化（仅本地裁决用）；
+  /// ④ [meta] / [visibility] 同 ③——纯客户端组织依据，不下发给模型。
   Map<String, Object?> toJson() => <String, Object?>{
         'name': name,
         'description': description,

@@ -39,6 +39,10 @@ class _FakeTransport implements McpTransport {
                   },
                   'required': ['a', 'b'],
                 },
+                // 对外投影须显式 shared（缺失即 private，不进 PC 目录）
+                '_meta': {
+                  'goodhub': {'visibility': 'shared'},
+                },
               }
             ]
           },
