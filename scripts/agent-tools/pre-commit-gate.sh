@@ -7,19 +7,20 @@
 # name: pre-commit-gate
 # summary: 提交前门禁：按改动范围分派 arch-guard（lib/ 改动）与 docs-lint（docs/ 改动），任一 FAIL 拒绝提交
 # trigger: pre-commit
-# after: arch-guard,docs-lint
+# after: arch-guard,docs-lint,check-contract-sync
 # cat: test
 # alias: pcg
 # platform: unix
 # self-test: --self-test
 
 set -u
-ROOT=''; LIB_TOUCHED=0; DOC_TOUCHED=0; SELF_TEST=0; JSON_ONLY=0
+ROOT=''; LIB_TOUCHED=0; DOC_TOUCHED=0; ANDROID_TOUCHED=0; SELF_TEST=0; JSON_ONLY=0
 
 usage() {
   cat <<'EOF'
 用法: pre-commit-gate.sh [选项]      （toolbox run pre-commit-gate [选项] 等价）
-  提交前门禁：git 取暂存区改动，涉及 lib/ 跑 arch-guard，涉及 docs/ 跑 docs-lint；
+  提交前门禁：git 取暂存区改动，涉及 lib/ 跑 arch-guard，涉及 docs/ 跑 docs-lint，
+  涉及 android/ 跑 check-contract-sync（本地插件 AIDL 契约跨仓双副本防漂移）；
   任一 FAIL → exit 1 拒绝提交（规则本身在各自工具内，本脚本只做分派与聚合）。
 选项:
   --root <目录>  指定仓库根（默认 git 顶层 / 当前目录）
@@ -48,9 +49,11 @@ detect_touched() {
   if git -C "$ROOT" diff --cached --quiet 2>/dev/null; then
     LIB_TOUCHED=$(git -C "$ROOT" diff --name-only HEAD -- lib | wc -l)
     DOC_TOUCHED=$(git -C "$ROOT" diff --name-only HEAD -- docs | wc -l)
+    ANDROID_TOUCHED=$(git -C "$ROOT" diff --name-only HEAD -- android | wc -l)
   else
     LIB_TOUCHED=$(git -C "$ROOT" diff --cached --name-only -- lib | wc -l)
     DOC_TOUCHED=$(git -C "$ROOT" diff --cached --name-only -- docs | wc -l)
+    ANDROID_TOUCHED=$(git -C "$ROOT" diff --cached --name-only -- android | wc -l)
   fi
   return 0
 }
@@ -85,6 +88,14 @@ run() {
       bash "$SCRIPT_DIR/docs-lint.sh" --root "$ROOT" || { rc=1; agg=$((agg+1)); }
     else
       echo "⚠ docs-lint.sh 缺失，跳过（fail-open）"
+    fi
+  fi
+  if [ "$ANDROID_TOUCHED" -gt 0 ]; then
+    echo "==> pre-commit-gate: android/ 有改动，跑 check-contract-sync（AIDL 契约防跨仓漂移）"
+    if [ -f "$SCRIPT_DIR/check-contract-sync.sh" ]; then
+      bash "$SCRIPT_DIR/check-contract-sync.sh" --root "$ROOT" || { rc=1; agg=$((agg+1)); }
+    else
+      echo "⚠ check-contract-sync.sh 缺失，跳过（fail-open）"
     fi
   fi
   if [ "$rc" -eq 0 ]; then

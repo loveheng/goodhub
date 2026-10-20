@@ -71,7 +71,7 @@ updated: 2026-10-14
 
 1. **声明权限（插件侧）**：插件自声明 `<permission android:name="com.zzh.goodhub.permission.MCP_SERVER" android:protectionLevel="signature" />` 并在 Service 上 `android:permission=...`（宿主**只请求不自声明**，#9 §3）。
 2. **声明 Service**：`exported="true"` + `action="com.zzh.goodhub.action.MCP_SERVER"` + meta-data `SERVER_ID` / `SERVER_TITLE`（thirdconnect §1.2.1）。
-3. **实现 AIDL 契约**：`IMcpChannel` / `IMcpCallback` 按 thirdconnect §1.2.2（建议走 `goodhub-mcp-plugin-core` SDK，§11）；遵守 §1.2.3 Binder 红线（离主线程、<512KB、长任务 `_async`、`mcp-blob://`）。
+3. **实现 AIDL 契约**：`IMcpChannel` / `IMcpCallback` 按 thirdconnect §1.2.2（建议走 `goodhub-mcp-plugin-core` SDK，独立仓 `loveheng/goodhub-mcp-sdk`，Maven 坐标 `com.zzh.goodhub.mcp:goodhub-mcp-plugin-core`，§11）；遵守 §1.2.3 Binder 红线（离主线程、<512KB、长任务 `_async`、`mcp-blob://`）。
 4. **签名一致**：用与 GoodHub 相同的签名证书打包——同签名判定即由此而来，无任何额外代码。
 5. 安装即被自动发现、零弹窗挂载；Release 不暴露任何 HTTP 端口。
 
@@ -109,7 +109,7 @@ updated: 2026-10-14
 
 - **MCP 协议版本**：统一 `2025-06-18`（`kMcpProtocolVersion`）。`initialize` 应答的 `protocolVersion` 与宿主不一致 → 挂载失败 + `ops.log` 留痕，**严禁静默按旧版本硬连**。
 - **AIDL 契约版本**：`IMcpChannel`/`IMcpCallback` 方法签名即契约，变更必须 SDK 升版且向下兼容（thirdconnect §11.5）；宿主按方法存在性探测（`asInterface` 后调用失败即判定契约不符，摘除该插件而非崩溃）。
-- **SDK 版本绑定**：`goodhub-mcp-plugin-core` 版本绑定 MCP 协议版本 + AIDL 契约版本；插件侧禁止绕过 SDK 直改 AIDL 私加方法（宿主不识别的额外方法不影响，但不得改变既有方法语义）。
+- **SDK 版本绑定**：`goodhub-mcp-plugin-core` 版本绑定 MCP 协议版本 + AIDL 契约版本（仓 `loveheng/goodhub-mcp-sdk`，`VERSION` 文件登记三项）；插件侧禁止绕过 SDK 直改 AIDL 私加方法（宿主不识别的额外方法不影响，但不得改变既有方法语义）。
 - **降级策略**：新宿主遇旧插件——旧插件未实现的新能力（如 progressToken）按「声明即须兑现」反推：没声明就没义务，宿主走 Polyfill/Loading 兜底（§2.3）；旧宿主遇新插件——宿主忽略不认识的 capabilities 字段，不拒绝挂载。
 
 ## 8. 第三方插件验收与调试

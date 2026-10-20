@@ -47,6 +47,8 @@ updated: 2026-10-12
 | context 识别 + handleAsync + buildArgs | `android-sdk/plugin-core/.../plugin/ToolDispatcher.kt` |
 | e2e 靶子（async + reverse 演示） | `android-sdk/sample-dummy-plugin/.../dummy/DummyPluginService.kt` |
 
+> **2026-10-20 更新**：以上落点已迁至独立仓 `loveheng/goodhub-mcp-sdk`——`plugin-core/` → 该仓 `:plugin-core` 模块，`sample-dummy-plugin/` → `:sample-dummy-plugin` 模块；AIDL 契约迁至该仓 `:contract` 模块（唯一物理副本）。本表路径仅作历史留存。
+
 ## 3. 验收标准
 
 - `./gradlew :plugin-core:assembleDebug :sample-dummy-plugin:assembleDebug`：BUILD SUCCESSFUL（已验证 2026-10-12）。

@@ -1,0 +1,10 @@
+# 插件接入契约绑定登记
+#
+# 事实源 = 契约仓 goodhub-mcp-sdk 的 VERSION 文件（version / mcp_protocol_version / contract_version）。
+# 契约变更（含升版）须同轮改三处，缺一即被 check-contract-sync 拦下：
+#   ① 本文件（contract_version / aidl_contract_version）
+#   ② android/app/build.gradle.kts 的契约坐标版本
+#   ③ 契约仓 VERSION 文件
+contract_module=com.zzh.goodhub.mcp:goodhub-mcp-contract
+contract_version=0.1.0
+aidl_contract_version=v1

@@ -353,6 +353,8 @@ Binder 侧经 `Binder.getCallingUid()` 验真——同签名私有生态（`<per
 
 > 让第三方 App「5 分钟无脑接入」的工业界标准解：把 GoodHub 侧通信细节封装为通用轻量 SDK（`goodhub-mcp-plugin-core.aar`，TC14），第三方开发者只写业务函数，不知道 Binder 为何物。本条为 Tier A 原生 Binder 插件的**官方接入通道**（对齐 TC10 Dual-Stack）。
 
+> **SDK 已独立成仓**（2026-10-20）：`loveheng/goodhub-mcp-sdk`。仓内 `:contract` 模块是**契约唯一物理副本**（AIDL + 发现约定常量 `com.zzh.goodhub.mcp.McpContract`），`:plugin-core` 是插件侧运行时 SDK，`:sample-dummy-plugin` 是靶子/示例 APK。**宿主已删除自带 AIDL 副本**，改经坐标 `com.zzh.goodhub.mcp:goodhub-mcp-contract` 消费（复合构建优先 / mavenLocal 兜底）；`toolbox run check-contract-sync` 校验「物理单副本 + 坐标版本与契约仓 `VERSION` 绑定一致」。
+
 ### 11.1 接入体验（第三方视角）
 
 1. 继承通用基类，用注解写工具：
@@ -421,6 +423,8 @@ class FlashlightMcpPlugin : GoodHubPluginService(
 ### 11.5 工程约束（SDK 分发/版本）
 - `.aar` 经 Maven/GitHub Release 分发；SDK 版本须绑定 `kMcpProtocolVersion`(2025-06-18) + AIDL 契约版本，契约变更须 SDK 升版且向下兼容。
 - 基础可用版（Stub+路由+Schema+异常+128KB 降级）数百行；加 KSP 编译期 Schema / `_async` / Flutter 桥可上千行，属正常。
+- **仓与坐标**：仓 `loveheng/goodhub-mcp-sdk`；Maven 坐标 `com.zzh.goodhub.mcp:goodhub-mcp-contract`（契约）与 `com.zzh.goodhub.mcp:goodhub-mcp-plugin-core`（SDK，传递依赖契约）；仓级版本绑定见该仓 `VERSION` 文件（`version` / `mcp_protocol_version` / `contract_version`）。
+- **AIDL 包名 `com.zzh.goodhub.mcp` 永久冻结**：AIDL 生成的 `DESCRIPTOR` = 接口全限定名，随每次 Binder 事务作为 interface token 上线，改包名 = 存量插件全部 bind 失败。发现约定四常量（Action / `SERVER_ID` / `SERVER_TITLE` / permission 名）同样永久冻结。
 
 ---
 

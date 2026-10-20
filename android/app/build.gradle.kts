@@ -9,10 +9,6 @@ android {
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
-    buildFeatures {
-        aidl = true
-    }
-
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -49,6 +45,14 @@ dependencies {
     // 无 NDK/CMake），跑 .litertlm 模型包。坐标经 AndroLLM 实际工程核实（2026-09-29）：
     // artifact 为 litertlm-android，非 litert-lm（后者在 Maven Central 不存在，构建期即解析失败）。
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.16.0")
+
+    // 插件接入契约（AIDL + 发现约定常量）的唯一物理副本在独立仓 goodhub-mcp-sdk
+    // 的 :contract 模块。宿主此前自带的 AIDL 副本已删除（2026-10-20）——
+    // 改由本坐标提供，保证宿主与插件侧字节级同一份契约。
+    // 解析路径：复合构建（android/settings.gradle.kts 的 includeBuild，优先）
+    // → mavenLocal()（toolbox run sdk-dep 发布）→ 远端 Maven（坐标发布后）。
+    // 版本与 contract_version 绑定，见 SDK 仓 VERSION 文件。
+    implementation("com.zzh.goodhub.mcp:goodhub-mcp-contract:0.1.0")
 }
 
 kotlin {

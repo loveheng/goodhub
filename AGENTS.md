@@ -12,6 +12,7 @@ goodhub —— AI 宿主 App（master / 交互式 MCP 客户端）：认领 good
 - **记忆与日志体系（dev-loop）**：`context/`——会话开始先读 `context/CURRENT`，再只读对应 epic 的 memory.md 恢复上下文；代码变更须按协议追加 devlog
 - **MCP 接缝契约 SSOT（跨仓只读）**：goodshare 仓 `docs/design/ai-app-split.md`——改接缝须同轮修该文档
 - **MCP 对 AI 接口契约立法源（跨仓只读）**：goodshare 仓 `docs/engineering/ai-dev-spec.md` §4——goodhub 采纳条款见本仓 `docs/project/coding-standards.md` §7
+- **插件接入 SDK（跨仓只读）**：独立仓 `loveheng/goodhub-mcp-sdk`——契约**物理单副本** = 该仓 `:contract` 模块（AIDL + `com.zzh.goodhub.mcp.McpContract`）；宿主经坐标 `com.zzh.goodhub.mcp:goodhub-mcp-contract` 消费（复合构建优先，`toolbox run sdk-dep` 发布到本地 Maven 兜底），`toolbox run check-contract-sync` 校验单副本与版本绑定——改契约必须先改契约仓
 
 ## 会话初始化（新窗口开场执行一次）
 

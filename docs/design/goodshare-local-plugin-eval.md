@@ -31,7 +31,7 @@ updated: 2026-10-13
 - `IMcpChannel`：`String call(String jsonRpcRequest)`（同步 JSON-RPC，用于 `initialize/tools/list/tools/call/resources/*/prompts/*`），及 `registerCallback` / `answerReverse`。
 - `IMcpCallback`：`onEvent(String jsonRpcMessage)`（插件 → GoodHub 单向事件，进度/反向请求）。
 - AIDL 包名固定 `com.zzh.goodhub.mcp`。
-- **接入 SDK 透明化（§1.2.7 / TC14）**：goodhub 提供 `goodhub-mcp-plugin-core`，goodshare 只需 `@McpTool` 注解 + 可选 `@McpTool(timeout=...)`，AIDL/路由/异常对 goodshare 透明。**优先走 SDK，不要手搓 AIDL。**
+- **接入 SDK 透明化（§1.2.7 / TC14）**：goodhub 提供 `goodhub-mcp-plugin-core`（独立仓 `loveheng/goodhub-mcp-sdk`，Maven 坐标 `com.zzh.goodhub.mcp:goodhub-mcp-plugin-core`），goodshare 只需 `@McpTool` 注解 + 可选 `@McpTool(timeout=...)`，AIDL/路由/异常对 goodshare 透明。**优先走 SDK，不要手搓 AIDL。**
 
 ### 2.3 Binder 调用约束（§1.2.3，红线）
 - 线程：`channel.call` 必须派发到后台线程（Kotlin `Dispatchers.IO`）；主线程同步 `call` 超 5s 触发 ANR。
@@ -74,7 +74,7 @@ updated: 2026-10-13
 | # | 评估项 | 结论(是/否/部分) | 工时估算 | 备注 |
 |---|---|---|---|---|
 | 1 | 能否移除 HTTP 端口监听、改 Binder Service | | | |
-| 2 | 接入 `goodhub-mcp-plugin-core` SDK 可行性 | | | |
+| 2 | 接入 `goodhub-mcp-plugin-core` SDK 可行性 | | | SDK 已独立成仓 `loveheng/goodhub-mcp-sdk`（0.1.0），引 `com.zzh.goodhub.mcp:goodhub-mcp-plugin-core:0.1.0` 即可；goodshare 现有自拷 AIDL + `McpBinderService` 可整体替换 |
 | 3 | 大结果是否触发 1MB 事务上限、需 URI 降级 | | | |
 | 4 | 长任务 `_async` 改造范围 | | | |
 | 5 | 采样反向请求闭环迁移量 | | | |

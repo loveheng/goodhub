@@ -46,6 +46,11 @@ object BinderTransportBridge {
     private const val TAG = "BinderTransport"
     private const val CHANNEL = "goodhub/binder_mcp"
     private const val DISCOVERY_CHANNEL = "goodhub/binder_discovery"
+
+    // 发现约定四常量（线级契约，永久冻结）：
+    //   SSOT = goodhub-mcp-sdk 仓 :contract 模块的 com.zzh.goodhub.mcp.McpContract
+    //   宿主侧副本由 scripts/agent-tools/check-contract-sync.sh 机械校验（golden 指纹 + 与契约仓逐字节比对）
+    //   改这里 = 打断存量插件的自动发现；改契约必须先改契约仓。
     private const val DISCOVERY_ACTION = "com.zzh.goodhub.action.MCP_SERVER"
     private const val META_SERVER_ID = "com.zzh.goodhub.SERVER_ID"
     private const val META_SERVER_TITLE = "com.zzh.goodhub.SERVER_TITLE"

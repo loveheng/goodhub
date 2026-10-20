@@ -2,6 +2,21 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+        // 插件接入契约 SDK（goodhub-mcp-sdk）的本地发布物：复合构建不可用时
+        // （未拉 sibling 仓）的兜底解析路径。先跑 toolbox run sdk-dep 发布。
+        mavenLocal()
+        // 公网坐标（GitHub Packages）：需 GITHUB_TOKEN（scope 至少 read:packages）。
+        // 复合构建 / 本地 Maven 都不可用时的第三通路（如 CI 只拉了本仓）。
+        val ghToken = System.getenv("GITHUB_TOKEN")
+        if (!ghToken.isNullOrBlank()) {
+            maven {
+                url = uri("https://maven.pkg.github.com/loveheng/goodhub-mcp-sdk")
+                credentials {
+                    username = System.getenv("GITHUB_ACTOR") ?: "loveheng"
+                    password = ghToken
+                }
+            }
+        }
     }
 }
 

@@ -66,6 +66,7 @@ updated: 2026-10-12
 
 - 契约：docs/design/thirdconnect.md §1.2.2（AIDL）/ §1.2.3（Binder 约束）/ §1.2.7（SDK 红线）/ §11（TC14 SDK）。
 - 模块位置：仓库内独立 Gradle 工程 `android-sdk/`（`goodhub-mcp-plugin-core` 库 + `sample-dummy-plugin` 应用），**不并入** Flutter `android/` 模块，以免污染宿主构建。AIDL 包名固定 `com.zzh.goodhub.mcp`，放置于 `src/main/aidl/com/zzh/goodhub/mcp/`。
+  - **2026-10-20 更新**：该工程已拆为独立仓 `loveheng/goodhub-mcp-sdk`（本地 `/home/zzh/app/goodhub-mcp-sdk`），AIDL 迁入 `:contract` 模块成为契约唯一物理副本；此处路径仅作历史留存，当前落点见该仓。
 
 ## 6. 实施记录（2026-10-12）
 
