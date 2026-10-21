@@ -22,7 +22,13 @@ class DegradationController {
     this.maxConsecutiveServerErrors = 2,
     this.recoveryCooldown = const Duration(seconds: 30),
     this.connectTimeout = const Duration(seconds: 5),
-    this.firstTokenTimeout = const Duration(seconds: 8),
+    // 2026-10-21 调参（用户拍板）：8s → 30s。8s 对无 SSE 心跳的推理型提供商
+    // （SiliconFlow/DeepSeek 等思考期首字节前静默）误杀率高——连接后 8s 内
+    // 零字节即判死；30s 仍保留「快速判死连接」能力（连接失败由 5s connectTimeout
+    // 先行覆盖），思考排队场景不再误杀。注意 reasoning_content delta 本身就是
+    // 字节活体，思考开始流式后看门狗即被 onActivity 重置——本阈值只管辖
+    // 「连接后首个字节前」窗口。
+    this.firstTokenTimeout = const Duration(seconds: 30),
     this.interEventGapTimeout = const Duration(seconds: 120),
     Clock? now,
   }) : _now = now ?? DateTime.now;
@@ -72,7 +78,7 @@ class DegradationController {
     }
   }
 
-  /// 传输超时/连接失败——单次即降级（判据：连接 >5s、首 Token >8s、流内间隙 >${interEventGapTimeout.inSeconds}s）。
+  /// 传输超时/连接失败——单次即降级（判据：连接 >5s、首 Token >${firstTokenTimeout.inSeconds}s、流内间隙 >${interEventGapTimeout.inSeconds}s）。
   void reportTransportTimeout() => _enterDegraded();
 
   /// 云端整流成功 → 复位计数与降级态（冷却期满探活成功即回归）。

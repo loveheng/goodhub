@@ -269,6 +269,36 @@ void main() {
     expect(find.text('已挂载服务（1）'), findsOneWidget);
   });
 
+  // P1-7（2026-10-22）：同一份记忆曾有三处展示（归因详情 / AppBar 本轮记忆 /
+  // 流内胶囊），用户认不出哪份可管理。注入直达回调后详情降级为计数 + 入口。
+  testWidgets('归因详情有直达入口：记忆不再重列，点即跳「本轮记忆」',
+      (tester) async {
+    var opened = 0;
+    await pump(tester, [
+      TrackContextAttribution(
+        memories: const [
+          ContextAttributionItem(source: 'user', text: '偏好 Dart 强类型'),
+        ],
+        services: const [
+          ContextAttributionItem(source: 'goodshare', text: 'goodshare Tier 2'),
+        ],
+        onViewMemories: () => opened++,
+      ),
+    ]);
+    await tester.tap(find.textContaining('本轮上下文'));
+    await tester.pumpAndSettle();
+    expect(find.text('本轮注入记忆 1 条'), findsOneWidget);
+    expect(find.text('宿主记忆（1）', skipOffstage: false), findsNothing,
+        reason: '记忆条目不再在此重抄（只留一处可管理位）');
+    expect(find.text('偏好 Dart 强类型', skipOffstage: false), findsNothing);
+    // 服务仍就地展示（服务清单别处没有同等视图）。
+    expect(find.text('已挂载服务（1）'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('ctx-open-memory-list')));
+    await tester.pumpAndSettle();
+    expect(opened, 1, reason: '点击直达 AppBar「本轮记忆」汇总列表');
+  });
+
   testWidgets('C4：助手文本轮次带「GoodHub」轻标（与用户轮「你」对称）', (tester) async {
     await pump(tester, [TrackText('回答正文')]);
     expect(find.text('GoodHub'), findsOneWidget,
@@ -283,9 +313,43 @@ void main() {
     ]);
     // 完成行独立在（不被折叠、不被隐藏）。
     expect(find.text(kTaskDoneNote), findsOneWidget);
-    // 两条遥测通告照旧折叠为概要（降噪不回归）。
-    expect(find.text('Run 概要（2 条通告）'), findsOneWidget);
+    // 两条遥测通告照旧折叠为概要（降噪不回归）。概要标题走人话（P0-4：撤
+    // 「Run 概要」内部名直出）。
+    expect(find.text('2 条系统通告（点开查看）'), findsOneWidget);
     expect(find.text('⊘ 有 2 个服务已卸载'), findsNothing,
         reason: '遥测通告在折叠概要内，默认不展开');
+  });
+
+  testWidgets('TrackThinking（2026-10-21 M1）：默认收起只露表头，点开见全文',
+      (tester) async {
+    final entry = TrackThinking('先分析需求，再查数据');
+    await pump(tester, [entry]);
+    // 默认收起：表头在位、全文不直出（用户拍板「默认收起」）。
+    expect(find.text('思考过程'), findsOneWidget);
+    expect(find.text('先分析需求，再查数据'), findsNothing);
+    // P2-12：表头带自述——「这是什么 + 影不影响结果」，否则用户要自己猜
+    // 「这坨要不要看」（与 CloudThinkingDelta 展示 only 契约同口径）。
+    expect(find.text(kThinkingHint), findsOneWidget);
+    await tester.tap(find.text('思考过程'));
+    await tester.pumpAndSettle();
+    expect(find.text('先分析需求，再查数据'), findsOneWidget,
+        reason: '展开后全文可见');
+    // 再点收回（切换闭环）。
+    await tester.tap(find.text('思考过程'));
+    await tester.pumpAndSettle();
+    expect(find.text('先分析需求，再查数据'), findsNothing);
+  });
+
+  testWidgets('TrackThinking 流式追加：delta 写入局部刷新（单条目不碎卡）',
+      (tester) async {
+    final entry = TrackThinking('开');
+    await pump(tester, [entry]);
+    await tester.tap(find.text('思考过程'));
+    await tester.pumpAndSettle();
+    entry.append('始思考');
+    await tester.pump();
+    expect(find.text('开始思考'), findsOneWidget);
+    expect(find.text('思考过程'), findsOneWidget,
+        reason: '追加复用同一条目——表头不增（不碎卡）');
   });
 }

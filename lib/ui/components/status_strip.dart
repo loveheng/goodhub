@@ -125,6 +125,17 @@ class StatusStrip extends StatelessWidget {
     _ => label,
   };
 
+  /// 路由前缀名 → 裸工具名：剥 `<serverId>__` 服务前缀（§5.6 命名空间隔离）；
+  /// 无分隔符（宿主本地工具）原名透传。
+  ///
+  /// 与 [toolAction] 同源拆分件——状态带、CallCard 摘要必须共用同一口径，
+  /// 禁各自现写 `indexOf`（历史坑：CallCard 漏剥前缀，`<serverId>__<tool>`
+  /// 遥测串直出阅读轨）。
+  static String plainToolName(String prefixedName) {
+    final i = prefixedName.indexOf('__');
+    return i > 0 ? prefixedName.substring(i + 2) : prefixedName;
+  }
+
   /// A2（page-beautify）：工具名 → 人话动作标签。优先取服务端下发的
   /// description 首子句（goodshare 侧实证为中文人话长句，首子句即动作）；
   /// 无描述回退裸工具名（剥 `<serverId>__` 服务前缀）；无分隔符（宿主
@@ -135,8 +146,7 @@ class StatusStrip extends StatelessWidget {
   ) {
     final desc = descriptions[prefixedName]?.trim();
     if (desc != null && desc.isNotEmpty) return shortClause(desc);
-    final i = prefixedName.indexOf('__');
-    return i > 0 ? prefixedName.substring(i + 2) : prefixedName;
+    return plainToolName(prefixedName);
   }
 
   /// 长描述 → 短标签：至首个分隔标点（中英文句读 / 左括号，描述常见

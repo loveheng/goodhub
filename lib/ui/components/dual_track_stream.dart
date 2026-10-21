@@ -41,8 +41,12 @@ const String kTaskDoneNote = '✓ 任务完成';
 
 /// A4（page-beautify P3）：首颗记忆胶囊的事前说明（chat_page onCapsule 幂等
 /// 插入；恢复会话经序列化还原、不再触发插入）。
+/// P2-12（2026-10-22）：思考轨表头的自述——「这是什么 + 影不影响结果」。
+/// 与 [CloudThinkingDelta] 的展示 only 四不契约同口径（不进历史/不回放）。
+const String kThinkingHint = '模型内部推理 · 不进对话历史，不影响结果';
+
 const String kMemoryFirstNotice =
-    '模型从对话中提取了一条事实写入记忆（可逐条撤销；AppBar ⚡ 查看本轮全部）';
+    '模型从对话中提取了一条事实写入记忆（可逐条撤销；顶部「本轮记忆」查看全部）';
 
 /// 阅读轨文本（流式追加：页面往 [text] 写 delta）。
 ///
@@ -61,6 +65,36 @@ class TrackText extends TrackEntry with ChangeNotifier {
   void append(String delta) {
     if (delta.isEmpty) return;
     text.write(delta);
+    notifyListeners();
+  }
+}
+
+/// 思考轨（2026-10-21 M1）：推理型云模型思维流（`reasoning_content`）的
+/// **展示 only** 条目——内容不进历史/不回放（见 [CloudThinkingDelta] 契约）。
+/// **默认收起**（用户拍板）：表头一行「思考过程 ▸」，点击展开/收起全文；
+/// 持久化保留展开态（历史保真），恢复态按存档值呈现。
+/// 自管件（同 TrackText 口径）：[append] 写 delta 后仅自身通知，渲染侧经
+/// `ListenableBuilder` 局部重绘，不牵连整页重建。
+class TrackThinking extends TrackEntry with ChangeNotifier {
+  TrackThinking(String initial) {
+    text.write(initial);
+  }
+
+  final StringBuffer text = StringBuffer();
+
+  /// 展开态（默认收起；用户点击切换后持久化）。
+  bool expanded = false;
+
+  /// 追加 delta 并通知自身监听者（仅本条目重绘，无整页 setState）。
+  void append(String delta) {
+    if (delta.isEmpty) return;
+    text.write(delta);
+    notifyListeners();
+  }
+
+  /// 展开/收起切换。
+  void toggle() {
+    expanded = !expanded;
     notifyListeners();
   }
 }
@@ -220,6 +254,7 @@ class TrackContextAttribution extends TrackEntry {
     required this.services,
     this.droppedCount = 0,
     this.onItemExclude,
+    this.onViewMemories,
   });
 
   /// 注入本轮 prompt 的记忆快照（原始顺序，页面上限内逐条展示）。
@@ -233,6 +268,12 @@ class TrackContextAttribution extends TrackEntry {
 
   /// 预留：单条排除回调（null = 不渲染排除按钮；当前页面不接线）。
   void Function(ContextAttributionItem item)? onItemExclude;
+
+  /// P1-7（2026-10-22）：直接跳 AppBar「本轮记忆」汇总列表的回调。
+  /// null = 详情仍按旧样逐条列出（历史恢复态同口径：无活页面可跳）。
+  /// 动机：同一份记忆曾有三处展示（归因详情 / AppBar 列表 / 流内胶囊），用户
+  /// 分辨不出哪一处是「可管理的那份」——此处降级为计数 + 直达入口。
+  VoidCallback? onViewMemories;
 }
 
 /// elicitation 交互卡（server→宿主结构化提问；MCP 2025-06-18 elicitation/create）。
@@ -379,6 +420,80 @@ class DualTrackStream extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 StreamingRichText(text: entry.text.toString()),
+              ],
+            ),
+          ),
+        );
+      case TrackThinking e:
+        // 切片 C：本件自管 Listenable，思维流 delta 追加与展开切换仅本条目
+        // 局部重绘（ListenableBuilder），不牵连整页。
+        final t = consoleTokens(context);
+        return ListenableBuilder(
+          listenable: e,
+          builder: (context, _) => Container(
+            margin: const EdgeInsets.symmetric(vertical: 2),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(t.cardRadius),
+              border: Border.all(color: t.hairline),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                InkWell(
+                  borderRadius: BorderRadius.circular(t.cardRadius),
+                  onTap: e.toggle,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          '思考过程',
+                          style: TextStyle(
+                            fontFamily: t.monoFamily,
+                            fontSize: Fsz.note,
+                            color: t.terminalMuted,
+                          ),
+                        ),
+                        Text(
+                          e.expanded ? ' ▾' : ' ▸',
+                          style: TextStyle(
+                            fontFamily: t.monoFamily,
+                            fontSize: Fsz.note,
+                            color: t.terminalMuted,
+                          ),
+                        ),
+                        // P2-12（2026-10-22）：默认收起是对的，但只露「思考过程
+                        // ▸」时用户要自己猜「这坨要不要看、看了算不算数」。补
+                        // 一句自述把决策成本降到零——它不进 transcript、不参与
+                        // 结果（CloudThinkingDelta 四不契约），故明说「不影响结果」。
+                        const SizedBox(width: 8),
+                        Text(
+                          kThinkingHint,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: Fsz.microSm,
+                            color: t.terminalMuted,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                if (e.expanded)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(8, 0, 8, 6),
+                    child: SelectableText(
+                      e.text.toString(),
+                      style: TextStyle(
+                        fontSize: Fsz.note,
+                        height: 1.5,
+                        color: t.terminalMuted,
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -652,12 +767,14 @@ class DualTrackStream extends StatelessWidget {
         :final services,
         :final droppedCount,
         :final onItemExclude,
+        :final onViewMemories,
       ):
         return _ContextAttributionRow(
           memories: memories,
           services: services,
           droppedCount: droppedCount,
           onItemExclude: onItemExclude,
+          onViewMemories: onViewMemories,
         );
     }
   }
@@ -747,12 +864,14 @@ class _ContextAttributionRow extends StatelessWidget {
     required this.services,
     required this.droppedCount,
     required this.onItemExclude,
+    required this.onViewMemories,
   });
 
   final List<ContextAttributionItem> memories;
   final List<ContextAttributionItem> services;
   final int droppedCount;
   final void Function(ContextAttributionItem item)? onItemExclude;
+  final VoidCallback? onViewMemories;
 
   @override
   Widget build(BuildContext context) {
@@ -827,15 +946,34 @@ class _ContextAttributionRow extends StatelessWidget {
                 ],
                 if (memories.isNotEmpty) ...[
                   const Divider(height: 16),
-                  Text(
-                    '宿主记忆（${memories.length}）',
-                    style: TextStyle(
-                      fontSize: Fsz.telemetry,
-                      fontWeight: FontWeight.w600,
+                  // P1-7：有直达入口时**不再在此重抄**记忆条目——同一份内容三处
+                  // 展示（归因详情 / AppBar 本轮记忆 / 流内胶囊），用户认不出哪份
+                  // 可管理。此处降级为计数 + 直达；历史恢复态（回调 null）保旧样。
+                  if (onViewMemories != null)
+                    ListTile(
+                      key: const ValueKey('ctx-open-memory-list'),
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.bolt, size: 18, color: t.dataRef),
+                      title: Text('本轮注入记忆 ${memories.length} 条'),
+                      subtitle: const Text('点开「本轮记忆」查看全部'),
+                      trailing: Icon(Icons.chevron_right, size: 18,
+                          color: t.terminalMuted),
+                      onTap: () {
+                        Navigator.pop(context);
+                        onViewMemories?.call();
+                      },
+                    )
+                  else ...[
+                    Text(
+                      '宿主记忆（${memories.length}）',
+                      style: TextStyle(
+                        fontSize: Fsz.telemetry,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
-                  ),
-                  for (final m in memories)
-                    _ContextItemRow(item: m, onExclude: onItemExclude),
+                    for (final m in memories)
+                      _ContextItemRow(item: m, onExclude: onItemExclude),
+                  ],
                 ],
                 if (services.isNotEmpty) ...[
                   const Divider(height: 16),
@@ -957,7 +1095,9 @@ class _RunSummary extends StatelessWidget {
           iconColor: t.terminalMuted,
           collapsedIconColor: t.terminalMuted,
           title: Text(
-            'Run 概要（${notes.length} 条通告）',
+            // P0-4（2026-10-22）：原「Run 概要（N 条通告）」把内部 Run 概念
+            // 直出用户面（违反 ui-design §2「内部名禁直出」）；改人话。
+            '${notes.length} 条系统通告（点开查看）',
             style: TextStyle(
               fontFamily: t.monoFamily,
               fontSize: Fsz.telemetrySm,
@@ -991,6 +1131,12 @@ extension TrackEntryCodec on TrackEntry {
 
   static Map<String, Object?> _encode(TrackEntry e) => switch (e) {
     TrackUser(:final text) => {'type': 'user', 'text': text},
+    // 思考轨持久化保留（历史保真）：展开态随存档恢复（缺省 = 收起）。
+    TrackThinking e => {
+      'type': 'thinking',
+      'text': e.text.toString(),
+      'expanded': e.expanded,
+    },
     TrackText(:final text) => {'type': 'text', 'text': text.toString()},
     TrackCall e => {
       'type': 'call',
@@ -1101,6 +1247,10 @@ extension TrackEntryCodec on TrackEntry {
       switch (m['type']) {
         case 'user':
           out.add(TrackUser(m['text'] as String? ?? ''));
+        case 'thinking':
+          // 历史恢复思考轨：按存档展开态呈现（缺省收起——默认收起拍板口径）。
+          out.add(TrackThinking(m['text'] as String? ?? '')
+            ..expanded = m['expanded'] as bool? ?? false);
         case 'text':
           out.add(TrackText(m['text'] as String? ?? ''));
         case 'call':

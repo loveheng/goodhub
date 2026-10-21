@@ -3,6 +3,12 @@
 ///
 /// 契约：调用方传 live 快照（bound/defaultId 等在每次 setSheet 重建时重读），
 /// 交互经回调回页面（绑定写回三态契约、全局钉选写回），本文件不持状态。
+///
+/// **信息架构（P1-6，2026-10-22）**：本弹层是「会话统一挂载入口」，装三类
+/// 生命周期不同的挂载物，必须分组到肉眼可辨——① 本次会话绑定（session 级，
+/// 跨轮有效、切会话重置）；② 本次发送附件（run 级，随发送即焚、移除不删
+/// 资源库）；③ 资源中心（应用级，跨会话持久、仅显式删除才消失）。分组功底
+/// 于 chat-interaction §1 #11：禁让用户凭「都在输入框上面一条」自行推断。
 library;
 
 import 'package:flutter/material.dart';
@@ -10,6 +16,52 @@ import 'package:flutter/material.dart';
 import '../../mcp/local_plugin_discovery.dart';
 import '../../mcp/server_endpoints.dart';
 import '../tokens/console_tokens.dart';
+
+/// 挂载弹层的分组标题（P1-6：三级生命周期分组标题 + 期限说明）。
+///
+/// 视觉走 ui-design §2/§4.7：microSm 等宽组名 + note 灰阶期限说明，不与列表抢
+/// 视觉重量；`dense` 供组内二级分组（本地插件）使用。
+class _GroupHeader extends StatelessWidget {
+  const _GroupHeader({
+    required this.title,
+    required this.hint,
+    this.dense = false,
+  });
+
+  final String title;
+  final String hint;
+
+  /// true = 二级分组（缩进更浅的行间距，不加分组前留白）。
+  final bool dense;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = consoleTokens(context);
+    return Padding(
+      padding: EdgeInsets.only(bottom: 4, top: dense ? 0 : 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            title,
+            style: TextStyle(
+              fontFamily: t.monoFamily,
+              fontSize: dense ? Fsz.microSm : Fsz.micro,
+              fontWeight: FontWeight.w600,
+              color: t.terminalMuted,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            hint,
+            style: TextStyle(fontSize: Fsz.note, color: t.terminalMuted),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 class SessionContextSheetBody extends StatelessWidget {
   const SessionContextSheetBody({
@@ -22,7 +74,6 @@ class SessionContextSheetBody extends StatelessWidget {
     required this.endpointName,
     required this.onBind,
     required this.onClear,
-    required this.onDone,
     this.onPickResource,
     this.onManageResources,
     this.scrollController,
@@ -42,7 +93,6 @@ class SessionContextSheetBody extends StatelessWidget {
 
   final ValueChanged<String> onBind;
   final VoidCallback onClear;
-  final VoidCallback onDone;
 
   /// 附加资源（composer「+」统一挂载菜单入口）；null = 不渲染该项。
   final VoidCallback? onPickResource;
@@ -55,9 +105,9 @@ class SessionContextSheetBody extends StatelessWidget {
   /// 跳转资源中心管理页（导入/改名/删除/外部打开）；null = 不渲染该项。
   final VoidCallback? onManageResources;
 
-  /// A5（page-beautify P3）：运行中菜单**可查看不可切换**——原一刀切
-  /// guard 连只读查看都弹「需等待」（查看当前绑定零收益被禁、纯添堵）。
-  /// true = 绑定/清空项置灰 + 说明行；查看信息不受影响。
+  /// P1-8（承 A5）：运行中**只锁会话绑定**——它会改写会话 slot、扰动在途 Run
+  /// 的装配语义。true = 绑定项置灰 + 说明行；「查看」与「挂载资源/管理资源」
+  /// （视图态/其他面的动作）不受影响（曾一并置灰，纯添堵且策略不一致）。
   final bool bindLocked;
 
   /// 当前是否处于公共态（''=显式公共；null=遗留「未绑定」，2026-10-18 起
@@ -79,7 +129,9 @@ class SessionContextSheetBody extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('本次会话上下文',
+            // P1-6（2026-10-22）：单一入口里混装三类挂载物，标题不能再叫「本次
+            // 会话上下文」——三层生命周期必须肉眼可辨（chat-interaction §1 #11）。
+            Text('挂载',
                 style: TextStyle(
                     fontSize: Fsz.telemetry, fontWeight: FontWeight.w600)),
             const SizedBox(height: 4),
@@ -100,13 +152,20 @@ class SessionContextSheetBody extends StatelessWidget {
                 ),
               ),
             const Divider(height: 16),
-            // A5：运行中锁定说明（查看可用、切换待命）。
+            // P1-8（2026-10-22）：锁定说明**点名被锁的对象**——原「暂不可切换
+            // 绑定」笼统，且实际只有服务绑定被锁（它会改写会话 slot、扰动在途
+            // Run 的装配），挂载资源不受影响。A5「可查看」语义保留。
             if (bindLocked)
               Padding(
                 padding: const EdgeInsets.only(bottom: 4),
-                child: Text('任务运行中：可查看，暂不可切换绑定',
+                child: Text('任务运行中：服务绑定暂不可切换（挂载资源不受影响）',
                     style: TextStyle(fontSize: Fsz.note, color: t.l2Warn)),
               ),
+            // —— 组 1：会话级挂载（跨轮有效 / 切会话重置）——————————————
+            const _GroupHeader(
+              title: '本次会话绑定',
+              hint: '跨轮有效 · 切会话或新建会话即重置',
+            ),
             if (privEndpoints.isEmpty && localPlugins.isEmpty)
               Text('无可用私有服务（私有端点请在侧边栏 → 设置页添加）',
                   style: TextStyle(fontSize: Fsz.note, color: t.terminalMuted)),
@@ -136,13 +195,12 @@ class SessionContextSheetBody extends StatelessWidget {
                     : onBind(e.id),
               ),
             if (localPlugins.isNotEmpty) ...[
-              const Divider(height: 16),
-              Text('本地私有插件（自动挂载 · 零配置）',
-                  style: TextStyle(
-                      fontSize: Fsz.telemetry, fontWeight: FontWeight.w600)),
-              const SizedBox(height: 4),
-              Text('私有 · 须选定后占用单槽；未选中则对本会话隐藏',
-                  style: TextStyle(fontSize: Fsz.note, color: t.terminalMuted)),
+              const SizedBox(height: 8),
+              const _GroupHeader(
+                title: '本地私有插件',
+                hint: '零配置自动发现 · 须选定后占用单槽，未选中则对本会话隐藏',
+                dense: true,
+              ),
               for (final lp in localPlugins)
                 ListTile(
                   leading: const Icon(Icons.lock_outline),
@@ -170,37 +228,44 @@ class SessionContextSheetBody extends StatelessWidget {
                   style: TextStyle(fontSize: Fsz.note, color: t.terminalMuted),
                 ),
               ),
-            // 2026-10-19：单一挂载入口收口——「附加资源 / 管理资源中心」一并
-            // 挂在 composer「+」下；原常驻附件行撤掉，药丸仅在有待发项时展开。
-            const Divider(height: 16),
-            ListTile(
-              key: const ValueKey('menu-attach'),
-              leading: const Icon(Icons.attach_file),
-              title: const Text('附加资源…'),
-              subtitle: const Text('从资源中心或系统文件选择，随本次发送'),
-              enabled: !bindLocked,
-              onTap: () {
-                Navigator.pop(context);
-                onPickResource?.call();
-              },
-            ),
-            ListTile(
-              key: const ValueKey('menu-resource-center'),
-              leading: const Icon(Icons.folder_open_outlined),
-              title: const Text('管理资源中心…'),
-              onTap: () {
-                Navigator.pop(context);
-                onManageResources?.call();
-              },
-            ),
-            const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerRight,
-              child: FilledButton(
-                onPressed: onDone,
-                child: const Text('完成'),
+            // —— 组 2：运行级附件（随本次发送即焚）——————————————————
+            if (onPickResource != null) ...[
+              const Divider(height: 16),
+              const _GroupHeader(
+                title: '本次发送附件',
+                hint: '随本次发送后即清空 · 移除只注销待发项，不删资源库',
               ),
-            ),
+              ListTile(
+                key: const ValueKey('menu-attach'),
+                leading: const Icon(Icons.attach_file),
+                title: const Text('附加资源…'),
+                subtitle: const Text('从资源中心或系统文件选择，随本次发送'),
+                // P1-8：不再随 bindLocked 置灰——挂载资源只是「预备下一次发送」
+                // 的视图态动作，不改写会话绑定、不扰动在途 Run 的领域态；与
+                // 「管理资源中心」同为资源入口，策略必须一致（原先一灰一可点）。
+                onTap: () {
+                  Navigator.pop(context);
+                  onPickResource?.call();
+                },
+              ),
+            ],
+            // —— 组 3：应用级资源库（跨会话持久）——————————————————
+            if (onManageResources != null) ...[
+              const Divider(height: 16),
+              const _GroupHeader(
+                title: '资源中心',
+                hint: '跨会话持久 · 仅在此显式删除才消失',
+              ),
+              ListTile(
+                key: const ValueKey('menu-resource-center'),
+                leading: const Icon(Icons.folder_open_outlined),
+                title: const Text('管理资源中心…'),
+                onTap: () {
+                  Navigator.pop(context);
+                  onManageResources?.call();
+                },
+              ),
+            ],
           ],
         ),
       ),

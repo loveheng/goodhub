@@ -71,6 +71,16 @@ class LoopToolCallFinished extends AgentLoopEvent {
   final ToolExecutionResult result;
 }
 
+/// 思考过程增量（2026-10-21，M1）：云端推理型模型的思维流透传——UI 思考轨
+/// 数据源（默认收起）。**展示 only**：环内 `continue` 早退，不进 accumulator
+/// （不入历史）、不过 workspace_filter（In-band 提取只解析正文）、不影响
+/// 空产出判定；契约见 [CloudThinkingDelta]。
+class LoopThinkingDelta extends AgentLoopEvent {
+  const LoopThinkingDelta(this.text);
+
+  final String text;
+}
+
 /// 收尾：模型自然结算（无工具调用待执行）。
 class LoopFinished extends AgentLoopEvent {
   const LoopFinished({
@@ -361,6 +371,12 @@ class AgentLoop {
         ),
       )) {
         if (_aborted) break; // 引擎流中途中止：断流结算（已收 delta 保留在 acc）
+        // 思考流（2026-10-21 M1）：展示 only 早退——禁入 acc（不入历史/不参与
+        // 空产出判定）、禁过 filter（In-band 提取 FSM 只解析正文）。
+        if (e is CloudThinkingDelta) {
+          emit(LoopThinkingDelta(e.text));
+          continue;
+        }
         acc.add(e);
         if (e is CloudTextDelta) {
           final passthrough = filter?.feed(e.text) ?? e.text;

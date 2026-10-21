@@ -88,9 +88,22 @@ class FencedCloudEngine implements CloudLlmEngine {
   }) async* {
     final masked = await _maskRequest(request);
     final textRestorer = _session.streamRestorer();
+    // 思考流独立 restorer（2026-10-21）：出站请求已遮蔽，模型思考里可能复述
+    // 占位符——与正文流分开缓冲，防跨流串缓冲（同 argRestorers 按 index 分持
+    // 的口径）；Done 前先冲刷放行，保持事件顺序契约。
+    final thinkingRestorer = _session.streamRestorer();
     final argRestorers = <int, PiiStreamRestorer>{};
     await for (final e in inner.send(masked, onActivity: onActivity)) {
       switch (e) {
+        case CloudThinkingDelta(:final text):
+          // 展示 only 透传：还原占位符后原样放行（遮蔽失败不阻断思考流——
+          // 思考非数据面；正文/工具入参的 fail-closed 语义不受影响）。
+          try {
+            final out = thinkingRestorer.push(text);
+            if (out.isNotEmpty) yield CloudThinkingDelta(out);
+          } on Object {
+            yield e;
+          }
         case CloudTextDelta(:final text):
           final out = textRestorer.push(text);
           if (out.isNotEmpty) yield CloudTextDelta(out);
@@ -115,6 +128,8 @@ class FencedCloudEngine implements CloudLlmEngine {
           // 契约与事件顺序；flush 产物在 Done 前抵达 accumulator）。
           final textTail = textRestorer.flush();
           if (textTail.isNotEmpty) yield CloudTextDelta(textTail);
+          final thinkingTail = thinkingRestorer.flush();
+          if (thinkingTail.isNotEmpty) yield CloudThinkingDelta(thinkingTail);
           for (final entry in argRestorers.entries) {
             final argsTail = entry.value.flush();
             if (argsTail.isNotEmpty) {

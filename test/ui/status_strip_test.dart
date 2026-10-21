@@ -89,6 +89,14 @@ void main() {
       expect(StatusStrip.toolAction('goodshare__list_items', const {}), 'list_items');
     });
 
+    // P0-4（2026-10-22）：前缀剥离抽为共用件——状态带与 CallCard 摘要必须同口径
+    // （历史坑：CallCard 直吃 `tool`，`<serverId>__<tool>` 遥测串直出阅读轨）。
+    test('plainToolName：剥前缀与本地工具透传（CallCard 摘要同源）', () {
+      expect(StatusStrip.plainToolName('goodshare__list_items'), 'list_items');
+      expect(StatusStrip.plainToolName('update_memory'), 'update_memory',
+          reason: '无分隔符（宿主本地工具）原名透传');
+    });
+
     test('无前缀宿主本地工具原名透传；空描述同样回退裸名', () {
       expect(StatusStrip.toolAction('update_memory', const {}), 'update_memory');
       expect(StatusStrip.toolAction('goodshare__add_item', const {'goodshare__add_item': '  '}),

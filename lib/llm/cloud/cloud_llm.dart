@@ -215,6 +215,20 @@ class CloudTextDelta extends CloudStreamEvent {
   final String text;
 }
 
+/// 思考过程增量（2026-10-21，M1：OpenAI 兼容侧 `reasoning_content`）。
+///
+/// **展示 only 契约**：只透传至 UI 思考轨（默认收起），四不——
+/// ① 不进 [CloudStreamAccumulator]（不入历史/不参与空产出判定）；
+/// ② 不过 [WorkspaceStreamFilter]（In-band 提取 FSM 只解析正文）；
+/// ③ 不进 transcript（下轮发送不回放思考——多数 API 不接受且烧 token）；
+/// ④ 不置 `sawOutput`（「思维链烧光预算零正文」的空产出防护不被打穿）。
+/// 端侧引擎与 Anthropic 侧（M2）暂不产出本事件，UI 须容忍缺席。
+class CloudThinkingDelta extends CloudStreamEvent {
+  const CloudThinkingDelta(this.text);
+
+  final String text;
+}
+
 /// 工具调用增量：按 [index] 拼接；id/name 仅在首个增量出现，
 /// [argumentsDelta] 逐片追加（JSON 字符串片段）。
 class CloudToolCallDelta extends CloudStreamEvent {

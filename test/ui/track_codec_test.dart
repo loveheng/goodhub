@@ -33,6 +33,26 @@ void main() {
     expect(note.text, '✓ 收尾');
   });
 
+  test('思考轨（2026-10-21 M1）往返：正文 + 展开态保真（缺省收起）', () {
+    final entries = <TrackEntry>[
+      TrackThinking('思维一')..expanded = true,
+      TrackThinking('思维二'),
+    ];
+
+    final encoded = TrackEntryCodec.encode(entries);
+    expect(encoded[0]['type'], 'thinking');
+    expect(encoded[0]['text'], '思维一');
+    expect(encoded[0]['expanded'], true);
+
+    final decoded = TrackEntryCodec.decode(encoded);
+    final t1 = decoded[0] as TrackThinking;
+    expect(t1.text.toString(), '思维一');
+    expect(t1.expanded, true, reason: '展开态随存档恢复（历史保真）');
+    final t2 = decoded[1] as TrackThinking;
+    expect(t2.text.toString(), '思维二');
+    expect(t2.expanded, false, reason: '缺省 expanded = 收起（默认收起拍板口径）');
+  });
+
   test('记忆胶囊（P2-6）往返：字段保真 + 恢复态不接撤销回调（锁定呈现）', () {
     final capsule = TrackMemoryCapsule(key: 'page_size', value: '20');
     final entries = <TrackEntry>[

@@ -135,6 +135,14 @@ Stream<CloudStreamEvent> mapOpenAiSse(Stream<SseEvent> events) async* {
     if (delta is Map) {
       final content = delta['content'];
       if (content is String && content.isNotEmpty) yield CloudTextDelta(content);
+      // 思考过程（2026-10-21 M1）：OpenAI 兼容侧推理型模型的
+      // `reasoning_content`（SiliconFlow/DeepSeek/Qwen/GLM 等）——展示 only，
+      // 契约见 [CloudThinkingDelta]：不进 accumulator、不过滤、不入历史。
+      // 缺失即普通模型（非推理型），零副作用。
+      final reasoning = delta['reasoning_content'];
+      if (reasoning is String && reasoning.isNotEmpty) {
+        yield CloudThinkingDelta(reasoning);
+      }
       final calls = delta['tool_calls'];
       if (calls is List) {
         for (final c in calls) {

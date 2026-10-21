@@ -2,8 +2,8 @@
 dev-loop: memory
 format: v1
 epic: misc
-total-merged: 4
-last-merge: 2026-10-19
+total-merged: 5
+last-merge: 2026-10-22
 ---
 
 # misc
@@ -18,6 +18,10 @@ last-merge: 2026-10-19
 - 方法论落位（2026-10-19，新项目初始化即得、均带 self-test 断言）：① 读码纪律三段式（文档建图→定向读码→关键断言实证）——goodhub-workflow 增专节（项目实例+实证锚点），project-scaffold.sh 的 <repo>-workflow 模板预填，dev-init §1 第 3 步补枚举；方法住项目 skill，不进全局 dev-loop。② 文档评估方法论（六维判据 + 三级依赖分级）——project-scaffold.sh 的 <repo>-docs 模板预填，goodhub-docs 增 §4 项目实例（原 §4 顺延 §5）；两者配套：读码纪律管怎么读，文档评估方法论管读到的东西能信几分。
 - context-lint.sh 三处修复（2026-10-19 根治）：① $ROOT/$R 分裂 bug——lint_mounts/lint_pointers 用原始 $ROOT 拼路径（不传 --root 时为空串致绝对路径假报），两处改 $R + self-test 增「cd 进夹具无 --root 不假报」回归断言；假告警 20→5。② lessons 归并口径——原 count `^- \[` 把正文四段式条目当待归并（归并后恒 ≥5 永误报），改为只数「## 待归并」节。③ devlog lesson 落点——原裸 append 落进上一主题节内致漏计，改入 inbox 节。伴随 [SSOT 修正]：lessons.md 工具链条目根因由「QC1 误判 toolbox cwd 错位」更正为「$ROOT/$R 分裂」，处置从绕行（一律显式传 --root）改为根治。
 - prompt-mgmt 透明面两轮（看板第 4 Tab「提示词」只读总览；提示词 Tab「都是空」双根因修复——CoW keptLocal 覆写正文进注册表 + 看板改 eager build，全量 903 绿）已借道本 devlog、事实落 prompt-mgmt/memory.md，此处留指针不双写。
+- **聊天页 P0+P1 降噪/信息架构两批（2026-10-22，用户逐批拍板；SSOT 已回填 `docs/product/chat-interaction.md`，updated 2026-10-22）**：
+  - **P0（省面积 + 降噪）**：① 删 `chat_page` 输入区外层重复布局（SafeArea/Center/ConstrainedBox/Padding 已由 `ChatComposer` 自持），回收横 24dp + 底 16dp；② 状态带展开条件甩掉 `hasEndpoints`（它是「配置过端点」而非「有启用端点」，曾让多数用户恒挂一行「空闲 · 公共」白占 30dp），收紧为 `running||hasContext`；③ 每轮必出通告降噪——卸载服务数 / 全局 Prompt 跳过项经 `ChatStatusController.claimSessionNotice` 会话级去重（键随内容变、随会话焚），「✓ 任务完成」仅本轮零正文才补行；④ `CallCard` 折叠摘要经 `StatusStrip.plainToolName` 剥 `<serverId>__` 前缀（与状态带同口径，**禁各自现写 indexOf**），失败/中止摘要取相位色补第二通道（成功仍灰阶）；⑤ 折叠标题去黑话「Run 概要」→「N 条系统通告（点开查看）」。
+  - **P1（信息架构）**：⑥ 挂载弹层改标题「挂载」并三级分组（会话绑定 session / 本次发送附件 run / 资源中心 应用级），组名 + 期限说明肉眼可辨；⑦ 记忆只留一处可管理位（AppBar 本轮记忆）——归因 BottomSheet 只给计数 + 直达（历史恢复态保旧样）；⑧ 运行中**只锁会话绑定**（它改写会话 slot 会扰动在途装配），资源类入口不跟着置灰、`_pickResource` 去运行守卫；⑨ 空输入发送给一次性 SnackBar（桌面端 Enter 曾零反馈 = 死控件）；⑩ 「回到最新」浮钮两态：`missedSinceDetach > 0` 挂计数徽标 + tooltip 明说条数，纯翻页态保持低调。
+  - **验证**：全仓 analyze 0 issue；`flutter test --timeout 180s` 985 绿（基线 972 + P0 7 + P1 6）；arch-guard / docs-lint OK。**未执行**：真机走查（输入法弹起后输入区实占高、多轮轨道密度、徽标深浅底对比）。
 
 ## 断点
 - [断点] 下一步：QC1~QC7 全部裁决并执行完毕，专项收口：全仓 0 违规、仅存 GROOM 42>30 + MOUNT 3 提示级（QC7 裁决长期接受）；GROOM 进一步收敛需用户对具体条目存废做价值判断（非机械范畴）

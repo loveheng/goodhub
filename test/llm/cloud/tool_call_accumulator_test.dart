@@ -51,6 +51,17 @@ void main() {
     expect(() => acc.toolCalls, throwsA(isA<CloudProtocolException>()));
   });
 
+  test('CloudThinkingDelta 显式忽略（展示 only 契约：不入累积/不参与结算）', () {
+    final acc = CloudStreamAccumulator()
+      ..add(const CloudThinkingDelta('思维链'))
+      ..add(const CloudTextDelta('正文'))
+      ..add(const CloudDone(finishReason: CloudFinishReason.stop));
+    expect(acc.text, '正文', reason: '思考绝不混入正文累积');
+    expect(acc.toolCalls, isEmpty);
+    expect(acc.finishReason, CloudFinishReason.stop);
+    expect(acc.toAssistantMessage().content, '正文');
+  });
+
   test('空名 tool_call 丢弃不抛错，同轮有效调用照常结算', () {
     final acc = CloudStreamAccumulator()
       ..add(const CloudToolCallDelta(index: 0, id: 'bad', name: ''))

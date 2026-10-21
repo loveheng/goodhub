@@ -236,6 +236,23 @@ class HybridCloudEngine implements CloudLlmEngine {
       } else {
         rethrow;
       }
+    } on Exception catch (e) {
+      // 语义排除：空产出（流干净完成但零可见内容）与协议违规是**设计上直露**
+      // 的结论性失败（UI 各有白话文案），不是传输中断——原样上抛，不进兜底。
+      if (e is InferenceException || e is CloudProtocolException) rethrow;
+      // 兜底（2026-10-21 真机实测教训，SiliconFlow「Connection closed while
+      // receiving data」）：流内异常若不在上述三类之列（传输层未映射的裸
+      // ClientException / FormatException / 其他 Exception），旧行为直接穿透
+      // 到 UI 错误卡炸整轮会话。按传输中断语义收口：计入降级判据 + 当次
+      // 端侧兜底（产出优先）；无兜底（带工具请求）包装为 CloudNetworkException
+      // 上抛——UI 白话卡据此给「连不上推理服务」而非裸异常文案，原始异常
+      // 信息内嵌保留（错误卡 detail 可复制）。禁静默吞：失败对调用方可见。
+      controller.reportTransportTimeout();
+      if (allowDeviceFallback) {
+        yield* _deviceSend(request, reason: '云端流异常中断: $e');
+      } else {
+        throw CloudNetworkException('云端流异常中断: $e');
+      }
     }
   }
 

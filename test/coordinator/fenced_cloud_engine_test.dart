@@ -51,6 +51,11 @@ String _text(List<CloudStreamEvent> events) => events
     .map((e) => e.text)
     .join();
 
+String _thinking(List<CloudStreamEvent> events) => events
+    .whereType<CloudThinkingDelta>()
+    .map((e) => e.text)
+    .join();
+
 void main() {
   const phone = '13812345678';
   const email = 'a@b.com';
@@ -211,6 +216,57 @@ void main() {
       expect((inner.requests.single.messages.single as UserMessage).content,
           '含 PII $phone',
           reason: '用户显式确认后仅本次明文放行');
+    });
+  });
+
+  group('思考流透传（2026-10-21 M1，展示 only）', () {
+    test('CloudThinkingDelta 原样放行（无遮蔽时零行为变化）', () async {
+      final inner = _CapturingEngine(const [
+        CloudThinkingDelta('想'),
+        CloudTextDelta('答'),
+        CloudDone(finishReason: CloudFinishReason.stop),
+      ]);
+      final engine = FencedCloudEngine(inner: inner);
+      final events = await _collect(engine.send(
+          const CloudChatRequest(messages: [UserMessage('u')])));
+      expect(_thinking(events), '想');
+      expect(_text(events), '答');
+    });
+
+    test('思考流独立 restorer：占位符还原不与正文流串缓冲', () async {
+      // 出站请求含 PII → 被遮蔽；模型思考复述占位符 → 思考流独立还原。
+      final inner = _CapturingEngine(const [
+        CloudThinkingDelta('用户电话是[手机'),
+        CloudThinkingDelta('号1]，先记住'),
+        CloudTextDelta('好的'),
+        CloudDone(finishReason: CloudFinishReason.stop),
+      ]);
+      final engine = FencedCloudEngine(inner: inner);
+      final events = await _collect(engine.send(
+          const CloudChatRequest(messages: [UserMessage('含 PII $phone')])));
+      expect(_thinking(events), '用户电话是$phone，先记住',
+          reason: '思考流占位符跨片还原（独立缓冲，不串正文流）');
+      expect(_text(events), '好的');
+    });
+
+    test('思考流在 Done 前冲刷（flush 产物先于 Done 抵达）', () async {
+      // 未完占位符（[手机 缺号1]）按字面量收尾——D5 同口径：无 PII 泄露，
+      // flush 把扣留缓冲放行后再放 Done（事件顺序契约）。
+      final inner = _CapturingEngine(const [
+        CloudThinkingDelta('结尾思考[手机'),
+        CloudDone(finishReason: CloudFinishReason.stop),
+      ]);
+      final engine = FencedCloudEngine(inner: inner);
+      final events = await _collect(engine.send(
+          const CloudChatRequest(messages: [UserMessage('含 PII $phone')])));
+      expect(events.whereType<CloudDone>(), hasLength(1));
+      final doneIdx = events.indexWhere((e) => e is CloudDone);
+      final lastThinking =
+          events.lastIndexWhere((e) => e is CloudThinkingDelta);
+      expect(lastThinking, lessThan(doneIdx),
+          reason: '思考 flush 产物先于 Done（事件顺序契约）');
+      expect(_thinking(events), '结尾思考[手机',
+          reason: '未完占位符按字面量收尾，绝不泄漏还原值');
     });
   });
 }

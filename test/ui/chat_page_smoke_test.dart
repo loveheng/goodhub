@@ -92,6 +92,45 @@ void main() {
     expect(find.byType(SettingsPage), findsNothing); // 不整页 push
   });
 
+  // P1-9（2026-10-22）：桌面端 Enter = 发送（composer B1 平台语义），空输入时
+  // 曾一路走到 `_send` 的空 return —— 点了/敲了零反馈 = 死控件（违反 SSOT §1
+  // 「禁止静默禁用」）。现在由 composer 的 onSend 在页面层给一次性说明。
+  testWidgets('空输入发送：给一次性反馈，不静默无反应', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(home: ChatPage(endpointStoreOverride: _FakeEpStore())),
+    );
+    await _settleAssembly(tester);
+
+    await tester.tap(find.byIcon(Icons.arrow_upward));
+    await _settleAssembly(tester);
+    expect(find.text('先说点什么再发送'), findsOneWidget);
+    expect(find.byType(SettingsPage), findsNothing,
+        reason: '空发送不触发「未配置」引导流程');
+  });
+
+  // P2-11（2026-10-22）：本轮记忆入口**常驻且恒可点**——原先「首颗胶囊入轨才
+  // 出现」让 AppBar 布局跳变；若改为常驻置灰则成了死控件（违反 SSOT §1「禁止
+  // 静默禁用」），故无记忆时点开是同一个汇总列表的空态说明。
+  testWidgets('本轮记忆入口常驻可点：无记忆时点开空态说明（非死控件）',
+      (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(home: ChatPage(endpointStoreOverride: _FakeEpStore())),
+    );
+    await _settleAssembly(tester);
+
+    final btn = tester.widget<IconButton>(
+      find.widgetWithIcon(IconButton, Icons.bolt),
+    );
+    expect(btn.onPressed, isNotNull, reason: '无记忆时也不得置灰（静默禁用）');
+
+    await tester.tap(find.widgetWithIcon(IconButton, Icons.bolt));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.textContaining('模型从对话里认出稳定事实'), findsOneWidget,
+        reason: '空态必须回答「什么时候这里会有东西」');
+  });
+
   testWidgets('未配置时发送：留在聊天页、输入保留、引导卡不重复', (tester) async {
     await tester.pumpWidget(
       MaterialApp(home: ChatPage(endpointStoreOverride: _FakeEpStore())),

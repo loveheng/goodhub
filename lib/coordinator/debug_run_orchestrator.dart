@@ -388,6 +388,10 @@ class DebugRunOrchestrator {
         tools: [...schemas, skills.activationToolSchema()],
       )) {
         switch (e) {
+          case LoopThinkingDelta():
+            // M1：调试页不呈现思考流（展示 only 落点 = chat_page 思考轨）；
+            // 禁混入 DebugRunDelta——那是正文遥测流，会污染 delta 语义。
+            break;
           case LoopTextDelta(:final text):
             yield DebugRunDelta(text);
           case LoopToolCallStarted(:final call):

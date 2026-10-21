@@ -12,6 +12,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/ui/components/chat_composer.dart';
 import 'package:goodhub/ui/components/status_capsule.dart';
+import 'package:goodhub/ui/components/status_strip.dart';
 import 'package:goodhub/ui/tokens/console_tokens.dart';
 
 void main() {
@@ -26,6 +27,8 @@ void main() {
     required VoidCallback onSend,
     required VoidCallback onAbort,
     bool running = false,
+    bool hasContext = false,
+    bool hasEndpoints = false,
   }) {
     return MaterialApp(
       home: Theme(
@@ -34,10 +37,10 @@ void main() {
           body: ChatComposer(
             inputCtrl: TextEditingController(),
             running: running,
-            hasContext: false,
+            hasContext: hasContext,
             contextId: null,
             endpointName: (_) => '',
-            hasEndpoints: false,
+            hasEndpoints: hasEndpoints,
             localPluginCount: 0,
             pillTone: CapsuleTone.idle,
             pillLabel: 'idle',
@@ -154,6 +157,35 @@ void main() {
     await tester.pump();
     expect(aborts, 1);
     expect(sends, 1); // 运行态不再触发发送
+  });
+
+  // P0-2（2026-10-22）：状态带不再因「配置过端点」而常驻——原条件下绝大多数用户
+  // 永远挂着一行零信息量的「空闲 · 公共」，白占 30dp 且与 ui-design §3.1
+  // 「空闲态收 0」抵触。回归钉子：hasEndpoints=true 而 idle ⇒ 高度必须 0。
+  testWidgets('状态带展开条件：running/hasContext 才 30dp，有端点但空闲=0',
+      (tester) async {
+    // 直接量渲染后的实际占高——「不占面积」才是要钉的语义（读目标字段会漏掉
+    // 动画/裁决滞后导致的常驻）。每轮先 pump 满 180ms 过渡，避免量到中间帧。
+    Future<double> stripHeight() async {
+      await tester.pump(const Duration(milliseconds: 200));
+      return tester.getSize(find.byType(StatusStrip)).height;
+    }
+
+    await tester.pumpWidget(harness(onSend: () {}, onAbort: () {}));
+    expect(await stripHeight(), 0, reason: '纯空闲：状态带收 0');
+
+    await tester.pumpWidget(
+        harness(onSend: () {}, onAbort: () {}, hasEndpoints: true));
+    expect(await stripHeight(), 0,
+        reason: '配置过端点但未运行未绑定：不得常驻「空闲 · 公共」');
+
+    await tester
+        .pumpWidget(harness(onSend: () {}, onAbort: () {}, hasContext: true));
+    expect(await stripHeight(), 30, reason: '绑定私有域：状态带承载上下文胶囊');
+
+    await tester
+        .pumpWidget(harness(onSend: () {}, onAbort: () {}, running: true));
+    expect(await stripHeight(), 30, reason: '运行态：相位 + 已耗时');
   });
 
   testWidgets('C3：聚焦时药丸边框 hairline → l1Info，失焦即回', (tester) async {

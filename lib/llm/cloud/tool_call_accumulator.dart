@@ -29,6 +29,10 @@ class CloudStreamAccumulator {
 
   void add(CloudStreamEvent event) {
     switch (event) {
+      case CloudThinkingDelta():
+        // 展示 only 契约（CloudThinkingDelta 四不之①）：思考流绝不进
+        // accumulator——不入历史、不参与空产出判定（sawOutput 同口径排除）。
+        break;
       case CloudTextDelta(:final text):
         _text.write(text);
       case CloudToolCallDelta(

@@ -4,6 +4,7 @@ import 'package:goodhub/coordinator/permission_gateway.dart'
     show GateDecision;
 import 'package:goodhub/coordinator/tool_breaker.dart';
 import 'package:goodhub/ui/components/breaker_card.dart';
+import 'package:goodhub/ui/components/call_card.dart';
 import 'package:goodhub/ui/components/confirmation_card.dart';
 import 'package:goodhub/ui/components/fence_block_card.dart';
 import 'package:goodhub/ui/components/status_capsule.dart';
@@ -276,6 +277,55 @@ void main() {
         isFalse,
         reason: '非运行态不显示计时',
       );
+    });
+  });
+
+  group('CallCard 终态单行摘要（2026-10-18 压缩 + P0-4/P0-5 修正）', () {
+    testWidgets('折叠摘要剥服务端前缀：无描述时不直出 <serverId>__<tool>',
+        (tester) async {
+      await tester.pumpWidget(host(const CallCard(
+        tool: 'goodshare__list_items',
+        phase: CallCardPhase.success,
+      )));
+      expect(find.text('list_items'), findsOneWidget,
+          reason: '阅读轨不得出现路由遥测串（ui-design §2 双轨排印）');
+      expect(find.text('goodshare__list_items'), findsNothing,
+          reason: '折叠态不展示遥测轨原名（点开才见）');
+    });
+
+    testWidgets('有描述时摘要取人话首子句', (tester) async {
+      await tester.pumpWidget(host(const CallCard(
+        tool: 'goodshare__add_item',
+        phase: CallCardPhase.success,
+        description: '把一段文本或链接存入「拾贝」收集器（例如用户说"帮我存一下"时使用）。',
+      )));
+      expect(find.text('把一段文本或链接存入「拾贝」收集器'), findsOneWidget);
+    });
+
+    // P0-5：成功/失败/中止三态一度同为灰阶，扫读会把「失败」当「已完成」。
+    testWidgets('失败/中止摘要取相位色（成功仍灰阶）——§6 双通道', (tester) async {
+      final t = ConsoleTokens.fallback;
+      Color? summaryColor(String data) =>
+          tester.widget<Text>(find.text(data)).style?.color;
+
+      await tester.pumpWidget(host(const CallCard(
+        tool: 'delete_item',
+        phase: CallCardPhase.success,
+      )));
+      expect(summaryColor('delete_item'), t.terminalMuted,
+          reason: '成功=终态灰阶审计感（既定口径不变）');
+
+      await tester.pumpWidget(host(const CallCard(
+        tool: 'delete_item',
+        phase: CallCardPhase.failed,
+      )));
+      expect(summaryColor('delete_item'), t.danger, reason: '失败= Rose 语义色');
+
+      await tester.pumpWidget(host(const CallCard(
+        tool: 'delete_item',
+        phase: CallCardPhase.cancelled,
+      )));
+      expect(summaryColor('delete_item'), t.danger, reason: '中止= Rose（≠ Failed 语义仍靠符号 ✕/⊘ 区分）');
     });
   });
 

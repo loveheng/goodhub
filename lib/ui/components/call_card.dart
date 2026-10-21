@@ -91,15 +91,24 @@ class _CallCardState extends State<CallCard> {
             (widget.preview.isEmpty ? '(无文本返回)' : widget.preview),
       _ => widget.preview.isEmpty ? '(无文本返回)' : widget.preview,
     };
-    // 终态单行人话摘要：描述首子句优先，无描述回退裸工具名。
+    // 终态单行人话摘要：描述首子句优先，无描述回退裸工具名（**剥 `<serverId>__`
+    // 前缀**——P0-4，2026-10-22：直接吃 `widget.tool` 会把路由遥测串直出阅读轨，
+    // 与 StatusStrip 的状态带口径不一致）。
     final description = widget.description?.trim() ?? '';
-    final summary = StatusStrip.shortClause(
-      description.isNotEmpty ? description : widget.tool,
-    );
+    final summary = description.isNotEmpty
+        ? StatusStrip.shortClause(description)
+        : StatusStrip.plainToolName(widget.tool);
     final symbol = switch (widget.phase) {
       CallCardPhase.success => '✓',
       CallCardPhase.failed => '✕',
       _ => '⊘',
+    };
+    // P0-5 第二通道（ui-design §6）：终态三态一度全灰，只有 3dp 竖条与单个
+    // ✓/✕/⊘ 可辨——失败/中止被扫读当「已完成」。非成功终态的摘要取出itting
+    // 灰阶改取相位语义色（符号仍为字形通道：色弱/强光下两条都可读）。
+    final summaryColor = switch (widget.phase) {
+      CallCardPhase.failed || CallCardPhase.cancelled => stripe,
+      _ => t.terminalMuted,
     };
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 4),
@@ -132,7 +141,7 @@ class _CallCardState extends State<CallCard> {
                               symbol,
                               style: TextStyle(
                                 fontSize: Fsz.telemetry,
-                                color: t.terminalMuted,
+                                color: summaryColor, // 与摘要同相位色（§6 双通道）
                               ),
                             ),
                             const SizedBox(width: 6),
@@ -143,7 +152,8 @@ class _CallCardState extends State<CallCard> {
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
                                   fontSize: Fsz.telemetry,
-                                  color: t.terminalMuted, // 终态灰阶审计感
+                                  // 成功=终态灰阶审计感；失败/中止=相位色（§6 双通道）
+                                  color: summaryColor,
                                 ),
                               ),
                             ),

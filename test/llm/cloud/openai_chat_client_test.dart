@@ -128,6 +128,31 @@ void main() {
         throwsA(isA<CloudProtocolException>()),
       );
     });
+
+    test('reasoning_content → CloudThinkingDelta（与正文分离保序，2026-10-21 M1）', () async {
+      final events = await map(
+        'data: {"choices":[{"delta":{"reasoning_content":"让"}}]}\n\n'
+        'data: {"choices":[{"delta":{"reasoning_content":"我想想"}}]}\n\n'
+        'data: {"choices":[{"delta":{"content":"答"}}]}\n\n'
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+        'data: [DONE]\n\n',
+      ).toList();
+      expect(
+        events.whereType<CloudThinkingDelta>().map((e) => e.text).join(),
+        '让我想想',
+      );
+      expect(events.whereType<CloudTextDelta>().single.text, '答',
+          reason: '思考与正文分离——不进正文流');
+    });
+
+    test('无 reasoning_content 的普通流零思考事件（非推理模型零副作用）', () async {
+      final events = await map(
+        'data: {"choices":[{"delta":{"content":"x"}}]}\n\n'
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+        'data: [DONE]\n\n',
+      ).toList();
+      expect(events.whereType<CloudThinkingDelta>(), isEmpty);
+    });
   });
 
   group('OpenAiChatClient.send', () {

@@ -68,6 +68,12 @@ format: v1
 - [x] [2026-10-18] **RC5 存储配额**：a) 管理页仅展示已占用空间，不设上限（agent 默认）b) 展示 + 200MB 软上限 c) 暂不处理 → **已确认 a（2026-10-18 用户勾选）**
 - [x] [2026-10-18] **RC6 内容查看定位（外评审四轮提出；注意：评审称「前序已拍板永久不做内建查看」失实——本项系新拍板非补登）**：a) 纯外部唤起——不做内建预览器，管理页「打开」一律复制 `cacheDir/external` 唤起系统默认应用（agent 默认，纯客户端定位最薄）b) 内建轻量预览（前几 KB 只读）c) 一期不做任何查看入口 → **已确认 a（2026-10-18 用户勾选）**
 
+## thinking-display（思考过程显示 · 2026-10-21 新增，M1 已落地）
+
+> M1 已落地（用户拍板：默认收起、本期就做）：OpenAI 兼容侧 `reasoning_content` 解析 + `CloudThinkingDelta`/`LoopThinkingDelta` 展示 only 事件链 + `TrackThinking` 思考轨（默认收起）。以下为 M2 候选。
+
+- [ ] [2026-10-21] **TH1 Anthropic thinking 侧是否同轮做**：a) 做——`mapAnthropicSse` 解析 `thinking_delta`（`content_block_delta` 的扩展类型，当前显式丢弃）；注意 signature 字段不回传（展示 only 路线天然不回传 thinking 块，无契约风险）b) 缓做——现网 BYOK 以 OpenAI 兼容侧为主（SiliconFlow 实证），Anthropic 思考非默认开启，按需再排（agent 默认）c) 不做
+
 ## mcp-tools-catalog（资源中心 Tab · 服务工具目录，2026-10-21 新增）
 
 > 需求：资源中心新增 Tab，按服务分组展示已连接 MCP 服务的工具（含 shared/private 可见性，公共在前、私有在后）。

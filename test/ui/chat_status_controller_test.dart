@@ -97,6 +97,59 @@ void main() {
     });
   });
 
+  group('ChatStatusController · 会话级通告去重（P0-3 降噪，2026-10-22）', () {
+    test('claimSessionNotice：同一键只放行一次，不同键各自独立', () {
+      final c = ChatStatusController();
+      expect(c.claimSessionNotice('unmounted-services:2'), isTrue,
+          reason: '首次申领=可通告');
+      expect(c.claimSessionNotice('unmounted-services:2'), isFalse,
+          reason: '重复申领=本会话已说过，调用方应跳过');
+      // 键随内容变（卸载数变化 = 配置真的变了）→ 仍会再告一次。
+      expect(c.claimSessionNotice('unmounted-services:3'), isTrue);
+      expect(c.claimSessionNotice('skill-skip:bad.yml'), isTrue);
+    });
+
+    test('resetForSession 清空通告记账（新会话重告，回历史亦不串账）', () {
+      final c = ChatStatusController();
+      c.claimSessionNotice('unmounted-services:2');
+      expect(c.claimSessionNotice('unmounted-services:2'), isFalse);
+      c.resetForSession();
+      expect(c.claimSessionNotice('unmounted-services:2'), isTrue,
+          reason: '切会话即焚：新会话首轮需要重新告知配置态');
+    });
+  });
+
+  group('ChatStatusController · 离底未读计数（P1-10，2026-10-22）', () {
+    test('脱离跟随期间入轨累加；回到跟随清零（浮钮据此判断「有没有新内容」）',
+        () {
+      final c = ChatStatusController();
+      expect(c.missedSinceDetach, 0);
+      // 跟随态入轨不计（用户正看着最新处）。
+      c.addEntry(const TrackNote('跟随中到达', danger: false));
+      expect(c.missedSinceDetach, 0);
+
+      c.setAutoFollow(false); // 用户上翻看历史
+      c.addEntry(const TrackNote('新内容 1', danger: false));
+      c.addEntry(const TrackNote('新内容 2', danger: false));
+      expect(c.missedSinceDetach, 2);
+
+      // 点「回到最新」/ 滚回底部：恢复跟随即清零（语义站位同一件事）。
+      c.setAutoFollow(true);
+      expect(c.missedSinceDetach, 0);
+      c.addEntry(const TrackNote('跟随中又到', danger: false));
+      expect(c.missedSinceDetach, 0);
+    });
+
+    test('会话重置清零未读计数（新会话不继承旧会话的未读）', () {
+      final c = ChatStatusController();
+      c.setAutoFollow(false);
+      c.addEntry(const TrackNote('x', danger: false));
+      expect(c.missedSinceDetach, 1);
+      c.resetForSession();
+      expect(c.missedSinceDetach, 0);
+    });
+  });
+
   group('ChatStatusController · 滚动/键盘（D）', () {
     test('attachScroll + pinToBottom 无客户端时不抛（逻辑收口端口）', () {
       final c = ChatStatusController();

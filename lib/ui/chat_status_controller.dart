@@ -72,8 +72,19 @@ class ChatStatusController extends ChangeNotifier {
   void setAutoFollow(bool v) {
     if (_autoFollow == v) return;
     _autoFollow = v;
+    // 回到自动跟随（用户滚回底部 / 点「回到最新」）即清零未读计数——两件事
+    // 同一个语义站位（见 missedSinceDetach）。
+    if (_autoFollow) _missedSinceDetach = 0;
     _statusNc.notifyListeners();
   }
+
+  /// 离底期间新增的条目数（P1-10：浮钮计数判别是否有新内容）。
+  ///
+  /// 语义：用户上翻看历史 = 主动脱离跟随；此后每条入轨的新内容计数 +1，回到
+  /// 底部清零。浮钮据此区分「只是翻上去了」与「下面有 N 条没看」——此前同一
+  /// 个箭头表达两种含义，用户无法判断是否该点。纯视图态，随会话重置清零。
+  int get missedSinceDetach => _missedSinceDetach;
+  int _missedSinceDetach = 0;
 
   /// Run 起步一次性收口：运行态 + connecting 相位 + 已耗时起点 + 恢复自动跟随。
   /// 替代原 `_send` 内 4 行 `setState`，合并为单次通知。
@@ -103,6 +114,8 @@ class ChatStatusController extends ChangeNotifier {
     // 条目之后（真机实证：「✓ 任务完成」插到回复正文中间）。
     _streamBuf.flush();
     tracks.add(entry);
+    // P1-10：脱离跟随期间入轨 = 用户还没看到的条目（浮钮据此显示未读计数）。
+    if (!_autoFollow) _missedSinceDetach++;
     _tracksNc.notifyListeners();
   }
 
@@ -132,6 +145,8 @@ class ChatStatusController extends ChangeNotifier {
     _streamBuf.flush();
     _activeTextEntry = null;
     tracks.clear();
+    _claimedNotices.clear(); // 会话级通告记账随会话焚（新会话可重告）
+    _missedSinceDetach = 0; // 未读计数随会话焚
     _pillLabel = 'idle';
     _pillTone = CapsuleTone.idle;
     _running = false;
@@ -140,6 +155,18 @@ class ChatStatusController extends ChangeNotifier {
     _statusNc.notifyListeners();
     _tracksNc.notifyListeners();
   }
+
+  // —— 会话级通告去重（P0-3 降噪，2026-10-22）——————————————————————
+  /// 已通告过的主题键集合（同会话内同一语义只通告一次）。
+  ///
+  /// 动机：每轮必出的重复通告（如「有 N 个服务已卸载」）在多轮会话里逐行堆积，
+  /// 吃掉阅读面积。记账属**视图态**（「本会话轨道里是否已说过」），随
+  /// [resetForSession] 清账——会话切换/历史恢复即自然重告，零领域态泄漏。
+  final Set<String> _claimedNotices = <String>{};
+
+  /// 申领一次通告额度：返回 true = 本会话尚未说过（可入轨）；false = 已说过
+  /// （调用方应跳过）。**键须随内容变**（如计数变化）——配置真的变了仍会再告。
+  bool claimSessionNotice(String key) => _claimedNotices.add(key);
 
   // —— 流式文本（stream-perf §3）———————————————————————————
   final _streamBuf = StreamTextBuffer();

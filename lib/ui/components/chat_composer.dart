@@ -158,16 +158,21 @@ class _ChatComposerState extends State<ChatComposer> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         // §3.1 状态做在输入框本身上沿（框内顶部状态带），idle
-                        // 高度收 0，运行态平滑展开；文本输入区始终全宽（D+B 改造）。
+                        // 高度收 0，运行/绑定态平滑展开；文本输入区始终全宽（D+B 改造）。
                         // [SSOT 修正] 回退 B6（2026-10-17 用户拍板）：上下文
                         // 胶囊不融入输入行——输入行只保留「+ + 文本 + 发送」
                         // 三件式；选中/本地工具信息回到上方状态带显示
-                        // （running || hasContext || hasEndpoints 时展开）。
+                        // （running || hasContext 时展开）。
+                        // P0-2（2026-10-22）：展开条件**去掉 hasEndpoints**——
+                        // 该值是「配置过端点」而非「有启用端点」，导致绝大多数用户
+                        // （配过服务即 true）永远挂着一条零信息量的「空闲 · 公共」
+                        // 常驻行，白占 30dp 阅读面积，且与 ui-design §3.1
+                        // 「空闲态收 0」抵触。有可言说的状态（运行中 / 绑定了私有
+                        // 域）才展开，纯空闲就彻底收起（高度 0）。
                         AnimatedContainer(
                           duration: t.fastDuration,
                           curve: Curves.easeOut,
-                          height:
-                              (running || hasContext || hasEndpoints) ? 30 : 0,
+                          height: (running || hasContext) ? 30 : 0,
                           clipBehavior: Clip.antiAlias,
                           decoration: const BoxDecoration(
                             borderRadius: BorderRadius.vertical(

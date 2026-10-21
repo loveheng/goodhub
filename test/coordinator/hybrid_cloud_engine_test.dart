@@ -7,6 +7,7 @@ import 'package:goodhub/core/errors/cloud_llm_error.dart';
 import 'package:goodhub/core/errors/inference_error.dart';
 import 'package:goodhub/llm/cloud/cloud_llm.dart';
 import 'package:goodhub/llm/llm.dart';
+import 'package:http/http.dart' as http;
 
 /// 可编程云端 fake：按脚本逐次返回流。
 class FakeCloudEngine implements CloudLlmEngine {
@@ -446,6 +447,105 @@ void main() {
       final events = await engine.send(noTools).toList();
       expect(device.prompts, isEmpty);
       expect(events.whereType<CloudTextDelta>().single.text, '云端正文');
+    });
+  });
+
+  group('流内裸异常兜底（2026-10-21 真机实测：SiliconFlow 中途关连接）', () {
+    // 首 delta 后抛裸 ClientException——package:http 对「响应体读到一半被
+    // 对端关闭」的呈现路径（io_client.dart stream onError：HttpException →
+    // ClientException 塞进流），不经 send 时 try；旧行为穿透到 UI 错误卡
+    // 炸整轮会话（Binder 会话里云端 SSE 是唯一 HTTP 面的实证场景）。
+    Stream<CloudStreamEvent> midStreamClientError() async* {
+      yield const CloudTextDelta('半句');
+      throw http.ClientException(
+        'Connection closed while receiving data, '
+        'uri=https://api.siliconflow.cn/v1/chat/completions',
+      );
+    }
+
+    test('带工具请求（无兜底位）→ CloudNetworkException 包装上抛 + 计入降级', () async {
+      cloud.script.add(midStreamClientError);
+      await expectLater(
+        engine.send(withTools).toList(),
+        throwsA(isA<CloudNetworkException>().having(
+          (e) => e.message,
+          'message',
+          contains('Connection closed'),
+        )),
+      );
+      expect(controller.health, CloudHealth.degraded);
+      expect(device.prompts, isEmpty);
+    });
+
+    test('无工具请求（有兜底位）→ 已达 delta 透传 + 端侧兜底产出', () async {
+      cloud.script.add(midStreamClientError);
+      device.next = '断流兜底';
+      final events = await engine.send(noTools).toList();
+      // 引擎语义「产出优先」：断流前已达的 '半句' 照常透传，端侧兜底追加在后。
+      expect(
+        events.whereType<CloudTextDelta>().map((d) => d.text).toList(),
+        ['半句', '断流兜底'],
+      );
+      expect(controller.health, CloudHealth.degraded);
+    });
+
+    test('语义排除：InferenceException 直露不进兜底（空产出口径不劣化）', () async {
+      cloud.script.add(
+        () => Stream<CloudStreamEvent>.error(
+          const InferenceException('云端空产出（流完成但零可见内容/工具调用）'),
+        ),
+      );
+      await expectLater(
+        engine.send(withTools).toList(),
+        throwsA(isA<InferenceException>()),
+      );
+      expect(controller.health, CloudHealth.healthy);
+    });
+
+    test('语义排除：CloudProtocolException 直露（协议违规各有白话文案）', () async {
+      cloud.script.add(
+        () => errorStream(const CloudProtocolException('流终止未交付 stop_reason')),
+      );
+      await expectLater(
+        engine.send(withTools).toList(),
+        throwsA(isA<CloudProtocolException>()),
+      );
+      expect(controller.health, CloudHealth.healthy);
+    });
+  });
+
+  group('思考流（2026-10-21 M1，展示 only）', () {
+    Stream<CloudStreamEvent> thinkingOnly() async* {
+      yield const CloudThinkingDelta('思维链烧光预算');
+      yield const CloudDone(finishReason: CloudFinishReason.stop);
+    }
+
+    test('思考事件透传（与正文事件保序）', () async {
+      cloud.script.add(() async* {
+        yield const CloudThinkingDelta('想');
+        yield const CloudTextDelta('答');
+        yield const CloudDone(finishReason: CloudFinishReason.stop);
+      });
+      final events = await engine.send(noTools).toList();
+      expect(events.whereType<CloudThinkingDelta>().single.text, '想');
+      expect(events.whereType<CloudTextDelta>().single.text, '答');
+    });
+
+    test('仅思考无正文 → 仍判空产出（sawOutput 排除思考，兜底不被打穿）', () async {
+      cloud.script.add(thinkingOnly);
+      device.next = '端侧兜底';
+      final events = await engine.send(noTools).toList();
+      expect(events.whereType<CloudTextDelta>().single.text, '端侧兜底',
+          reason: '思考不计入可见产出——T7 空产出口径照常触发');
+    });
+
+    test('仅思考无正文 + 带工具（无兜底位）→ 显式 InferenceException', () async {
+      cloud.script.add(thinkingOnly);
+      await expectLater(
+        engine.send(withTools).toList(),
+        throwsA(isA<InferenceException>()),
+      );
+      expect(device.prompts, isEmpty);
     });
   });
 }

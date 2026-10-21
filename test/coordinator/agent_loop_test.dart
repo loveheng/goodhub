@@ -929,4 +929,66 @@ void main() {
       expect(events.whereType<LoopFinished>().single.text, 'ok');
     });
   });
+
+  group('思考流透传（2026-10-21 M1，展示 only 契约）', () {
+    Stream<CloudStreamEvent> thinkingThenText() async* {
+      yield const CloudThinkingDelta('先想一下');
+      yield const CloudThinkingDelta('，再想');
+      yield const CloudTextDelta('正文');
+      yield const CloudDone(finishReason: CloudFinishReason.stop);
+    }
+
+    test('LoopThinkingDelta 透传，思考段整体先于正文段', () async {
+      engine.script.add(thinkingThenText);
+      final events = await loop.run(systemPrompt: 's', userPrompt: 'u').toList();
+      expect(
+        events.whereType<LoopThinkingDelta>().map((e) => e.text).join(),
+        '先想一下，再想',
+      );
+      expect(events.whereType<LoopTextDelta>().single.text, '正文');
+      expect(
+        events.indexWhere((e) => e is LoopThinkingDelta),
+        lessThan(events.indexWhere((e) => e is LoopTextDelta)),
+        reason: '思考段先于正文段（保序透传）',
+      );
+    });
+
+    test('思考不入 transcript（下轮发送不回放——回放禁区）', () async {
+      engine.script.add(thinkingThenText);
+      final events = await loop.run(systemPrompt: 's', userPrompt: 'u').toList();
+      final done = events.whereType<LoopFinished>().single;
+      expect(done.text, '正文');
+      for (final m in done.transcript) {
+        final text = switch (m) {
+          UserMessage(:final content) => content,
+          AssistantMessage(:final content) => content ?? '',
+          ToolResultMessage(:final content) => content,
+          SystemMessage(:final content) => content,
+        };
+        expect(text.contains('先想'), isFalse,
+            reason: 'transcript 任何位置不得出现思考文本');
+      }
+    });
+
+    test('思考不过 workspace_filter：思维里的提取标签不触发提交', () async {
+      final extracted = <List<WorkspaceFactUpdate>>[];
+      final filter = WorkspaceStreamFilter(onExtracted: extracted.add);
+      Stream<CloudStreamEvent> thinkingWithTag() async* {
+        yield CloudThinkingDelta(
+            '心里盘算 ${WorkspaceStreamFilter.startTag}'
+            '{"facts":[{"key":"k","value":"v","scope":"user","action":"upsert"}]}'
+            '${WorkspaceStreamFilter.endTag}');
+        yield const CloudTextDelta('答');
+        yield const CloudDone(finishReason: CloudFinishReason.stop);
+      }
+
+      engine.script.add(thinkingWithTag);
+      final events = await loop
+          .run(systemPrompt: 's', userPrompt: 'u', workspaceFilter: filter)
+          .toList();
+      expect(extracted, isEmpty,
+          reason: 'In-band 提取 FSM 只解析正文流——思考标签不得触发提取');
+      expect(events.whereType<LoopTextDelta>().single.text, '答');
+    });
+  });
 }

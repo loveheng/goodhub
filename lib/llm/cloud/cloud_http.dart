@@ -5,6 +5,7 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show SocketException;
 
 import 'package:http/http.dart' as http;
 
@@ -48,7 +49,28 @@ Stream<SseEvent> sendSseRequest({
       statusCode: resp.statusCode,
     );
   }
-  yield* parseSse(resp.stream.transform(utf8.decoder), onActivity: onActivity);
+  // 流式消费段包错（2026-10-21 真机实测教训）：对端在**响应体读到一半**时
+  // 关闭连接（SiliconFlow 实证 `Connection closed while receiving data`）——
+  // dart:io 的 HttpException 经 package:http 包装成 ClientException 从
+  // **响应流**抛出（io_client.dart stream onError 分支，非 send 时抛出，
+  // 故发送处的 try 捕不到）；utf8 解码遇截断多字节序列另抛 FormatException。
+  // 三类统一收口为 CloudNetworkException，让上层既有分支接管（降级判据 /
+  // 端侧兜底 / 白话错误卡「连不上推理服务」）——严禁裸异常穿透炸整轮会话。
+  // 注：必须显式 `await for` 而非 `yield*`——后者把内层流的错误事件直接
+  // 转发给消费者，不在生成器体内抛出，外围 try 捕不到（实测证实）。
+  try {
+    await for (final e
+        in parseSse(resp.stream.transform(utf8.decoder), onActivity: onActivity)) {
+      yield e;
+    }
+  } on http.ClientException catch (e) {
+    throw CloudNetworkException(
+        '云端流连接中断（响应接收中被对端关闭）: ${e.message}');
+  } on SocketException catch (e) {
+    throw CloudNetworkException('云端流连接中断: $e');
+  } on FormatException catch (e) {
+    throw CloudNetworkException('云端流数据不完整（连接在响应中途关闭）: ${e.message}');
+  }
 }
 
 /// SSE data / 工具入参等 JSON 文本 → object；形状违规抛

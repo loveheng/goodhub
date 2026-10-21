@@ -153,6 +153,11 @@ class _ChatPageState extends State<ChatPage>
 
   McpAssembly? _activeAssembly; // Run 期句柄（Abort/finally 释放；步 1 内核化后窗口只持句柄）
   TrackCall? _activeCallEntry;
+
+  /// 活动思考轨条目（2026-10-21 M1）：本轮当前思维流段——首 delta 建条目
+  /// （默认收起），后续 delta 追加；工具卡/收尾断开（下一轮思维另起条目，
+  /// 保多轮轨迹顺序）。展示 only，不参与持久化外的任何语义。
+  TrackThinking? _activeThinkingEntry;
   StuckWatcher? _watcher;
 
   @override
@@ -241,6 +246,7 @@ class _ChatPageState extends State<ChatPage>
   /// **切会话即重置配额** = 行为变更①，原为页面级「重启清零」）。
   void _resetSessionState() {
     _activeCallEntry = null;
+    _activeThinkingEntry = null; // 思考轨句柄随会话切换断开
     // 记忆治理器随会话生灭（§6.2：传输态切会话即弃，重置周期锚点）——
     // governor 随编排件（window-slim P1-A），本页只触发重置。
     _runOrchestrator.memGovernor.reset();
@@ -364,7 +370,10 @@ class _ChatPageState extends State<ChatPage>
                 const Divider(height: 16),
                 if (capsules.isEmpty)
                   Text(
-                    '本会话暂无提取的记忆',
+                    // P2-11：常驻入口必须有「为什么这里是空的」的答案——否则点开
+                    // 一个空面板等于把用户丢在真空里（禁静默禁用同源口径）。
+                    '本会话暂无提取的记忆。模型从对话里认出稳定事实时会写入这里，'
+                    '入轨的每条都可在流内逐条撤销。',
                     style: TextStyle(
                       fontSize: Fsz.note,
                       color: t.terminalMuted,
@@ -626,7 +635,6 @@ class _ChatPageState extends State<ChatPage>
               _bindSessionServer('');
               setSheet(() {});
             },
-            onDone: () => Navigator.pop(ctx),
             // 资源挂载 = 本次会话挂载物的一类，与「服务绑定」同挂「+」下：
             // 空态无独立附件行，靠本菜单发现（消「功能堆砌」的物理痕迹）。
             onPickResource: _pickResource,
@@ -641,9 +649,10 @@ class _ChatPageState extends State<ChatPage>
   /// resource_center_section（ui→resources 白名单内文件），本页零 resources 域
   /// import——只持 record 数据。
   Future<void> _pickResource() async {
-    // 运行守卫走 _guardRunning（非静默 return）：否则入口常驻却点了没反应
-    // = 死控件，违反交互 SSOT §1「禁止静默禁用」。
-    if (!_guardRunning('附加资源')) return;
+    // P1-8（2026-10-22）：取消此处的运行守卫——挂载资源是「预备下一次发送」的
+    // 视图态动作（`_pendingResources` 只影响下一次 _send，本次 Run 早已在装配
+    // 期取过快照），不扰动在途 Run 的领域态；且菜单里「附加资源」已不再随绑定一起
+    // 置灰，两者口径必须一致（此前菜单可点却被守卫拦，等于说谎）。
     final picked = await showResourcePickerSheet(context);
     if (picked == null || !mounted) return;
     if (_pendingResources.any((r) => r.id == picked.id)) return; // 幂等。
@@ -703,7 +712,11 @@ class _ChatPageState extends State<ChatPage>
     final endpoints = allEndpoints.where((e) => e.enabled).toList();
     _endpoints = allEndpoints;
     final unmounted = allEndpoints.length - endpoints.length;
-    if (unmounted > 0) {
+    // P0-3 降噪（2026-10-22）：卸载提示属**配置态通告**——每轮重插会在多轮会话里
+    // 逐行堆积。同一会话同一计数只告一次；用户回设置页改动导致计数变化则再告
+    // （键随计数变，见 ChatStatusController.claimSessionNotice）。
+    if (unmounted > 0 &&
+        _status.claimSessionNotice('unmounted-services:$unmounted')) {
       _add(TrackNote('⊘ 有 $unmounted 个服务已卸载，未参与本次任务（设置页可重新挂载）', danger: false));
     }
     // T-trans-4：本地插件零配置发现（系统托管，不进手填配置）；与 HTTP 端点合并判定。
@@ -728,6 +741,7 @@ class _ChatPageState extends State<ChatPage>
     // 切片 B：运行态收口到 controller——beginRun 一次性落 running/connecting/
     // 自动跟随/已耗时起点，合并为单次状态通知（替代原 4 行整页 setState）。
     _status.beginRun(startedAt: DateTime.now());
+    _activeThinkingEntry = null; // 思考轨按 Run 生灭（多轮内按工具卡分段）
     if (!isRetry) _add(TrackUser(prompt));
     // T3b：会话懒建（首个任务起落盘；标题截取策略在 Archive 内核）。
     await _archive!.ensureCurrent(prompt: prompt);
@@ -808,7 +822,11 @@ class _ChatPageState extends State<ChatPage>
               dirResolver: () async => await getApplicationDocumentsDirectory(),
             );
       for (final skip in baseSkills.skipped) {
-        _add(TrackNote('⚠ 全局 Prompt 注册跳过: $skip', danger: true));
+        // P0-3 降噪（同上）：注册跳过项迟早仍在（文件没修就在），每轮重插 = 每行
+        // 必出的重复危险通告，反而稀释真正的错误。同会话同条目只告一次。
+        if (_status.claimSessionNotice('skill-skip:$skip')) {
+          _add(TrackNote('⚠ 全局 Prompt 注册跳过: $skip', danger: true));
+        }
       }
       _session.bindSkills(baseSkills.registry);
       _session.bindDegradation(_session.degradation ?? DegradationController());
@@ -967,6 +985,9 @@ class _ChatPageState extends State<ChatPage>
               ),
           ],
           droppedCount: plan.droppedCount,
+          // P1-7：记忆不再在此重列——给直达 AppBar「本轮记忆」的入口
+          // （同一份内容只留一处可管理位）。
+          onViewMemories: _showMemoryListSheet,
         ),
       );
       _setPill('thinking', CapsuleTone.l1);
@@ -988,6 +1009,19 @@ class _ChatPageState extends State<ChatPage>
         tools: const [],
       )) {
         switch (e) {
+          case LoopThinkingDelta(:final text):
+            // 思考轨（2026-10-21 M1，默认收起）：首 delta 经 _add 建条目
+            // （保序铁律：先刷文本缓冲），后续追加。PII 边界：思考流与正文
+            // 同域（宿主本机视图——不进 transcript/工具结果，无跨端暴露面），
+            // 出站遮蔽与占位符还原由 FencedCloudEngine 统一覆盖，本层不重复遮。
+            final activeThinking = _activeThinkingEntry;
+            if (activeThinking != null) {
+              activeThinking.append(text);
+            } else {
+              final entry = TrackThinking(text);
+              _activeThinkingEntry = entry;
+              _add(entry);
+            }
           case LoopTextDelta(:final text):
             _appendText(text);
           case LoopToolCallStarted(:final call):
@@ -998,8 +1032,11 @@ class _ChatPageState extends State<ChatPage>
               CapsuleTone.l1,
             );
             final entry = TrackCall(tool: call.name)
-              ..description = toolDescriptions[call.name];
+            ..description = toolDescriptions[call.name];
             _activeCallEntry = entry;
+            // 思考轨分段断开：工具卡之后的下一轮思维另起条目（保轨迹顺序，
+            // 不把新思维追加到工具卡之前的旧条目里）。
+            _activeThinkingEntry = null;
             // 工具卡插入打断文本流：先刷盘残余保序（尾帧不被卡甩后），后续
             // 文本另起条目。
             _status.breakTextStream();
@@ -1057,7 +1094,13 @@ class _ChatPageState extends State<ChatPage>
             _appendText(text.isEmpty ? '' : '\n');
             // C6：完成通告走常量（dual_track_stream 据此把它从 Run 概要
             // 折叠中摘出、单独 Emerald 成行——重要反馈不被遥测通告稀释）。
-            _add(const TrackNote(kTaskDoneNote, danger: false));
+            // P0-3 降噪（2026-10-22）：本轮已产出可见正文时，**答案本身即完成
+            // 信号**（流式停止 + pill 转「已完成」），不再另起一行「✓ 任务完成」
+            // ——多轮会话里每轮必出即为纯占位。仅当本轮**零正文**（纯工具调用/
+            // 纯思考）才补这一行，避免「任务结束了吗」的悬空感。
+            if (text.trim().isEmpty) {
+              _add(const TrackNote(kTaskDoneNote, danger: false));
+            }
             _setPill('done', CapsuleTone.idle);
             // §4.1：L1 药丸完成 → 极轻微 tick
             unawaited(HapticFeedback.selectionClick());
@@ -1075,6 +1118,7 @@ class _ChatPageState extends State<ChatPage>
       _watcher?.stop();
       _watcher = null;
       _activeCallEntry = null;
+      _activeThinkingEntry = null; // Run 收尾：思考轨句柄断开（条目已入轨）
       // §6.4 TTL 机会主义压实的判定起点：本 Run 结束时刻（governor 持有，
       // 随编排件——window-slim P1-A）。
       _runOrchestrator.markRunEnded();
@@ -1228,19 +1272,17 @@ class _ChatPageState extends State<ChatPage>
           // B2（page-beautify）：会话记忆入口上收 AppBar——原右下悬浮 ≡ FAB
           // 与「回到最新」同尺寸垂直堆叠、主次不分，且 reorder 图标表意弱
           // （排序/菜单心智，且与归因条「≡」前缀撞车，A3 同源半题）。改 Bolt
-          // 图标（与流内「⚡ 已记录」胶囊同符号），仅本会话存在记忆胶囊时
-          // 出现（首颗入轨即亮、因果可见）；点击仍弹 BottomSheet 汇总列表
+          // 图标（与流内「⚡ 已记录」胶囊同符号）；点击弹 BottomSheet 汇总列表
           // （_showMemoryListSheet，纯展示不变）。
           actions: [
-            // B2：本轮记忆入口（仅存在胶囊时出现，首颗入轨即亮、因果可见）。
             // A7（page-beautify P3）：命名与抽屉「记忆库」（全局）区分——
             // 原「会话记忆」vs「记忆看板」两套「记忆」用户必混。
-            if (_status.hasMemoryCapsules)
-              IconButton(
-                tooltip: '本轮记忆',
-                onPressed: _showMemoryListSheet,
-                icon: const Icon(Icons.bolt),
-              ),
+            // P2-11（2026-10-22）：由「有胶囊才出现」改**常驻且恒可点**——
+            // ① 消灭首颗胶囊入轨时 AppBar 的布局跳变；② 常驻但不给动作 = 死
+            // 控件（违反 SSOT §1「禁止静默禁用」），故无记忆时点开仍是同一个
+            // 汇总列表的空态说明，而不是置灰。有/无记忆以图标色分档（§6 双
+            // 通道：颜色 + tooltip 文本）。
+            _MemoryEntryButton(hasMemory: _status.hasMemoryCapsules, onPressed: _showMemoryListSheet),
             // A6（page-beautify P3）已撤销（2026-10-17 用户拍板）：⚙ 设置直达
             // 从对话页 AppBar 摘除，设置入口回归抽屉底部。
           ],
@@ -1282,10 +1324,12 @@ class _ChatPageState extends State<ChatPage>
                           duration: t.fastDuration,
                           transitionBuilder: (child, animation) =>
                               FadeTransition(opacity: animation, child: child),
-                          child: FloatingActionButton.small(
+                          // P1-10（2026-10-22）：离底期间下方新增内容带计数徽标
+                          // ——同一个箭头曾同时表达「只是翻上去了」和「下面有 N
+                          // 条没看」，用户无法判断该不该点。计数 > 0 才标强调色。
+                          child: _ScrollToBottomFab(
                             key: const ValueKey('chat-scroll-bottom'),
-                            heroTag: 'chat-scroll-bottom',
-                            tooltip: '回到最新',
+                            missed: _status.missedSinceDetach,
                             onPressed: () {
                               _scrollCtrl
                                   .animateTo(
@@ -1299,59 +1343,119 @@ class _ChatPageState extends State<ChatPage>
                                     }
                                   });
                             },
-                            child: const Icon(Icons.arrow_downward),
                           ),
                         ),
                       ),
                   ],
                 ),
               ),
-              SafeArea(
-                top: false,
-                child: Center(
-                  // 桌面宽屏下输入区居中限宽，避免全宽拉伸
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 720),
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
-                      // 底部控制集群已抽 lib/ui/components/chat_composer.dart
-                      // （断点③ step2：传数据 + 回调，零依赖本页私有态）。
-                      child: ChatComposer(
-                        inputCtrl: _inputCtrl,
-                        running: _status.running,
-                        hasContext: _hasContext,
-                        contextId: _session.activePrivateServerId,
-                        endpointName: _endpointName,
-                        hasEndpoints: _endpoints.isNotEmpty,
-                        localPluginCount: _localPlugins.length,
-                        pillTone: _status.pillTone,
-                        pillLabel: _status.pillLabel,
-                        runStartedAt: _status.runStartedAt,
-                        onOpenMenu: _openComposerMenu,
-                        // 资源附件（M1-T3）：药丸展示 + 选择/移除回调；数据
-                        // 流出，零依赖本页私有态（composer 头部口径）。
-                        pendingResources: List.unmodifiable(_pendingResources),
-                        onPickResource: _pickResource,
-                        onRemoveResource: (id) => setState(
-                          () =>
-                              _pendingResources.removeWhere((r) => r.id == id),
-                        ),
-                        // 回车与发送钮统一走 guard（非 running 时 guard 通过→等价原
-                        // 按钮直发；running 时按钮已变中止键，此处拦下并给 SnackBar）。
-                        onSend: () {
-                          if (!_guardRunning('发送')) return;
-                          _send();
-                        },
-                        onAbort: _abort,
-                      ),
-                    ),
-                  ),
+              // 底部控制集群：限宽/SafeArea/留白**一律由 ChatComposer 自持**
+              // （任何复用面都该拿到同一套布局）。页面侧只传数据与回调——曾在
+              // 此重复套一层 SafeArea+Center+ConstrainedBox+Padding，导致输入区
+              // 比 ui-design §5 窄 24dp、底部多垫 16dp（2026-10-22 P0-1：布局
+              // owner 单一化，删外层重复包装）。
+              ChatComposer(
+                inputCtrl: _inputCtrl,
+                running: _status.running,
+                hasContext: _hasContext,
+                contextId: _session.activePrivateServerId,
+                endpointName: _endpointName,
+                hasEndpoints: _endpoints.isNotEmpty,
+                localPluginCount: _localPlugins.length,
+                pillTone: _status.pillTone,
+                pillLabel: _status.pillLabel,
+                runStartedAt: _status.runStartedAt,
+                onOpenMenu: _openComposerMenu,
+                // 资源附件（M1-T3）：药丸展示 + 选择/移除回调；数据
+                // 流出，零依赖本页私有态（composer 头部口径）。
+                pendingResources: List.unmodifiable(_pendingResources),
+                onPickResource: _pickResource,
+                onRemoveResource: (id) => setState(
+                  () => _pendingResources.removeWhere((r) => r.id == id),
                 ),
+                // 回车与发送钮统一走本分支（composer 不判 emptiness）：
+                // running 时按钮已变中止键，此处拦下并给 SnackBar；空输入同样
+                // 给一次性反馈（P1-9——桌面端 Enter 曾静默无反应，等同死控件）。
+                onSend: () {
+                  if (!_guardRunning('发送')) return;
+                  if (_inputCtrl.text.trim().isEmpty) {
+                    _toast('先说点什么再发送');
+                    return;
+                  }
+                  _send();
+                },
+                onAbort: _abort,
               ),
             ],
           ),
         ),
       ),
+    );
+  }
+}
+
+/// AppBar「本轮记忆」入口（B2 定位 + P2-11 常驻化）。
+///
+/// 常驻 + 恒可点：无记忆时点开汇总列表的空态说明（解释「什么时候这里会有
+/// 东西」），而不是置灰——置灰即死控件，违反 SSOT §1「禁止静默禁用」。
+/// 有/无记忆两档以图标色区分（§6 双通道：颜色 + tooltip 文本）。
+class _MemoryEntryButton extends StatelessWidget {
+  const _MemoryEntryButton({
+    required this.hasMemory,
+    required this.onPressed,
+  });
+
+  final bool hasMemory;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = consoleTokens(context);
+    return IconButton(
+      tooltip: hasMemory ? '本轮记忆' : '本轮记忆（暂无，点击查看说明）',
+      onPressed: onPressed,
+      icon: Icon(
+        Icons.bolt,
+        color: hasMemory ? t.l1Ok : t.terminalMuted,
+      ),
+    );
+  }
+}
+
+/// 「回到最新」悬浮钮（chat-interaction §3：消息流唯一悬浮钮）。
+///
+/// P1-10（2026-10-22）：两层含义此前共用同一个向下箭头——「只是翻上去了」与
+/// 「下面还有 N 条没看」，用户无法判断该不该点。现按 `missed` 分档：有新内容
+/// 挂计数徽标 + 数据指针强调色（§1）+ tooltip 明说条数；纯离底态保持低调。
+/// 双通道（§6）：徽标数字 + tooltip 文本，不单靠颜色。
+/// heroTag 保留原值（与既有 Hero 动画/测试键位一致）。
+class _ScrollToBottomFab extends StatelessWidget {
+  const _ScrollToBottomFab({
+    super.key,
+    required this.missed,
+    required this.onPressed,
+  });
+
+  /// 离底期间新增且未看的条目数（0 = 只是翻上去了，无新内容）。
+  final int missed;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = consoleTokens(context);
+    final hasNew = missed > 0;
+    final icon = const Icon(Icons.arrow_downward);
+    return FloatingActionButton.small(
+      heroTag: 'chat-scroll-bottom',
+      tooltip: hasNew ? '下方有 $missed 条新内容' : '回到最新',
+      onPressed: onPressed,
+      child: hasNew
+          ? Badge.count(
+              count: missed,
+              backgroundColor: t.l1Info,
+              child: icon,
+            )
+          : icon,
     );
   }
 }
