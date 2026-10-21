@@ -10,13 +10,19 @@
 /// **入口** = 会话侧边栏底部横排工具带（「设置」右侧，与 `TaskLedgerPage`
 /// 同款先例：原为设置页段，迁出后由抽屉直达）。
 ///
+/// **Tab（2026-10-21 mcp-tools-catalog）**：① 文件资源（原管理面）② MCP 工具
+/// 目录（按服务分组展示已注册服务的工具 + 三态可见性；取数经 [McpCatalog]）。
+///
 /// 内容 widget = [ResourceCenterSection]（与设置页时期同一 widget，store
 /// 经注入位传入——视图不持领域单例；生产装配在段内，CowSection 同款）。
 library;
 
 import 'package:flutter/material.dart';
 
+import '../coordinator/tool_catalog.dart';
+import '../mcp/local_plugin_discovery.dart';
 import 'components/panel_error_row.dart';
+import 'sections/mcp_tools_catalog_section.dart';
 import 'sections/resource_center_section.dart';
 
 class ResourceCenterPage extends StatefulWidget {
@@ -30,7 +36,15 @@ class ResourceCenterPage extends StatefulWidget {
   State<ResourceCenterPage> createState() => _ResourceCenterPageState();
 }
 
-class _ResourceCenterPageState extends State<ResourceCenterPage> {
+class _ResourceCenterPageState extends State<ResourceCenterPage>
+    with SingleTickerProviderStateMixin {
+  /// 页面级双 Tab：文件资源 / MCP 工具目录（与 memory_board_page AppBar Tab 同先例）。
+  late final TabController _tabs =
+      TabController(length: 2, vsync: this);
+
+  /// 工具目录取数收口（生产默认；测试可整体替换内部 discovery/endpointStore/runtime）。
+  final McpCatalog _catalog = McpCatalog();
+
   /// 段内动作反馈（导入成功/失败等）走页面级 toast，与设置页口径一致。
   void _flash(String message) {
     if (!mounted) return;
@@ -40,14 +54,40 @@ class _ResourceCenterPageState extends State<ResourceCenterPage> {
   }
 
   @override
+  void dispose() {
+    _tabs.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('资源中心')),
-      body: ListView(
-        padding: const EdgeInsets.all(12),
+      appBar: AppBar(
+        title: const Text('资源中心'),
+        bottom: TabBar(
+          controller: _tabs,
+          tabs: const [
+            Tab(text: '文件资源'),
+            Tab(text: 'MCP 工具'),
+          ],
+        ),
+      ),
+      body: TabBarView(
+        controller: _tabs,
         children: [
-          ResourceCenterSection(
-            cachePathOverride: widget.cachePathOverride,
+          ListView(
+            padding: const EdgeInsets.all(12),
+            children: [
+              ResourceCenterSection(
+                cachePathOverride: widget.cachePathOverride,
+                onFlash: _flash,
+                errorRowBuilder: panelErrorRow,
+              ),
+            ],
+          ),
+          McpToolsCatalogSection(
+            catalog: _catalog,
+            changes: localPluginDiscovery.changes,
             onFlash: _flash,
             errorRowBuilder: panelErrorRow,
           ),

@@ -1,6 +1,6 @@
 ---
 status: draft
-updated: 2026-10-18
+updated: 2026-10-21
 ---
 
 # 资源中心设计（本地文件库 · 一期）
@@ -91,3 +91,13 @@ flowchart LR
 4. 存储配额 = **仅展示已占用空间**，不设上限（RC5）；
 5. 文本判定 = utf8 严格解码（不用扩展名白名单/魔数探针），>1MB 解码走 `Isolate.run`；删除 = 两段式容错（清单为准，实体删除失败 DEGRADE 不裸抛）；不做引用计数/软删除（评审项 1 简化采纳）；
 6. 外部唤起纪律（RC6，2026-10-18 拍板）= **纯外部唤起**：不做内建查看/编辑器；管理页「打开」与导出全量走 `cacheDir/external/<random_id>_<displayName>` 临时副本唤起宿主系统默认应用。
+
+## 7. MCP 工具目录 Tab（2026-10-21 新增）
+
+> 与 §1「一期不做」中的「MCP server 资源聚合面（resources/list，M2）」**正交**：本 Tab 浏览的是 `tools/list` 的**工具声明**（含 `_meta.goodhub.visibility` 三态），非文件/资源聚合；落在资源中心纯因「用户资产/能力集中面」入口便利，性质属**服务/能力浏览**而非文件库。
+
+- **定位**：资源中心第二 Tab（MC1-a）；第一 Tab 仍是文件资源（一期 M1）。
+- **取数**：`lib/coordinator/tool_catalog.dart` 收口——已注册服务 = 本地插件 `localPluginDiscovery.scan` + 远端 `ServerEndpointStore.load`（静态注册态，不依赖连接）；工具 = per-service `McpRuntime.mount/mountEndpoint` 拉 `tools/list`，纯浏览拉完即释放，不常驻 face。
+- **展示**：按服务分组；服务组按「含 shared 工具数」降序，组内工具 shared→private→未声明（MC2-a 两层都排）；每个服务卡标注「来源/隐私」（本地 / 远程·私有 / 远程·公开），仅作标注不作分组维度（MC4）。
+- **可见性三态（MC3-a）**：共享 / 私有 / 未声明——`declared` 区分「显式声明私有」与「SDK<0.2.0 存量插件未声明兜底」，UI 标「未声明」（琥珀）防误判插件坏；`shared` 经网关对外投影、`private`/未声明不投影（对齐 `tool_visibility.dart` 兜底口径与网关过滤面）。
+- **落点**：`lib/ui/sections/mcp_tools_catalog_section.dart`（注入位取数 + 包变更热刷新 + keepAlive）+ `lib/ui/resource_center_page.dart`（TabBar）；单测 `test/ui/mcp_tools_catalog_section_test.dart` + `test/coordinator/tool_catalog_test.dart`。
