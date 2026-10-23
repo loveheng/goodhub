@@ -1,8 +1,8 @@
 {
-  "versionCode": 2009,
-  "versionName": "1.0.4",
+  "versionCode": 2011,
+  "versionName": "1.1.1",
   "applicationId": "com.zzh.goodhub",
-  "apkUrl": "https://r2.oklhj.eu.org/updates/goodhub/app-release-2009.apk",
-  "sha256": "1033387b86fb29e847e1923cba56428ef774b0f8e2cc026b61819f49affb83fb",
-  "changelog": "应用图标替换为拾圆 + 中文名改为拾圆 + 新增任务消费循环"
+  "apkUrl": "https://r2.oklhj.eu.org/updates/goodhub/app-release-2011.apk",
+  "sha256": "8d7086433f42ff6a4a87c6ce3efabec4556dc77a4f2d418bce3f154f6329bfc0",
+  "changelog": "v1.0.2：窗口瘦身（状态条/双轨流/会话抽屉重构）与页面美化；更新源目录与清单校验不变"
 }
