@@ -77,11 +77,17 @@ CHANGELOG_ESC="${CHANGELOG//\\/\\\\}"
 CHANGELOG_ESC="${CHANGELOG_ESC//\"/\\\"}"
 
 # 读取旧清单中的上一个 APK 键，发布成功后删除，避免版本化文件越攒越多
+# 键语义：完整对象键（公开域 URL 去掉域前缀，含 REMOTE_PREFIX）——upload-r2.mjs 对
+# put/delete 均按传入键原样签名，不做前缀拼接（旧实现传相对键名，DELETE 打到桶根
+# 不存在的键上，S3 幂等返回成功 → 清理静默失效，孤儿 APK 越攒越多）
 OLD_APK_KEY=""
 if [ -f updates/goodhub-update.json ]; then
   _OLD_APK_URL="$(grep -oE '"apkUrl"[[:space:]]*:[[:space:]]*"[^"]+"' updates/goodhub-update.json | sed -E 's/.*"([^"]+)".*/\1/')"
   if [ -n "$_OLD_APK_URL" ]; then
-    OLD_APK_KEY="${_OLD_APK_URL#*/${REMOTE_PREFIX}/}"   # 取前缀之后的对象键名
+    OLD_APK_KEY="${_OLD_APK_URL#"https://${R2_PUBLIC_DOMAIN}/"}"
+    case "$OLD_APK_KEY" in
+      http://*|https://*) OLD_APK_KEY="" ;;   # apkUrl 非本公开域（外部源/异常清单）→ 放弃清理
+    esac
   fi
 fi
 
@@ -104,7 +110,7 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "  生成 updates/goodhub-update.json (apkUrl=$APK_URL)"
   echo "  node scripts/upload-r2.mjs $APK $REMOTE_PREFIX/app-release-${VERSION_CODE}.apk application/vnd.android.package-archive"
   echo "  node scripts/upload-r2.mjs updates/goodhub-update.json $REMOTE_PREFIX/goodhub-update.json application/json"
-  if [ -n "$OLD_APK_KEY" ] && [ "$OLD_APK_KEY" != "app-release-${VERSION_CODE}.apk" ]; then
+  if [ -n "$OLD_APK_KEY" ] && [ "$OLD_APK_KEY" != "${REMOTE_PREFIX}/app-release-${VERSION_CODE}.apk" ]; then
     echo "  node scripts/upload-r2.mjs delete $OLD_APK_KEY   # 清理上一个版本 APK"
   fi
   exit 0
@@ -164,7 +170,7 @@ echo "上传清单 → s3://$R2_BUCKET/$REMOTE_PREFIX/goodhub-update.json"
 node scripts/upload-r2.mjs updates/goodhub-update.json "$REMOTE_PREFIX/goodhub-update.json" "application/json"
 
 # 清理上一个版本的 APK（版本化文件名会随时间堆积，删旧留新）
-if [ -n "$OLD_APK_KEY" ] && [ "$OLD_APK_KEY" != "app-release-${VERSION_CODE}.apk" ]; then
+if [ -n "$OLD_APK_KEY" ] && [ "$OLD_APK_KEY" != "${REMOTE_PREFIX}/app-release-${VERSION_CODE}.apk" ]; then
   echo "清理旧版本 APK → s3://$R2_BUCKET/$OLD_APK_KEY"
   node scripts/upload-r2.mjs delete "$OLD_APK_KEY" || echo "WARN: 删除旧 APK 失败（可忽略，稍后手动清理）"
 fi
