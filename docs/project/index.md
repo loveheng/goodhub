@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-18
+updated: 2026-10-23
 ---
 
 # goodhub · 功能落点索引（数据）
@@ -36,6 +36,7 @@ updated: 2026-10-18
 | 阅读轨只读渲染器（console tokens 对齐） | `lib/ui/rich_text_view.dart` | 媒体块降级不吞内容；todo 只读字形；MathBlock/InlineMath 降级等宽呈现 |
 | 流式性能优化（P0 流控缓冲 + P1 前缀块缓存） | `lib/ui/components/stream_text_buffer.dart` + `lib/ui/components/streaming_rich_text.dart` | 设计 SSOT `docs/design/stream-perf.md`；Buffer 40ms 节拍 + 流结束强制清空；安全切点增量解析 + RepaintBoundary 隔离；等价性 fuzz 门禁 `test/ui/streaming_rich_text_test.dart` |
 | 记忆沙盒（三件套/FC1 锚点/scope 三层作用域/预算视图/审计/轮转） | `lib/sandbox/memory_store.dart` | 拍板 D4~D8 见 docs/design/m4.md §4；`underSupportDir` 生产装配 + 启动清扫挂 main |
+| 宿主环境事实只读工具（`get_host_status`：宿主身份 / MCP 协议版本 / 平台 / 时区 / 语言区域；**Allowlist 首项**，描述与 Schema 的单点 owner） | `lib/coordinator/host_status_tool.dart`（新，2026-10-23；`HostStatusToolExecutor`，`readOnlyHint:true` → 网关 L1 静默放行）+ `lib/app/service_directory.dart`（`appVersion()` 应用级单入口 + 注入位 + DEGRADE 占位） | 选型与被否决候选见 `docs/design/host-tools-gateway-export.md`「首项登记」；**零隐私约束**（返回体不含用户数据 / 服务清单 / 私有槽位态）由单测钉死；入宿主执行链经 `assembleHostToolInvoker`（`coordinator` 内部引用，网关白名单不扩张）；单测 `test/coordinator/host_status_tool_test.dart` + `test/gateway/gateway_controller_mount_test.dart`（用例 4 端到端） |
 | 记忆读写内部工具面（update_memory/query_memory） | `lib/coordinator/memory_tool_executor.dart` | 挂 Gateway 内侧（L2 裁决先于执行）；§5.1 描述引导 + §5.3 快照回显；审计三点合围见 m4.md T2 注记 |
 | 会话历史持久化（每会话一 JSON/原子重写） | `lib/sandbox/conversation_store.dart` | CloudChatMessage 编解码在此；恢复降级语义见 m4.md T3b 注记 |
 | 串行文件写队列（temp+rename 原子替换） | `lib/core/storage/sequential_file_writer.dart` | coding-standards §3.2 基准件；支持 `settled`/`ioDrained` 确定性握手 |
@@ -43,11 +44,15 @@ updated: 2026-10-18
 | 节点探活（握手+工具计数计时 / 401/403 鉴权态与离线区分） | `lib/mcp/server_probe.dart`（`ServerProber`/`NodeProbeResult`） | `McpClientFactory` 注入位；探活一次性建 client 用完即弃；单测 `test/mcp/server_probe_test.dart` |
 | Server 节点卡面板（端口/延迟/在线点/工具计数/鉴权态/挂载开关/增删改/默认私有钉选渲染） | `lib/ui/sections/nodes_section.dart`（`NodesSection`） | 增删改同 `mcp_servers.json`；探活按需不自动网络化；注入位 `endpointStoreOverride`/`probeOverride`/`autoProbe`；钉选 owner 在 settings_page（`isDefaultPrivate`/`onPinToggle` 透传）；段 State 混合 `AutomaticKeepAliveClientMixin`（滚动不丢态，闸见 `test/ui/settings_sections_keepalive_test.dart`）；单测 `test/ui/server_nodes_panel_test.dart` |
 | 本地插件面板（Binder 发现项渲染/信任态 pill/信任卡片入口；零配置自动挂载，不落用户 JSON） | `lib/ui/sections/local_plugins_section.dart`（`LocalPluginsSection`） | 注入位 `localScanOverride`/`localChangesOverride`；单测 `test/ui/local_plugins_panel_test.dart` |
-| 设置页（原服务大厅：Skill 覆写管理/BYOK/跨源授权/PC 远程网关/本地插件撤销信任/关于段） | `lib/ui/settings_page.dart`（页面骨架 + 跨段 owner：ListView 顺序/toast/错误行/默认私有钉选持久读写）+ 八段各自落在 `lib/ui/sections/{appearance,byok,nodes,local_plugins,gateway,cow,cross_source,about}_section.dart`（文件头有 scope 边界声明与各段迁移语义）；面板级错误行口径统一于 `lib/ui/components/panel_error_row.dart` | BYOK 多 profile 增删改 + 置顶切换生效（首位=生效对齐 hybrid_assembly；apiKey 走 SecureKeyValue）；「关于」段 = 版本 + 检查更新常驻 + 长按标题进 debug 联调（kDebugMode）；**红线**：入口只在聊天页侧边栏（AppBar 无设置按钮）；单测 `test/ui/byok_panel_test.dart` + `settings_page_test.dart`（关于面板/长按联调） |
+| 设置页（原服务大厅：Skill 覆写管理/BYOK/跨源授权/PC 远程网关/本地插件撤销信任/关于段） | `lib/ui/settings_page.dart`（页面骨架 + 跨段 owner：ListView 顺序/toast/错误行/默认私有钉选持久读写）+ 八段各自落在 `lib/ui/sections/{appearance,byok,nodes,local_plugins,gateway,cow,cross_source,about}_section.dart`（文件头有 scope 边界声明与各段迁移语义）；面板级错误行口径统一于 `lib/ui/components/panel_error_row.dart` | BYOK 多 profile 增删改 + 置顶切换生效（首位=生效对齐 hybrid_assembly；apiKey 走 SecureKeyValue）；「关于」段 = 版本 + 检查更新常驻 + 长按标题进 debug 联调（kDebugMode）；**红线**：入口只在聊天页侧边栏（AppBar 无设置按钮）；单测 `test/ui/byok_panel_test.dart` + `settings_page_test.dart`（关于面板/长按联调/网关面板控件）+ `test/ui/gateway_section_test.dart`（网关段：默认自动生成 Token / 显式免鉴权逃生口 / 用户值优先） |
 | 记忆看板（四 Tab 查看/编辑/导出/粉碎 + ops.log 人类可读渲染 + 提示词透明面） | `lib/ui/memory_board_page.dart`（四 Tab：记忆/教训/审计/提示词）+ 第 4 Tab 段 `lib/ui/sections/prompts_overview_section.dart`（只读总览：全局 Prompt = builtin globals 恒可见 + `UserGlobalPromptsStore` 落盘，**与 App 启动同源、不依赖会话**；MCP 服务 Prompt 读连接态 `SkillRegistry.appScoped()`（窗口经抽屉注入 `skillsProvider`——反映当前已连接服务与静态预置，与具体会话无关）或注册表不可用时回落 builtin appScoped 恒在 + `CowOverridesStore` known_versions/overrides 落盘基线（覆写正文直接展示、未覆写模板正文不落盘走占位）；编辑归设置页两段防双入口） | store 编辑面 `updateEntry/deleteEntry/purgeUserScope/listOpsLog/exportAll`（memory_store.dart）；ChatPage 侧边栏入口；单测 `test/ui/memory_board_page_test.dart` + `test/sandbox/memory_board_store_test.dart` |
 | token 字符级粗估口径 SSOT | `lib/core/tokens.dart` | 自 context_governor 下沉（层级纪律），governor 原位 re-export |
 | 应用内自更新（清单模型/下载校验/安装器/更新页） | `lib/update/` + `lib/ui/update_page.dart` | 入口 = chat_page ⚙ 调试菜单「检查更新」；设计 SSOT `docs/design/self-update.md` |
-| 聚合网关服务器（Streamable HTTP `/mcp` / 会话 / Bearer / SSE 下行 / 15s 心跳） | `lib/gateway/gateway_server.dart` | thirdconnect §7；协议 2025-06-18；**红线**：SSE 起点必设 `bufferOutput=false`（goodshare 同坑已修 + 逐帧计时回归钉子）；单测 `test/gateway/gateway_server_test.dart` |
+| 网关策略投影（三策略 `single`/`pruned`/`full` / 元组级四级过滤管道 / 会话绑定策略 / `single` 入站前缀补齐 / 投影差分广播抑制） | `lib/gateway/projection_pipeline.dart`（新，2026-10-23：`ProjectionPolicy` 值对象 + `ProjectionFilter.project` + `resolveInboundToolName`，纯函数无 IO）+ `lib/gateway/mcp_gateway_handler.dart`（`policy` 字段 / `project()` 单一投影源 / `markProjectionBaseline` + `projectionChangedSinceBaseline`）+ `lib/gateway/gateway_server.dart`（`initialize` 期解析 URL query 绑定策略；非法字面量 / 目标未挂载 Fail-Fast `-32602`） | 设计 SSOT `docs/design/host-tools-gateway-export.md`；**单轴化（2026-10-23 裁决 D1）**：字面量并集 `single|private|full|pruned`，URL 键与控制面参数统一 `policy`（旧 `strategy=`/`scope=` 为兼容别名，`scope` 不进 schema） §投影策略规范/过滤铁律/入站补齐/会话绑定；**三级纯度**：管道纯函数 → handler 只接线 → server 只绑定；投影集签名按 `serverId/bareName`结构化（不含对外前缀，故 `single` 与 `full` 同批工具签名相同，差分广播只认集合变化）；`full` 策略目录与入站语义**逐条等价**于既有实现（仅目录序稳定化为字典序）；单测 `test/gateway/projection_pipeline_test.dart` + `test/gateway/projection_session_binding_test.dart` |
+| 聚合网关服务器（Streamable HTTP `/mcp` / 会话 / Bearer / SSE 下行 / 15s 心跳） | `lib/gateway/gateway_server.dart` | thirdconnect §7；协议 2025-06-18；**红线**：SSE 起点必设 `bufferOutput=false`（goodshare 同坑已修 + 逐帧计时回归钉子）；**TC12 Keep-Alive 双通道**：GET 订阅 = `: keep-alive` 注释帧（不计入 MCP 帧）/ `tools/call` SSE = 真 `notifications/progress` 帧（`keepAliveInterval` 可注入，默认 15s；`progressToken` 优先回显客户端 `_meta.progressToken`；**JSON 模式无法注入**——响应体须整体写出）；**会话生命周期（2026-10-23 修「无线用久了自动掉线」）**：`sid` **长期有效**（不按时间删）、SSE 订阅断开**不销毁会话**、idle GC 只回收 **handler 内存态**（按需重建，策略与连接级私有绑定从会话条目恢复）、会话表 **LRU 256 上限**兜底；`stop()` 取副本再关闭（边遍历边 `await` 会与 SSE 断连回调并发改表 → Concurrent modification 崩溃，已修）；单测 `test/gateway/gateway_server_test.dart`（含「TC12 Keep-Alive」+「SSE 订阅断开 ≠ 会话结束」钉子，撤修复即红） |
+| 网关息屏保活 · 电池优化白名单（状态查询 + 跳系统申请 + 设置页提示） | `android/app/src/main/kotlin/com/zzh/goodhub/GatewayServiceBridge.kt`（`batteryExemptionStatus` / `requestBatteryExemption`，ROM 不支持申请弹窗时降级到白名单列表页）+ `lib/gateway/gateway_service_channel.dart` + `lib/gateway_api/gateway_control.dart` + `lib/ui/sections/gateway_section.dart`（提示行 + 「去设置」按钮 + 生命周期回查） | **G4 遗留项收口（2026-10-23）**：未加白名单时息屏进 Doze 会限网 → PC 侧表现为「过段时间连接掉了」（历史 Doze 验证是 adb 写白名单做的，真机用户路径从未开过）；Manifest 加 `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`；单测 `test/ui/gateway_section_test.dart` |
+| 网关配对 Token（生成 + 起服决策 + 设置段控件；默认自动生成，免鉴权降级为显式逃生口） | `lib/gateway_api/gateway_token.dart`（新，2026-10-23：`generateGatewayToken` = 32B `Random.secure` → base64url 无填充；`resolveGatewayToken` 决策 = 输入框有值→用户值 / 留空+自动生成开→生成 / 留空+自动生成关→免鉴权）+ `lib/ui/sections/gateway_section.dart`（自动生成开关 + 显示/复制/重新生成；`gateway.token` + `gateway.token.authMode` 落盘） | **产品裁决 2026-10-23**：消除「Token 留空 = 不鉴权」的**默认暴露**（网关默认监听 `0.0.0.0:8766` → 同局域网任意主机可无鉴权访问只读工具面，L1 工具不弹确认卡）；免鉴权保留为**显式**逃生口（仅建议 ADB 转发）；注入位 `startOverride`/`stopOverride`（沿用 section 的 `xxxOverride` 范式）；单测 `test/gateway_api/gateway_token_test.dart` + `test/ui/gateway_section_test.dart` |
+| 网关连接级系统工具（列全部已挂载 MCP 服务 `gateway__list_servers` / 投影切换 `gateway__select_private(scope=single\|private\|full)`） | `lib/gateway/mcp_gateway_handler.dart`（`_handleListPrivateServers` / `_handleSelectPrivate` + `systemToolJson`；`gateway__` 命名空间） | **列全部已挂载服务**（含 public / 本地插件）并标注 `tier`+`source`，只列 id / 隐私级别 / 来源 / 只读工具数（不含凭据、端点、服务自报名或内容），实时现算；切换**只改本连接**投影（与既有 `select_private` 同权限集合，MO6「PC 无权改写宿主状态」不受影响）；`single` 下**只保留 select_private 作退出通道**（全隐匿即死锁）；单测 `test/gateway/projection_server_switch_test.dart` |
 | 网关协议处理器（工具聚合 / 前缀分发 / 进度转 SSE / `tools/list_changed`） | `lib/gateway/mcp_gateway_handler.dart` | `GatewayHandler.toolsCall` 剥前缀直达 `face.client`；阻断类结果经 `errorCode` 回协议错误帧 |
 | 网关装配与生命周期（双源装配 / 包变更重扫 / 原生前台服务桥 / Wi-Fi IP） | `lib/gateway/gateway_controller.dart` + `gateway_service_channel.dart` + `android/`（`GatewayForegroundService`/`GatewayServiceBridge`） | TC12 FSI 醒目呼叫 = `L2AlertActivity` + `GatewayConsentBridge`；电池优化白名单留真机 |
 | 网关入站安全闭环（L1/L2 裁决 / 45s 熔断 / 会话豁免 / PII 出站 fail-closed / 入站审计） | `lib/gateway/gateway_security.dart` | 复用 `permission_gateway.classify` + `DialogGateDelegate`（`appNavigatorKey` 后台弹层）；ops.log 落 `server=gateway`；单测 `test/gateway/gateway_security_test.dart` |
@@ -57,6 +62,11 @@ updated: 2026-10-18
 | 同机插件信任（签名 SHA-256 白名单持久化 + 信任卡片 UI） | `lib/mcp/trusted_plugins.dart` + `lib/ui/trust_plugin_dialog.dart` | 同签名零弹窗 + 开发者模式第三方信任卡；gateway headless 跳过；真机自动化 `integration_test/trust_gate_test.dart` |
 | Sampling 反向请求（宿主收端 + 反向在途表 + `answerReverse`） | `lib/mcp/sampling.dart` | 配额分池（2026-10-17 instant-sampling 一期）：`pool` params 平级字段（Tier 1 私有，缺省/非 String/未登记名 = 默认池）→ 配额 key `serverKey`/`serverKey:pool`；默认池 20 次/60min、instant 池 60 次/60min；内存态不落盘（restoreHits 跨 pool key 兼容）；caps 白名单单点防伪造池名绕过限额；契约 = goodshare 仓 ai-app-split.md §3.11 |
 | 同机 Binder 传输（AIDL 通道 / 状态机 / 挂起队列 / DeathRecipient / 事件回传） | `lib/mcp/transport/`（Dart `BinderTransport`）+ `android/`（MethodChannel 桥；AIDL 契约由 Maven 坐标 `com.zzh.goodhub.mcp:goodhub-mcp-contract` 提供） | TC9 控制面；**插件侧 SDK 与 AIDL 契约已拆独立仓** `loveheng/goodhub-mcp-sdk`（契约物理单副本 = 该仓 `:contract` 模块；宿主经复合构建 / mavenLocal 消费，`toolbox run check-contract-sync` 校验单副本与版本绑定）；≥128KB 的 `mcp-blob://` 数据面未落地（thirdconnect 待办） |
+| 宿主虚拟服务导出面（`HostTransport` 伪装 MCP 服务端 / `kHostExportAllowlist` 静态注册表 / 门禁 1 annotations 强置 + 门禁 2 控制面原语黑名单 / `host` 保留字断言 / 网关第三装配源） | `lib/mcp/transport/host_transport.dart`（新，2026-10-23）+ `lib/coordinator/host_tool_invoker.dart`（新，执行端口适配器 + `assembleHostToolInvoker`，**无裁决**）+ `lib/coordinator/reserved_namespace.dart`（`assertServerIdMountable` 独立小件，mount/mountEndpoint/assemble 三路同点设防）+ `lib/core/errors/mcp_error.dart`（`ReservedNamespaceException`） | 设计 SSOT `docs/design/host-tools-gateway-export.md`；**端口纪律**：`mcp` 域禁反向 import coordinator/llm（arch-guard R5/R6），宿主执行面经 `HostToolInvoker` typedef 注入 + `coordinator/host_tool_invoker.dart` 适配（owner 住 coordinator，网关只调一行）；**无裁决铁律**：L1/L2 已由 `GatewaySecurity.guard` 在 `toolsCall` 层完成（annotations 取自合成面），端口内**严禁**再挂 `PermissionGateway`（否则 PC 见两次确认卡）；网关第三装配源 = `gateway_controller._assemble` 末位装 `faces['host']`（注入位 `hostExportAllowlist` / `hostInvokerProvider`）；只声明 tools 能力（不声明 sampling，否则 face 被拖进流式调用）；**Allowlist 首项 = `get_host_status`**（宿主身份/协议/时区/语言只读事实，零隐私 + 有真实推理增益；记忆读写等隐私能力仍默认不登记）；单测 `test/mcp/host_transport_test.dart` + `test/coordinator/mcp_runtime_reserved_id_test.dart` |
+| 执行面链装配器（`ToolExecutor` 链**唯一构造入口**：层按「优先级高 → 低」给出、折叠方向固定逐层向外 → 结构上杜绝「inner 指向链中段」丢层） | `lib/coordinator/tool_executor_chain.dart`（新，2026-10-23） | 架构债 #19 根治件；调用点 = `host_tool_invoker` / `local_tool_chain` / `debug_run_orchestrator`；机械门禁 = `arch-guard.sh` R9 + `test/architecture/executor_chain_rules_test.dart` |
+| 本机工具执行链组装（T6 链路序唯一 owner：Guarded→Discovery→SkillActivation→Hydration→L1/L2 网关→本地资源→记忆工具→ToolRouter 兜底；`GuardedExecutor` 随迁自此） | `lib/coordinator/local_tool_chain.dart`（新，2026-10-23：`composeLocalToolChain` + `GuardedExecutor` + `LocalToolChain` record） | #18 体量治理续：自 `mcp_runtime.assemble` 抽出（该文件恢复「只减不增」轨迹）；本地资源工具挂 Gateway 内侧（L2 裁决先于执行，对齐记忆工具面）；单测经 `test/coordinator/mcp_runtime_test.dart` 装配基线 + 全量回归覆盖 |
+| 网关系统工具面（`gateway__` 命名空间常量 + 系统工具 JSON 声明 + 投影描述文案的**单一 owner**） | `lib/gateway/gateway_system_tools.dart`（新，2026-10-23） | handler 只留接线与连接态（#18 体量治理）；**文案禁引用未声明工具名**（工具名 = PC 侧唯一契约面，悬空引用 = 幻觉调用源）——钉子 `test/gateway/projection_server_switch_test.dart` |
+| CoW 模板 → Skill 注入（逐 server 同步 + 撞名跳过通告 + 失败 Polyfill 降级） | `lib/coordinator/cow_skill_sync.dart`（新，2026-10-23） | 从 `mcp_runtime.assemble` 抽出（#18 体量治理）；命名 `cow/<promptName>` |
 | 多 Server 路由与 JIT 元工具（前缀隔离 / 激活集 / `get_connected_apps` / `activate_server_tools` / `use_server`） | `lib/coordinator/tool_router.dart` + `lib/coordinator/discovery_executor.dart` | `<server_id>__<tool>`；装配在 `chat_page._send`；**注意** `lib/mcp/tool_router.dart` 为孤立件（仅测试引用，海关过滤规则在其中，待收编 #9） |
 | 工具可见性标记（SDK 0.2.0 `_meta.goodhub.visibility`，private/shared；缺失即 private） | `lib/core/tool_visibility.dart`（枚举 + 解析）+ `lib/coordinator/mcp_tool_face.dart`（tools/list 解析进 `CloudToolSchema`）+ `lib/gateway/mcp_gateway_handler.dart`（对外目录只回 shared） | **声明非 ACL**：SDK 不剔条目、不拦调用；过滤只在**对外暴露面**（网关 PC 投影），本机链路（`coordinator/tool_router`）保持能力全集；旧口径 `annotations["x-mcp-export-to-shared"]` 已作废；单测 `test/core/tool_visibility_test.dart` + `test/gateway/mcp_gateway_handler_test.dart`（F1.9 组） |
 | `$ref` 暂存池（内存/文件双介质 / TTL 30min / Session 即焚 / 启动幂等清池） | `lib/coordinator/ref_store.dart` | architecture §9；启动清池 `sweepStartupOrphans` 挂 `main.dart`；单测 `test/coordinator/ref_store_test.dart` |
@@ -80,7 +90,8 @@ updated: 2026-10-18
 | 自更新（整包/清单/串包防御） | 本仓 `docs/design/self-update.md` | active |
 | Binder 联调评估与修复请求 | 本仓 `docs/design/goodhub-goodshare-binder-eval.md` + `goodshare-binder-poc-fix-request.md` | active（结果回写投 thirdconnect 域） |
 | 端侧 LLM 设计（LiteRT-LM / FoundationModels） | goodshare 仓 `docs/design/on-device-llm.md` | active（跨仓只读） |
-| Host 网关架构 · 访问性模型 · 记忆捎带提取（Provider×Tier 解耦 / 聚合反向代理 / In-band `<workspace_update>`） | 本仓 `docs/design/host-gateway-accessibility-memory.md` | active；绑定 epic = `chatmessage`（§3 记忆提取主战场，§1/§2 依赖项） |
+| Host 网关架构 · 访问性模型 · 记忆捎带提取（Provider×Tier 解耦 / 聚合反向代理 / In-band `<workspace_update>`） | 本仓 `docs/design/host-gateway-accessibility-memory.md` | active；绑定 epic = `chatmessage`（§3 记忆提取主战场，§1/§2 依赖项）；§1.4 无前缀约束已收窄至本机调度域 |
+| Host 原生工具网关导出与策略投影（host__ 虚拟服务 / HostTransport 伪装客户端 / Allowlist 静态注册表 / 四级过滤管道 / 保留字门禁） | 本仓 `docs/design/host-tools-gateway-export.md` | draft |
 | 窗口解耦（内核 + 多投影：ServiceDirectory / McpRuntime / ConversationSession） | 本仓 `docs/design/window-kernel-split.md` | 内容 SSOT（架构裁决十二项 §8.1、路线图 §7.5）；施工已由 arch-hardening 承接 |
 | 架构债修复施工稿（内核单入口 + 反向边斩断，步 0→3 勾稽） | 本仓 `docs/design/arch-hardening.md` | active；绑定 epic = `arch-hardening`；步 0→3 已完成，剩余 = 真机冒烟验收 |
 | 普通用户可用性加固（冷启动/错误自救/术语白话/危险权重/DEGRADE 可见性） | 本仓 `docs/design/ux-hardening.md` | active；epic `ux-hardening` 已收尾归档 |
@@ -94,8 +105,6 @@ updated: 2026-10-18
 | # | 未结架构债与风险点 | 落点 | 现状与收敛条件 |
 |---|---|---|---|
 | 11 | 投影平面 `workspaceId` 接线（D-D 投影平面三元 `{activePrivateServerId, publicServerIds, workspaceId}` 缺 `workspaceId`） | `gateway/*`（ProjectionContext） | 待接：PC 连接不携带 workspaceId，记忆分区归属 chatmessage 域 per-conversation（`workspace_states`）；网关侧接线待 chatmessage 记忆分区工作 |
-| 13 | **CI 缺口**：无 `.github/` 无 `.gitlab-ci.yml`，`flutter test` 从无自动化触发入口 | 仓库根（待建 workflow）；现状兜底 = `scripts/agent-tools/pre-commit-gate.sh` | 现状 = pre-commit 默认跑秒级 `arch-guard`（R1~R8），`flutter test` 版（arch-deps，~12s 超钩子 10s 预算）经 `ARCH_GATE_FULL=1` 显式开关跑。**收敛条件**：建 CI workflow 固定跑 `flutter analyze` + `flutter test --timeout 180s` + `arch-guard.sh --json`；存量教训 = conversation_drawer_test 隔夜腐化（fixture 写死绝对日期）长期未暴露，根因正是从不跑测试 |
-| 14 | **GatewayController 无装配注入位**（`localPluginDiscovery` / `serverEndpointStore` 为顶层全局直接引用）→ 重扫释放与起服失败回滚两条路径缺网关级单测，只能真机验收 | `lib/gateway/gateway_controller.dart` | 释放接线已落地（`_mounted` 句柄表 + `_unmountAll` + 重扫/停服/起服失败三路回滚，`McpMount.close` 为唯一释放通道），但断言只到挂载原语层（`test/gateway/gateway_session_isolation_test.dart` 用例 5~7）。**收敛条件** = 加 `localPluginDiscovery` / `serverEndpointStore` 注入位后补网关级重扫与回滚断言；真机冒烟 = 插件安装触发重扫、停服后无残留连接 |
 
 ### 已结项归档（只减不增 · 过程细节归 Git log / epic devlog）
 
@@ -108,6 +117,13 @@ updated: 2026-10-18
 - #9 装配级 / chat_page 级测试基线补齐：`test/coordinator/mcp_runtime_test.dart` 等（2026-10-16 结项）
 - #10 全仓并发 flaky 修复：`SequentialFileWriter.settled` + `MemoryStore/WorkspaceStateStore.ioDrained` 确定性握手，706/706 全绿（2026-10-16 结项）
 - #12 UI 侧 `dart:io` 存量清零：`update_page.dart` 改持路径 `String`、`error_copy.dart` 判定下沉 `core/errors/transport_error_kind.dart`；R1 白名单维持原 3 项只减不增（2026-10-17 结项）
+- #15 保留命名空间无防护：`host` 登记为系统保留 serverId（`mcp/transport/host_transport.dart` 的 `kHostServerId`），`McpRuntime.assertServerIdMountable` 在 mount / mountEndpoint / assemble 三路同点设防（非内置 `HostTransport` 一律抛 `ReservedNamespaceException`），网关 `_assemble` 第三装配源真挂 `faces['host']`（2026-10-23 PR1-2 + PR1-3 结项；设计稿 `docs/design/host-tools-gateway-export.md`）
+- #16 直连白名单账实差（UI → 下层域实际边未登记）：`docs/project/index.md` 直连白名单基线改文件级账实（补登 `mcp/elicitation` 三边 / 联调页边 / 配置类窗口边；去掉易腐边数计数）（2026-10-23 审查轮结项）
+- #17 产品层 SSOT 与实现反向（出厂特权工具清单 / 回环强制鉴权 / host 导出方向零记载）：`docs/product/architecture.md` §1·§13·§15 与 `docs/product/requirements.md` F1.5·F1.17·F1.20 同轮回写（2026-10-23 审查轮结项）
+- #18 文件体量漂移（超标清单项净增长 + 逼近软红线件膨胀）：`mcp_runtime.dart` 抽「保留字断言 / CoW 注入」两独立小件、`mcp_gateway_handler.dart` 抽「网关系统工具面」件（体量恢复只减不增方向，数字以当次扫描为准）（2026-10-23 结项）
+- #19 链式装配等价性无通用机械门禁：新增唯一装配器 `lib/coordinator/tool_executor_chain.dart`（结构上不可表达丢层形态）+ 机械门禁 `arch-guard.sh` R9 与 `test/architecture/executor_chain_rules_test.dart`（2026-10-23 结项）
+- #13 CI 缺口（无自动化触发入口）：`.github/workflows/ci.yml` 已落地（2026-10-17，commit 25ee53b）——analyze + 全量 `flutter test` + `arch-deps`（跑整个 `test/architecture/`，含 R9 镜像）；台账曾长期滞留未结项，2026-10-23 审查轮取证发现并结项
+- #14 GatewayController 无装配注入位：四个注入位（discovery / endpointStore / supportDir / trustGate）+ 网关级断言（重扫释放、起服失败回滚、host 面装配与降级）均已落地；台账曾长期滞留未结项，2026-10-23 审查轮取证发现并结项
 
 ## 工程基线数据（coding-standards 配套 · 数据 SSOT）
 
@@ -124,29 +140,47 @@ updated: 2026-10-18
 
 ### 直连白名单基线（standards §1.4 · 只减不增）
 
-- **配置类窗口现状边**：`byok_section→llm/cloud`、`nodes_section→mcp`、`local_plugins_section→mcp`、`trust_plugin_dialog→mcp`、`memory_board_page→sandbox`、`gateway_consent_dialog→gateway`、`resource_center_section→resources`。配置类窗口清单：`settings_page` + `ui/sections/*`、`memory_board_page`、`update_page`、`trust_plugin_dialog`、`components/server_endpoint_forms`、`gateway_consent_dialog`。
-- **聊天窗口存量直连（遗留债，12 边）**：
+> 口径：按**源文件 → 目标域件**逐边登记（禁写边数——计数每次提交都漂移）。核对命令：`grep -rnE "import '(\.\./)*\.\./?(mcp|sandbox|llm)/" lib/ui/`。**新增任何清单外直连即违例**（standards §1.4 类别 4）。
 
-| 源文件 | 目标 |
-|---|---|
-| `chat_page.dart` | `llm/cloud/cloud_llm`（1）、`mcp/{connection_manager, default_private_server, local_plugin_discovery, server_endpoints, trusted_plugins}`（5）、`sandbox/{conversation_store, memory_store, workspace_state_store}`（3） |
-| `components/conversation_drawer.dart` | `sandbox/conversation_store`（1） |
-| `components/session_context_sheet.dart` | `mcp/{local_plugin_discovery, server_endpoints}`（2） |
+| 类别 | 源文件 | 目标 |
+|---|---|---|
+| 配置类窗口（§1.4 类别 1 · 管理面直连） | `settings_page.dart` | `mcp/{default_private_server, local_plugin_discovery, server_endpoints}`、`llm/cloud/byok_store` |
+| | `sections/byok_section.dart` | `llm/cloud/{byok_store, cloud_llm}` |
+| | `sections/nodes_section.dart` | `mcp/{server_endpoints, server_probe}` |
+| | `sections/local_plugins_section.dart` | `mcp/{local_plugin_discovery, trusted_plugins}` |
+| | `memory_board_page.dart` | `sandbox/memory_store` |
+| | `resource_center_page.dart` | `mcp/local_plugin_discovery` |
+| | `trust_plugin_dialog.dart` | `mcp/{local_plugin_discovery, trusted_plugins}` |
+| | `components/server_endpoint_forms.dart` | `mcp/server_endpoints` |
+| 聊天窗口存量直连（遗留债） | `chat_page.dart` | `llm/cloud/cloud_llm`、`mcp/{connection_manager, default_private_server, local_plugin_discovery, server_endpoints, trusted_plugins}`、`sandbox/{conversation_store, memory_store, workspace_state_store}` |
+| | `components/conversation_drawer.dart` | `sandbox/conversation_store` |
+| | `components/session_context_sheet.dart` | `mcp/{local_plugin_discovery, server_endpoints}` |
+| 交互组件（2026-10-23 账实补登） | `components/{dual_track_stream, chat_gate_delegates, elicitation_card}` | `mcp/elicitation`（交互协议 DTO 直连） |
+| 联调 / spike 页（§1.4 类别 3 豁免 · 登记备查） | `gateway_loop_debug_page.dart` | `llm/cloud/byok_store`、`mcp/{local_plugin_discovery, mcp_client, sampling}` |
 
-  **新增任何第 13 边即违例**（standards §1.4 类别 4）。收敛方向 = 经 coordinator 门面（`ChatSessionService` / `McpRuntime` / `ChatRunOrchestrator`）+ 端口回传；每清一边同轮更新本表。
+收敛方向 = 经 coordinator 门面（`ChatSessionService` / `McpRuntime` / `ChatRunOrchestrator`）+ 端口回传；每清一边同轮更新本表。
 
-- **gateway → coordinator 执行面白名单（默认拒绝，standards §1.4 类别 5）**，仅限执行面 8 件：`agent_loop` / `mcp_runtime` / `mcp_tool_face` / `permission_gateway` / `pii_fence` / `hybrid_assembly` / `ref_store` / `tool_router`。
+- **gateway → coordinator 执行面白名单（默认拒绝，standards §1.4 类别 5）**，仅限执行面 9 件：`agent_loop` / `mcp_runtime` / `mcp_tool_face` / `permission_gateway` / `pii_fence` / `hybrid_assembly` / `ref_store` / `tool_router` / `host_tool_invoker`（2026-10-23 按 §1.4 类别 5「先改清单再写 import」增：host 虚拟服务执行端口的 owner 住 coordinator——「谁拥有执行面谁组装」，避免网关逐个直连 `memory_tool_executor` / `local_resource_tool_executor` 两件）。
 
 ### 存量超标清单（standards §8.3 · 只减不增）
 
-> 本表只登记超标文件与治理策略，**不登记即时行数**（行数每次提交都在漂移，写进文档必打架）；是否仍超标以当次扫描为准，CI 自动化缺口见架构债 #13。任一件降到 800 行以下即从本清单移除。
+> 本表只登记超标文件与治理策略，**不登记即时行数**（行数每次提交都在漂移，写进文档必打架）；是否仍超标以当次扫描为准，CI 已覆盖全量 `flutter test`（见 `.github/workflows/ci.yml`）。任一件降到 800 行以下即从本清单移除。
 
 | 文件 | 治理策略 |
 |---|---|
 | `ui/chat_page.dart` | 窗口层最大件；状态/控制器/组件已拆出，剩余视图骨架逐步收敛至 800 行以下 |
 | `ui/components/dual_track_stream.dart` | 卡片渲染集中地；计划按卡片类型（确认卡/排查卡）拆子组件 |
 | `ui/gateway_loop_debug_page.dart` | 编排已下沉 orchestrator，剩余为 UI 开关面板；只减不增 |
-| `coordinator/mcp_runtime.dart` | 核心装配逻辑保持高内聚；只减不增 |
+| `coordinator/mcp_runtime.dart` | 核心装配逻辑保持高内聚；只减不增（保留字断言 / CoW 注入 / 本机工具链已抽独立小件） |
+
+### 契约面漂移登记（standards §8.2 · 机械门禁数据）
+
+| 项 | 落点 | 说明 |
+|---|---|---|
+| 规则数据（唯一数据源） | `scripts/agent-tools/drift-registry.txt` | 三类登记：`BANNED` 退役词条（token 级）/ `CONST` 单源常量（字面量级）/ `OVERSIZE` 超标登记核对（行数级）；**新规则只加数据行** |
+| 引擎（跨项目共用，全局池） | `~/.agents/toolbox/scripts/drift-guard.sh`（`toolbox run drift-guard`） | pre-commit 侧；零项目知识，读各项目 registry |
+| CI 镜像（随仓库进 CI） | `test/architecture/drift_rules_test.dart` | flutter test 版，与引擎同读同一 registry；CI 无 toolbox 故走镜像 |
+| 首版登记项 | 同 registry | 退役词条 = 旧工具名 `gateway__list_private_servers`（drift:keep：此处是登记说明，非调用契约）+ D1 旧键 `?strategy=`/`scope=`（PC copy 面）；单源常量 = `kMcpProtocolVersion` / `kGatewayDefaultPort`（2026-10-23 评估轮实证的双源）；超标上限 = 800 行对 `index.md` 超标清单 |
 
 ## 命令速查
 

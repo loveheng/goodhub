@@ -159,6 +159,83 @@ void main() {
       expect(seen.single.$4, 'step 0');
     });
 
+    test('多路复用：无构造期回调，运行期监听器照常驱动流式并收到进度', () async {
+      // 装配层合一 Expand 件：网关挂载的 face（onProgress=null）被 chat 复用
+      // 时，经 addProgressListener 注册 UI 委托——共享 face 不得丢进度语义。
+      var sawProgressToken = false;
+      final client = McpClient.http(
+        baseUrl: 'http://127.0.0.1:8765/mcp',
+        httpClient: MockClient((req) async {
+          if (req.body.contains('"method":"initialize"')) {
+            return _json({
+              'protocolVersion': '2025-06-18',
+              'capabilities': {'tools': {}, 'sampling': {}},
+              'serverInfo': {'name': 'fake', 'version': '1.0'},
+            });
+          }
+          if (req.body.contains('"progressToken"')) sawProgressToken = true;
+          return _sse(_sseBody(
+            resultJson: json.jsonEncode({
+              'jsonrpc': '2.0',
+              'id': 1,
+              'result': {'content': [], 'isError': false},
+            }),
+            progressCount: 1,
+          ));
+        }),
+      );
+      final face = McpToolFace(client: client); // 网关口径：无构造期回调
+      final seen = <String>[];
+      void listener(String tool, num progress, num? total, String? message) =>
+          seen.add('$tool:$progress');
+      face.addProgressListener(listener);
+      final r = await face.execute(AssembledToolCall(
+        id: 'c1',
+        name: 'slow_tool',
+        argumentsJson: '{}',
+      ));
+      expect(r.isError, isFalse);
+      expect(sawProgressToken, isTrue,
+          reason: '监听器存在即有进度消费方 → 注入 token 走流式');
+      expect(seen.single, 'slow_tool:0');
+      face.removeProgressListener(listener);
+      final r2 = await face.execute(AssembledToolCall(
+        id: 'c2',
+        name: 'slow_tool',
+        argumentsJson: '{}',
+      ));
+      expect(r2.isError, isFalse);
+      expect(seen, hasLength(1), reason: '注销后不再接收（消费者生命周期自管）');
+    });
+
+    test('多路复用：构造期回调与监听器扇出并存（两者都收到）', () async {
+      final client = McpClient.http(
+        baseUrl: 'http://127.0.0.1:8765/mcp',
+        httpClient: MockClient((_) async => _sse(_sseBody(
+              resultJson: json.jsonEncode({
+                'jsonrpc': '2.0',
+                'id': 1,
+                'result': {'content': [], 'isError': false},
+              }),
+              progressCount: 1,
+            ))),
+      );
+      var ctorHits = 0;
+      var listenerHits = 0;
+      final face = McpToolFace(
+        client: client,
+        onProgress: (_, _, _, _) => ctorHits++,
+      );
+      face.addProgressListener((_, _, _, _) => listenerHits++);
+      await face.execute(AssembledToolCall(
+        id: 'c1',
+        name: 'x',
+        argumentsJson: '{}',
+      ));
+      expect(ctorHits, 1, reason: '构造期回调语义不变');
+      expect(listenerHits, 1, reason: '运行期监听器并行扇出');
+    });
+
     test('onProgress null → 不注入 progressToken（普通 call）', () async {
       final client = McpClient.http(
         baseUrl: 'http://127.0.0.1:8765/mcp',

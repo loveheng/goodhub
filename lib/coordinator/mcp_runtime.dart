@@ -17,23 +17,25 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 
 import 'agent_loop.dart';
+import 'cow_skill_sync.dart';
 import 'cow_sync.dart';
 import 'degradation_controller.dart';
 import 'discovery_executor.dart';
 import 'fenced_cloud_engine.dart' show PiiFenceDelegate;
 import 'hybrid_assembly.dart';
+import 'local_resource_tool_executor.dart';
+import 'local_tool_chain.dart';
 import 'memory_tool_executor.dart';
 import 'mcp_tool_face.dart';
-import 'permission_gateway.dart' show GateDelegate, PermissionGateway, ToolNotice;
-import 'ref_hydrator.dart';
+import 'permission_gateway.dart' show GateDelegate, ToolNotice;
 import 'ref_store.dart';
-import 'skill_activation_executor.dart';
+import 'ref_hydrator.dart' show CrossSourceDelegate;
 import 'skill_registry.dart';
 import 'tool_breaker.dart' show BlockDelegate;
 import 'tool_router.dart';
 import '../core/errors/mcp_error.dart';
 import '../llm/cloud/cloud_llm.dart'
-    show AssembledToolCall, CloudChatMessage, CloudLlmEngine, CloudToolSchema;
+    show CloudChatMessage, CloudLlmEngine, CloudToolSchema;
 import '../mcp/connection_manager.dart';
 import '../mcp/local_plugin_discovery.dart';
 import '../mcp/mcp_client.dart';
@@ -44,10 +46,10 @@ import '../mcp/elicitation.dart'
 import '../mcp/server_capabilities.dart';
 import '../mcp/server_endpoints.dart';
 import '../mcp/server_probe.dart' show McpClientFactory;
+import 'reserved_namespace.dart';
 import '../resources/resource_store.dart';
 import '../sandbox/memory_store.dart';
 import '../sandbox/workspace_state_store.dart';
-import 'local_resource_tool_executor.dart';
 import 'resource_attachment_binder.dart' show ResourceAttachment, bindResourceAttachments;
 
 // ---------------------------------------------------------------------------
@@ -217,7 +219,12 @@ class McpAssembly {
     required List<McpToolFace> faces,
     required List<McpConnection> connections,
     this.resourceContextFooter,
+
+    /// 借用面监听器（装配层合一 · Contract 件）：close 只摘监听不关 client
+    /// （client 归共享能力源所有）；abort 不遍历借用面（跨消费者取消风险）。
+    Map<McpToolFace, ToolProgressCallback> borrowedListeners = const {},
   })  : _faces = List<McpToolFace>.unmodifiable(faces),
+        _borrowedListeners = Map.of(borrowedListeners),
         _connections = List<McpConnection>.unmodifiable(connections),
         serverSummaries = Map<String, String>.unmodifiable(serverSummaries);
 
@@ -236,6 +243,9 @@ class McpAssembly {
   /// face 在跑」的偶然性（现 `chat_page:959` 取 `faces[serverIds.first]`）。
   final List<McpToolFace> _faces;
   final List<McpConnection> _connections;
+
+  /// 借用面 → 本会话进度监听器（Contract 件）：close 摘除；client 归源。
+  final Map<McpToolFace, ToolProgressCallback> _borrowedListeners;
 
   /// Run 级（§9：Session 结束直清临时文件；refStore 封死不外泄）。
   final RefStore refStore;
@@ -269,6 +279,16 @@ class McpAssembly {
         developer.log('[DEGRADE] mcp-runtime: connection.stop failed: $e');
       }
     }
+    // 借用面（Contract 件）：只摘本会话监听器，**不 close**——client 归共享
+    // 能力源所有，源侧（GatewayController）统一管理释放。
+    for (final entry in _borrowedListeners.entries) {
+      try {
+        entry.key.removeProgressListener(entry.value);
+      } on Object catch (e) {
+        developer.log(
+            '[DEGRADE] mcp-runtime: borrowed listener remove failed: $e');
+      }
+    }
     for (final f in _faces) {
       try {
         f.client.close();
@@ -288,25 +308,6 @@ class McpAssembly {
 // ---------------------------------------------------------------------------
 // T5c · McpRuntime —— 装配入口（步 0 立签名，步 1 搬迁后实现）
 // ---------------------------------------------------------------------------
-
-/// 步 1-T3 自 `chat_page._GuardedExecutor` 迁入（纯 Dart coordinator 件，
-/// 原住 UI 文件）：工具执行按 server 路由到对应 [McpConnection.guardExecute]
-/// （离线窗口整体丢弃、不重放）；无 server 前缀的工具（JIT 元工具/本地工具）透传。
-class GuardedExecutor implements ToolExecutor {
-  GuardedExecutor(this.connections, this.router, this.inner);
-
-  final Map<String, McpConnection> connections;
-  final ToolRouter router;
-  final ToolExecutor inner;
-
-  @override
-  Future<ToolExecutionResult> execute(AssembledToolCall call) {
-    final sid = router.serverFor(call.name);
-    final conn = sid != null ? connections[sid] : null;
-    if (conn != null) return conn.guardExecute(() => inner.execute(call));
-    return inner.execute(call);
-  }
-}
 
 /// 挂载原语出参句柄（步 2 装配原语；类型别名须在顶层，不可嵌套类内）。
 ///
@@ -365,6 +366,14 @@ class McpRuntime {
 
     /// 测试注入位 / 生产由窗口经 lib/app 装配传入；null = 不注册本地资源工具面。
     ResourceStore? resourceStore,
+
+    /// 共享能力源 face 表（装配层合一 · Contract 件，2026-10-23 方向裁决）：
+    /// 生产由 chat 传 `GatewayController.shared.faces`——id 命中即**借用**该
+    /// face（跳过新建/协商/连接，消同源双实例双冷启动），进度经运行期监听器
+    /// 接入本会话；client 归源所有，本会话不 close、不入 abort（跨消费者取消
+    /// 风险），sampling/elicitation/CoW 接线保留源侧现状。缺省空表 = 旧路径
+    /// 全量自建（测试隔离不受影响）。
+    Map<String, McpToolFace> sharedFaces = const {},
   }) async {
     // 装配中途失败（如第 N 个端点 negotiate 抛）：回收已建连接/客户端/RefStore
     // 再上抛——原 chat_page 实现里这些资源都在 _send 的 try-finally 保护下，
@@ -390,6 +399,7 @@ class McpRuntime {
         documentsDirResolver: documentsDirResolver,
         resourceAttachments: resourceAttachments,
         resourceStore: resourceStore,
+        sharedFaces: sharedFaces,
         partialConns: partialConns,
         partialClients: partialClients,
         partialRefStore: (rs) => partialRefStore = rs,
@@ -436,6 +446,7 @@ class McpRuntime {
     required Future<Directory> Function()? documentsDirResolver,
     required List<ResourceAttachment> resourceAttachments,
     required ResourceStore? resourceStore,
+    required Map<String, McpToolFace> sharedFaces,
     required List<McpConnection> partialConns,
     required List<McpClient> partialClients,
     required void Function(RefStore refStore) partialRefStore,
@@ -451,10 +462,44 @@ class McpRuntime {
     final connections = <String, McpConnection>{};
     AgentLoop? loopBox;
 
+    // —— 装配层合一（Contract 件）借用登记：借用面入 faces/summaries（参与
+    // 路由与目录），**不入** partialClients/partialConns（失败清理不碰源侧
+    // client）、**不入** McpAssembly._faces（close 不关、abort 不取消——共享
+    // client 上可能有其他消费者的在途请求，跨消费者取消是踩踏）。sampling/
+    // elicitation/CoW 挂 clients 表，借用面不入表 = 保留源侧既有接线。
+    final borrowedListeners = <McpToolFace, ToolProgressCallback>{};
+    Future<void> borrowShared(
+        String serverId, McpToolFace shared, String summary) async {
+      if (shared.cachedSchemas.isEmpty) await shared.listTools();
+      faces[serverId] = shared;
+      summaries[serverId] = summary;
+      void listener(String tool, num progress, num? total, String? message) {
+        loopBox?.emitToolProgress(tool, progress, total, message);
+        delegates.onProgress?.call(tool, progress, total, message);
+      }
+      shared.addProgressListener(listener);
+      borrowedListeners[shared] = listener;
+    }
+
     // —— T6-2 多连接池：每个端点一个 client + face（协商 + 能力目录）——
     for (final ep in endpoints) {
+      // 共享能力源命中 → 借用（Contract 件）：跳过新建/协商/连接。
+      final shared = sharedFaces[ep.id];
+      if (shared != null) {
+        await borrowShared(ep.id, shared, '${ep.name} (共享能力源)');
+        continue;
+      }
       final key = await apiKeyReader(ep.id);
       final client = factory(ep.endpoint, key);
+      // 保留命名空间断言（#15）：手填端点声明 `host` → 拒装（宁缺勿炸，
+      // 不因一条误配端点炸掉整轮聊天装配）。
+      try {
+        assertServerIdMountable(ep.id, client);
+      } on ReservedNamespaceException catch (e) {
+        note?.call('⚠ 端点 ${ep.id} 挂载被拒: ${e.message}', danger: true);
+        client.close();
+        continue;
+      }
       client.samplingEnabled = true; // 托管 server：声明 sampling（§3.11 消费面）
       final caps = await client.negotiate();
       serverCaps[ep.id] = caps;
@@ -486,8 +531,16 @@ class McpRuntime {
     // —— T-trans-4：本地插件自动挂载（信任闸门已由窗口裁决）——
     for (final info in locals) {
       if (info.serverId.isEmpty || faces.containsKey(info.serverId)) continue;
+      // 共享能力源命中 → 借用（Contract 件）：同端点口径。
+      final shared = sharedFaces[info.serverId];
+      if (shared != null) {
+        await borrowShared(
+            info.serverId, shared, '${info.serverTitle} (本地·共享能力源)');
+        continue;
+      }
       try {
         final client = localPluginDiscovery.createClient(info);
+        assertServerIdMountable(info.serverId, client);
         client.samplingEnabled = true; // 托管 server：声明 sampling（§3.11 消费面）
         final caps = await client.negotiate();
         serverCaps[info.serverId] = caps;
@@ -555,28 +608,34 @@ class McpRuntime {
       };
     }
 
-    // —— 链路序（T6 设计）：Loop → Discovery → SkillActivation → MemoryTool
-    // → Hydration → Gateway → ToolRouter → faces ——
-    final memoryTool = MemoryToolExecutor(inner: router, store: memoryStore);
-    // 本地资源工具（M1-T3）挂 Gateway 内侧：L2 裁决先于执行（对齐 memoryTool）。
-    final localResource = resourceStore == null
-        ? null
-        : LocalResourceToolExecutor(inner: memoryTool, store: resourceStore);
-    final gateway = PermissionGateway(
-      inner: localResource ?? memoryTool,
-      delegate: delegates.gateDelegate, // null = headless fail-closed（§8.1-2）
-      onNotice: (n) => delegates.onNotice?.call(n),
-    );
-    gateway.loadCatalog([
-      ...router.focusedSchemas(),
-      ...MemoryToolExecutor.toolSchemas(),
-      if (localResource != null) ...LocalResourceToolExecutor.toolSchemas(),
-    ]);
     final refStore = RefStore(
       cacheDir: await (tempDirResolver ?? getTemporaryDirectory)(),
       gcInterval: null, // 短会话，close 即焚
     );
     partialRefStore(refStore);
+    // —— 本机工具执行链（T6 链路序唯一 owner = local_tool_chain.dart；
+    // #18 体量治理：抽走后 assemble 只留调用）——
+    final chain = composeLocalToolChain(
+      connections: connections,
+      router: router,
+      summaries: summaries,
+      skills: skills,
+      memoryStore: memoryStore,
+      refStore: refStore,
+      resourceStore: resourceStore,
+      gateDelegate: delegates.gateDelegate,
+      consentDelegate: delegates.consentDelegate,
+      onNotice: delegates.onNotice,
+      onNote: note,
+    );
+    final executor = chain.executor;
+    final gateway = chain.gateway;
+    final resourceToolStore = resourceStore;
+    gateway.loadCatalog([
+      ...router.focusedSchemas(),
+      ...MemoryToolExecutor.toolSchemas(),
+      if (resourceToolStore != null) ...LocalResourceToolExecutor.toolSchemas(),
+    ]);
     // 资源附件绑定（M1-T3）：全文落 run 级 $ref 池 + 产出上下文 footer。
     String? resourceContextFooter;
     if (resourceAttachments.isNotEmpty && resourceStore != null) {
@@ -586,12 +645,7 @@ class McpRuntime {
         resourceAttachments,
       );
     }
-    final hydration = HydratingExecutor(
-      inner: gateway,
-      refStore: refStore,
-      targetResolver: router.serverFor,
-      crossSourceDelegate: delegates.consentDelegate,
-    );
+
     final effectiveEngine = engine ??
         await assembleDefaultHybridEngine(
           controller: context.degradation ?? DegradationController(),
@@ -625,58 +679,22 @@ class McpRuntime {
     }
 
     // —— T6：逐 server CoW 同步（有 prompts 能力者）；skill 名保持
-    // cow/<promptName>，撞名跳过并通告（design 口径）——
-    for (final entry in clients.entries) {
-      final caps = serverCaps[entry.key]!;
-      if (!caps.hasPrompts) continue;
-      try {
-        final cow = CowSyncService(
-          store: CowOverridesStore(
-            dir: await (documentsDirResolver ?? getApplicationDocumentsDirectory)(),
-          ),
-          onMajorJump: delegates.majorJumpDelegate,
-        );
-        for (final i in await cow.sync(entry.value, serverId: entry.key)) {
-          if (i.content == null) continue;
-          final skill = CowSyncService.toSkill(i, entry.key);
-          final existing = skills.byName(skill.name);
-          if (existing != null) {
-            // 撞名（cow/<promptName> 全局唯一）：先到先得，跳过后者并通告用户。
-            note?.call(
-              '⚠ CoW 模板「${i.promptName}」重名：已采用 '
-              '${existing.serverId ?? '内置'} 版本，跳过 ${entry.key} 的同名模板',
-              danger: false,
-            );
-            continue;
-          }
-          try {
-            skills.register(skill);
-          } on ArgumentError catch (e) {
-            note?.call('⚠ CoW Skill 注册跳过: ${i.promptName} — $e', danger: true);
-          }
-        }
-      } on McpException catch (e) {
-        note?.call('CoW 同步失败（Polyfill 降级为无模板注入）：$e', danger: false);
-      }
-    }
+    // cow/<promptName>，撞名跳过并通告用户（design 口径）——
+    // 注入语义独立成件（#18 体量治理）：`cow_skill_sync.dart`。
+    await syncCowSkillsIntoRegistry(
+      clients: clients,
+      serverCaps: serverCaps,
+      skills: skills,
+      documentsDirResolver:
+          documentsDirResolver ?? getApplicationDocumentsDirectory,
+      majorJumpDelegate: delegates.majorJumpDelegate,
+      note: note,
+    );
 
-    final skillExecutor = SkillActivationExecutor(
-      inner: hydration,
-      registry: skills,
-      opsLog: memoryStore,
-    );
-    // T6-3 JIT 两级发现：DiscoveryExecutor 挂最外层（SkillActivation 之前），
-    // 拦截 get_connected_apps / activate_server_tools（L1 本地，不走确认卡）。
-    final discovery = DiscoveryExecutor(
-      router: router,
-      inner: skillExecutor,
-      serverSummaries: summaries,
-      onActivation: (id) => note?.call('✓ 已激活 $id 的工具', danger: false),
-    );
-    final guarded = GuardedExecutor(connections, router, discovery);
+
     final loop = AgentLoop(
       engine: effectiveEngine,
-      executor: guarded,
+      executor: executor,
       blockDelegate: delegates.blockDelegate,
       refStore: refStore,
       refServerId: router.serverIds.isNotEmpty
@@ -701,8 +719,14 @@ class McpRuntime {
       refStore: refStore,
       serverSummaries: summaries,
       resourceContextFooter: resourceContextFooter,
-      faces: faces.values.toList(),
+      // 借用面（Contract 件）不入 _faces：abort 不取消、close 不关 client
+      // （共享 client 上可能有其他消费者在途请求，跨消费者操作是踩踏）。
+      faces: [
+        for (final e in faces.entries)
+          if (!borrowedListeners.containsKey(e.value)) e.value,
+      ],
       connections: connections.values.toList(),
+      borrowedListeners: borrowedListeners,
     );
   }
 
@@ -754,6 +778,8 @@ class McpRuntime {
     ToolProgressCallback? onProgress,
     void Function()? release,
   }) async {
+    // 保留命名空间断言先行（#15）：撞 `host` 保留 serverId 的外部服务在协商前拒装。
+    assertServerIdMountable(serverId, client);
     // 托管挂载原语：声明 sampling capability（§3.11）——gateway / 联调页 /
     // mountEndpoint 均经此，其调用方随后接采样 handler；诊断探针不走此原语故不声明。
     client.samplingEnabled = true;
@@ -774,6 +800,8 @@ class McpRuntime {
   }
 
   static void _noopRelease() {}
+
+
 
   /// 端点挂载原语（§7.5 步 2-3）：按 [ServerEndpoint] 建 HTTP client 并挂载。
   /// 本原语**拥有**它创建的 client：挂载失败即 close 再上抛（调用方无须也无从

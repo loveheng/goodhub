@@ -21,9 +21,13 @@ import '../coordinator/mcp_tool_face.dart';
 import '../coordinator/pii_fence.dart' show redactSync;
 import '../coordinator/ref_store.dart' show parseRefHandle;
 import '../coordinator/tool_router.dart';
+import '../mcp/server_capabilities.dart' show kMcpProtocolVersion;
+import '../mcp/transport/host_transport.dart' show kHostServerId;
 import 'gateway_backpressure.dart' show PerServerBackpressure;
 import 'gateway_loop_guard.dart';
+import 'gateway_system_tools.dart' as sys;
 import 'gateway_security.dart';
+import 'projection_pipeline.dart';
 
 class GatewayHandler {
   GatewayHandler({
@@ -32,6 +36,8 @@ class GatewayHandler {
     this.privateServerIds = const {},
     this.activePrivateServerId,
     this.onListChanged,
+    this.policy = const ProjectionPolicy.full(),
+    this.blockedPlugins = const {},
     GatewayLoopGuard? loopGuard,
   }) : _loopGuard = loopGuard ?? GatewayLoopGuard();
 
@@ -56,6 +62,22 @@ class GatewayHandler {
   /// 由 GatewayController 注入为共享 `_listChanged` 的触发（所有连接同播）。
   final void Function()? onListChanged;
 
+  /// **本连接绑定的投影策略**（host-tools-gateway-export PR2）：`initialize` 期
+  /// 由服务器层解析 URL query 后经 [forSession] 派生注入；此后**可由本连接的
+  /// `gateway__select_private(policy=single|private|full)` 切换**（用户裁决
+  /// 2026-10-23；旧参数 `scope=` 为兼容别名，不进 schema）。
+  ///
+  /// **可变的边界**：只改**本连接**的投影视图，与 [activePrivateServerId] 同性质
+  /// ——绝不触碰宿主私有槽位机、不影响其他连接，故 MO6「PC 无权改写宿主状态」
+  /// 不受影响（被禁的 `use_server` 改的是宿主槽位，二者不同源）。
+  ProjectionPolicy policy;
+
+  /// **已发现但未挂载**的本地插件（serverId → 原因；仅 id 与原因，不含包名 /
+  /// 签名 / Service 类名）。装配层（`GatewayController`）在信任闸门拦下插件时
+  /// 记账于此，供 `gateway__list_servers` 的 `blocked` 段透出——让 PC 侧能区分
+  /// 「宿主没装这个服务」与「装了但尚未信任」，避免把排障支去错方向。
+  final Map<String, String> blockedPlugins;
+
   /// 入站环路防护（A2 止血：Trace-ID 在途集合 + hop_count 深度熔断）。
   /// **每连接独立**（阶段二裁决 per-session loop guard）——单连接的调用链异常
   /// 绝不应熔断另一正常连接。
@@ -66,13 +88,23 @@ class GatewayHandler {
   /// backpressure）——避免多客户端场景单连接饿死全局配额。
   final PerServerBackpressure _backpressure = PerServerBackpressure();
 
-  /// 网关级系统工具：连接投影切换（Connection Projection Switch）。
+  /// 网关级系统工具（**声明与文案 owner = `gateway_system_tools.dart`**；
+  /// #18 体量治理：本文件只留接线与连接态）。
+  ///
   /// 命名空间 `gateway__` 明确标定其为网关系统工具，不污染业务 MCP 服务命名空间，
   /// 且在网关入站路由层做专用拦截（绝不转交任何 face / 宿主槽位机）。
-  static const kGatewaySelectPrivate = 'gateway__select_private';
+  static const kGatewaySelectPrivate = sys.kGatewaySelectPrivate;
 
-  /// 对 PC 暴露的协议版本（与宿主客户端 kMcpProtocolVersion 同源，§1）。
-  static const _protocolVersion = '2025-06-18';
+  /// 列出宿主**当前已挂载的全部 MCP 服务**（术语纠错：列全部而非只列「私有」，
+  /// 详见新件注释）。
+  static const kGatewayListServers = sys.kGatewayListServers;
+
+  /// 网关级系统工具命名空间前缀（零泄漏判定与分派共用）。
+  static const _kGatewayPrefix = sys.kGatewayToolPrefix;
+
+  /// 对 PC 暴露的协议版本（单一事实源 = `mcp/server_capabilities.dart` 的
+  /// [kMcpProtocolVersion]——此前本处为字面量复制，改协议版本会静默分叉）。
+  static const _protocolVersion = kMcpProtocolVersion;
 
   /// 工具目录变更信号（broadcast；GatewayServer 订阅后向 SSE 订阅者下行）。
   final _listChanged = StreamController<void>.broadcast();
@@ -93,10 +125,18 @@ class GatewayHandler {
   /// 共享 [faces] / [privateServerIds] 引用，复制当前宿主默认激活私有，持有
   /// 独立 `_loopGuard` / `_backpressure` / `onListChanged`。`onListChanged` 统一
   /// 指向模板的共享 `_listChanged`，确保任一连接的投影切换广播到全部连接。
-  GatewayHandler forSession() => GatewayHandler(
+  GatewayHandler forSession({
+    ProjectionPolicy? policy,
+    String? activePrivateServerId,
+  }) =>
+      GatewayHandler(
         faces: faces,
         privateServerIds: privateServerIds,
-        activePrivateServerId: activePrivateServerId,
+        // 连接级私有投影绑定：URL 指定 `single&server=<私有服务>` 时由服务器层
+        // 传入（**仅改本连接**，绝不触碰宿主槽位机——与 `gateway__select_private`
+        // 同权限集合，MO6「PC 不得改写宿主状态」不受影响）。
+        activePrivateServerId: activePrivateServerId ?? this.activePrivateServerId,
+        policy: policy ?? this.policy,
         // 2026-10-17 P0-B：安全上下文**随连接派生**（此前是同一引用，导致
         // PC-A 的「本会话记住」给 PC-B 同工具免 L2 确认 = 跨会话提权）。
         security: security?.forSession(),
@@ -107,39 +147,183 @@ class GatewayHandler {
   /// 不留内存态。幂等，可在 stop / idle GC 等任意回收路径调用。
   void disposeSession() => security?.resetSessionGrants();
 
-  /// 网关级系统工具 [kGatewaySelectPrivate] 处理：**仅改写本连接** [activePrivateServerId]，
-  /// 绝不触碰宿主 `discovery_executor` 槽位机或任何 face（连接级投影切换）。
+  /// 网关级系统工具 [kGatewayListServers]：列出宿主**当前已挂载的全部 MCP 服务**。
+  ///
+  /// 每条只给 `server_id` / `tier` / `source` / 只读工具数 / 是否当前目标——
+  /// **不含凭据、端点地址、服务自报名（可能含用户自定义命名）或任何服务内容**。
+  /// 服务 id 本就在既有 `kGatewaySelectPrivate` 拒绝话术中回显过，故不新增暴露面。
+  ///
+  /// **实时性**：每次调用现算，不依赖 `tools/list` 快照——宿主刚改完配置即可复查，
+  /// 无需重连会话。
+  GatewayToolResult _handleListServers() {
+    final rows = [
+      for (final entry in faces.entries)
+        () {
+          final id = entry.key;
+          final isPrivate = privateServerIds.contains(id);
+          final isTarget =
+              policy.isSingle && policy.targetServerId == id;
+          return <String, Object?>{
+            'server_id': id,
+            // 端点隐私级别：仅手填端点可私有；本地插件恒 public（系统托管常驻曝光）。
+            'tier': isPrivate ? 'private' : 'public',
+            // 来源分类（供 PC 判断可动性）：host = 宿主虚拟服务；endpoint-private =
+            // 私有端点；public = 本地插件或 public 端点。
+            'source': id == kHostServerId
+                ? 'host'
+                : (isPrivate ? 'endpoint-private' : 'public'),
+            'shared_tools': entry.value.cachedSchemas.where((s) => s.isShared).length,
+            'current': id == activePrivateServerId,
+            'policy_target': isTarget,
+          };
+        }(),
+    ]..sort((a, b) =>
+        (a['server_id']! as String).compareTo(b['server_id']! as String));
+    if (rows.isEmpty) {
+      return GatewayToolResult(
+        content: blockedPlugins.isEmpty
+            ? '宿主当前未挂载任何 MCP 服务'
+                '（可在宿主 ⚙ 设置 → 节点添加端点，或安装本地插件；'
+                '装好后直接重调本工具即可，无需重连）'
+            : jsonEncode(<String, Object?>{
+                'servers': <Object?>[],
+                'blocked': [
+                  for (final e in blockedPlugins.entries)
+                    {'server_id': e.key, 'reason': e.value},
+                ],
+                'blocked_hint': '这些 MCP 插件已安装但尚未被宿主信任，'
+                    '按 reason 在宿主侧信任后重调本工具即可',
+              }),
+        isError: false,
+      );
+    }
+    return GatewayToolResult(
+      content: jsonEncode(<String, Object?>{
+        'servers': rows,
+        if (blockedPlugins.isNotEmpty)
+          'blocked': [
+            for (final e in blockedPlugins.entries)
+              {'server_id': e.key, 'reason': e.value},
+          ],
+        'hint': '只想跟其中一个服务打交道 → '
+            'gateway__select_private(server_id=<id>, policy=single)'
+            '（目录只剩它的无前缀工具；回联邦面用 policy=full；'
+            '叠加某个私有服务用 policy=private）',
+        if (blockedPlugins.isNotEmpty)
+          'blocked_hint': 'blocked 段列出的是已安装但尚未被宿主信任的 MCP 插件，'
+              '按 reason 在宿主侧完成信任后重调本工具即可（无需重连）',
+        'policy': switch (policy.strategy) {
+          ProjectionStrategy.single => 'single(${policy.targetServerId})',
+          ProjectionStrategy.private => 'private(${policy.targetServerId})',
+          ProjectionStrategy.pruned => 'pruned(${policy.tags.join(",")})',
+          ProjectionStrategy.full => 'full',
+          // owner = 宿主内部档（无 URL 入口，网关侧不可达）——防御性分支：
+          // 真走到这里说明有代码绕过 owner 档的入口约束，按内部档原样回报。
+          ProjectionStrategy.owner => 'owner',
+        },
+      }),
+      isError: false,
+    );
+  }
+
+  /// 网关级系统工具 [kGatewaySelectPrivate] 处理：**仅改写本连接**的投影
+  /// （[activePrivateServerId] 与 [policy]），绝不触碰宿主 `discovery_executor`
+  /// 槽位机或任何 face（连接级投影切换）。
+  ///
+  /// **单轴化（2026-10-23 用户裁决 D1）**：参数 `policy` 为**主名**，`scope`
+  /// 为**兼容别名**（同传时 `policy` 优先；schema 只暴露 `policy` → PC 侧
+  /// 只记一套词表）。字面量四档 `single` / `private` / `full` / `pruned`——
+  /// `pruned` **仅连接建立期可用**（`?policy=pruned&tag=…`；连接内无 tag
+  /// 来源，故此处显式拒绝并给可自纠话术）。
   /// 完成后经 `onListChanged` 通知 PC 重拉自身 tools/list。
   GatewayToolResult _handleSelectPrivate(Map<String, Object?> arguments) {
     final raw = arguments['server_id'];
     if (raw is! String) {
-      return GatewayToolResult(
+      return const GatewayToolResult(
         content: 'gateway__select_private 缺少 server_id 参数'
-            '（传私有服务 id；传 "all" 或空串清空为公共面）',
+            '（传服务 id；传 "all" 或空串清空为公共面/完整联邦面）',
+        isError: true,
+      );
+    }
+    // 兼容别名：`policy` 主名，`scope` 旧名（同传时 `policy` 优先）。
+    final requested = switch (arguments['policy']) {
+      final String s when s.trim().isNotEmpty => s.trim(),
+      _ => switch (arguments['scope']) {
+          final String s when s.trim().isNotEmpty => s.trim(),
+          _ => 'private',
+        },
+    };
+    if (requested != 'single' &&
+        requested != 'private' &&
+        requested != 'full' &&
+        requested != 'pruned') {
+      return const GatewayToolResult(
+        content: 'policy 取值非法（合法字面量：single / private / full / pruned）',
+        isError: true,
+      );
+    }
+    if (requested == 'pruned') {
+      return const GatewayToolResult(
+        content: 'policy=pruned 仅在连接建立期可用（?policy=pruned&tag=<tag>）——'
+            '连接内切换无 tag 来源；请改用 policy=single（单服务，收敛上下文）',
         isError: true,
       );
     }
     final target = raw.trim();
-    if (target.isEmpty || target == 'all' || target == 'public') {
+    final isClear = target.isEmpty || target == 'all' || target == 'public';
+
+    // `single` 的目标允许**任意已挂载服务**（不限于私有）——single 是通用
+    // 收敛语义；私有服务另需连接级绑定（防火墙据此放行）。
+    if (!isClear) {
+      if (!faces.containsKey(target)) {
+        return GatewayToolResult(
+          content: '服务 $target 当前未挂载（可能离线）——'
+              '先用 gateway__list_servers 查看可用服务',
+          isError: true,
+        );
+      }
+      if (requested == 'private' && !privateServerIds.contains(target)) {
+        return GatewayToolResult(
+          content: 'server_id=$target 不是私有服务'
+              '（policy=private 仅可在已配置的私有域中选择；'
+              '要用非私有服务请传 policy=single）',
+          isError: true,
+        );
+      }
+    }
+
+    if (requested == 'single') {
+      if (isClear) {
+        return const GatewayToolResult(
+          content: 'policy=single 必须指定具体服务 id'
+              '（server_id="all" 只在 policy=full 下有意义）',
+          isError: true,
+        );
+      }
+      policy = ProjectionPolicy.single(target);
+      activePrivateServerId =
+          privateServerIds.contains(target) ? target : activePrivateServerId;
+    } else if (requested == 'full') {
+      policy = const ProjectionPolicy.full();
       activePrivateServerId = null;
-    } else if (!privateServerIds.contains(target)) {
-      return GatewayToolResult(
-        content: 'server_id=$target 不是私有服务（仅可在已配置的私有域中选择）',
-        isError: true,
-      );
-    } else if (!faces.containsKey(target)) {
-      return GatewayToolResult(
-        content: '私有服务 $target 当前未挂载（可能离线）',
-        isError: true,
-      );
     } else {
+      // policy=private：完整联邦面 + 该私有服务（私有叠加只对本连接生效）
+      if (isClear) {
+        return const GatewayToolResult(
+          content: 'policy=private 必须指定具体私有服务 id'
+              '（server_id="all" 只在 policy=full 下有意义）',
+          isError: true,
+        );
+      }
+      policy = ProjectionPolicy.private(target);
       activePrivateServerId = target;
     }
     onListChanged?.call();
     return GatewayToolResult(
-      content: activePrivateServerId == null
-          ? '已切换本连接私有投影至公共面（无激活私有域）'
-          : '已切换本连接私有投影至私有域 $activePrivateServerId',
+      content: sys.describeGatewayProjection(
+        policy,
+        activePrivateServerId: activePrivateServerId,
+      ),
       isError: false,
     );
   }
@@ -153,37 +337,60 @@ class GatewayHandler {
   /// **声明非 ACL**：过滤只在目录层收窄（PC 看不见即不可达），`tools/call` 不
   /// 因可见性额外拦截——调用方可信性由信任白名单 / L2 确认卡独立把关，可见性
   /// 不是安全边界。
-  List<Map<String, Object?>> toolsList() => [
-        for (final entry in faces.entries)
-          if (!privateServerIds.contains(entry.key) ||
-              entry.key == activePrivateServerId)
-            for (final s in entry.value.cachedSchemas)
-              if (s.isShared)
-                {
-                  'name': ToolRouter.prefixed(entry.key, s.name),
-                  'description': s.description,
-                  'inputSchema': s.parametersSchema,
-                  if (s.annotations != null) 'annotations': s.annotations,
-                },
-        // 网关级系统工具：连接私有投影切换（阶段二 D-D，命名空间 gateway__）。
-        {
-          'name': kGatewaySelectPrivate,
-          'description':
-              '网关级连接投影切换（Connection Projection Switch）：将本 MCP 连接的'
-              '私有域激活面切换至指定私有服务，不影响宿主或其他连接的私有选择。'
-              'server_id 传私有服务 id；传 "all" 或空串清空为公共面。',
-          'inputSchema': {
-            'type': 'object',
-            'properties': {
-              'server_id': {
-                'type': 'string',
-                'description': '目标私有服务 id；"all" 或空串 = 清空为公共面',
-              },
-            },
-            'required': ['server_id'],
-          },
-        },
-      ];
+  List<Map<String, Object?>> toolsList() {
+    final result = project();
+    _lastProjection = result.signature;
+    return [for (final t in result.tools) t.toJson()];
+  }
+
+  /// 网关级系统工具声明（JSON owner = `gateway_system_tools.dart`）。抽出为
+  /// getter 供投影管道消费（`single` 策略下管道按策略不纳入）。
+  static List<Map<String, Object?>> get systemToolJson =>
+      sys.buildGatewaySystemToolJson();
+
+  /// **四级过滤管道唯一入口**（PR2）：visibility 海关 → 私有投影防火墙 →
+  /// 策略过滤 → 命名格式化。`toolsList`、广播差分、入站边界判定三处共用
+  /// 本投影结果（**同源**，杜绝「目录看得到、调用被拒」的不一致）。
+  ProjectionResult project() {
+    // 系统工具裁剪：`single` 只留 `gateway__select_private`（退出 single 的
+    // **唯一出口**——全隐匿即死锁）；`gateway__list_servers` 在 single
+    // 下无意义（已锁定单一目标），一并隐匿。
+    final tools = policy.isSingle
+        ? [
+            for (final t in systemToolJson)
+              if (t['name'] == kGatewaySelectPrivate) t,
+          ]
+        : systemToolJson;
+    return ProjectionFilter.project(
+      faces: faces,
+      privateServerIds: privateServerIds,
+      // `policy=private` 自带私有叠加目标（联邦面 + 该私有服务）；其余档用
+      // 连接上的显式私有绑定（single 指向私有服务时的连接级绑定 / full 档为 null）。
+      activePrivateServerId:
+          policy.isPrivate ? policy.targetServerId : activePrivateServerId,
+      policy: policy,
+      systemTools: tools,
+    );
+  }
+
+  /// 上次广播/列目录时的投影集签名（**null = 尚未建立基线**）。
+  Set<String>? _lastProjection;
+
+  /// 投影集基线（会话建立 / 每次 `toolsList` 后刷新）——广播差分的比较基准。
+  void markProjectionBaseline() => _lastProjection = project().signature;
+
+  /// 目录变更广播的投影差分判定（PR2）：重算当前投影集并与上次快照比对，
+  /// **无变化即抑制**——同时覆盖「`single` 会话对无关服务上下线无感」与
+  /// 「`full` 会话对私有域变更无感」两类噪音。
+  bool projectionChangedSinceBaseline() {
+    final now = project().signature;
+    final prev = _lastProjection;
+    _lastProjection = now;
+    return prev == null || !_setEquals(prev, now);
+  }
+
+  static bool _setEquals(Set<String> a, Set<String> b) =>
+      a.length == b.length && a.containsAll(b);
 
   /// tools/call 分发（G2）：剥前缀 → face.client 流式执行，进度经 [onProgress]
   /// 回调（服务器层转 SSE 帧）。协议错误/目标缺失转 isError 结果不抛穿。
@@ -196,15 +403,49 @@ class GatewayHandler {
     int hopCount = 0,
     String? sessionId,
   }) async {
-    // 网关级系统工具（阶段二 D-D）：连接投影切换。先于任何路由/防火墙拦截，
-    // 仅改写「本连接」activePrivateServerId，绝不触碰宿主槽位机或任何 face。
-    if (name == kGatewaySelectPrivate) {
-      return _handleSelectPrivate(arguments);
-    }
-    final parsed = parsePrefixedToolName(name);
-    if (parsed == null) {
+    // 网关级系统工具（阶段二 D-D + 用户裁决 2026-10-23）：连接投影切换 / 私有服务
+    // 列举。先于任何路由/防火墙拦截，仅改写「本连接」投影，绝不触碰宿主槽位机
+    // 或任何 face。
+    if (name.startsWith(_kGatewayPrefix)) {
+      // single 下的控制面收窄：**只放行出口工具** `select_private`（否则 PC
+      // 切进 single 后出不来 = 死锁）；其余网关工具显式拒绝。
+      if (policy.isSingle && name != kGatewaySelectPrivate) {
+        return const GatewayToolResult(
+          content: 'gateway__* 是网关连接级系统工具，single 策略下只保留 '
+              'gateway__select_private 作为退出通道；'
+              '回完整联邦面请调 gateway__select_private(server_id="all", '
+              'policy=full)，无需重连',
+          isError: true,
+        );
+      }
+      if (name == kGatewayListServers) return _handleListServers();
+      if (name == kGatewaySelectPrivate) return _handleSelectPrivate(arguments);
       return GatewayToolResult(
-        content: '工具名 $name 缺少服务前缀（应形如 <server_id>__<tool>）',
+        content: '未知网关系统工具 $name（可用：$kGatewayListServers / '
+            '$kGatewaySelectPrivate）',
+        isError: true,
+      );
+    }
+    // 入站工具名判定（PR2）：系统工具拒绝 → single 前缀补齐 / 投影集边界 →
+    // 既有 parsePrefixedToolName 之后的全部分发逻辑。
+    final inbound = resolveInboundToolName(
+      name: name,
+      policy: policy,
+      isProjected: _isProjected,
+    );
+    if (inbound is InboundProtocolError) {
+      return GatewayToolResult(
+          content: inbound.message, isError: true, errorCode: inbound.code);
+    }
+    if (inbound is InboundRejected) {
+      return GatewayToolResult(content: inbound.reason, isError: true);
+    }
+    final effectiveName = (inbound as InboundAllowed).resolvedName;
+    final parsed = parsePrefixedToolName(effectiveName);
+    if (parsed == null) {
+      // 纵深防御：投影管道已判过形态，此处不可达（保留以免上游改判定时静默失守）。
+      return GatewayToolResult(
+        content: '工具名 $effectiveName 缺少服务前缀（应形如 <server_id>__<tool>）',
         isError: true,
       );
     }
@@ -320,6 +561,11 @@ class GatewayHandler {
       _loopGuard.release(trace);
     }
   }
+
+  /// 投影集边界判定（`single` 投影即调用边界）：当前投影集内是否存在该工具。
+  /// **实时重算**（不读目录快照）——face 重扫后即刻生效，杜绝陈旧快照误拒。
+  bool _isProjected(String serverId, String bareName) =>
+      project().signature.contains('$serverId/$bareName');
 
   /// 前缀化工具的 annotations（L1/L2 裁决的 readOnlyHint 源；未命中 → null）。
   Map<String, Object?>? _annotationsFor(

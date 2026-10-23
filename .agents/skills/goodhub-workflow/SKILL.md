@@ -14,7 +14,7 @@ description: goodhub（AI 宿主 App，Flutter/MCP 客户端）工作流事实�
 | **改前定位**：某功能的代码落点 / 文档落点 / 架构债与违例登记 | `docs/project/index.md`（数据；登记规约 = goodhub-index skill） |
 | **命令与环境**：本 skill | 构建/测试/运行/发布命令、环境硬约束（工具链踩坑规则正文查 `context/lessons.md`） |
 
-lib/ 的分层结构与 11 域清单**不在本表登记**——见 `docs/project/coding-standards.md` §1.0（矩阵与护栏）与 `docs/project/index.md`（域内文件与功能落点）。现行 epic 与过程态查 `context/CURRENT` / `context/epics/`，本 skill 不登记。
+lib/ 的分层结构与 12 域清单**不在本表登记**——见 `docs/project/coding-standards.md` §1.0（矩阵与护栏）与 `docs/project/index.md`（域内文件与功能落点）。现行 epic 与过程态查 `context/CURRENT` / `context/epics/`，本 skill 不登记。
 
 ## 读码纪律（省 token 与正确性兼得）
 
@@ -42,6 +42,7 @@ lib/ 的分层结构与 11 域清单**不在本表登记**——见 `docs/projec
 | **新特权工具 / 对外暴露工具** | §5.7 自查清单过一遍；§6.2 主体矩阵**原则与登记要求**核对 | 主体矩阵**枚举值**下沉 `permission_gateway` / `gateway_security` 代码表（改代码时执行） |
 | **跨域 import 命中红灯** | 按 §8.2 处置：先改结构（端口注入 / 类型下沉 core）再写 import；确属历史遗留走白名单纪律（只减不增） | 债表登记与清零记账（**goodhub-index skill** → index.md） |
 | **内核新增 / 搬迁** | §8.4 检查清单过一遍（生命周期层级/纯 Dart/注入位/命名登记） | index.md「内核登记表」更新（**goodhub-index skill**） |
+| **契约面变更**（对外工具改名 / 词表单轴化 / 新单源常量 / 新超标件） | §8.2 门禁矩阵与 §8.3 超标登记核对（规则正文在 standards） | `scripts/agent-tools/drift-registry.txt` **同轮登记**（只加数据行，不改引擎）+ 新规则同步 §8.2 矩阵 |
 
 **维护收尾两件**（standards 侧，同轮完成）：① 刷新 `updated` 字段；② 检查机械镜像（dependency_rules_test / arch-guard）是否需同步——规则正文在文档，代码只镜像不立法。
 
@@ -108,8 +109,9 @@ flutter pub get                 # 依赖拉取（改 pubspec.yaml 后）
 
 ```bash
 toolbox run arch-guard            # ag   # ① 架构红线扫描（秒级：UI 禁 dart:io/平台分支/MethodChannel + 依赖方向）
-flutter analyze                   #      # ② 静态检查 → 0 issue 为交付线
-flutter test --timeout 180s       #      # ③ 单测 → 全绿为交付线（⚠️ 务必带 --timeout，widget 测试默认 10 分钟超时）
+toolbox run drift-guard           # dg   # ② 契约面漂移扫描（秒级：退役词条/单源常量/超标登记；数据 = scripts/agent-tools/drift-registry.txt）
+flutter analyze                   #      # ③ 静态检查 → 0 issue 为交付线
+flutter test --timeout 180s       #      # ④ 单测 → 全绿为交付线（⚠️ 务必带 --timeout，widget 测试默认 10 分钟超时）
 ```
 
 - lib/ 与 docs/ 混改时用聚合门禁按改动范围分派：`toolbox run pre-commit-gate`（pcg；默认秒级 arch-guard，`ARCH_GATE_FULL=1` 追加 flutter test 版依赖护栏，docs/ 改动自动跑 docs-lint）；提交信息过 Conventional Commits 校验：`toolbox run commit-msg-gate`

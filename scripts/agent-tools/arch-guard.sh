@@ -69,6 +69,30 @@ $out
 EOF
 }
 
+# R9 执行面链构造只允许两种形态：装配器层工厂（inner: inner）或内联终端构造
+# （inner: Xxx()）——禁「inner: <执行面实例变量>」的手工链：新层可直接指向链中段，
+# 内层即被整层丢弃（对外表现为「目录可见、调用全败」，实证 2026-10-23）。
+scan_chain_inner() {
+  [ -d "$ROOT/lib" ] || return 0
+  local out line rel rest lineno code
+  out=$(grep -rnE --include='*.dart' --exclude='*.g.dart' \
+        "inner: [a-z][A-Za-z0-9_]*" "$ROOT/lib" 2>/dev/null \
+        | grep -vE "inner: inner([^A-Za-z0-9_]|\$)" \
+        | grep -vE "inner: [a-z][A-Za-z0-9_]*\(" \
+        | grep -vE "^[^:]+:[0-9]+: *(//|\*)" || true)
+  [ -z "$out" ] && return 0
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    rel=${line%%:*}; rest=${line#*:}; lineno=${rest%%:*}; code=${rest#*:}
+    rel=${rel#"$ROOT/"}
+    code=$(printf '%s' "$code" | cut -c1-72 | tr -d '"')
+    HITS="${HITS}FAIL ${rel}:${lineno} [R9-chain-inner] 执行面链层构造须经 composeToolExecutorChain（层工厂形态 inner: inner）或内联终端构造；手工把实例塞进 inner 可致内层整层丢弃（目录可见、调用全败）\n        ${code}\n"
+    COUNT=$((COUNT + 1))
+  done <<PIPE_EOF
+$out
+PIPE_EOF
+}
+
 scan_all() {
   COUNT=0
   HITS=""
@@ -110,6 +134,8 @@ scan_all() {
   scan_pattern "R8-mcp-tool-router" "lib" \
     "引用了 lib/mcp/tool_router.dart（海关过滤件，SA-Q6 不删不引）：生产路由只引 coordinator/tool_router.dart，防同名误导入" \
     "import '[^']*mcp/tool_router\.dart" "lib/mcp/tool_router.dart"
+  # R9 执行面链构造（手工把实例塞进 inner 可致内层整层丢弃）
+  scan_chain_inner
   return 0
 }
 
@@ -132,7 +158,7 @@ report_json() {
     printf '{"status":"OK","severity":"info","message":"arch-guard: 架构硬约束全部通过"}\n'
     return 0
   fi
-  msg="arch-guard: $COUNT 处架构硬约束违规（R1 UI dart:io / R2 UI 平台分支 / R3 UI MethodChannel / R4 core 零出向 / R5 mcp·sandbox 不依赖 coordinator / R6 mcp·sandbox 不依赖 llm / R7 ui 不直连 gateway_controller / R8 禁引 mcp/tool_router.dart）"
+  msg="arch-guard: $COUNT 处架构硬约束违规（R1 UI dart:io / R2 UI 平台分支 / R3 UI MethodChannel / R4 core 零出向 / R5 mcp·sandbox 不依赖 coordinator / R6 mcp·sandbox 不依赖 llm / R7 ui 不直连 gateway_controller / R8 禁引 mcp/tool_router.dart / R9 执行面链构造须经装配器）"
   remedy="裸跑 toolbox run arch-guard 看逐条明细；对照 docs/project/coding-standards.md §1.2/§1.3 修正，历史遗留加白名单并注明原因"
   printf '{"status":"FAIL","severity":"error","message":"%s","remedy":"%s"}\n' "$msg" "$remedy"
   return 1
@@ -172,8 +198,18 @@ EOF
   cat >"$bad/lib/coordinator/bad_router.dart" <<'EOF'
 import '../mcp/tool_router.dart';
 EOF
+  # R9 手工执行面链（inner 指向实例变量）
+  cat >"$bad/lib/coordinator/bad_chain.dart" <<'EOF'
+final memoryTool = MemoryToolExecutor(inner: router, store: store);
+EOF
 
-  mkdir -p "$clean/lib/ui" "$clean/lib/core" "$clean/lib/mcp" "$clean/lib/sandbox"
+  mkdir -p "$clean/lib/ui" "$clean/lib/core" "$clean/lib/mcp" "$clean/lib/sandbox" "$clean/lib/coordinator"
+  # 干净样本：装配器层工厂形态（inner: inner）+ 内联终端构造
+  cat >"$clean/lib/coordinator/ok_chain.dart" <<'EOF'
+final executor = composeToolExecutorChain([
+  (inner) => MemoryToolExecutor(inner: inner, store: store),
+], fallback: const _NeverExecutor());
+EOF
   cat >"$clean/lib/ui/ok_widget.dart" <<'EOF'
 import 'package:goodhub/core/storage/abstract_store.dart';
 final s = await store.read();
@@ -191,8 +227,8 @@ import '../core/chat_message_data.dart';
 EOF
 
   ROOT="$bad"; scan_all
-  if [ "$COUNT" -lt 9 ]; then
-    echo "SELF-TEST FAIL: 坏样本只抓到 $COUNT 处（期望 >=9：R1-R8 各至少 1）" >&2
+  if [ "$COUNT" -lt 10 ]; then
+    echo "SELF-TEST FAIL: 坏样本只抓到 $COUNT 处（期望 >=10：R1-R9 各至少 1）" >&2
     printf '%b' "$HITS" >&2
     return 2
   fi

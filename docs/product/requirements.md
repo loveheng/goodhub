@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-21
+updated: 2026-10-23
 ---
 
 > **名词映射（2026-10-16）**：本文件中的「服务大厅」= 现**设置页**（`lib/ui/settings_page.dart`）——聊天页 ⚙ 设置弹层已并入服务大厅并统一改名「设置」。历史决策/施工原文**保留不替换**，代码与现行文档以新名为准（合并记录见 [page-revamp.md](page-revamp.md)）。
@@ -32,7 +32,7 @@ updated: 2026-10-21
 | F1.2 | ToolRouter 命名空间前缀隔离（`goodshare__tool`） | P0 |
 | F1.3 | JIT 两级工具发现 + 静态首级摘要（每 Server 一行常驻系统提示词，Turn 1 直达激活）：元工具常驻 + `activate_server_tools` 按需注入 | P0 |
 | F1.4 | 心跳探活、在线/离线状态展示、断线重连 | P1 |
-| F1.5 | MCP Server 角色：`:8766/mcp` 监听 + 聚合工具面（特权工具按 L1/L2 裁决逐步开放） | P1（**已落地** 2026-10-13，G1~G5；见 architecture.md 分期表 M1.5 行） |
+| F1.5 | MCP Server 角色：`:8766/mcp` 监听 + 聚合工具面（特权工具按 L1/L2 裁决逐步开放） | P1（**已落地** 2026-10-13，G1~G5；见 architecture.md 分期表 M1.5 行；**2026-10-23 增补**：宿主能力经 `host` 虚拟服务按 Allowlist 渐进开放，见 F1.20） |
 | F1.6 | 进程内零拷贝直调（handler 与 HTTP 路径共用） | P1（**未落地**：网关经 `face.client` 复用同一 McpClient 链路，未做进程内直调短路；延后至本地插件高频调用出现实测瓶颈） |
 | F1.7 | 聚合网关 `$ref` 暂存池（形态 A） | P2 |
 | F1.8 | Integration Hub 接线看板 + 跨 App 审计标记 | P2（**未落地**：ops.log 已有 `server=gateway` 入站审计，看板 UI 未做；延后至多插件接入） |
@@ -44,9 +44,10 @@ updated: 2026-10-21
 | F1.14 | MCP Resources + Subscriptions：只读数据走 Resource URI（`resources/list`、`read`）上下文注入；`resources/subscribe` 感知服务端数据变更（**依赖 goodshare 契约扩展**） | P1 |
 | F1.15 | `$/progress` 进度通告：progressToken 下发 + 卡片 `Running(progress/total)` 态 + 无更新超阈值提示疑似卡死 | P1 |
 | F1.16 | Sampling 反向推理：`sampling/createMessage` + Server 级配额上限（M2+，依赖端侧引擎稳定） | P2（**部分落地**：Client 侧 sampling 反向闭环已落（M3-T1）并接入网关反向在途表；**Server 级配额上限未落**——延后至外部客户端高频调用场景出现） |
-| F1.17 | 同机接入准入：回环与局域网**均强制** Bearer Token；Binder UID + 签名 SHA-256 白名单 → TTL Session Token，未授权 403（五轮评审，P0） | P0（**部分落地**：Bearer Token 强制校验已落（G3，未授权 401）；Binder UID + 签名 SHA-256 白名单已落（§1.2.6 信任卡片 + 同签名零弹窗）；**TTL Session Token 未落**——现为长期配对 Token，延后至多 PC 共用 / 需要会话级吊销的场景） |
+| F1.17 | 同机接入准入：回环与局域网**均强制** Bearer Token；Binder UID + 签名 SHA-256 白名单 → TTL Session Token，未授权 403（五轮评审，P0） | P0（**部分落地**：Bearer Token 强制校验已落（G3，未授权 401）；Binder UID + 签名 SHA-256 白名单已落（§1.2.6 信任卡片 + 同签名零弹窗）；**TTL Session Token 未落**——现为长期配对 Token，延后至多 PC 共用 / 需要会话级吊销的场景。**2026-10-23 增补**：默认**自动生成**配对 Token（起服必带 Bearer）；「免鉴权」降级为**显式**逃生口（关闭自动生成 + 留空，仅建议 ADB 转发），意图落盘防下次开启被静默补 Token 推翻——安全默认由「留空 = 不鉴权」改为「留空 = 自动生成」） |
 | F1.18 | 能力协商与降级垫片：initialize capabilities 协商；Tier 2（Vanilla MCP）自动 Polyfill——无 resources/progress/prompts/订阅各自默认降级，不抛异常 | P0 |
 | F1.19 | SessionManager：会话粒度隔离（缓存区/激活工具表/滑动窗口/暂存池归属）；前台优先 + 后台有界队列（深度 4 可配）超限 429 | P0（后台队列仲裁挂起，随 Server 角色；会话隔离在 Client 侧生效） |
+| F1.20 | 宿主能力经网关导出（`host` 虚拟服务 / `host__` 命名空间）+ **策略投影**（单轴 `policy`：`single` / `private` / `full` / `pruned`，旧 `strategy=`/`scope=` 作兼容别名）+ 连接级控制面（列举已挂载服务 / 切换投影）：显式 Allowlist 登记（未登记者不导出）、`host` 保留字门禁、标注 `readOnlyHint`/`destructiveHint` 强制声明 | P1（**2026-10-23 已落地（待真机验收）**：设计 SSOT `docs/design/host-tools-gateway-export.md`；首项登记 `get_host_status`（零隐私只读），记忆读写等隐私能力**默认不登记**——是否向外部 AI 暴露宿主长期记忆属产品定位问题，须单独立项） |
 
 ### F2 混合推理编排
 

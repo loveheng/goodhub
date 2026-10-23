@@ -17,6 +17,32 @@ class GatewayServiceChannel {
 
   static Future<void> stop() => _invoke('stop');
 
+  /// 电池优化白名单状态（true = 已在白名单）。
+  ///
+  /// 未加白名单时，息屏进 Doze 会限网 → PC 侧表现为「过段时间连接掉了」
+  /// （G4 遗留项，2026-10-23 收口）。查询失败按「未加」处理（宁可多提示）。
+  static Future<bool> batteryExemptionStatus() async {
+    try {
+      return await _channel.invokeMethod<bool>('batteryExemptionStatus') ??
+          false;
+    } on Object catch (e) {
+      debugPrint('[DEGRADE] gateway-service: batteryExemptionStatus: $e');
+      return false;
+    }
+  }
+
+  /// 跳系统申请电池优化白名单（需用户在系统弹窗确认）。
+  /// 返回是否**当场**已生效（用户未确认时为 false——状态以下次查询为准）。
+  static Future<bool> requestBatteryExemption() async {
+    try {
+      return await _channel.invokeMethod<bool>('requestBatteryExemption') ??
+          false;
+    } on Object catch (e) {
+      debugPrint('[DEGRADE] gateway-service: requestBatteryExemption: $e');
+      return false;
+    }
+  }
+
   static Future<void> _invoke(String method) async {
     try {
       await _channel.invokeMethod<void>(method);

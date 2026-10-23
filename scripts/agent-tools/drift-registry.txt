@@ -1,0 +1,30 @@
+# drift-registry.txt — goodhub 契约面漂移登记（drift-guard 数据源）
+#
+# 维护纪律（coding-standards §8）：契约面变更——工具改名 / 词表单轴化 /
+# 新单源常量 / 新超标件——须**同轮**登记对应行，缺登记即被 drift-guard 拦下。
+# 历史留档用行内 `drift:keep` 显式豁免（禁静默）；合法镜像登记进 CONST 行。
+# 格式：BANNED|token|scopes|reason ／ CONST|name|literal|declaring[,mirrors] ／ OVERSIZE|limit|listfile
+# scope = 目录（递归 .dart/.md）或文件；.dart 整行注释不判；context/ 是历史账归属，不扫。
+
+# —— D1 BANNED：退役词条（token 级）——
+# 旧工具名（2026-10-23 术语纠错：list_private_servers → list_servers）。
+# PC 侧模型照抄文案里的旧名即调不存在的工具（幻觉调用源）→ lib 与 docs 全禁。
+BANNED|gateway__list_private_servers|lib,docs|旧工具名，PC 照抄即幻觉调用（现名 gateway__list_servers）
+# D1 单轴化（2026-10-23 裁决）后旧 URL 键。只禁 lib/gateway（PC 可见 copy）：
+# docs 叙述兼容别名合法（`旧键 strategy= 仍可用`），散文级一致性归 ::audit 人判。
+# token 带 `?`+`=` 防误伤兼容别名代码 query['strategy']。
+BANNED|?strategy=|lib/gateway|D1 单轴化后旧 URL 键（现行键 policy=）
+# D1 单轴化后旧参数名（工具 schema 只暴露 policy；docs 叙述兼容别名合法，故只禁 PC copy）。
+BANNED|scope=|lib/gateway|D1 单轴化后旧参数名（现行参数 policy）
+
+# —— D2 CONST：单源常量（字面量级）——
+# 搜索面 = lib/ + test/ 的 Dart 代码（注释剥除）；docs 散文提及不判。
+# MCP 协议版本：2026-10-23 评估轮发现 handler 曾有字面量复制（自称同源实为分叉）。
+CONST|kMcpProtocolVersion|2025-06-18|lib/mcp/server_capabilities.dart
+# 网关默认端口：2026-10-23 收敛双声明（gateway_server + gateway_controller 各写一份 8766）。
+CONST|kGatewayDefaultPort|8766|lib/gateway/gateway_server.dart
+
+# —— D3 OVERSIZE：体量登记（行数级）——
+# lib/ 超 800 行的件必须登记在超标清单（docs/project/index.md「存量超标清单」节，
+# 按 lib/ 前缀剥离形态登记）；「登记件只减不增」的基线跟踪留 git numstat 人判。
+OVERSIZE|800|docs/project/index.md

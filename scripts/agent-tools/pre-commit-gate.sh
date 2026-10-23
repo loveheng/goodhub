@@ -1,13 +1,13 @@
 #!/bin/sh
-# pre-commit 聚合门禁：提交前机械拦截——arch-guard 架构硬约束 + docs-lint 文档规范。
+# pre-commit 聚合门禁：提交前机械拦截——arch-guard 架构硬约束 + docs-lint 文档规范 + drift-guard 契约面漂移。
 # 复用既有单工具而非重写规则；无 lib/ 改动则跳过 arch-guard，无 docs/ 改动则跳过 docs-lint。
 #
 # toolbox-script
 # format: v1
 # name: pre-commit-gate
-# summary: 提交前门禁：按改动范围分派 arch-guard（lib/ 改动）与 docs-lint（docs/ 改动），任一 FAIL 拒绝提交
+# summary: 提交前门禁：按改动范围分派 arch-guard（lib/ 改动）、docs-lint（docs/ 改动）、drift-guard（lib/ 或 docs/ 改动），任一 FAIL 拒绝提交
 # trigger: pre-commit
-# after: arch-guard,docs-lint,check-contract-sync
+# after: arch-guard,docs-lint,check-contract-sync,drift-guard
 # cat: test
 # alias: pcg
 # platform: unix
@@ -21,6 +21,8 @@ usage() {
 用法: pre-commit-gate.sh [选项]      （toolbox run pre-commit-gate [选项] 等价）
   提交前门禁：git 取暂存区改动，涉及 lib/ 跑 arch-guard，涉及 docs/ 跑 docs-lint，
   涉及 android/ 跑 check-contract-sync（本地插件 AIDL 契约跨仓双副本防漂移）；
+  涉及 lib/ 或 docs/ 跑 drift-guard（契约面漂移：退役词表 / 单源常量 / 超标登记，
+  数据 = scripts/agent-tools/drift-registry.txt，引擎在全局 toolbox 池）；
   任一 FAIL → exit 1 拒绝提交（规则本身在各自工具内，本脚本只做分派与聚合）。
 选项:
   --root <目录>  指定仓库根（默认 git 顶层 / 当前目录）
@@ -96,6 +98,17 @@ run() {
       bash "$SCRIPT_DIR/check-contract-sync.sh" --root "$ROOT" || { rc=1; agg=$((agg+1)); }
     else
       echo "⚠ check-contract-sync.sh 缺失，跳过（fail-open）"
+    fi
+  fi
+  # drift-guard：契约面漂移（退役词表 / 单源常量 / 超标登记）。引擎在**全局**
+  # toolbox 池（跨项目共用一份），数据在本仓 scripts/agent-tools/drift-registry.txt。
+  # toolbox 缺失 → fail-open + 明示兜底路径（CI 侧 Dart 镜像仍把关）。
+  if [ "$LIB_TOUCHED" -gt 0 ] || [ "$DOC_TOUCHED" -gt 0 ]; then
+    echo "==> pre-commit-gate: 有 lib/docs 改动，跑 drift-guard（契约面漂移）"
+    if command -v toolbox >/dev/null 2>&1; then
+      toolbox run drift-guard --root "$ROOT" || { rc=1; agg=$((agg+1)); }
+    else
+      echo "⚠ toolbox 不可用，drift-guard 跳过（fail-open：CI 侧 test/architecture/drift_rules_test.dart 仍把关）"
     fi
   fi
   if [ "$rc" -eq 0 ]; then

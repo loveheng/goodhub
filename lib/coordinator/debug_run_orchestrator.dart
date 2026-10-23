@@ -48,6 +48,7 @@ import 'ref_store.dart';
 import 'skill_activation_executor.dart';
 import 'skill_registry.dart';
 import 'tool_breaker.dart';
+import 'tool_executor_chain.dart';
 import 'user_prompt_store.dart';
 
 /// 状态带色调（窗口侧的 `CapsuleTone` 是 UI 枚举，编排件只用三档语义）。
@@ -251,35 +252,16 @@ class DebugRunOrchestrator {
       final supportDir = await (cfg.supportDirResolver ??
           getApplicationSupportDirectory)();
       final memoryStore = MemoryStore.underSupportDir(supportDir.path);
-      final gateway = PermissionGateway(
-        // M4-T2：记忆工具面挂 Gateway 内侧——update_memory（写）先过 L2 裁决
-        // 再执行（F4.4 记忆类写路径强制 L2），query_memory 只读 L1。
-        inner: MemoryToolExecutor(inner: face, store: memoryStore),
-        delegate: cfg.gate,
-        onNotice: (n) {
-          cfg.onPill(n.toolName, DebugPillTone.busy);
-          cfg.onNotice?.call();
-        },
-      );
-      gateway.loadCatalog([
-        ...schemas,
-        ...MemoryToolExecutor.toolSchemas(),
-      ]);
       // M2.5-T4 注水拦截：AgentLoop → HydratingExecutor → Gateway → Face
       // （先注水再网关——L1/L2 按注水后真实入参裁决）；RefStore 会话粒度，
       // run 一次 = 一会话，finally 即焚（§9 Session 结束直清）。
       final tempDir = await (cfg.tempDirResolver ?? getTemporaryDirectory)();
-      refStore = RefStore(
+      final runRefStore = RefStore(
         cacheDir: tempDir,
         gcInterval: null, // debug 页短会话，退出即 expireAll，不靠周期 GC
       );
-      final hydration = HydratingExecutor(
-        inner: gateway,
-        refStore: refStore,
-        targetServerId: face.serverId,
-        crossSourceDelegate: (handle, from, to, preview) =>
-            cfg.crossSource(handle, from, to, preview),
-      );
+      refStore = runRefStore;
+
       final engine = cfg.useScriptedEngine
           ? ScriptedDebugEngine()
           : await assembleDefaultHybridEngine(
@@ -307,9 +289,7 @@ class DebugRunOrchestrator {
           params,
         ).whenComplete(() => cfg.onSamplingEnd?.call());
       };
-      final executor = cfg.injectFaults
-          ? _FaultInjector(inner: hydration, failTimesPerTool: 2)
-          : hydration as ToolExecutor;
+
       // M2.5-T5 三级 Skill：注册表会话粒度 + activate_skill 元工具最外层拦截
       // （本地工具不外发 server）；Global/App-Scoped 注入 system prompt 组装。
       final skills = SkillRegistry()..registerAll(builtinSkills());
@@ -352,20 +332,55 @@ class DebugRunOrchestrator {
           );
         }
       }
-      final skillExecutor = SkillActivationExecutor(
-        inner: executor,
-        registry: skills,
-        opsLog: memoryStore,
-      );
+
       if (cfg.injectFaults) {
         yield const DebugRunNote(
           '⚠ 故障注入开启：每个工具前 2 次调用强制失败（联调熔断卡）',
           danger: true,
         );
       }
+      // 执行面链经**唯一装配器** composeToolExecutorChain（架构债 #19 根治）：
+      // 层按「优先级高 → 低」给出，折叠方向固定逐层向外——调用点无法再写出
+      // 「inner 指向链中段」的丢层形态（该形态曾致内层整层丢弃、目录可见而调用全败）。
+      PermissionGateway? gatewayRef;
+      final executor = composeToolExecutorChain([
+        (inner) => SkillActivationExecutor(
+          inner: inner,
+          registry: skills,
+          opsLog: memoryStore,
+        ),
+        if (cfg.injectFaults)
+          (inner) => _FaultInjector(inner: inner, failTimesPerTool: 2),
+        (inner) => HydratingExecutor(
+          inner: inner,
+          refStore: runRefStore,
+          targetServerId: face.serverId,
+          crossSourceDelegate: (handle, from, to, preview) =>
+              cfg.crossSource(handle, from, to, preview),
+        ),
+        (inner) {
+          final g = PermissionGateway(
+            // M4-T2：记忆工具面挂 Gateway 内侧——update_memory（写）先过 L2 裁决
+            // 再执行（F4.4 记忆类写路径强制 L2），query_memory 只读 L1。
+            inner: inner,
+            delegate: cfg.gate,
+            onNotice: (n) {
+              cfg.onPill(n.toolName, DebugPillTone.busy);
+              cfg.onNotice?.call();
+            },
+          );
+          gatewayRef = g;
+          return g;
+        },
+        (inner) => MemoryToolExecutor(inner: inner, store: memoryStore),
+      ], fallback: face);
+      gatewayRef!.loadCatalog([
+        ...schemas,
+        ...MemoryToolExecutor.toolSchemas(),
+      ]);
       final loop = AgentLoop(
         engine: engine,
-        executor: skillExecutor,
+        executor: executor,
         blockDelegate: cfg.block,
         summarizer: cfg.summarizeResults
             ? OnDeviceResultSummarizer(ChannelLlmEngine()).call

@@ -15,6 +15,9 @@ library;
 
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -57,4 +60,31 @@ Future<ResourceStore> resourceStore() async {
   await store.load(); // 幂等；损坏 → 空库 + DEGRADE。
   _resourceStore = store;
   return store;
+}
+
+/// 应用版本字符串（`version+buildNumber`）——进程内缓存，读取失败按 `unknown`
+/// 兜底（**非数据面降级**：环境事实拿不到不该让调用链炸）。
+///
+/// 2026-10-23 新增：`get_host_status` 需要真实版本（PC 据此做协议兼容判断，
+/// 占位版本会让工具产生误导）。此前版本读取散在 `ui/sections/about_section`
+/// 与 `ui/update_page` 两处自调 `PackageInfo.fromPlatform()`——后续可一并收敛
+/// 到本访问器（本次不改 UI，避免扩大改动面）。
+String? _appVersion;
+
+/// 测试注入位（非空时 [appVersion] 恒返回之，免平台插件依赖）。
+String? appVersionOverride;
+
+/// 应用版本（应用级单入口，缓存一次）。
+Future<String> appVersion() async {
+  final injected = appVersionOverride;
+  if (injected != null) return injected;
+  final cached = _appVersion;
+  if (cached != null) return cached;
+  try {
+    final info = await PackageInfo.fromPlatform();
+    return _appVersion = '${info.version}+${info.buildNumber}';
+  } on Object catch (e) {
+    debugPrint('[DEGRADE] service-directory: 版本读取失败按 unknown: $e');
+    return _appVersion = 'unknown';
+  }
 }

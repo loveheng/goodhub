@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-21
+updated: 2026-10-23
 ---
 
 # GoodHub 工程规范（Engineering Specification / Architecture SSOT）
@@ -133,7 +133,7 @@ flowchart TD
 4. **存量直连（遗留债）**：存量清单逐边登记于 `index.md`，**新增任何清单外直连即违例**；收敛方向 = 经 coordinator 门面 + 端口回传，每清一边同轮更新 index.md。
 5. **gateway → coordinator 执行面白名单（默认拒绝）**：gateway 可 import 的 coordinator 文件仅限登记于 `index.md` 的执行面清单；**coordinator 新增文件默认对 gateway 不可见**，确需引入先改清单再写 import。
 
-> 尾注（前瞻项）：§1.4 第 4/5 条白名单目前为**文档态基线**，机械镜像（dependency_rules_test / arch-guard 新规则）待立项补——CI 缺口（无自动化触发入口）收敛时一并接线（债表 #13）。
+> 尾注（前瞻项）：§1.4 第 4/5 条白名单目前为**文档态基线**，机械镜像（dependency_rules_test / arch-guard 新规则）待立项补——**CI 已就绪**（`.github/workflows/ci.yml` 跑整个 `test/architecture/`），镜像落 `test/architecture/` 即自动被 CI 覆盖。
 
 ### 1.5 新功能落点决策表
 
@@ -155,7 +155,7 @@ flowchart TD
 
 ### 1.6 新顶层域纪律
 
-`lib/` 新增一级域（当前 11 域之外的任何新前缀）须**三处同步**，缺一即护栏盲区：① `test/architecture/dependency_rules_test.dart` 的 `kGoodhubDomains` 集合；② 本文 §1.0 分层矩阵（角色 + 允许出向）；③ `index.md`（域内文件落点）。**拍板前禁止新增前缀**——需要新域先问「是否可落现有域的子目录」（如 `llm/cloud/`、`mcp/transport/` 先例）。
+`lib/` 新增一级域（当前 12 域之外的任何新前缀）须**三处同步**，缺一即护栏盲区：① `test/architecture/dependency_rules_test.dart` 的 `kGoodhubDomains` 集合；② 本文 §1.0 分层矩阵（角色 + 允许出向）；③ `index.md`（域内文件落点）。**拍板前禁止新增前缀**——需要新域先问「是否可落现有域的子目录」（如 `llm/cloud/`、`mcp/transport/` 先例）。
 
 ## 2. 状态、数据不可变性与生命周期（State & Lifecycle）
 
@@ -312,6 +312,7 @@ class ActionCardFailed extends ActionCardState { final String error; /* ... */ }
 - `mcp`：ToolRouter 命名空间隔离（`<server_id>__<tool>` 剥前缀路由）、JIT 元工具命中解析。
 - `coordinator`：两步熔断、步数墙、**用户拒绝不计入熔断计数**、`$ref` 注入生命周期（Session 即焚 + TTL 30min + 启动幂等清池）、PII 遮蔽失败 fail-closed 三路。
 - **内核须带注入位 + 装配级测试**：装配函数**必须接受依赖注入位**（`clientFactory` / `storeOverride` 范式）——资源句柄封死后，「连接是否全部 close」**只能靠注入假件计数断言**；同时补**装配产物等价性**单测（搬迁前后逐项一致），**不得只靠真机冒烟**（真机侧载是 UI 唯一验证路径，但不是装配正确性的验证路径）。
+- **链式装配等价性（多层执行面 / 装饰器链）**：链式装配**一律经唯一装配器** `lib/coordinator/tool_executor_chain.dart`（`composeToolExecutorChain`：层按「优先级高 → 低」给出，折叠方向固定逐层向外 → 调用点**无法表达**「inner 指向链中段」的丢层形态），并补「全成员在场可调」单测——链条任一层被覆盖即产生「目录可见、调用全败」；实证 2026-10-23 宿主执行链丢层（架构债 #19 已结项）。机械门禁 = `arch-guard.sh` R9 + `test/architecture/executor_chain_rules_test.dart`（含金丝雀）
 - **有状态 UI 段**：设置页各段 State 必须混 `AutomaticKeepAliveClientMixin`——不变式由 `test/ui/settings_sections_keepalive_test.dart` 反向闸住。
 - **测试基线纪律**：门禁 = **不劣于开工前实测基线**（`flutter analyze` 0 issue + `flutter test --timeout 180s` 全绿），**不锁死测试总数**——新增用例只增不删，删用例须在 devlog 说明理由。
 
@@ -322,15 +323,21 @@ class ActionCardFailed extends ActionCardState { final String error; /* ... */ }
 | 层级依赖防腐（§1.0 护栏表 R1~R6） | `test/architecture/dependency_rules_test.dart`（flutter test 版，剥注释匹配 import/export URI） | `flutter test` |
 | 同上（镜像） | `scripts/agent-tools/arch-guard.sh` 秒级版（R4~R8） | pre-commit 钩子 |
 | 平台隔离（UI 禁 dart:io / Platform.isX / MethodChannel） | `arch-guard.sh` R1~R3 | pre-commit 钩子 |
+| 执行面链构造（禁手工把执行面实例塞进另一层的 `inner`） | `arch-guard.sh` R9（秒级版）+ `test/architecture/executor_chain_rules_test.dart`（flutter test 版，含金丝雀） | pre-commit 钩子 / `flutter test` |
 | 释放完整性（注入 fake 计数断言） | `test/mcp/release_hygiene_test.dart` 等（§7/§8.1） | `flutter test` |
+| 契约面漂移（退役词条 / 单源常量 / 超标登记核对） | `test/architecture/drift_rules_test.dart`（flutter test 版，读 `scripts/agent-tools/drift-registry.txt`） | `flutter test` |
+| 同上（引擎，跨项目共用） | 全局 `toolbox run drift-guard`（shell 版，读同一 registry） | pre-commit 钩子 |
 | 文件膨胀控制 | 单文件软红线 800 行（§8.3） | 评审 + `index.md` 清单 |
 
-> 两套镜像**编号相互独立**（shell 版多出 3 条 `ui` 平台纪律），引用时带实现名。规则 SSOT 链：`window-kernel-split.md` §5 铁律 → 本文 §1.0/§1.1 → 两套脚本。**新增跨域 import 前先查 §1.0 护栏表与 [`index.md`](index.md) 索引行**：命中红灯 = 先改结构（端口注入 / 类型下沉 core）再写 import，而不是申请白名单。CI 缺口（无自动化触发入口）与白名单机械镜像为待接项（债表 #13 / §1.4 尾注）。
+> **契约面漂移的规则数据 = `scripts/agent-tools/drift-registry.txt`**（唯一数据源；引擎与 Dart 镜像同读，registry 缺行即漏检）。三类登记：`BANNED` 退役词条（token 级，面向下游 copy 与 docs）· `CONST` 单源常量（字面量级，只许出现在声明处 + 登记镜像）· `OVERSIZE` 超标登记核对（行数级，>800 行的 lib/ 件须登记在 `index.md` 超标清单）。**新规则只加数据行、不改引擎代码**——新退役词条 / 新单源常量 / 新超标件须**同轮登记**，缺登记即被门禁拦下（发现即维护）。诚实边界：docs 与代码的散文级集合描述一致性（如三档 vs 四档）机械不可靠，**不做扫描**，归 `::audit` 人判。
+
+> 两套镜像**编号相互独立**（shell 版多出 3 条 `ui` 平台纪律），引用时带实现名。规则 SSOT 链：`window-kernel-split.md` §5 铁律 → 本文 §1.0/§1.1 → 两套脚本。**新增跨域 import 前先查 §1.0 护栏表与 [`index.md`](index.md) 索引行**：命中红灯 = 先改结构（端口注入 / 类型下沉 core）再写 import，而不是申请白名单。CI 已覆盖全量门禁（`.github/workflows/ci.yml`：analyze + 全量 test + arch-deps）；**白名单机械镜像**仍为待接项（§1.4 尾注）。
 
 ### 8.3 单文件体量护栏
 
 - **软红线 800 行**：新文件评审时超 800 行须拆分；800~1200 行的新文件须在文件头注释声明拆分计划。
 - **存量超标清单（只减不增）**：登记于 [`index.md`](index.md)「存量超标清单」，行数为软参考（以实测为准，不锁行号防漂移）；任一件降到 800 以下即从清单移除。
+- **超标登记的机械核对**：`drift-guard` 的 `OVERSIZE` 登记项（`OVERSIZE|800|docs/project/index.md`）拦「新增超标件未登记」——新件长过 800 行而未进清单即红灯（清单内的只减不增基线跟踪留 `git diff --numstat` 人判，机械不记基线防漂移）。
 
 ### 8.4 新内核 / 新装配件检查清单（开工前过一遍）
 

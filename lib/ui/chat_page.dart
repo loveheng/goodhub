@@ -501,6 +501,11 @@ class _ChatPageState extends State<ChatPage>
     setState(() => _session.bindPrivateServer(bound));
     // MO6 阶段一：端点预热/默认锁定后 → 网关投影同步宿主当前激活私有域。
     syncGatewayActivePrivate(_session.activePrivateServerId);
+    // 装配层合一（Contract 件）：预热共享能力源——启用端点逐个幂等确保挂载
+    //（已挂载零成本），_send 装配时借用共享 face，消同源双实例双冷启动。
+    for (final e in all.where((e) => e.enabled)) {
+      unawaited(ensureEndpointMounted(e));
+    }
     // ux-hardening P0-1：未配置（无启用端点且无本地插件）→ 轨道内引导卡
     // 替代历史上的整页跳转；幂等入轨，瞬态不持久化。
     _ensureGuide();
@@ -838,6 +843,9 @@ class _ChatPageState extends State<ChatPage>
       assembly = await const McpRuntime().assemble(
         engine: widget.engineOverride,
         resourceAttachments: attachmentsSnapshot,
+        // 装配层合一（Contract 件）：共享能力源 face 表——已由网关挂载的服务
+        // 借用复用（跳过新建/协商/连接），未挂载的走旧自建路径兜底。
+        sharedFaces: sharedFaces,
         context: SessionContext(
           activePrivateServerId: _session.activePrivateServerId,
           conversationId: convId,

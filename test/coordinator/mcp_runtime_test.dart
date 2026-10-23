@@ -13,6 +13,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/coordinator/mcp_runtime.dart';
+import 'package:goodhub/coordinator/mcp_tool_face.dart';
 import 'package:goodhub/coordinator/skill_registry.dart';
 import 'package:goodhub/llm/cloud/cloud_llm.dart';
 import 'package:goodhub/mcp/mcp_client.dart';
@@ -146,6 +147,7 @@ Future<McpAssembly> _assemble({
   required Map<String, McpClient> clients,
   required List<McpTransport> transports,
   SessionContext? context,
+  Map<String, McpToolFace> sharedFaces = const {},
 }) async {
   final tmp = await _tmpDir();
   return const McpRuntime().assemble(
@@ -158,6 +160,7 @@ Future<McpAssembly> _assemble({
     engine: _FakeEngine(),
     tempDirResolver: _tmpDir,
     documentsDirResolver: _tmpDir,
+    sharedFaces: sharedFaces,
     clientFactory: (endpoint, apiKey) {
       final transport = _CountingTransport();
       transports.add(transport);
@@ -213,6 +216,64 @@ void _assembleTests() {
         reason: 'close 释放底层传输（T5b：stop 之外的 client.close 既有债）');
     await assembly.close(); // 幂等
     expect(transports.every((t) => (t as _CountingTransport).closeCount == 1), isTrue);
+  });
+
+  group('共享能力源借用缝（装配层合一 · Contract 件）', () {
+    /// 构造一个已挂载的共享 face（tools/list 预热缓存）。
+    Future<(McpToolFace, _CountingTransport)> makeSharedFace(String id) async {
+      final transport = _CountingTransport();
+      final face = McpToolFace(
+        client: McpClient(transport),
+        serverId: id,
+      );
+      await face.listTools();
+      return (face, transport);
+    }
+
+    test('命中即借用：不经 clientFactory（零新建连接），face 同一实例，摘要标共享', () async {
+      final (shared, sharedTransport) = await makeSharedFace('svc');
+      final transports = <McpTransport>[];
+      final assembly = await _assemble(
+        endpoints: [ep('svc')],
+        clients: {},
+        transports: transports,
+        sharedFaces: {'svc': shared},
+      );
+      addTearDown(assembly.close);
+
+      expect(transports, isEmpty,
+          reason: '借用面跳过新建/协商/连接——clientFactory 不被调用');
+      expect(sharedTransport.closeCount, 0);
+      expect(assembly.router.faceOf('svc'), same(shared),
+          reason: '路由使用共享 face 同一实例（能力目录同源）');
+      expect(assembly.serverSummaries['svc'], contains('共享能力源'));
+      // 借用面不入 _faces：close/abort 不触碰共享 client
+      await assembly.close();
+      expect(sharedTransport.closeCount, 0,
+          reason: 'close 只摘监听不关共享 client——client 归共享能力源所有');
+    });
+
+    test('未命中的端点照旧自建（兜底路径不受借用缝影响）', () async {
+      final (shared, sharedTransport) = await makeSharedFace('svc');
+      final transports = <McpTransport>[];
+      final assembly = await _assemble(
+        endpoints: [ep('svc'), ep('other')],
+        clients: {},
+        transports: transports,
+        sharedFaces: {'svc': shared},
+      );
+      addTearDown(assembly.close);
+
+      expect(transports, hasLength(1), reason: '未命中端点走旧自建路径');
+      expect(assembly.serverSummaries['other'], contains('Tier'));
+      await assembly.close();
+      expect(sharedTransport.closeCount, 0);
+      expect(
+        (transports.single as _CountingTransport).closeCount,
+        1,
+        reason: '自建端点照常释放',
+      );
+    });
   });
 
   test('装配异常路径：第 2 个端点失败 → 已建端点传输全部回收（不泄漏）', () async {

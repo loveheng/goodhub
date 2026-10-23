@@ -29,3 +29,9 @@ class McpProtocolException extends McpException {
 class TurnWallExceeded extends McpException {
   const TurnWallExceeded(super.message);
 }
+
+/// 保留命名空间撞车（架构债 #15）：外部插件 / 手填端点声明宿主系统保留
+/// serverId（如 `host` = 宿主虚拟服务）——装配期拒装，不静默挤占。
+class ReservedNamespaceException extends McpException {
+  const ReservedNamespaceException(super.message);
+}

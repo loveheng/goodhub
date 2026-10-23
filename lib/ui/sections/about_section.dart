@@ -10,10 +10,10 @@ library;
 
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
-import 'package:package_info_plus/package_info_plus.dart';
 
+import '../../app/service_directory.dart' show appVersion;
 import '../gateway_loop_debug_page.dart';
 import '../tokens/console_tokens.dart';
 import '../update_page.dart';
@@ -36,7 +36,7 @@ class _AboutSectionState extends State<AboutSection>
   bool get wantKeepAlive => true;
 
 
-  String _appVersion = '—'; // PackageInfo 不可用时占位（宁空勿炸）
+  String _appVersion = '—'; // 版本读取失败时占位（宁空勿炸）
 
   @override
   void initState() {
@@ -44,15 +44,13 @@ class _AboutSectionState extends State<AboutSection>
     unawaited(_loadVersion());
   }
 
-  /// 版本号独立初始化：失败按占位（ DEGRADE 留痕），不拖垮页面。
+  /// 版本号独立初始化：经应用级单入口 `appVersion()` 取（失败按其 DEGRADE
+  /// 口径返 'unknown' 占位，不拖垮页面）——此前本段自调 PackageInfo，与
+  /// `get_host_status` 的版本事实双源。
   Future<void> _loadVersion() async {
-    try {
-      final info = await PackageInfo.fromPlatform();
-      if (mounted) {
-        setState(() => _appVersion = '${info.version}+${info.buildNumber}');
-      }
-    } on Object catch (e) {
-      debugPrint('[DEGRADE] about-panel: 版本读取失败按占位: $e');
+    final version = await appVersion();
+    if (mounted) {
+      setState(() => _appVersion = version);
     }
   }
 

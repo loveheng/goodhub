@@ -2,8 +2,8 @@
 dev-loop: memory
 format: v1
 epic: thirdconnect
-total-merged: 0
-last-merge: none
+total-merged: 1
+last-merge: 2026-10-23
 ---
 
 # thirdconnect
@@ -38,7 +38,7 @@ last-merge: none
 - TC14 通用插件接入 SDK：把 AIDL/1MB 分包对第三方透明化，封装为 `goodhub-mcp-plugin-core.aar`（Tier A 官方接入通道，对齐 TC10）。第三方继承 `GoodHubPluginService` + `@McpTool` 注解 + Manifest 一行即接入，零手写 AIDL。SDK 仅实现 `IMcpChannel.Stub`（server 端）；client 端连接生命周期（§9.1 状态机/PendingRequestQueue）仍属 GoodHub 宿主。SDK 必满足 §1.2.7 四条红线：`_async` 透明降级（§1.2.2）、URI 统一 `mcp-blob://`（TC9）、命名不上仲裁（§9.3）、安全闸门无关（TC4）。跨平台三档：Android SDK / Flutter bridge（MethodChannel 包装）/ 非 Android 走 TC7 HTTP。属 net-new 插件侧交付物，独立于 T-trans/G 系列。**2026-10-20 拆独立仓**：SDK 与契约迁至 `loveheng/goodhub-mcp-sdk`（`:contract` 契约唯一物理副本 = AIDL + `com.zzh.goodhub.mcp.McpContract` 常量、`:plugin-core` SDK、`:sample-dummy-plugin` 靶子）；AIDL 包名 `com.zzh.goodhub.mcp` 与发现约定四常量**永久冻结**（DESCRIPTOR 随每次 Binder 事务上线，漂移=存量插件 bind 失败）；**AIDL 契约已是物理单副本**（宿主已删自带副本，改经坐标 `com.zzh.goodhub.mcp:goodhub-mcp-contract` 消费，复合构建优先/mavenLocal 兜底），`toolbox run check-contract-sync` 校验「单副本 + 坐标版本与契约仓 VERSION 绑定一致」。
 
 ## 断点
-- [断点] 下一步：goodhub 侧提交本次契约单副本改造（见本轮给出的分两次提交指令）；随后 goodshare 按提示迁 SDK 消费坐标 com.zzh.goodhub.mcp:goodhub-mcp-plugin-core:0.1.0（GitHub Packages 需 token，或用 dist 离线包免认证）
+- [断点] 下一步：装 SDK 0.2.0 靶子 APK（`install-dummy-plugin`）后复跑真机 e2e，并创建远端仓完成 GitHub Packages 首次发布（host 工具导出与策略投影已迁出至 epic `host-tools-gateway-export`）
   - [已完成] T-sdk-1：插件侧 SDK MVP 骨架 + sample-dummy-plugin 靶子 APK（assembleDebug 通过）
   - [已完成] T-trans-2：宿主 BinderTransport（状态机/挂起队列/5s/DeathRecipient + Dart BinderTransport + McpClient.binder）；真机同步链路联调待设备
   - [已完成] T-trans-3：宿主事件回传（onEvent→onProgress + _async 终帧唤醒 + 反向→answerReverse）；宿主收端代码已落，flutter analyze lib/ 0 错误
@@ -66,3 +66,12 @@ last-merge: none
 - **reverseDemo「反向请求未达 PC」= 预期架构非 bug**：网关模式下本地插件 sampling 反向请求由宿主 `gateway_controller._assemble` 的 `samplingRequestHandler` 闭环（走宿主自身引擎，TC8/§15 临时会话隔离），不经外部 PC 客户端。「端侧生成失败：未下载模型包（云端未配置）」= 该机无可用推理源，属环境未就绪；`isError:false` + 结构化失败 status 符合 M3 降级语义（防熔断误计数）。
 - **thirdconnect.md 增补**：§9 运行时鲁棒性守则（6 暗坑：冷启动挂起队列/状态机、list_changed 下行、SERVER_ID 命名仲裁、多用户 MATCH_CURRENT_USER、hop_count/_meta 防环、背压信号量 max_concurrent=4）+ 红线速查表 + 落点映射；§10 架构重构（控制/数据面分离 / Dual-Stack stdio / 原生 200ms 节流 + 旁路直通 / Keep-Alive 15s+L2 45s 熔断 / 双进程 :gateway/:main 隔离）；§11 插件接入 SDK（接入体验 + SDK 脏活 + 五处纠正 + 跨平台三档 + 工程约束）。
 - **信任闸门两修复**：① 信任卡片抽公共件 `lib/ui/trust_plugin_dialog.dart`（`showTrustCard` + `TrustPluginDialog`，chat_page 复用、删内联 51 行，调用点补 `mounted` 守卫）；② TrustedPlugins 空白名单首次信任必崩——`_map()` 白名单空/损坏时返回 `const {}` 不可变，`add`/`remove` 原地变更抛 `UnsupportedError`，改为一律 `Map.of` 可变副本；由 `integration_test/trust_gate_test.dart` 真机钉死（**绕过闸门的 e2e 对闸门自身路径零覆盖，故闸门必须独立集成测试**）。
+
+## 归并补充（2026-10-23 · 自 devlog 21 条提炼）
+
+- **插件 SDK 拆独立仓 + 契约物理单副本（TC14 定稿）**：SDK 与 AIDL 契约迁 `loveheng/goodhub-mcp-sdk`（`:contract` 唯一物理副本 + `:plugin-core` + `:sample-dummy-plugin`）；宿主删 `android/app/src/main/aidl/` 自拷副本，改经坐标 `com.zzh.goodhub.mcp:goodhub-mcp-contract` 消费（复合构建 `includeBuild` 优先 / mavenLocal 兜底 / GitHub Packages 第三通路，`toolbox run sdk-dep` 一键发布）；门禁 `check-contract-sync` 升 v2（禁宿主自拷 AIDL + 坐标版本与契约仓 VERSION 绑定一致，登记 `scripts/agent-tools/contract.lock`）；坐标 0.1.0→0.2.0（AIDL 契约版本仍 v1）。未执行：真机 e2e（先装 SDK 0.2.0 靶子）、GitHub Packages 实际发布（远端仓未创建）。
+- **工具可见性标记 SSOT**：旧 `annotations["x-mcp-export-to-shared"]` ➔ 新 `_meta.goodhub.visibility`（`shared`/`private`，缺失/形状异常/未知取值一律 private）。访问控制标记不进 MCP `annotations`（规范定位 advisory hints）；**声明≠访问控制**——SDK 不剔条目不拦调用，过滤只在目录层且只在对外暴露面（网关 PC 投影），本机 `tool_router` 保持能力全集。对接件 `lib/core/tool_visibility.dart` + `CloudToolSchema.meta/visibility/isShared`；裁决口径改按「是否显式声明」（显式 `destructiveHint`/`readOnlyHint=false` → L2），「双缺从严落 L2」条款下线。
+- **云端 SSE 流内断连契约收口**：`sendSseRequest` 流式消费段把 `http.ClientException` / `SocketException` / 截断 `FormatException` 统一映射 `CloudNetworkException`；**必须显式 `await for` 而非 `yield*`**——后者把内层流错误事件直接转发消费者、不在生成器体内抛出，外围 try 捕不到（实测证实）。`hybrid_cloud_engine._cloudSend` 增 `on Exception` 兜底（语义排除 `InferenceException` / `CloudProtocolException`）。
+- **思考过程显示 M1 + 首字节阈值**：`CloudThinkingDelta` 四不契约（不进 accumulator / 不过 workspace_filter / 不入 transcript / 不置 sawOutput）；`mapOpenAiSse` 解析 `delta.reasoning_content`；`TrackThinking` 默认收起；`DegradationController.firstTokenTimeout` 8s→30s（requirements F2.4 与 architecture 两处同步回填）。
+- **验证账本**：940 绿（可见性轮）→ 972 绿（思考流轮）；每轮 analyze 0 issue + arch-guard + docs-lint + pre-commit-gate 全过。未执行：真机验证（SiliconFlow 推理模型思考面板实见、首 Token 30s 实测）。
+- **范围迁出**：`docs/design/host-tools-gateway-export.md`（Host 工具导出 + 策略投影）及其实现 / 门禁 / 验收待办归新 epic `host-tools-gateway-export`，本 epic 不再持有。

@@ -1,8 +1,10 @@
 /// 网关装配与生命周期控制（G1/G2）：本地插件（Binder）+ 远端 HTTP 端点
+/// + host 虚拟服务
 /// 全量装配为 face 喂给网关；包变更重扫 → tools/list_changed 下行联动。
 ///
-/// - **双源装配**：本地插件零配置发现（`localPluginDiscovery.scan`，系统托管）
-///   + 手填 HTTP 端点（`ServerEndpointStore`，用户托管）——同一套
+/// - **三源装配**：本地插件零配置发现（`localPluginDiscovery.scan`，系统托管）
+///   + 手填 HTTP 端点（`ServerEndpointStore`，用户托管）+ host 虚拟服务
+///   （系统保留 serverId=`host`，经 `HostTransport` 伪装客户端）——同一套
 ///   negotiate → listTools → face 挂载口径（与 chat_page 装配等价，但独立于
 ///   聊天会话生命周期）；
 /// - **反向请求接线**：每 face 的 `client.onServerRequest` 接
@@ -18,19 +20,28 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:path_provider/path_provider.dart';
 
 import '../app/service_directory.dart';
+import '../coordinator/host_tool_invoker.dart';
 import '../coordinator/hybrid_assembly.dart';
 import '../coordinator/mcp_runtime.dart';
 import '../coordinator/mcp_tool_face.dart';
 import '../llm/cloud/sampling_engine.dart';
 import '../mcp/local_plugin_discovery.dart';
+import '../mcp/mcp_client.dart';
 import '../mcp/server_endpoints.dart';
 import '../mcp/trusted_plugins.dart';
 import '../mcp/sampling.dart';
+import '../mcp/transport/host_transport.dart';
 import '../sandbox/memory_store.dart';
 import 'gateway_security.dart';
 import 'gateway_server.dart';
 import 'gateway_service_channel.dart';
 import 'mcp_gateway_handler.dart';
+
+/// host 虚拟服务的一次装配产出（执行端口 + schema 解析端口，同源）。
+typedef HostToolPorts = ({
+  HostToolInvoker invoke,
+  HostSchemaResolver? schemaOf,
+});
 
 class GatewayController {
   GatewayController._() {
@@ -38,6 +49,7 @@ class GatewayController {
       faces: faces,
       privateServerIds: privateServerIds,
       security: security,
+      blockedPlugins: blockedPlugins,
     );
     server = McpGatewayServer(_templateHandler);
   }
@@ -72,7 +84,35 @@ class GatewayController {
   }
 
   /// 目录变更热同步（§9.2）：广播到全部 SSE 订阅连接，PC 自动重拉 tools/list。
-  void notifyToolsListChanged() => _templateHandler.notifyToolsListChanged();
+  void notifyToolsListChanged() {
+    _facesChanged.add(null); // 消费者视图同步（装配层合一 Expand 件）
+    _templateHandler.notifyToolsListChanged();
+  }
+
+  // —— 消费者视图（装配层合一 · Expand 件，2026-10-23 方向裁决）——
+  // 「一个能力源、一个管道、多档策略」：App 内链路（chat）复用本单例的 face
+  // 表，消掉同源两份装配（双 client 双冷启动）。本节 API 是消费缝；chat 侧
+  // 切换（Contract）落地前，旧装配路径不动（零行为变更）。
+
+  final StreamController<void> _facesChanged = StreamController.broadcast();
+
+  /// face 集变更流（幂等超集口径：任何 tools/list_changed 触发点都会发，
+  /// 消费方以「重拉目录」语义消费，不做差分假设）。
+  Stream<void> get facesChanged => _facesChanged.stream;
+
+  /// 读已挂载 face（未挂载/离线 → null）。
+  McpToolFace? faceFor(String serverId) => faces[serverId];
+
+  /// 确保某端点已挂载并返回其 face（**幂等**：已挂载直接返回，零成本）。
+  ///
+  /// 未挂载 → 触发一次全量重扫（**单点装配路径**：挂载逻辑只有 [_assemble]
+  /// 一份，此处绝不复制第二份拷贝），重扫后仍无（端点禁用 / 挂载失败）→ null。
+  Future<McpToolFace?> ensureEndpointMounted(ServerEndpoint ep) async {
+    final existing = faces[ep.id];
+    if (existing != null) return existing;
+    await rescan();
+    return faces[ep.id];
+  }
 
   /// 入站安全闭环（G3）：L2 确认卡（手机屏全屏醒目呼叫，TC12）+ PII 出站过滤 + ops.log 审计。
   final GatewaySecurity security = GatewaySecurity(
@@ -111,6 +151,42 @@ class GatewayController {
   Future<PluginTrustGate> Function() trustGate = () async =>
       TrustedPlugins.instance;
 
+  /// **已发现但未挂载**的本地插件诊断台账（serverId → 原因，2026-10-23）。
+  ///
+  /// 存在的理由：被信任闸门拦下的插件不进 `faces`，PC 侧 `gateway__list_servers`
+  /// 就只表现为「没这个服务」——用户分不清「没装」与「装了但没信任」。本台账把
+  /// **仅 id + 原因**（不含包名 / 签名 / Service 类名）透给该诊断工具，让排障
+  /// 一次到位。装配期每次 `_assemble` 全量重建（重扫即刷新）。
+  final Map<String, String> blockedPlugins = {};
+
+  /// host 虚拟服务（`serverId='host'`）的导出登记表（注入可造非空面验证装配链；
+  /// 默认 = 生产静态表 `kHostExportAllowlist`）。
+  List<HostExportEntry> hostExportAllowlist = kHostExportAllowlist;
+
+  /// host 工具执行端口 provider（注入可换假端口，隔离记忆/资源/版本存储）；
+  /// 默认走 coordinator 门面 `assembleHostToolInvoker`（owner 住 coordinator，
+  /// 见该文件头依赖倒置说明）。
+  ///
+  /// 产出**两个**端口而非一个：执行端口（`tools/call` 直调）与 schema 解析端口
+  /// （`tools/list` 合成面取描述与 schema）——二者同源于一次装配，杜绝两套装配
+  /// 产出不一致的 schema 面。
+  Future<HostToolPorts> Function(MemoryStore opsLog) hostInvokerProvider =
+      defaultHostInvoker;
+
+  /// 生产 host 执行端口：无裁决链路（L1/L2 已由 `GatewaySecurity.guard` 完成）
+  /// + 资源面经装配容器单入口取（解析失败降级为「无资源工具」）+ 版本经装配
+  /// 容器取真值（占位版本会让 PC 的协议兼容判断产生误导）。
+  ///
+  /// 公开静态而非私有：注入位需可被测试还原（与 `trustGate` 注入位同范式）。
+  static Future<HostToolPorts> defaultHostInvoker(MemoryStore opsLog) async {
+    final port = await assembleHostToolInvoker(
+      memoryStore: opsLog,
+      resourceStoreResolver: () async => resourceStore(),
+      appVersion: await appVersion(),
+    );
+    return (invoke: port.invoke, schemaOf: port.schemaOf);
+  }
+
   bool get running => server.running;
 
   /// 局域网 IPv4 地址列表（G5：PC 配置展示用，`http://<IP>:8766/mcp`；
@@ -135,7 +211,7 @@ class GatewayController {
   /// 起服：装配 face → 绑定 :8766 → 订阅包变更重扫。
   Future<void> start({
     InternetAddress? address,
-    int port = 8766,
+    int port = kGatewayDefaultPort,
     String? token,
   }) async {
     if (running || _starting) return;
@@ -207,6 +283,7 @@ class GatewayController {
     security.opsLog = opsLog; // G3 入站审计与 face 级审计同汇
 
     // —— 本地插件（Binder，系统托管，零配置）——
+    blockedPlugins.clear(); // 每次装配重建（重扫即刷新，避免陈旧诊断）
     final trusted = await trustGate();
     for (final info in await discovery.scan()) {
       if (info.serverId.isEmpty || faces.containsKey(info.serverId)) {
@@ -216,6 +293,9 @@ class GatewayController {
       // 则 headless 跳过（网关无 UI 无法弹信任卡片，需先在聊天页/设置中信任，持久化后
       // 下次装配即生效）。
       if (!info.sameSignature && !trusted.isTrusted(info.packageName)) {
+        // 记账给 gateway__list_servers 的 blocked 段（PC 侧排障用；仅 id+原因）。
+        blockedPlugins[info.serverId] = '未信任的第三方插件：请先在宿主聊天页或 '
+            '⚙ 设置 → 本地插件中信任一次，之后网关装配即自动挂载';
         debugPrint(
             '[DEGRADE] gateway: 跳过未信任第三方插件 ${info.serverId}'
             '（${info.packageName}）；请先在聊天页或 ⚙ 设置中信任');
@@ -269,11 +349,36 @@ class GatewayController {
       }
     }
 
+    // —— host 虚拟服务（系统保留 serverId='host'；第三装配源）——
+    // 置于末位：联邦面在前、host__ 工具面在尾部追加，`tools/list` 输出序稳定；
+    // 每次装配（含包变更重扫）一并重挂——与其他源同构、零特殊分支，host 面
+    // 无传输资源，重挂成本可忽略。单源失败 [DEGRADE] 不阻断（宁缺勿炸）。
+    try {
+      final ports = await hostInvokerProvider(opsLog);
+      final client = McpClient(HostTransport(
+        invoker: ports.invoke,
+        allowlist: hostExportAllowlist,
+        schemaResolver: ports.schemaOf,
+      ));
+      final m = await const McpRuntime().mount(
+        serverId: kHostServerId,
+        client: client,
+        opsLog: opsLog, // face 自审计按 serverId=host 记账
+        // P0-B：client 由本方创建 → 交回释放能力（_unmountAll 统一句柄）
+        release: client.close,
+      );
+      faces[kHostServerId] = m.face;
+      _mounted[kHostServerId] = m;
+    } on Object catch (e) {
+      debugPrint('[DEGRADE] gateway: host 虚拟服务 mount failed: $e');
+    }
+
     // —— sampling 反向请求接线（best-effort；失败仅 -32601 拒绝，不起服失败）——
     try {
       final engine = await assembleDefaultHybridEngine();
       final quota = SamplingQuota();
       for (final entry in faces.entries) {
+        if (entry.key == kHostServerId) continue; // host 面不供给反向请求
         entry.value.client.onServerRequest = samplingRequestHandler(
           engine: CloudSamplingEngine(engine),
           quota: quota,

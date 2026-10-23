@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-15
+updated: 2026-10-23
 ---
 
 # Host 网关架构 · 访问性模型 · 记忆捎带提取（设计演进 SSOT）
@@ -71,7 +71,7 @@ class ServerEndpoint {
 
 - 序列化：`fromJson` 缺字段 / 非法 → `ServerPrivacyTier.private`（兜底，不抛）。
 - `host` **不进** `ServerEndpoint`；宿主能力通过 `HostNativeTools.schemas` 注入（见 §2.4）。
-- 现有约定已印证：`tool_router.dart:57-59` 的 `serverFor(name)` 对**无前缀**的宿主本地工具返回 `null`——宿主工具从一开始就不走外部注册表，新模型只是把它显式化为注入点（动态路由 `switch_server`、权限确认卡 `PermissionGateway`、工作区沙箱 IO）。**宿主工具必须保持无前缀**，否则破坏 `tool_router.dart:12-13`「本地结果不落池」语义。
+- 现有约定已印证：`tool_router.dart:57-59` 的 `serverFor(name)` 对**无前缀**的宿主本地工具返回 `null`——宿主工具从一开始就不走外部注册表，新模型只是把它显式化为注入点（动态路由 `switch_server`、权限确认卡 `PermissionGateway`、工作区沙箱 IO）。**宿主工具在本机 ToolRouter 调度路径下必须保持无前缀**，否则破坏 `tool_router.dart:12-13`「本地结果不落池」语义；网关投影面（对 PC 的暴露面）改用系统保留命名空间 `host__`，以虚拟服务形式挂载——裁决与实现见 `docs/design/host-tools-gateway-export.md`。
 
 ### 1.5 goodshare 迁移结论
 

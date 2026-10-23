@@ -11,6 +11,9 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- 电池优化白名单（G4 遗留项，2026-10-23）：未加白名单时息屏进 Doze 会限网
+         → PC 侧表现为「过段时间连接掉了」；宿主在网关设置页提供跳转入口。 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- TC 本地插件鉴权（thirdconnect §1.2.6）：goodshare 侧 Service 已挂 signature
          权限，宿主须声明同名权限才可 bind；两包须同签名同批出包，否则 SecurityException -->
     <uses-permission android:name="com.zzh.goodhub.permission.MCP_SERVER" />

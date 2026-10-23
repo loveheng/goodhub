@@ -249,6 +249,30 @@ void main() {
     );
   });
 
+  testWidgets('PC 远程网关面板：自动生成 Token 默认开 + 显示/复制/重新生成控件',
+      (tester) async {
+    // 产品裁决（2026-10-23）：「留空 = 不鉴权」不得再是默认——默认自动生成
+    // 配对 Token，否则同局域网任意主机可无鉴权访问只读工具面。
+    await pumpSettings(tester);
+    await tester.dragUntilVisible(
+      find.text('PC 远程网关'),
+      find.byType(ListView).first,
+      const Offset(0, -60),
+      maxIteration: 50,
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('gateway-token-auto')), findsOneWidget);
+    expect(find.byKey(const Key('gateway-token-visibility')), findsOneWidget);
+    expect(find.byKey(const Key('gateway-token-copy')), findsOneWidget);
+    expect(find.byKey(const Key('gateway-token-regen')), findsOneWidget);
+    final auto = tester.widget<Checkbox>(
+        find.byKey(const Key('gateway-token-auto')));
+    expect(auto.value, isTrue, reason: '默认必须自动生成配对 Token');
+    expect(find.textContaining('默认自动生成'), findsOneWidget,
+        reason: '自动生成开关旁须说明默认行为');
+  });
+
   testWidgets('关于面板：版本占位 + 检查更新常驻 + 长按标题唤出 debug 联调入口', (tester) async {
     await pumpSettings(tester);
     await scrollTo(tester, find.byKey(const Key('about-title')));

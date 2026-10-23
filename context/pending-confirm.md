@@ -12,6 +12,25 @@ format: v1
 - [x] [2026-10-14] SU2 新依赖引入：crypto + package_info_plus + open_filex（goodshare 同款三件）？→ 已确认：同意
 - [x] [2026-10-14] SU3 范围：仅整包自更新还是含 config 热更？→ 已确认：仅整包自更新（清单 versionCode/versionName/apkUrl/sha256/changelog；config 热更后续按需加）
 
+## host-tools-gateway-export（P2 收尾轮 · 2026-10-23）
+
+- [x] D2 CI 门禁盲区：shell 版 `arch-guard.sh`（R1~R9）只在 pre-commit 跑，CI 侧只跑 flutter-test 镜像 → 两者漂移时 CI 不报。→ **已做**（2026-10-23）：`.github/workflows/ci.yml` 增一步 `arch-guard (shell mirror)`（~1s），并同步 standards §1.4/§8.2 尾注的「CI 缺口」表述（CI 早在 2026-10-17 已落地，台账 #13 长期滞留未结项，本轮取证结项）
+- [x] D1 投影策略收窄为一轴（对外契约变更 · **已裁决 2026-10-23：单轴 policy + 兼容别名**，落地见 memory.md「投影策略单轴化」）：现状 = URL 轴 `?strategy=single|pruned|full`（+`server`/`tag`）与控制面轴 `scope=single|private|full`（+`server_id`）两套词表，PC 侧模型须同时记两轴，且 `pruned` 只在 URL 有、`private` 只在控制面有。→ **待裁决**（默认建议：单轴 `policy` = 字面量并集 `single|private|full|pruned`，旧 `strategy=`/`scope=` 作兼容别名保留一个版本；工具名与参数名不破坏性改名——本 epic 刚因旧名残留出 P0 幻觉调用）
+- [x] D3 `mcp_gateway_handler.dart` 是否继续拆「投影接线」（**已裁决 2026-10-23：不拆**）：现状 612 行（< 800 软红线），且「纯管道在 `projection_pipeline.dart`、接线在 handler」的分层本已正确。→ **默认建议：不拆**（边际收益低、搬动 PC 可见语义代码风险高；其真正价值已被 D1 吸收——两处字面量判定应收敛到一处）
+
+## meta-upgrade（元体系升舱 · 2026-10-23 立项评估轮）
+
+> 背景：架构评估修复轮实证「回写不完整」复发模式（D1 单轴化漏 7 处：PC 话术旧词表 ×3 / SSOT 文档矛盾 ×4）+ 纪律漂移 ×3（协议版本双源 / 版本读取三源 / mcp_runtime 体量净增）。每轮靠人工评估+手修+手抄断言，成本线性累积。solution-admission 判定 **S2**（缺能力，禁补丁糊）。
+
+- [x] **U1 落点形态（2026-10-23 依「多项目同框架」事实修正）**：实测 6 个项目（goodhub/goodshare/goodAccount/goodTools/shiguang/goodTemplate）各自持有 arch-guard.sh 副本（192~269 行、同骨架、规则已分叉，合计 1267 行）——「回写不完整」是框架级病害，非 goodhub 个案。→ **修正默认建议：三层分离**——① 引擎进全局池 `~/.agents/toolbox/scripts/drift-guard.sh`（零项目知识，6 项目共用一份；全局资产写入须用户显式授权）② registry 数据留各项目仓内 `scripts/agent-tools/drift-registry.txt`（随代码同批版本化）③ CI 门禁走各项目 Dart 镜像 `test/architecture/drift_rules_test.dart`（读同一 registry；CI 无 toolbox，镜像对齐 dependency_rules_test 先例）
+- [x] **U2 registry 落点**：`scripts/agent-tools/drift-registry.txt`（贴工具，仿 `contract.lock` 先例）vs `docs/project/` 下。→ **默认建议：前者**（数据贴工具、git 同审批；docs/project 只留指针）
+- [x] **U3 feature test 静态词表断言去留**：`projection_server_switch_test.dart` 的文案扫描断言在 drift-guard 覆盖后是否保留。→ **默认建议：保留到 epic 收官**（过渡期双保险，防 drift-guard 未接入的路径裸奔；行为级钉子（single 拒绝话术）永久保留——它测的是运行期行为不是静态词表）
+- [x] **U4 体量检查口径**：D3 查「>800 行未登记超标清单」（lite）vs 连「登记件只减不增」基线一起机械化。→ **默认建议：lite**（基线跟踪留 git numstat 人判；工具只堵「新增超标件不登记」这个最常漏的口子）
+- [x] **U5 诚实边界（写死进工具头，非决策项）**：docs 与代码的「集合描述一致性」（如三档 vs 四档的散文表述）机械不可靠 → 不做扫描，归 `::audit` 人判；工具只做 token 级 / 字面量级 / 行数级三类可机械判定
+- [x] **U6 全局池写入授权（阻断项）**：引擎落 `~/.agents/toolbox/` 属用户侧全局资产（AGENTS.md 明须显式授权）；另 goodTemplate 为跨仓（dev-loop 跨库只读纪律：目标库写入须用户执行或逐次显式授权）。→ **待用户授权后方可开工**
+- [ ] **U7 传播与采纳节奏**：goodTemplate（新项目脚手架，init-app.sh 起底）加 registry 骨架 + Dart 镜像 + pcg 分派行 → 新项目自动继承；存量 5 项目（goodshare/goodAccount/goodTools/shiguang/rich_text）按需采纳或统一 rollout。→ **默认建议：模板先行、存量按需**（各项目 registry 从空/小起步合法——引擎与纪律是共享资产，数据随各自漂移事件增长）｜**待办：goodTemplate 跨仓写入须用户执行**（本轮读该仓被中止，转为移交件交付）
+- [ ] **U8 后续（本轮不做，登记防遗忘）**：同一三层模式可推广至 arch-guard 引擎去重（6 副本 1267 行 → 引擎全局 + 各项目 rules-as-data + Dart 镜像），但须待 drift-guard  pilot 验证「全局引擎+项目数据」跑通后再立项，防一次性拆六个工具的回归面｜**pilot 已跑通**（引擎 + 镜像 + 接线 + 变异探针全绿）→ 可立项
+
 ## thirdconnect（同机 MCP 传输选型）
 - [x] [2026-10-12] TC1 同机传输主战场是否就是「同机 Android App 互通」（GoodHub↔好共享/第三方插件 App）？还是也含远端部署/标准 HTTP MCP server？（不定则 Binder 是否现在建无法定）→ 已确认：先做安卓底层方案，现有 HTTP 保持不变；长期各平台底层方案 + HTTP 优化
 - [x] [2026-10-12] TC2 同机传输选型：Binder(AIDL) 为主 / UDS(LocalSocket) 为主 / 两者都做？→ 已确认：选 Binder(AIDL) 为主，UDS 留作后续降级兜底

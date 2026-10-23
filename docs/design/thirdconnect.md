@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-15
+updated: 2026-10-23
 ---
 
 # 外部 MCP 服务接入规范（GoodHub 宿主契约）
@@ -317,7 +317,7 @@ Binder 侧经 `Binder.getCallingUid()` 验真——同签名私有生态（`<per
 
 ### 10.4 PC 60s 超时与息屏死锁对策
 
-> **状态（2026-10-15 对账）**：**已实现**（G1~G5 + TC12 FULL_SCREEN_INTENT 醒目呼叫收口 2026-10-13）；15s Keep-Alive 进度帧 + L2 45s 主动熔断 + 息屏 FSI 拉起全链路真机通过。
+> **状态（2026-10-23 复核）**：**已实现**（G1~G5 + TC12 FULL_SCREEN_INTENT 醒目呼叫收口 2026-10-13）。Keep-Alive **分两通道**：GET 订阅通道用 15s `: keep-alive` 注释帧（不计入 MCP 帧，仅喂 TCP 计时器）；**tools/call 的 SSE 通道按 15s 主动推真 `notifications/progress` 帧**（`progressToken` 优先回显客户端 `_meta.progressToken`，缺省用本次请求 id）——下游无 progress 支持的长调用（本地插件冷启动 / Binder 慢调用）由此喂狗，根除 PC 60s 掉线。**JSON（非 SSE）模式无法注入**（响应体须整体写出，中途插帧破坏 JSON 单体语义）。L2 45s 主动熔断 + 息屏 FSI 拉起全链路真机通过。回归钉子：`test/gateway/gateway_server_test.dart`「TC12 Keep-Alive：长调用期间推 progress 帧喂狗」（撤修复即红）。
 
 - **Keep-Alive 进度帧（Progress Ping）**：PC 端（Cursor/Claude）超时规则为「连续 60s 收不到任何 HTTP 数据包即超时」。网关在等待手机冷启动或长任务期间，**每 15s 主动向 PC 推一条轻量 `notifications/progress`**（如 `Warming up local plugin...`）；管道有合法 MCP 帧流动即无限重置 PC 计时器，根除 60s 掉线。
 - **L2 权限卡片醒目呼叫 + 主动熔断**：PC 请求触发手机 L2 确认时，GoodHub 发 `FULL_SCREEN_INTENT` + 短时 `WakeLock` 震动点亮屏，弹原生全屏授权卡；**显式 45s 确认时限**——超时未点即主动向 PC 回 JSON-RPC 拒绝响应，PC 立即停转，避免无序挂死（与 §7 入站安全 L1/L2 卡片联动）。
@@ -445,3 +445,17 @@ class FlashlightMcpPlugin : GoodHubPluginService(
 | 运行时鲁棒性（规划） | 挂起队列/状态机/冷启动超时（`BinderTransport`）；`tools/list_changed` 下行（G1~G5）；命名仲裁/MATCH_CURRENT_USER/多用户（T-trans-4 扫描）；`hop_count`/`_meta` 透传（`BinderTransport`+网关）；背压并发信号量（G1~G5 入站） |
 | 架构重构（TC9~TC13 已锁定） | TC9 数据面分离 `$ref`/PFD（T-trans-2/3）；TC10 Dual-Stack stdio 加载器（T-stdio）；TC11 原生 200ms 节流（G1~G5）；TC12 Keep-Alive 15s + L2 45s 熔断（G1~G5）；TC13 双进程 `:gateway`/`:main`（G6） |
 | 对外接入 SDK（TC14 已锁定） | `goodhub-mcp-plugin-core.aar`（插件侧 Stub/Schema/路由/1MB 降级/异常隔离）；`goodhub_plugin_bridge`（Flutter）；契约红线见 §1.2.7，跨平台三档见 §11.4 |
+
+## 决策日志
+
+> 归并自 epic `thirdconnect` 的 devlog（决策与权衡留档；过程流水归 Git log 与 `context/epics/thirdconnect/`）。
+
+| 决策 | 理由与取舍 |
+|---|---|
+| 插件 SDK 与 AIDL 契约拆独立仓 `loveheng/goodhub-mcp-sdk`，契约采「物理单副本 + Maven 坐标消费」 | 取代「宿主留副本 + golden 指纹比对」——副本必然漂移，而 AIDL 包名/DESCRIPTOR 永久冻结，漂移即存量插件 bind 失败；复合构建优先、mavenLocal 与 GitHub Packages 兜底 |
+| 契约门禁升 v2：禁宿主自拷 AIDL + 坐标版本与契约仓 VERSION 绑定一致 | 机械防漂移，取代逐字节 golden 比对 |
+| 工具可见性标记由 `annotations["x-mcp-export-to-shared"]` 改为 `_meta.goodhub.visibility` | 访问控制标记不得塞进 MCP `annotations`（规范定位 advisory hints，`x-` 顶官方命名空间）；私有维度收在 `_meta.goodhub` 子树，为标准 hints 与未来 `hidden` 等正交维度留位 |
+| 可见性「声明≠访问控制」：过滤只在目录层、只在对外暴露面 | SDK 不剔条目、不拦调用；本机链路保持能力全集，避免私有工具在本机发现/调用路径上被误伤 |
+| L1/L2 裁决口径由「双缺从严落 L2」改为「按是否显式声明」 | SDK 0.2.0 起 hints 选择性下发（`annotations` 可整体缺席），旧的从严条款会把未声明工具全部打成 L2；取舍 = 生态体验 vs 保守，选前者并以显式 `destructiveHint` 兜住危险面 |
+| 云端 SSE 流内断连统一映射 `CloudNetworkException`，且必须 `await for` 而非 `yield*` | `yield*` 把内层流错误事件直接转发消费者、不在生成器体内抛出，外围 try 捕不到（实测证实） |
+| `firstTokenTimeout` 8s→30s | 推理型提供商思考期首字节前静默误杀率高；reasoning delta 本身即字节活体会重置看门狗，本阈值只管辖「连接后首字节前」窗口 |

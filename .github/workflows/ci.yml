@@ -30,6 +30,12 @@ jobs:
       - name: analyze
         run: flutter analyze
 
+      # 秒级 shell 护栏（R1~R9）：与 test/architecture/ 的 flutter-test 镜像互为
+      # 兜底——镜像进 CI 全量，shell 版只在 pre-commit 跑，两者漂移时 CI 不报；
+      # 本步把 shell 版也拉进 CI（~1s），堵住该盲区（2026-10-23）。
+      - name: arch-guard (shell mirror)
+        run: ./scripts/agent-tools/arch-guard.sh
+
       - name: test (full suite)
         run: flutter test --timeout 180s
 

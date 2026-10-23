@@ -38,6 +38,34 @@ class McpToolFace implements ToolExecutor, ConnectionFace {
   /// M3-T2 经 AgentLoop 事件流呈现，本回调是最小呈现 + 环桥接通道。
   final ToolProgressCallback? onProgress;
 
+  /// 运行期附加的进度监听器（**多路复用**，装配层合一 Expand 件）：face 由
+  /// 共享能力源（GatewayController）持有后，多个消费者（网关 / chat 会话）
+  /// 挂同一 face——构造期 [onProgress] 只能表达一个 owner，运行期消费者经
+  /// [addProgressListener] 注册自己的 UI 委托、用毕 [removeProgressListener]
+  /// 注销。发射序 = 构造期回调先行，监听器按注册序（弱保证，仅观测用）。
+  final List<ToolProgressCallback> _progressListeners = [];
+
+  /// 注册运行期进度监听器（幂等不查重——调用方自行管理生命周期）。
+  void addProgressListener(ToolProgressCallback listener) =>
+      _progressListeners.add(listener);
+
+  /// 注销运行期进度监听器（未注册过为 no-op）。
+  void removeProgressListener(ToolProgressCallback listener) {
+    _progressListeners.remove(listener);
+  }
+
+  /// 进度扇出单点：构造期回调 + 运行期监听器依序发射。
+  void _emitProgress(String tool, num progress, num? total, String? message) {
+    onProgress?.call(tool, progress, total, message);
+    for (final l in _progressListeners) {
+      l(tool, progress, total, message);
+    }
+  }
+
+  /// 是否有任一进度消费方（决定是否强制流式调用，见 [_executeInner]）。
+  bool get _hasProgressConsumer =>
+      onProgress != null || _progressListeners.isNotEmpty;
+
   /// ops.log 审计汇（M4-T2，N4 全链路）：非空时每次 tools/call 执行（含入参
   /// 解析失败与协议异常）落一条审计（server=本 face.serverId；本地拦截工具
   /// 由各自执行器自审计 server='local'）。审计失败 DEGRADE 留痕不阻断工具。
@@ -168,7 +196,7 @@ class McpToolFace implements ToolExecutor, ConnectionFace {
       // 反向请求帧需要帧间夹带通道；onProgress 维持既有 opt-in。两者皆无 =
       // 普通单 JSON（Tier 2 零破坏）。negotiate 幂等缓存，握手失败回退普通
       // （连接级失败由调用统一兜）。
-      var useStream = onProgress != null;
+      var useStream = _hasProgressConsumer;
       if (!useStream) {
         try {
           useStream = (await client.negotiate()).hasSampling;
@@ -182,12 +210,11 @@ class McpToolFace implements ToolExecutor, ConnectionFace {
               params: params,
               onProgress: (p) {
                 _lastStreamActivityAt = DateTime.now(); // 活跃度信号（心跳忙时免判）
-                final cb = onProgress;
-                if (cb == null) return; // sampling 流式但无进度消费：帧只作通道
+                if (!_hasProgressConsumer) return; // sampling 流式但无进度消费：帧只作通道
                 if (p is Map<String, Object?> && p['progress'] is num) {
                   final total = p['total'];
                   final message = p['message'];
-                  cb(
+                  _emitProgress(
                     call.name,
                     p['progress']! as num,
                     total is num ? total : null,

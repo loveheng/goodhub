@@ -132,6 +132,34 @@ class _SlowProgressTransport extends _FakeTransport {
   }
 }
 
+/// 无 progress 的慢调用传输：延迟 600ms 只发终帧——模拟「下游不支持 progress」
+/// 的长调用（PC 端此时只能靠网关侧 Keep-Alive 帧喂狗，否则 60s 超时掉线）。
+class _SilentSlowTransport extends _FakeTransport {
+  @override
+  Future<StreamedTransportResponse> sendStream(String requestBody) async {
+    final req = jsonDecode(requestBody) as Map<String, Object?>;
+    Stream<String> gen() async* {
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      yield 'data: ${jsonEncode({
+        'jsonrpc': '2.0',
+        'id': req['id'],
+        'result': {
+          'content': [
+            {'type': 'text', 'text': 'ok-silent-slow'},
+          ],
+        },
+      })}';
+      yield '';
+    }
+
+    return StreamedTransportResponse(
+      statusCode: 200,
+      contentType: 'text/event-stream',
+      lines: gen(),
+    );
+  }
+}
+
 Future<HttpClientResponse> _post(
   HttpClient c,
   String url,
@@ -292,6 +320,46 @@ void main() {
     }
   });
 
+  test('SSE 订阅断开 ≠ 会话结束：同 sid 后续请求仍可用（无线断续不再 400）',
+      () async {
+    // 用户症状：无线使用过一段时间连接自动掉线。根因之一：GET SSE 订阅通道
+    // 一断（NAT 空闲超时 / Wi-Fi 抖动 / 半开）即**销毁整个会话** → PC 复用旧
+    // sid 继续请求时吃 400「unknown Mcp-Session-Id」= 掉线。
+    final (server, base) = await _startServer();
+    final c = HttpClient();
+    final sub = HttpClient();
+    try {
+      final r0 = await _post(c, base,
+          jsonEncode({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize'}));
+      final sid = r0.headers.value('mcp-session-id')!;
+      // 建立 GET SSE 订阅通道。
+      final subReq = await sub.openUrl('GET', Uri.parse(base));
+      subReq.headers.set('mcp-session-id', sid);
+      final subResp = await subReq.close();
+      expect(subResp.statusCode, 200);
+      // 订阅通道断开（模拟 NAT 空闲超时 / Wi-Fi 抖动）。
+      sub.close(force: true);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      // 客户端复用同一 sid 继续请求。
+      final r2 = await _post(c, base,
+          jsonEncode({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'}),
+          sessionId: sid);
+      expect(r2.statusCode, 200,
+          reason: 'SSE 订阅断开不得销毁会话——否则 PC 复用旧 sid 直接 400 掉线');
+      final b2 =
+          jsonDecode(await r2.transform(utf8.decoder).join()) as Map;
+      final names = [
+        for (final t in (b2['result'] as Map)['tools'] as List)
+          (t as Map)['name'] as String
+      ];
+      expect(names, contains('demo__echo'));
+    } finally {
+      sub.close(force: true);
+      c.close(force: true);
+      await server.stop();
+    }
+  });
+
   test('Bearer Token 校验（G3 最小件）：无 Token 401 / 有 Token 通过', () async {
     final face = McpToolFace(client: McpClient(_FakeTransport()), serverId: 'demo');
     await face.listTools();
@@ -318,9 +386,13 @@ void main() {
     }
   });
 
-  test('POST-only 连接投影上下文 idle GC（#7 泄漏修复）', () async {
-    // 纯 POST 客户端不维持 SSE 订阅通道，断连时无法经 _handleGet 的 done 清理，
-    // 须由 idle GC 按 idleTimeout 回收其 handler/session 条目（否则长期运行网关累积泄漏）。
+  test('POST-only 连接：闲置后 handler 内存态被回收，会话 sid 仍有效', () async {
+    // 纯 POST 客户端不维持 SSE 订阅通道 → 由 idle GC 按 idleTimeout 回收其
+    // **内存态**（handler + L2 豁免集，防长期运行累积泄漏）。
+    //
+    // **2026-10-23 语义收口**：会话条目（sid）**不再按时间删除**——PC 侧可能
+    // 任意时刻回来用旧 sid（无线下连接断续是常态），一旦 400 就是「掉线」体感。
+    // 旧实现此处断言 400（sid 失效），现断言 200（sid 长期有效，handler 重建）。
     final face = McpToolFace(client: McpClient(_FakeTransport()), serverId: 'demo');
     await face.listTools();
     final server = McpGatewayServer(
@@ -340,13 +412,85 @@ void main() {
           jsonEncode({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'}),
           sessionId: sid);
       expect(rList.statusCode, 200);
-      // 超过 idleTimeout 无活动 → idle GC 回收纯 POST 连接。
+      // 远超 idleTimeout 无活动 → idle GC 回收内存态，但会话条目保留。
       await Future.delayed(const Duration(milliseconds: 350));
       final rStale = await _post(c, base,
           jsonEncode({'jsonrpc': '2.0', 'id': 3, 'method': 'tools/list'}),
           sessionId: sid);
-      expect(rStale.statusCode, 400,
-          reason: 'idle GC 应已回收纯 POST 连接，旧 sid 应不可知');
+      expect(rStale.statusCode, 200,
+          reason: 'sid 长期有效——客户端复用旧 sid 必须继续可用（不再 400 掉线）');
+      final bStale =
+          jsonDecode(await rStale.transform(utf8.decoder).join()) as Map;
+      final names = [
+        for (final t in (bStale['result'] as Map)['tools'] as List)
+          (t as Map)['name'] as String
+      ];
+      expect(names, contains('demo__echo'),
+          reason: 'handler 重建后工具面仍完整（策略与 face 均恢复）');
+    } finally {
+      c.close(force: true);
+      await server.stop();
+    }
+  });
+
+  test('TC12 Keep-Alive：长调用期间推 progress 帧喂狗（PC 60s 超时对策）',
+      () async {
+    // 设计稿 thirdconnect §10.4：PC 规则 = 连续 60s 收不到任何 HTTP 数据包即超时。
+    // 下游无 progress 支持的长调用此前在网关侧静默 → PC 掉线；本例锁定「流中
+    // 注入 Keep-Alive 帧」这一行为（帧必须早于终帧到达，证明非收尾补写）。
+    final face = McpToolFace(
+        client: McpClient(_SilentSlowTransport()), serverId: 'silent');
+    await face.listTools();
+    final server = McpGatewayServer(
+      GatewayHandler(faces: {'silent': face}),
+      keepAliveInterval: const Duration(milliseconds: 100),
+    );
+    await server.start(address: InternetAddress.loopbackIPv4, port: 0);
+    final base = 'http://127.0.0.1:${server.port}/mcp';
+    final c = HttpClient();
+    try {
+      final r0 = await _post(c, base,
+          jsonEncode({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize'}));
+      final sid = r0.headers.value('mcp-session-id')!;
+      final r = await _post(
+        c,
+        base,
+        jsonEncode({
+          'jsonrpc': '2.0',
+          'id': 5,
+          'method': 'tools/call',
+          'params': {'name': 'silent__echo', 'arguments': <String, Object?>{}},
+        }),
+        accept: 'text/event-stream',
+        sessionId: sid,
+      );
+      expect(r.statusCode, 200);
+      final sw = Stopwatch()..start();
+      var keepAliveCount = 0;
+      Duration? tFirstKeepAlive;
+      Duration? tFinal;
+      await for (final line
+          in r.transform(utf8.decoder).transform(const LineSplitter())) {
+        if (!line.startsWith('data:')) continue;
+        final frame =
+            jsonDecode(line.substring('data: '.length)) as Map<String, Object?>;
+        if (frame['method'] == 'notifications/progress') {
+          keepAliveCount++;
+          tFirstKeepAlive ??= sw.elapsed;
+          final params = frame['params'] as Map<String, Object?>;
+          expect(params['progressToken'], isNotNull,
+              reason: 'progress 帧须带 progressToken 供客户端关联本次调用');
+          expect(params['message'], contains('silent__echo'));
+        } else if (frame['id'] == 5) {
+          tFinal = sw.elapsed;
+        }
+      }
+      expect(tFirstKeepAlive, isNotNull,
+          reason: '长调用期间须有 Keep-Alive 帧喂狗（否则 PC 60s 超时掉线）');
+      expect(keepAliveCount, greaterThanOrEqualTo(3),
+          reason: '600ms 内按 100ms 间隔应收到多条 Keep-Alive 帧');
+      expect(tFirstKeepAlive!.inMilliseconds, lessThan(tFinal!.inMilliseconds),
+          reason: 'Keep-Alive 帧必须早于终帧到达（证明是流中注入）');
     } finally {
       c.close(force: true);
       await server.stop();

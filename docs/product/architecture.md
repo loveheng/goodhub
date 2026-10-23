@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-21
+updated: 2026-10-23
 ---
 
 > **名词映射（2026-10-16）**：本文件中的「服务大厅」= 现**设置页**（`lib/ui/settings_page.dart`）——聊天页 ⚙ 设置弹层已并入服务大厅并统一改名「设置」。历史决策/施工原文**保留不替换**，代码与现行文档以新名为准（合并记录见 [page-revamp.md](page-revamp.md)）。
@@ -56,7 +56,7 @@ flowchart TB
 **Client 能力**：JSON-RPC 2.0（Streamable HTTP/SSE）多 Server 挂载（goodshare:8765、todo:8767…）；ToolRouter 命名空间前缀隔离（`goodshare__list_items`）；两级按需发现（首轮仅暴露元工具，命中才下发完整 Schema）；心跳探活与断线重连。
 - **静态首级摘要（2026-10-10 三轮评审补完 JIT）**：系统提示词常驻每 Server 一行的能力摘要（`- goodshare: 笔记/待办管理`），挂在尾部注入区（与元工具声明相邻，护住前缀缓存）——模型 Turn 1 即可直接 `activate_server_tools("goodshare")`，发现链路从「查列表→激活」缩为单步激活。**修正理由**：纯元工具查询对云端多空转一轮（2~4s 延迟），对端侧小模型更是多轮元规划瘫痪——JIT 两级结构保留，第一级从「元工具查询」升级为「静态摘要直读」。
 
-**Server 能力**：独立端口 `:8766`（默认绑 127.0.0.1，可切局域网 + Bearer Token）；进程内零拷贝直调（自调用不走 TCP，但 handler 必须与 HTTP 路径完全共用，防双语义）；出厂特权工具：`update_memory` / `query_memory` / `read_clipboard` / `send_capsule_notification` / `abort_task`。
+**Server 能力**：独立端口 `:8766`（**默认监听 `0.0.0.0`（局域网可达）**，安全边界由配对 Token 承担——默认自动生成、起服必带 Bearer；「免鉴权」降级为**显式**逃生口，仅建议 ADB 转发，见 §13 与 F1.17）；进程内零拷贝直调（自调用不走 TCP，但 handler 必须与 HTTP 路径完全共用，防双语义）；**宿主能力经 `host` 虚拟服务导出**（`host__` 命名空间，显式 Allowlist 登记——未登记者一律不对外导出；**当前仅登记零隐私只读项 `get_host_status`**，记忆读写 / 剪贴板等能力默认**不**外露——是否向外部 AI 暴露宿主长期记忆属产品定位问题，须单独立项，不在工程侧顺手放行）；**对外暴露面按连接做策略投影**（单轴 `policy` 四档：`single` / `private` / `full` / `pruned`，旧 `strategy=` / `scope=` 为兼容别名 + 连接级控制面切换投影；只改本连接，不触碰宿主状态）。设计 SSOT 见 [design/host-tools-gateway-export.md](../design/host-tools-gateway-export.md)（2026-10-23 回写，原「出厂特权工具：update_memory / query_memory / read_clipboard / send_capsule_notification / abort_task」为 2026-10-10 预案口径，与实现反向已作废）。
 - **OS 权限合规（2026-10-10 二轮评审补齐，三轮裁撤音频方案）**：`read_clipboard` 受 Android 12+ 剪贴板焦点约束——强制前置条件「前台 + 交互焦点」，不满足时向 LLM 抛结构化权限拒绝异常（让模型可向用户解释，禁止静默失败/猜测性兜底）；iOS 侧 UIPasteboard 约束更严，特权工具集上 iOS 须重新审计（挂双端策略）。`POST_NOTIFICATIONS` 被拒时降级：**仅应用内胶囊 + 切后台允许被系统回收 + 外部 App 显式 Intent 重唤醒**——无声音频会话保活方案正式废除（三轮评审：流氓保活，发热/耗电/Play 合规三杀，且本产品主场景是前台交互，无长时间无感驻留需求）。
 
 **环路防护（2026-10-10 评审采纳，六轮修死锁）**：桌面 AI 平台经 `:8766` 调入后 GoodHub 再回调出去的级联环——全链路注入 `Trace-ID` + 调用深度 `hop_count`（请求头传递，硬限制 ≤2），总线层做环检测。待实现时定义：hop 计数按调用链归属。
@@ -223,7 +223,7 @@ flowchart TB
 ### 13. 安全威胁模型与同机接入准入（2026-10-10 五轮评审：采纳，升格）
 
 **回环假安全（本轮最大遗漏）**：Android 沙盒不隔离 `127.0.0.1`——同机任意 App/SDK 可裸扫 `:8766` 调用特权工具（窃取记忆/剪贴板、投毒 memory），无需任何系统权限。
-- **鉴权升级**：Bearer Token **回环模式同样强制**（原文「默认绑回环、可切局域网+Token」的免密回环选项删除）——回环与局域网同一套凭证握手，配置差异仅在外网可达性。
+- **鉴权升级**：Bearer Token **回环模式同样强制**（原文「默认绑回环、可切局域网+Token」的免密回环选项删除）——回环与局域网同一套凭证握手，配置差异仅在外网可达性。**2026-10-23 落地校正**：网关默认监听 `0.0.0.0`（局域网可达）+ **默认自动生成**配对 Token（起服必带 Bearer）；「免鉴权」仅作为**显式**逃生口保留（关闭自动生成 + 留空），意图落盘防下次开启被静默补 Token 推翻——原「默认绑回环」一语与实现反向，已作废。
 - **对端身份核验（六轮评审：双轨鉴权模型）**：Binder 是本机机制，跨设备够不着——分两轨：
   - **本机访问（127.0.0.1）**：ContentProvider + Binder `getCallingUid()` → 包名 + 签名证书 SHA-256 白名单 → 下发带 TTL 的本地 Session Token，自动握手免人工介入；未授权一律 403。与端口发现同通道：一次握手完成发现+准入+发 Token。
   - **局域网访问（LAN IP）**：用户在设置页生成/重置长期 Bearer Token（可扫码配对），首连弹窗确认放行。
@@ -277,5 +277,7 @@ flowchart TB
 - [ ] **有界队列与 429 仲裁（显式关闭，SA-Q1 b）**：现网仅 `gateway_backpressure` per-server 并发上限 4 + FIFO 排队，**无 429 拒绝语义**。不做理由：单机自用、ADB/局域网调用并发压力极小。**触发条件**：网关对外正式分发或多 PC 并发接入导致排队可见时延 → 解冻补 429 语义
 - [ ] **SessionManager 会话隔离（显式关闭，SA-Q1 b）**：详见 §15 注记，触发条件 = 多客户端并发接入
 - [ ] **TC13 双进程 `:gateway`（延后，非冲突）**：现状单进程，详见 §11 注记
+- [x] ~~宿主能力经网关导出 + 策略投影~~ → **已定并落地（2026-10-23，待真机验收）**：`host` 虚拟服务（`host__` 命名空间）+ Allowlist 静态登记 + 单轴四档策略投影（`single`/`private`/`full`/`pruned`，URL 键与控制面参数统一 `policy`，旧 `strategy=`/`scope=` 为兼容别名）+ 连接级控制面；首项仅登记零隐私只读工具 `get_host_status`；见 §1 与 F1.20、设计稿 [design/host-tools-gateway-export.md](../design/host-tools-gateway-export.md)
+- [ ] **宿主长期记忆是否向外部 AI 开放**（产品定位，非工程项）：`query_memory` / `update_memory` 属隐私降级能力，现默认**不**登记进导出 Allowlist；是否开放须单独立项评估（暴露面 = 外部 AI 可读写宿主长期记忆），工程侧不得顺手放行
 
 > 需求清单见 [product/requirements.md](product/requirements.md)（草案，与本文件配套）。
