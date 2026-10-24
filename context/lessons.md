@@ -84,4 +84,4 @@ last-merge: 2026-10-24
 
 ## 待归并（inbox）
 
-（空——2026-10-24 归并：工具链 ×2 →「工具链 / toolbox」节；构建/发布 ×1、core/安全存储 ×1 各入节）
+- [test/widget] 现象: fake-async widget 测试中 dart:io 完成事件不推进（negotiate 永挂）；出站网络垫片行为不稳（时快 4xx 时永挂） | 根因: fakeAsync 时钟只驱动微任务与 timer，socket IO 完成回调由真实事件循环投递不随 pump 推进；沙箱网络路径被垫片拦截且时序不确定 | 处置: Run 级 widget 断言用「结构钉子」或 runAsync 真实窗；网络路径不作确定性地基，平台通道/真实 IO 混链用「真实窗↔pump」交替推进 | 回归: test/ui/chat_page_smoke_test.dart F1 结构钉子 + F19 _pendingAbort 闸门用例 (Ref: review-fix-2026-10)
