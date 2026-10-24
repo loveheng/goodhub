@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 updated: 2026-10-24
 ---
 
@@ -9,7 +9,7 @@ updated: 2026-10-24
 > 范围 = 审查发现的 P0/P1 代码缺陷 + 安全落盘卫生 + 门禁矩阵账实修正；P2 择要挂尾。
 > 完成态判定 = 本表各项「验收」列全过 + `flutter analyze` 0 issue + 全量 `flutter test` 全绿。
 >
-> **状态（2026-10-24）**：F1-F18 全部落地；F9 验收降级为「镜像 _heartbeatPing 已测形态」（死连接同步抛不可用真实 socket 确定性复现，无自动钉子）；F3 含语义变更（见 epic memory SSOT 条）。遗留：P2 择要清单 + F19（连接中 abort 空操作）。
+> **状态（2026-10-24）**：F1-F18 + P2 评估 A 批 13 项（含 F19）+ B 批 2 项全部落地（实施明细见 epic devlog）。F9 验收降级为「镜像 _heartbeatPing 已测形态」（死连接同步抛不可用真实 socket 确定性复现，无自动钉子）；F3 含语义变更（见 epic memory SSOT 条）；拍板①②见 epic memory 显式决策。遗留：B 档剩余 6 项按触发条件择机、C 档 3 项观察。
 
 ## P0（用户数据保护实际失效）
 
@@ -59,13 +59,23 @@ updated: 2026-10-24
 | F17 | host-tools-gateway-export.md `status: draft → active` | 该文档 frontmatter + README | 机制已全量落地（债 #15/#19 已结项） |
 | F18 | drift-guard 裸命令假绿（root 解析到全局池，项目 registry 不被扫） | 全局工具仓（移交） | 本仓侧动作 = workflow skill 文档改为显式 `--root`；根治在 meta-upgrade 域（引擎 root 默认 cwd） |
 
-## P2 择要（本轮不修，登记备查）
+## P2 择要（2026-10-24 评估轮分档：A 批已全部落地；B/C/D 结论见各行标注）
 
-- `streaming_rich_text.dart` 长流 O(n²)（每次 flush 全文正则扫描）
+- 【D 档·已否决】`CHANGE_WIFI_STATE` 权限「略超需」——**评估实证否决**：该权限是 Android 14 `connectedDevice` 前台服务 WifiLock 的 precondition（`GatewayForegroundService.kt:20` 注释已立法），安全审查此条判断有误，从清单剔除
+- 【升 P1·并入 A 批·已落地】F19 连接中 abort 空操作（落地 S 方案：chat_page `_pendingAbort` + 赋值点补发，未动内核；assemble 取消管道 = M 根治留待触发）
+- `streaming_rich_text.dart` 长流 O(n²)（每次 flush 全文正则扫描）【B：先加基准量化，有卡顿实证再修】
 - 背压 per-connection（N 连接同 server 并发 4N）+ 队列无界；LRU 逐出不豁免活跃 SSE 订阅
-- full/pruned 入站不做 isProjected 校验（pruned 不对称未裁决）；§6.2 主体矩阵未落地（ops 不记 actor）
+- full/pruned 入站不做 isProjected 校验【**已拍板 2026-10-24：pruned 补边界校验；full 显式保持目录-only**（visibility 非 ACL 与 §1.1 规则 7 一致，裁决记录须同轮回写 host-tools-gateway-export.md；见 epic memory 拍板②）】；§6.2 主体矩阵未落地（ops 不记 actor）
 - `server_probe` 工具计数不分页；`json_rpc` string id 抛裸 TypeError；`agent_loop` 无重入守卫；`ref_store` id 注释 128-bit 实际 64-bit；`goodshare_task_api` version_conflict 重试注释漂移
 - UI 零散：`_pendingResources` 跨会话残留、`beginRun` 绕过 `setAutoFollow`、`gateway_consent_dialog` 硬编码字号、重命名弹窗 controller 未 dispose
 - 超标件：chat_page 1469 行（仍在涨，破「只减不增」轨迹）、dual_track_stream 1411 行
-- Bearer 非恒时间比较；免鉴权 + 0.0.0.0 建议强制绑 127.0.0.1；插件可抢占 serverId；本机侧 ops.log 未遮蔽错误原文；`CHANGE_WIFI_STATE` 权限略超需
+- Bearer 非恒时间比较【升入 A 批 A13】；免鉴权 + 0.0.0.0【**已拍板 2026-10-24：强制绑 127.0.0.1**（token 空 ⇔ loopback；ADB 两姿势兼容、设置页地址展示同步改；依据见 epic memory 拍板①）】；插件可抢占 serverId【B：冲突语义需拍板】；本机侧 ops.log 未遮蔽错误原文【B：并入下个 gateway 轮】
 - context/ 归档轮：~10 个已收尾 epic 驻留活跃区未物理归档
+
+## 决策日志
+
+- [2026-10-24] **P2 分档评估**：A 批 13 项（F19 升 P1 居首 + A02~A13）登记后全部落地；B 档 8 项按触发条件择机（两项当日拍板落地 = B14/B15，余 6 项见上表各行标注）；C 档 3 项观察；D 档 1 项实证否决——`CHANGE_WIFI_STATE` 系 Android 14 `connectedDevice` 前台服务 WifiLock 的 precondition（`GatewayForegroundService.kt` 注释立法），安全审查误判，从清单剔除。
+- [2026-10-24] **拍板①（免鉴权绑定）**：免鉴权模式强制绑 127.0.0.1（与 `resolveGatewayToken` 决策联动：token 空 ⇔ loopback）。依据：免鉴权仅建议 ADB 转发，`adb forward/reverse` 两姿势均经设备侧 loopback，兼容性零损失；把「同网段无凭据可达」从文案劝阻升级为结构不可能（fail-closed 口径）。
+- [2026-10-24] **拍板②（pruned 入站不对称）**：pruned 补入站 isProjected 校验（目录=调用边界）；full 保持开放并升格为显式裁决——full 若也边界化，等于把 visibility 标记升格为调用 ACL，与 coding-standards §1.1 规则 7「声明非 ACL」冲突；full 连接威胁模型由 L1/L2 裁决 + 私有服务防火墙兜住。裁决记录已回写 host-tools-gateway-export.md「入站边界裁决」表。
+- [2026-10-24] **F9 验收降级**：网关广播修复镜像 `_heartbeatPing` 已测形态（拷贝遍历 + 单订阅者 try/catch 包裹）；死连接同步抛不可用真实 socket 确定性复现，无自动钉子。
+- [2026-10-24] **F19 方案取舍**：装配期预中止走 chat_page S 方案（`_pendingAbort` 标志 + 赋值点补发 abort，未动内核），避免为闸门语义动 assemble 取消管道；M 方案根治留待出现新触发场景再评估。

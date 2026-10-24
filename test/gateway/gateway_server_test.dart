@@ -557,4 +557,30 @@ void main() {
       await server.stop();
     }
   });
+
+  // B14（review-fix-2026-10 拍板①）：免鉴权强制绑回环——「无凭据 ⇔ 仅本机
+  // 可达」结构化收口；显式传入 anyIPv4 不得覆盖不变式。撤修复即红。
+  test('B14：免鉴权 → 强制 loopback；带 Token → 尊重传入地址', () async {
+    final face = McpToolFace(client: McpClient(_FakeTransport()), serverId: 'demo');
+    await face.listTools();
+    // 免鉴权：显式 anyIPv4 也被强制回环。
+    final open = McpGatewayServer(GatewayHandler(faces: {'demo': face}));
+    await open.start(address: InternetAddress.anyIPv4, port: 0);
+    try {
+      expect(open.bindAddress!.isLoopback, isTrue,
+          reason: 'B14：无凭据监听必须收敛到 loopback（ADB 转发场景不受影响）');
+    } finally {
+      await open.stop();
+    }
+    // 带 Token：尊重调用方地址（LAN 暴露语义不变）。
+    final secured = McpGatewayServer(GatewayHandler(faces: {'demo': face}))
+      ..requiredToken = 'secret';
+    await secured.start(address: InternetAddress.anyIPv4, port: 0);
+    try {
+      expect(secured.bindAddress!.isLoopback, isFalse,
+          reason: '带凭据的 LAN 监听不被强制回环');
+    } finally {
+      await secured.stop();
+    }
+  });
 }

@@ -248,6 +248,12 @@ class AgentLoop {
     /// 态（私有 server 已让位当前私有槽位）。null = 不脱敏。
     bool Function(String toolName)? maskTool,
   }) {
+    // A03（review-fix-2026-10）：单次使用契约（Run 级句柄）——重入会覆盖
+    // `_out`，首个 run 的 finally 置空会打掉第二个 run 的进度通道。预中止
+    // （abort 先于 run，装配期取消通道 F19）是合法形态：run 后首个 _aborted
+    // 检查即 LoopFinished(stop) 收尾。
+    assert(_out == null, 'AgentLoop.run 不允许重入——单次使用（Run 级句柄），'
+        '复用会覆盖 _out 打掉首个 run 的事件通道');
     final out = StreamController<AgentLoopEvent>();
     _out = out;
     unawaited(Future<void>(() async {

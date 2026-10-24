@@ -16,7 +16,9 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/foundation.dart' show debugPrint;
 
 import 'mcp_gateway_handler.dart';
@@ -71,13 +73,25 @@ class McpGatewayServer {
   bool get running => _server != null;
   int get port => _port;
 
+  /// 实际绑定地址（B14 测试观测位：免鉴权须为 loopback）。
+  InternetAddress? get bindAddress => _server?.address;
+
   Future<void> start({InternetAddress? address, int port = kGatewayDefaultPort}) async {
     if (running) return;
     _port = port;
-    _server = await HttpServer.bind(address ?? InternetAddress.anyIPv4, port);
+    // B14（review-fix-2026-10 拍板①）：免鉴权（未配置 requiredToken）**强制绑
+    // 回环**——「无凭据 ⇔ 仅本机可达」结构化收口，调用方传入的 address 不得
+    // 覆盖本不变式。ADB forward/reverse 两姿势均经设备侧 loopback，兼容零损失
+    // （epic memory 拍板①）。
+    final token = requiredToken; // 本地副本（公有字段不参与流分析提升）
+    final bindAddress =
+        (token == null || token.isEmpty)
+            ? InternetAddress.loopbackIPv4
+            : (address ?? InternetAddress.anyIPv4);
+    _server = await HttpServer.bind(bindAddress, port);
     _port = _server!.port; // port=0（测试）时回填实际绑定端口
     debugPrint('[gateway] listening on '
-        '${address?.address ?? '0.0.0.0'}:$_port/mcp');
+        '${bindAddress.address}:$_port/mcp');
     _listChangedSub =
         template.onToolsListChanged.listen((_) => _broadcastListChanged());
     _heartbeat = Timer.periodic(const Duration(seconds: 15), (_) => _heartbeatPing());
@@ -132,7 +146,22 @@ class McpGatewayServer {
   bool _checkAuth(HttpRequest req) {
     final token = requiredToken;
     if (token == null || token.isEmpty) return true;
-    return req.headers.value(HttpHeaders.authorizationHeader) == 'Bearer $token';
+    // A13（review-fix-2026-10）：恒时间比较——双方 sha256 定长摘要逐字节异或
+    // 累计，抹平长度差与逐字节提前退出的时序侧信道（可利用性低，成本亦低）。
+    final header = req.headers.value(HttpHeaders.authorizationHeader);
+    if (header == null) return false;
+    return _constantTimeEquals(header, 'Bearer $token');
+  }
+
+  /// 恒时间字符串相等：定长摘要后逐位累计差异，无提前退出分支。
+  static bool _constantTimeEquals(String a, String b) {
+    final da = crypto.sha256.convert(utf8.encode(a)).bytes;
+    final db = crypto.sha256.convert(utf8.encode(b)).bytes;
+    var diff = 0;
+    for (var i = 0; i < da.length; i++) {
+      diff |= da[i] ^ db[i];
+    }
+    return diff == 0;
   }
 
   Future<void> _handlePost(HttpRequest req) async {
@@ -173,8 +202,10 @@ class McpGatewayServer {
             'invalid projection policy: ${e.message}',
             sessionId: null);
       }
-      final sid =
-          'gw-${DateTime.now().microsecondsSinceEpoch}-${_sessions.length}';
+      // A12（review-fix-2026-10）：sid 混入安全随机段——免鉴权模式下纯时间戳
+      // + 计数可被局域网枚举猜测（低危，成本极低）。时间戳保留供排障可读。
+      final sid = 'gw-${DateTime.now().microsecondsSinceEpoch}'
+          '-${_sidRandom.nextInt(0xffffffff).toRadixString(16).padLeft(8, '0')}';
       // `single` 指向任意服务 → 本连接投影**绑定**到它（连接级，不改宿主
       // 槽位）。私有目标：否则四级管道的私有投影防火墙会拦掉它，PC 拿到空
       // 目录且 `single` 下无 `gateway__select_private` 可自救。公共目标：绑定
@@ -374,6 +405,9 @@ class McpGatewayServer {
       ctx.handler = null;
     }
   }
+
+  /// sid 随机段安全随机源（A12：免鉴权模式防局域网枚举）。
+  static final Random _sidRandom = Random.secure();
 
   /// 会话表容量上限（超出即 LRU 淘汰最久未活动的会话）——防异常客户端狂
   /// initialize 造大量 sid 撑爆内存。**不按时间删 sid**（见 [_gcIdle] 注释）。

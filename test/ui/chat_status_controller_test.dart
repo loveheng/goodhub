@@ -250,4 +250,27 @@ void main() {
       expect(call.phase, CallCardPhase.cancelled);
     });
   });
+
+  group('A07/A08（review-fix-2026-10）', () {
+    test('A07：beginRun 清离底未读计数（跨轮残留即红）', () {
+      final c = ChatStatusController();
+      c.setAutoFollow(false);
+      c.addEntry(const TrackNote('旧轮未读', danger: false));
+      expect(c.missedSinceDetach, 1);
+      c.beginRun(startedAt: DateTime(2026));
+      expect(c.missedSinceDetach, 0,
+          reason: 'A07：beginRun 直写 autoFollow 须与 setAutoFollow 同口径清计数');
+      expect(c.autoFollow, isTrue);
+    });
+
+    test('A08：addEntries 先刷文本缓冲（保序铁律同 addEntry）', () {
+      final c = ChatStatusController();
+      c.appendStreamText('缓冲尾帧');
+      c.addEntries([const TrackNote('同步卡', danger: false)]);
+      expect(c.tracks.first, isA<TrackText>(),
+          reason: 'A08：缓冲先刷出（文本条目在同步卡之前）');
+      expect((c.tracks.first as TrackText).text.toString(), contains('缓冲尾帧'));
+      expect(c.tracks.last, isA<TrackNote>());
+    });
+  });
 }

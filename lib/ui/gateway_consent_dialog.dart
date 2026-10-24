@@ -13,6 +13,7 @@ import 'package:flutter/material.dart';
 
 import '../coordinator/permission_gateway.dart';
 import '../gateway/gateway_security.dart' show kGatewayConsentTimeout;
+import 'tokens/console_tokens.dart';
 import 'navigator_key.dart';
 
 /// 手机屏 L2 确认卡（TC12：45s 超时自动弹回拒绝；安全层另有同限超时兜底，
@@ -38,46 +39,58 @@ class DialogGateDelegate implements GateDelegate {
       context: nav.context,
       barrierDismissible: false,
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialog) => AlertDialog(
-          title: const Text('PC 远程调用确认（L2 写操作）'),
-          content: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  '工具：${pending.toolName}',
-                  style: const TextStyle(
-                      fontFamily: 'monospace', fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 8),
-                const Text('参数：'),
-                Text(
-                  pending.argumentsJson,
-                  style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-                ),
-                CheckboxListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('本网关会话记住该工具'),
-                  value: remember,
-                  onChanged: (v) => setDialog(() => remember = v ?? false),
-                ),
-              ],
+        builder: (ctx, setDialog) {
+          // A09（review-fix-2026-10）：等宽/字号走 design tokens（全库唯一
+          // 绕过 ConsoleTokens/Fsz 处，收口）。
+          final t = consoleTokens(ctx);
+          return AlertDialog(
+            title: const Text('PC 远程调用确认（L2 写操作）'),
+            content: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '工具：${pending.toolName}',
+                    style: TextStyle(
+                      fontFamily: t.monoFamily,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text('参数：'),
+                  Text(
+                    pending.argumentsJson,
+                    style: TextStyle(
+                      fontFamily: t.monoFamily,
+                      fontSize: Fsz.microSm,
+                    ),
+                  ),
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('本网关会话记住该工具'),
+                    value: remember,
+                    onChanged: (v) => setDialog(() => remember = v ?? false),
+                  ),
+                ],
+              ),
             ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () =>
-                  nav.pop(const GateDecision(approved: false, reason: '用户拒绝')),
-              child: const Text('拒绝'),
-            ),
-            FilledButton(
-              onPressed: () => nav.pop(
-                  GateDecision(approved: true, rememberSession: remember)),
-              child: const Text('批准'),
-            ),
-          ],
-        ),
+            actions: [
+              TextButton(
+                onPressed: () => nav.pop(
+                  const GateDecision(approved: false, reason: '用户拒绝'),
+                ),
+                child: const Text('拒绝'),
+              ),
+              FilledButton(
+                onPressed: () => nav.pop(
+                  GateDecision(approved: true, rememberSession: remember),
+                ),
+                child: const Text('批准'),
+              ),
+            ],
+          ); // AlertDialog 收口 + return 语句结束
+        }, // A09：builder 闭包收口（t 提取自 ctx）
       ),
     );
     unawaited(dialog.whenComplete(() => settled = true));

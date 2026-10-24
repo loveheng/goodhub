@@ -16,6 +16,7 @@
 library;
 
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'dart:io';
 import 'dart:math';
 
@@ -92,8 +93,7 @@ class ConversationArchive {
       return true;
     } on Object catch (e) {
       // DEGRADE: 配额落盘失败日志可查即可（下次 Run 收尾重试），不抛穿。
-      // ignore: avoid_print
-      print('[DEGRADE] conversation-archive: 配额落盘失败: $e');
+      developer.log('[DEGRADE] conversation-archive: 配额落盘失败: $e');
       return false;
     }
   }
@@ -131,8 +131,7 @@ class ConversationArchive {
     } on Object catch (e) {
       // DEGRADE: 配额文件损坏按无记录（重置）——先备份 + lastQuotaError 面板
       // 可见（P2-1：额度不再静默清零），日志留痕。
-      // ignore: avoid_print
-      print('[DEGRADE] conversation-archive: 配额文件损坏按重置（已备份，面板可见）: $e');
+      developer.log('[DEGRADE] conversation-archive: 配额文件损坏按重置（已备份，面板可见）: $e');
       await _backupCorruptQuota();
       _lastQuotaError = '配额记录损坏，已按无记录处理（$e）';
       return null;
@@ -153,8 +152,7 @@ class ConversationArchive {
           '${_quotaFile.path}.corrupt-${DateTime.now().millisecondsSinceEpoch}');
       await _quotaFile.rename(backup.path);
     } on Object catch (e) {
-      // ignore: avoid_print
-      print('[DEGRADE] conversation-archive: 配额损坏文件备份失败（原文件保留）: $e');
+      developer.log('[DEGRADE] conversation-archive: 配额损坏文件备份失败（原文件保留）: $e');
     }
   }
 
@@ -215,8 +213,7 @@ class ConversationArchive {
     } on Object catch (e) {
       // DEGRADE: 快照保存失败至少日志可查（禁静默吞会话）——返回 false 由
       // 窗口出可观测提示（原替身 TrackNote 同口径），异常不抛穿 finally。
-      // ignore: avoid_print
-      print('[DEGRADE] conversation-archive: 会话快照保存失败 $id: $e');
+      developer.log('[DEGRADE] conversation-archive: 会话快照保存失败 $id: $e');
       return false;
     }
   }

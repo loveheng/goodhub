@@ -559,4 +559,33 @@ void main() {
     });
   });
 
+
+  // B15（review-fix-2026-10 拍板②）：pruned 入站补边界校验（目录=调用边界）；
+  // full 显式保持目录-only（visibility 非 ACL，裁决见设计稿「入站边界裁决」）。
+  group('B15 pruned/full 入站边界裁决', () {
+    bool projected(String serverId, String bare) =>
+        serverId == 'demo' && bare == 'a';
+
+    test('pruned 白名单内工具 → 放行（前缀保留）', () {
+      final r = resolveInboundToolName(
+          name: 'demo__a', policy: ProjectionPolicy.pruned({'core'}), isProjected: projected);
+      expect(r, isA<InboundAllowed>());
+    });
+
+    test('pruned 白名单外工具 → 拒绝（撤修复即红）', () {
+      final r = resolveInboundToolName(
+          name: 'demo__b', policy: ProjectionPolicy.pruned({'core'}), isProjected: projected);
+      expect(r, isA<InboundRejected>());
+      expect((r as InboundRejected).reason, contains('pruned 白名单外'));
+    });
+
+    test('full 保持目录-only（显式裁决：不投影校验）', () {
+      final r = resolveInboundToolName(
+          name: 'demo__x',
+          policy: const ProjectionPolicy.full(),
+          isProjected: (s, b) => false);
+      expect(r, isA<InboundAllowed>(),
+          reason: 'full = visibility 非 ACL（§1.1 规则 7），调用信任由 L1/L2 兜底');
+    });
+  });
 }

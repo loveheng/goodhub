@@ -92,7 +92,10 @@ class ChatStatusController extends ChangeNotifier {
     _running = true;
     _pillLabel = 'connecting';
     _pillTone = CapsuleTone.l1;
+    // A07（review-fix-2026-10）：直写 _autoFollow 须与 setAutoFollow 同口径——
+    // 清未读计数（原残留旧值，离底徽标跨轮累加）。
     _autoFollow = true;
+    _missedSinceDetach = 0;
     _runStartedAt = startedAt;
     _statusNc.notifyListeners();
   }
@@ -123,6 +126,9 @@ class ChatStatusController extends ChangeNotifier {
   bool get hasMemoryCapsules => tracks.any((e) => e is TrackMemoryCapsule);
 
   void addEntries(List<TrackEntry> entries) {
+    // A08（review-fix-2026-10）：与 addEntry 同守保序铁律——批量入轨前先刷空
+    // 文本缓冲（当前仅恢复快照路径调用故未踩中，属潜伏雷，收口防患）。
+    _streamBuf.flush();
     tracks.addAll(entries);
     _tracksNc.notifyListeners();
   }

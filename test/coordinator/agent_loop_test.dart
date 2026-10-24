@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -990,5 +991,27 @@ void main() {
           reason: 'In-band 提取 FSM 只解析正文流——思考标签不得触发提取');
       expect(events.whereType<LoopTextDelta>().single.text, '答');
     });
+  });
+
+  // A03（review-fix-2026-10）：run 单次使用契约——重入会覆盖 _out 打掉首个
+  // run 的事件通道，debug 断言拦截（Run 级句柄一次一用）。
+  test('A03：run 在途重入 → AssertionError（单次使用契约）', () async {
+    final engine = ScriptedEngine();
+    final hang = StreamController<CloudStreamEvent>();
+    engine.script.add(() => hang.stream); // 挂起：首 run 停在引擎流（在途）
+    final loop = AgentLoop(engine: engine, executor: RecordingExecutor());
+    final sub = loop
+        .run(systemPrompt: 's', userPrompt: 'u')
+        .listen(null, onError: (Object _) {});
+    await pumpEventQueue(); // _runCore 推进到引擎流（_out 非空 = 在途）
+
+    expect(
+      () => loop.run(systemPrompt: 's', userPrompt: 'u'),
+      throwsA(isA<AssertionError>()),
+      reason: 'A03：在途重入禁止——第二个 run 覆盖 _out 会打掉首个 run 的事件通道',
+    );
+
+    await hang.close(); // 收尾：引擎流结束（协议违规错误由 onError 吸收，防悬挂）
+    await sub.cancel();
   });
 }

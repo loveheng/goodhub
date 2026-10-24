@@ -253,7 +253,8 @@ class RefStore {
     }
   }
 
-  /// 128-bit 安全随机 hex（无 uuid 依赖；id 只需池内唯一 + 不含冒号）。
+  /// 64-bit 安全随机 hex（16 个 4-bit 半字节；无 uuid 依赖；id 只需池内唯一 +
+  /// 不含冒号——A04 评估轮更正：单会话池容量下碰撞概率可忽略，不必加宽）。
   String _newId() =>
       List.generate(16, (_) => _random.nextInt(16).toRadixString(16)).join();
 }

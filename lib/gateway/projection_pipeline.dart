@@ -423,6 +423,15 @@ InboundToolName resolveInboundToolName({
       return const InboundRejected(
           '工具名缺少服务前缀（应形如 <server_id>__<tool>）');
     }
+    // B15（review-fix-2026-10 拍板②）：pruned = 显式白名单投影——目录=调用
+    // 边界（配置了白名单却拦不住名单外调用违背配置预期）；full 显式保持
+    // 目录-only（visibility 非 ACL，§1.1 规则 7；裁决记录见
+    // host-tools-gateway-export.md「入站边界裁决」）。
+    final parsed = parsePrefixedToolName(name)!;
+    if (policy.isPruned && !isProjected(parsed.serverId, parsed.toolName)) {
+      return InboundRejected(
+          '工具 ${parsed.toolName} 不在当前投影集内（pruned 白名单外不可调用）');
+    }
     return InboundAllowed(name, prefixNormalized: false);
   }
 

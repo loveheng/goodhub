@@ -152,6 +152,10 @@ class _ChatPageState extends State<ChatPage>
   String? _lastPrompt;
 
   McpAssembly? _activeAssembly; // Run 期句柄（Abort/finally 释放；步 1 内核化后窗口只持句柄）
+  // F19（review-fix-2026-10）：装配期（连接中）点停止时句柄未就绪，无取消
+  // 通道——置预中止标志，装配完成后立即对 assembly 补发 abort（否则 Run 挂着
+  // 悬挂引擎空转，pill 已 idle 而 running 卡 true）。
+  bool _pendingAbort = false;
   TrackCall? _activeCallEntry;
 
   /// 活动思考轨条目（2026-10-21 M1）：本轮当前思维流段——首 delta 建条目
@@ -251,6 +255,9 @@ class _ChatPageState extends State<ChatPage>
     // governor 随编排件（window-slim P1-A），本页只触发重置。
     _runOrchestrator.memGovernor.reset();
     _status.resetForSession(); // 清轨道 + 复位状态带到 idle + 复位自动跟随
+    // A06（review-fix-2026-10）：附件待发项属单次发送——跨会话残留会混入新
+    // 会话的首轮发送（旧口径冲突）。
+    _pendingResources.clear();
     _sessionSvc.resetSession(); // 内核态重置（会话实例 + 归档当前指针）
   }
 
@@ -970,6 +977,9 @@ class _ChatPageState extends State<ChatPage>
         onSamplingEnd: () => _watcher?.samplingEnd(),
       );
       _activeAssembly = assembly;
+      // F19：装配期间用户已点停止 → 对刚就绪的 assembly 补发 abort（预中止：
+      // loop 首个 _aborted 检查即 LoopFinished 收尾，Run 立即结束而非空转）。
+      if (_pendingAbort) assembly.abort(reason: 'user abort (connecting phase)');
       final router = assembly.router;
       // A2：填充人话化映射——faces 的 cachedSchemas 已缓存，一次性 O(工具数)；
       // 值 = 服务端 description 全文（CallCard 收起首子句/可展开全文）。
@@ -1157,6 +1167,7 @@ class _ChatPageState extends State<ChatPage>
       await assembly?.close();
       _activeAssembly = null;
       assembly = null;
+      _pendingAbort = false; // F19：Run 收尾清预中止标志（下 Run 干净起步）
       await _persistCurrent(); // T3b：Run 收尾快照（含 Cancelled 终态）
       if (mounted) _status.endRun();
     }
@@ -1177,6 +1188,10 @@ class _ChatPageState extends State<ChatPage>
     // §4.1：Abort → 重度确认震动
     unawaited(HapticFeedback.heavyImpact());
     _watcher?.stop();
+    if (_activeAssembly == null) {
+      // F19：Run 仍在装配期（negotiate/加载未完）——置预中止标志，赋值点补发。
+      _pendingAbort = true;
+    }
     _activeAssembly?.abort(
       reason: 'user abort',
     ); // 内核遍历全部 face 取消在途 + loop.abort

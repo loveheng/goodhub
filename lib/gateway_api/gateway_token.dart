@@ -9,13 +9,16 @@ library;
 import 'dart:convert';
 import 'dart:math';
 
+/// 进程级安全随机源（A11：避免逐字节新建 Random.secure 的无谓开销）。
+final Random _secureRandom = Random.secure();
+
 /// 生成网关配对 Token。
 ///
 /// 32 字节 `Random.secure` 熵 → base64url 无填充（约 43 字符）。强度只需覆盖
 /// 「同局域网配对」场景（非长期凭据）；字符集为 URL-safe base64（无 `+/=`），
 /// 便于用户手动抄进 PC 端而不易出错。
 String generateGatewayToken() {
-  final bytes = List<int>.generate(32, (_) => Random.secure().nextInt(256));
+  final bytes = List<int>.generate(32, (_) => _secureRandom.nextInt(256));
   return base64Url.encode(bytes).replaceAll('=', '');
 }
 

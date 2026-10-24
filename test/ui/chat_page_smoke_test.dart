@@ -9,6 +9,7 @@
 /// 装配，第三个用例演示经 store 注入位绕过文件系统，可升级为覆盖发送链路的交互测试。
 library;
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -184,6 +185,47 @@ void main() {
             '（页面级 build 的 canPop = 陈旧值，运行中返回拦截失灵）');
   });
 
+  // F19（review-fix-2026-10）：装配期（连接中）点停止此前是空操作——
+  // _activeAssembly 未赋值时 abort 无通道，pill 转 idle 而 running 卡 true。
+  // 修复 = 预中止标志 + 装配完成后补发 abort。闸门式 apiKey 卡住装配窗口：
+  // 点停止必然落在「句柄未就绪」期（确定性）；撤修复即红（Run 挂悬挂引擎
+  // 空转，canPop 永不回落）。
+  testWidgets('F19：连接中点停止 → 装配完成后立即中止（预中止补发）',
+      (tester) async {
+    PopScope<Object> popScope() =>
+        tester.widget(find.byType(PopScope<Object>));
+    final gate = _GatedEpStore();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ChatPage(
+          endpointStoreOverride: gate,
+          engineOverride: _HangingEngine(),
+        ),
+      ),
+    );
+    await _settleAssembly(tester);
+
+    await tester.enterText(find.byType(TextField), '连接中中止');
+    await tester.tap(find.byIcon(Icons.arrow_upward));
+    for (var i = 0; i < 8; i++) {
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+    expect(find.byIcon(Icons.stop), findsOneWidget,
+        reason: '前置：已进运行态（连接中相位）');
+
+    await tester.tap(find.byIcon(Icons.stop)); // 装配期点停止（apiKey 挂起）
+    gate.gate.complete(); // 放行装配
+    // 收尾链交替推进（真实窗 ↔ pump，同 F6 收尾经验）。
+    for (var round = 0; round < 120 && !popScope().canPop; round++) {
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      });
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+    expect(popScope().canPop, isTrue,
+        reason: 'F19：预中止补发 → Run 立即结束（撤修复即红：running 卡死）');
+  });
+
   // F6（review-fix-2026-10）：判 running 与 beginRun 之间有两个 await（装配
   // 加载），窗口内双击发送 = 两个并发 Run（双 TrackUser + transcript 竞写）。
   // 撤闩即红（同文案 TrackUser 变两条）。
@@ -245,6 +287,21 @@ class _RunEpStore extends _FakeEpStore {
           endpoint: '::invalid-uri::',
         ),
       ];
+}
+
+/// 闸门式假 store（F19）：apiKey 读取挂起等测试放行——精确卡住「已 beginRun
+/// 但 assemble 未返回」的连接中窗口（load 正常返回保证不走引导卡，endpoint
+/// 非法 URI 走 F3 降级继续）。
+class _GatedEpStore extends _FakeEpStore {
+  final Completer<void> gate = Completer<void>();
+
+  @override
+  Future<List<ServerEndpoint>> load() async => const [
+        ServerEndpoint(id: 'srv_run', name: 'run', endpoint: '::invalid-uri::'),
+      ];
+
+  @override
+  Future<String?> apiKey(String id) => gate.future.then((_) => null);
 }
 
 /// 悬挂假引擎（F6）：持续低频产出、永不 Done——Run 停在运行态供断言；取消

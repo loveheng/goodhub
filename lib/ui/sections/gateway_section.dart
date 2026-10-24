@@ -22,7 +22,10 @@ import '../../gateway_api/gateway_control.dart';
 import '../tokens/console_tokens.dart';
 
 /// 网关起服注入位（测试替换 → 不真绑端口）。
-typedef GatewayStartFn = Future<void> Function({required int port, String? token});
+typedef GatewayStartFn = Future<void> Function({
+  required int port,
+  String? token,
+});
 
 /// 网关停服注入位（测试替换）。
 typedef GatewayStopFn = Future<void> Function();
@@ -85,7 +88,6 @@ class _GatewaySectionState extends State<GatewaySection>
   /// 的用户可见语义。
   @override
   bool get wantKeepAlive => true;
-
 
   var _gwRunning = false;
   var _gwLanAddrs = const <String>[]; // 运行中展示 PC 可配 URL
@@ -159,9 +161,7 @@ class _GatewaySectionState extends State<GatewaySection>
 
   Future<void> _reloadGateway() async {
     final running = gatewayRunning;
-    final addrs = running
-        ? await gatewayLanAddresses()
-        : const <String>[];
+    final addrs = running ? await gatewayLanAddresses() : const <String>[];
     if (!mounted) return;
     setState(() {
       _gwRunning = running;
@@ -184,8 +184,10 @@ class _GatewaySectionState extends State<GatewaySection>
     }
     try {
       // F11：Token 值走安全存储；authMode 标记留 prefs。
-      await (widget.secureOverride ?? FlutterSecureKeyValue())
-          .write(_kTokenKey, token);
+      await (widget.secureOverride ?? FlutterSecureKeyValue()).write(
+        _kTokenKey,
+        token,
+      );
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_kTokenAuthModeKey, _kTokenAuthModeAuto);
     } on Object catch (e) {
@@ -198,7 +200,8 @@ class _GatewaySectionState extends State<GatewaySection>
   Future<void> _refreshBatteryExemption() async {
     try {
       final exempt =
-          await (widget.batteryStatusOverride ?? gatewayBatteryExemptionStatus)();
+          await (widget.batteryStatusOverride ??
+              gatewayBatteryExemptionStatus)();
       if (!mounted) return;
       setState(() => _batteryExempt = exempt);
     } on Object catch (e) {
@@ -209,8 +212,9 @@ class _GatewaySectionState extends State<GatewaySection>
   /// 跳系统申请电池优化白名单（息屏保活的关键一步——Doze 限网会让 PC 侧
   /// 表现为「过段时间连接掉了」）。
   Future<void> _requestBatteryExemption() async {
-    final ok = await (widget.batteryRequestOverride ??
-        requestGatewayBatteryExemption)();
+    final ok =
+        await (widget.batteryRequestOverride ??
+            requestGatewayBatteryExemption)();
     if (!mounted) return;
     if (ok) {
       setState(() => _batteryExempt = true);
@@ -252,15 +256,19 @@ class _GatewaySectionState extends State<GatewaySection>
           });
         }
         // F11：Token 值走安全存储；authMode 标记留 prefs。
-        await (widget.secureOverride ?? FlutterSecureKeyValue())
-            .write(_kTokenKey, token);
+        await (widget.secureOverride ?? FlutterSecureKeyValue()).write(
+          _kTokenKey,
+          token,
+        );
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString(
           _kTokenAuthModeKey,
           _autoToken ? _kTokenAuthModeAuto : _kTokenAuthModeOpen,
         );
         await (widget.startOverride ?? startGateway)(
-            port: kGatewayDefaultPort, token: token.isEmpty ? null : token);
+          port: kGatewayDefaultPort,
+          token: token.isEmpty ? null : token,
+        );
       } else {
         await (widget.stopOverride ?? stopGateway)();
       }
@@ -295,9 +303,15 @@ class _GatewaySectionState extends State<GatewaySection>
               title: Text('暴露 :$kGatewayDefaultPort（Streamable HTTP）'),
               subtitle: Text(
                 _gwRunning
-                    ? '运行中——PC 配置：'
-                          '${_gwLanAddrs.isEmpty ? 'http://<手机IP>' : _gwLanAddrs.map((a) => 'http://$a').join(' 或 ')}'
-                          ':$kGatewayDefaultPort/mcp（ADB 场景 127.0.0.1:$kGatewayDefaultPort）'
+                    ? (!_autoToken && _gwTokenCtrl.text.trim().isEmpty
+                          // B14（拍板①）：免鉴权 = 强制绑 127.0.0.1——LAN 地址
+                          // 不可达，展示回环 + ADB 转发路径（防「连不上」困惑）。
+                          ? '运行中（免鉴权·仅本机可达）——PC 经 ADB 转发连接：'
+                                'adb forward tcp:$kGatewayDefaultPort tcp:$kGatewayDefaultPort '
+                                '后配 http://127.0.0.1:$kGatewayDefaultPort/mcp'
+                          : '运行中——PC 配置：'
+                                '${_gwLanAddrs.isEmpty ? 'http://<手机IP>' : _gwLanAddrs.map((a) => 'http://$a').join(' 或 ')}'
+                                ':$kGatewayDefaultPort/mcp（ADB 场景 127.0.0.1:$kGatewayDefaultPort）')
                     : '关闭——开启后 PC 经 Streamable HTTP 调用手机内全部服务',
                 style: const TextStyle(fontSize: Fsz.telemetrySm),
               ),
@@ -317,9 +331,9 @@ class _GatewaySectionState extends State<GatewaySection>
                   children: [
                     IconButton(
                       key: const Key('gateway-token-visibility'),
-                      icon: Icon(_tokenVisible
-                          ? Icons.visibility_off
-                          : Icons.visibility),
+                      icon: Icon(
+                        _tokenVisible ? Icons.visibility_off : Icons.visibility,
+                      ),
                       tooltip: _tokenVisible ? '隐藏' : '显示',
                       onPressed: () =>
                           setState(() => _tokenVisible = !_tokenVisible),
@@ -363,8 +377,10 @@ class _GatewaySectionState extends State<GatewaySection>
                     child: Text(
                       '⚡ 息屏保活：尚未加入电池优化白名单——息屏后系统可能限网，'
                       'PC 侧会表现为「过段时间连接掉了」',
-                      style:
-                          TextStyle(fontSize: Fsz.telemetrySm, color: t.danger),
+                      style: TextStyle(
+                        fontSize: Fsz.telemetrySm,
+                        color: t.danger,
+                      ),
                     ),
                   ),
                   TextButton(

@@ -115,6 +115,16 @@ flowchart TD
 
 执行顺序：系统工具拒绝 → 本补齐判定 → 既有 `parsePrefixedToolName` 之后的全部分发逻辑。
 
+### 入站边界裁决（2026-10-24 拍板②，review-fix-2026-10）
+
+各策略的「目录面 ⇔ 调用边界」一致性显式裁决：
+
+| 策略 | 目录（tools/list） | 入站（tools/call） | 依据 |
+|---|---|---|---|
+| `single` | 投影即边界 | 投影即边界（isProjected 校验 + 前缀补齐） | 单一目标面，零泄漏语义 |
+| `pruned` | tag 白名单 | **isProjected 校验（B15 补齐）** | pruned 是显式挑出的白名单投影——目录与边界不一致违背配置预期（配了白名单却拦不住名单外调用） |
+| `full` / `private` | 全量联邦面 | **仅前缀形状校验，不做投影校验（显式保持）** | visibility 标记是目录级过滤**非调用 ACL**（本仓 coding-standards §1.1 规则 7 立法：声明非 ACL）；full 连接的调用信任由 L1/L2 裁决 + 私有服务防火墙兜底。full 与 pruned 的不对称是**有意设计**，非漂移 |
+
 ## Host 导出 Allowlist
 
 `HostTransport` 合成的 `tools/list` 以静态注册表 `kHostExportAllowlist` 为准，**未登记者一律不导出**（留在本地 ToolRouter，本机照常可用）：

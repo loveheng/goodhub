@@ -88,13 +88,11 @@ Future<PickedResource?> showResourcePickerSheet(
               if (!ctx.mounted) return;
               // collected = 本次**新**入库：命中同内容复用时不再提示「已收入」，
               // 也不提供撤销（撤销 = 删本次收集；复选既有条目不属收集）。
-              Navigator.of(ctx).pop(
-                (
-                  id: result.entry.id,
-                  name: result.entry.name,
-                  collected: !result.reused,
-                ),
-              );
+              Navigator.of(ctx).pop((
+                id: result.entry.id,
+                name: result.entry.name,
+                collected: !result.reused,
+              ));
             } on ResourceStoreException catch (e) {
               if (!ctx.mounted) return;
               setSheet(() {
@@ -138,7 +136,10 @@ Future<PickedResource?> showResourcePickerSheet(
                   padding: const EdgeInsets.all(24),
                   child: Text(
                     '资源中心暂无资源——可直接点上方「从系统选择…」。',
-                    style: TextStyle(fontSize: Fsz.body, color: t.terminalMuted),
+                    style: TextStyle(
+                      fontSize: Fsz.body,
+                      color: t.terminalMuted,
+                    ),
                   ),
                 )
               else
@@ -147,18 +148,22 @@ Future<PickedResource?> showResourcePickerSheet(
                     key: ValueKey('pick-${e.id}'),
                     dense: true,
                     leading: const Icon(Icons.description_outlined),
-                    title: Text(e.name,
-                        style: const TextStyle(fontSize: Fsz.body)),
+                    title: Text(
+                      e.name,
+                      style: const TextStyle(fontSize: Fsz.body),
+                    ),
                     subtitle: Text(
                       '${_fmtBytes(e.sizeBytes)} · ${e.headPreview}',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                          fontSize: Fsz.telemetry, color: t.terminalMuted),
+                        fontSize: Fsz.telemetry,
+                        color: t.terminalMuted,
+                      ),
                     ),
-                    onTap: () => Navigator.of(ctx).pop(
-                      (id: e.id, name: e.name, collected: false),
-                    ),
+                    onTap: () =>
+                        Navigator.of(ctx)
+                            .pop((id: e.id, name: e.name, collected: false)),
                   ),
             ],
           );
@@ -213,8 +218,13 @@ class ResourceCenterSection extends StatefulWidget {
   final void Function(String message) onFlash;
 
   /// 面板级错误态（ux-hardening P0-3 口径：Rose 文案 + 重试入口）。
-  final Widget Function(ConsoleTokens t, String message, VoidCallback onRetry,
-      {ValueKey<String>? key}) errorRowBuilder;
+  final Widget Function(
+    ConsoleTokens t,
+    String message,
+    VoidCallback onRetry, {
+    ValueKey<String>? key,
+  })
+  errorRowBuilder;
 
   @override
   State<ResourceCenterSection> createState() => _ResourceCenterSectionState();
@@ -254,7 +264,7 @@ class _ResourceCenterSectionState extends State<ResourceCenterSection>
       }
       final store = _store!;
       // 缓存路径**先判注入位再取平台路径**：否则纯 Dart 环境（无插件）
-        // 即便传了 override 也会因 getTemporaryDirectory 抛异常而落错误态。
+      // 即便传了 override 也会因 getTemporaryDirectory 抛异常而落错误态。
       final cachePath =
           widget.cachePathOverride ?? (await getTemporaryDirectory()).path;
       if (!mounted) return;
@@ -266,9 +276,9 @@ class _ResourceCenterSectionState extends State<ResourceCenterSection>
       });
       // 孤儿对账（启动/进入段触发，后台不阻断渲染）：清完有产出则刷新清单/占用。
       unawaited(
-        store
-            .reconcileOrphans(extraDirs: ['$_cachePath/external'])
-            .then((removed) {
+        store.reconcileOrphans(extraDirs: ['$_cachePath/external']).then((
+          removed,
+        ) {
           if (removed > 0 && mounted) {
             setState(() {
               _reconcileRemoved = removed;
@@ -283,8 +293,7 @@ class _ResourceCenterSectionState extends State<ResourceCenterSection>
     }
   }
 
-  int get _totalBytes =>
-      _entries.fold(0, (sum, e) => sum + e.sizeBytes);
+  int get _totalBytes => _entries.fold(0, (sum, e) => sum + e.sizeBytes);
 
   Future<void> _reload() async {
     final store = _store;
@@ -306,11 +315,15 @@ class _ResourceCenterSectionState extends State<ResourceCenterSection>
       final result = await store.import(path);
       await _reload();
       // 复用命中 = 该内容已在册（改名产生的「同名不同内容」不在此列）。
-      widget.onFlash(result.reused
-          ? '✓ 内容已在资源中心：《${result.entry.name}》'
-          : '✓ 已导入：${result.entry.name}');
+      widget.onFlash(
+        result.reused
+            ? '✓ 内容已在资源中心：《${result.entry.name}》'
+            : '✓ 已导入：${result.entry.name}',
+      );
     } on ResourceStoreException catch (e) {
-      widget.onFlash('⚠ 导入失败：${e.message}${e.hint == null ? '' : '（${e.hint}）'}');
+      widget.onFlash(
+        '⚠ 导入失败：${e.message}${e.hint == null ? '' : '（${e.hint}）'}',
+      );
     } on Object catch (e) {
       widget.onFlash('⚠ 导入失败: $e');
     } finally {
@@ -325,27 +338,36 @@ class _ResourceCenterSectionState extends State<ResourceCenterSection>
     final store = _store;
     if (store == null) return;
     final ctrl = TextEditingController(text: entry.name);
-    final newName = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('重命名资源'),
-        content: TextField(controller: ctrl, autofocus: true),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(ctx).pop(), child: const Text('取消')),
-          TextButton(
-              onPressed: () => Navigator.of(ctx).pop(ctrl.text),
-              child: const Text('确定')),
-        ],
-      ),
-    );
-    if (newName == null || !mounted) return;
+    // A10（review-fix-2026-10）：弹窗作用域 controller 用完即 dispose（弹窗
+    // 关闭路径含取消/确定/点外部，finally 兜底）。
     try {
-      await store.rename(entry.id, newName);
-      await _reload();
-      widget.onFlash('✓ 已重命名');
-    } on ResourceStoreException catch (e) {
-      widget.onFlash('⚠ 重命名失败：${e.message}');
+      final newName = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('重命名资源'),
+          content: TextField(controller: ctrl, autofocus: true),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('取消'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(ctrl.text),
+              child: const Text('确定'),
+            ),
+          ],
+        ),
+      );
+      if (newName == null || !mounted) return;
+      try {
+        await store.rename(entry.id, newName);
+        await _reload();
+        widget.onFlash('✓ 已重命名');
+      } on ResourceStoreException catch (e) {
+        widget.onFlash('⚠ 重命名失败：${e.message}');
+      }
+    } finally {
+      ctrl.dispose(); // A10：弹窗关闭（取消/确定/点外部）后必释放
     }
   }
 
@@ -359,11 +381,13 @@ class _ResourceCenterSectionState extends State<ResourceCenterSection>
         content: Text('确定删除「${entry.name}」？会话内已注入的附件引用将失效。'),
         actions: [
           TextButton(
-              onPressed: () => Navigator.of(ctx).pop(false),
-              child: const Text('取消')),
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
           TextButton(
-              onPressed: () => Navigator.of(ctx).pop(true),
-              child: const Text('删除')),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('删除'),
+          ),
         ],
       ),
     );
@@ -429,8 +453,12 @@ class _ResourceCenterSectionState extends State<ResourceCenterSection>
             ),
           ),
         if (_error != null)
-          widget.errorRowBuilder(t, _error!, _bootstrap,
-              key: const ValueKey('resource-error')),
+          widget.errorRowBuilder(
+            t,
+            _error!,
+            _bootstrap,
+            key: const ValueKey('resource-error'),
+          ),
         if (_store != null && _entries.isEmpty && _error == null)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 6),
@@ -449,8 +477,7 @@ class _ResourceCenterSectionState extends State<ResourceCenterSection>
               '${_fmtBytes(e.sizeBytes)} · ${e.headPreview}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style:
-                  TextStyle(fontSize: Fsz.telemetry, color: t.terminalMuted),
+              style: TextStyle(fontSize: Fsz.telemetry, color: t.terminalMuted),
             ),
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
@@ -470,8 +497,7 @@ class _ResourceCenterSectionState extends State<ResourceCenterSection>
                 IconButton(
                   key: ValueKey('resource-delete-${e.id}'),
                   tooltip: '删除',
-                  icon: Icon(Icons.delete_outline,
-                      size: 18, color: t.danger),
+                  icon: Icon(Icons.delete_outline, size: 18, color: t.danger),
                   onPressed: () => unawaited(_delete(e)),
                 ),
               ],
