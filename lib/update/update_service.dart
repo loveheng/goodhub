@@ -37,8 +37,13 @@ class UpdateService {
       return;
     }
     final uri = Uri.tryParse(trimmed);
-    if (uri == null || !uri.isScheme('https') && !uri.isScheme('http')) {
-      throw const UpdateException('更新源必须是合法的 http(s) URL');
+    // F14：更新源只收 https（http 明文源可被劫持投递整包——清单侧已同步强制）；
+    // 回环 http 豁免（本地调试/单测地基，不可被远程劫持）。
+    final loopbackHttp = uri != null &&
+        uri.isScheme('http') &&
+        (uri.host == '127.0.0.1' || uri.host == 'localhost');
+    if (uri == null || (!uri.isScheme('https') && !loopbackHttp)) {
+      throw const UpdateException('更新源必须是合法的 https URL（明文源可被劫持，已拒绝）');
     }
     await _prefs.setString(_prefSourceUrl, trimmed);
   }

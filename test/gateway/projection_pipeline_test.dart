@@ -228,6 +228,14 @@ void main() {
           reason: 'single 剥前缀；私有域内 shared 与 private 工具全量（输出按名排序）');
     });
 
+    test('single 切入公共档服务 → 绑定激活域，私有声明工具剥前缀进面（2026-10-24 裁决）', () {
+      // 修「single 切入公共档服务后私有声明工具不可见」：切入即信任边界，
+      // 与目标 tier 无关（v1.1.1 的可见性来自宿主默认绑定偶然生效，非设计）。
+      final n = names(ProjectionPolicy.single('pub'), activePrivate: 'pub');
+      expect(n, ['a', 'hidden'],
+          reason: 'single 剥前缀；目标服务全量工具（shared + private 声明）都进面');
+    });
+
     test('③ single 收敛到单一目标 + ④ 剥前缀直出裸名', () {
       final n = names(ProjectionPolicy.single('host'));
       expect(n, ['echo_host']);

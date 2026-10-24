@@ -105,7 +105,10 @@ class TaskConsumeLoop {
         final round = await _drainRound();
         roundFull = round.full;
         // 跑满上限 ≠ 队列空：继续下一轮，直到本轮未跑满且期间无新通知。
-      } while (_dirty || roundFull);
+        // F8（review-fix-2026-10）：dispose 后不再续轮——原判断只在 _pump 入口
+        // 检查一次，do/while 内无检查，dispose（断连/卸载场景）后仍继续
+        // claim 直到连续失败熔断，对已断通道徒增 churn。
+      } while (!_disposed && (_dirty || roundFull));
     } finally {
       _running = false;
     }
@@ -116,6 +119,11 @@ class TaskConsumeLoop {
     var processed = 0;
     var failures = 0;
     while (processed < maxPerRound) {
+      // F8：单步间复查存活——通道在轮内断开（dispose/断连）即停，不盲发。
+      if (_disposed ||
+          isChannelAlive != null && !isChannelAlive!()) {
+        return _Round(processed, full: false);
+      }
       bool handled;
       try {
         handled = await service.runOnce();

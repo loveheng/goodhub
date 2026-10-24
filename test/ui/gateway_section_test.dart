@@ -10,11 +10,17 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:goodhub/core/security/secure_key_value.dart';
 import 'package:goodhub/ui/sections/gateway_section.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  /// F11：Token 走安全存储——测试统一注入内存件（含迁移断言的观测位）；
+  /// setUp 每用例重建（内存件跨用例会串 Token 态）。
+  late InMemorySecureKeyValue secure;
+
   setUp(() {
+    secure = InMemorySecureKeyValue();
     SharedPreferences.setMockInitialValues({});
   });
 
@@ -34,6 +40,7 @@ void main() {
             startOverride: start,
             batteryStatusOverride: batteryStatus,
             batteryRequestOverride: batteryRequest,
+            secureOverride: secure,
           ),
         ]),
       ),
@@ -62,8 +69,11 @@ void main() {
     expect(gotToken, isNotNull);
     expect(gotToken, isNotEmpty,
         reason: '默认路径必须带 Bearer——不得静默免鉴权暴露 :8766');
+    expect(await secure.read('gateway.token'), gotToken,
+        reason: 'F11：Token 落安全存储（明文 prefs 即红）');
     final prefs = await SharedPreferences.getInstance();
-    expect(prefs.getString('gateway.token'), gotToken);
+    expect(prefs.getString('gateway.token'), isNull,
+        reason: 'F11：明文位不得再写');
     expect(prefs.getString('gateway.token.authMode'), 'auto');
     expect(tokenField(tester), gotToken,
         reason: '生成的 Token 回填输入框——用户要复制到 PC 端');
@@ -89,8 +99,8 @@ void main() {
 
     expect(startCalls, 1);
     expect(gotToken, isNull, reason: '显式关自动生成 + 留空 = 免鉴权');
+    expect(await secure.read('gateway.token'), '');
     final prefs = await SharedPreferences.getInstance();
-    expect(prefs.getString('gateway.token'), '');
     expect(prefs.getString('gateway.token.authMode'), 'open',
         reason: '免鉴权意图须落盘——否则下次开启会被自动补 Token 静默推翻');
   });
@@ -136,5 +146,24 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(gotToken, 'my-token', reason: '用户显式指定优先于自动生成');
+  });
+
+  // F11（review-fix-2026-10）：Bearer Token 属凭证，明文落 prefs 违反 §6.3
+  // 零明文留痕——本地取证即得。首启从旧明文键迁移到安全存储并删除明文残留。
+  testWidgets('F11：旧明文 Token 首启迁移至安全存储 + 明文键删除', (tester) async {
+    SharedPreferences.setMockInitialValues({
+      'gateway.token': 'legacy-secret-token',
+      'gateway.token.authMode': 'auto',
+    });
+    await pumpSection(tester);
+    // bootstrap 已完成迁移。
+    expect(tokenField(tester), 'legacy-secret-token');
+    expect(await secure.read('gateway.token'), 'legacy-secret-token',
+        reason: '旧值须迁入安全存储');
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getString('gateway.token'), isNull,
+        reason: 'F11：明文残留必须删除（撤迁移清理即红）');
+    expect(prefs.getString('gateway.token.authMode'), 'auto',
+        reason: '非机密模式标记不动');
   });
 }

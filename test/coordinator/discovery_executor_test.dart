@@ -260,6 +260,10 @@ void main() {
           id: '1', name: DiscoveryExecutor.activateServerTools,
           argumentsJson: jsonEncode({'server_id': 'p1'})));
       expect(res.isError, isFalse);
+      // F5（review-fix-2026-10）：activate 私有曾直写 activePrivateServerId
+      // 绕过提交点事务——提交前活跃槽位必须不变（撤修复即红）。
+      expect(router.activePrivateServerId, isNull,
+          reason: 'F5：pending 阶段不得动活跃槽位（与 use_server 同事务）');
       router.commitPendingSlot();
       expect(router.activePrivateServerId, 'p1');
       expect(router.activatedServers, isNot(contains('p1')));

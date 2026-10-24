@@ -2,8 +2,8 @@
 dev-loop: memory
 format: v1
 epic: meta-upgrade
-total-merged: 0
-last-merge: none
+total-merged: 1
+last-merge: 2026-10-24
 ---
 
 # meta-upgrade
@@ -21,6 +21,11 @@ last-merge: none
   - CONST 搜索面收窄到 **lib/ 生产代码**（test/ 不扫）：测试字面量是有意的独立钉子，常量变更经测试失败自曝；docs 散文提及不判（版本号在文档里是正常叙述）。
 - **顺带收敛的真双源**：网关端口 8766 此前两处声明（gateway_server 默认 + gateway_controller 入参默认）+ UI 文案与 gateway_control 各写一份 → 统一 `kGatewayDefaultPort`（gateway_server 声明，其余三处引用；UI 经 gateway_api 门面转出，守住 ui→gateway_api→gateway 单向纪律）。
 - **本轮抓到的自伤**：drift-guard 首跑即命中我自己在 index.md 写的登记说明行（退役词条出现在文档里）→ 加 `drift:keep` 行内显式豁免（可见可审计，禁静默豁免）。
+
+## 进度（活事实）
+
+- 三层件已落地并全绿（2026-10-23：drift-guard 自检 PASS + 变异探针注入即红/还原复绿 + Dart 镜像同咬 + 全量 1133/1137 绿）；goodTemplate 移交件已产出（handoff-goodtemplate.md），等用户执行（见断点）
+- 并行会话在 projection_pipeline.dart 加 owner 档时留下半成品编译红——本轮只补 mcp_gateway_handler policy switch 防御性 case（owner => 'owner'）恢复可编译，其语义/设计归 gateway 并行会话，未触碰
 
 ## 断点
 - [断点] 下一步：用户执行 goodTemplate 移交件（context/epics/meta-upgrade/handoff-goodtemplate.md）并按 §4 校验命令验收；存量 5 项目按需采纳；后续 epic：arch-guard 引擎去重（6 副本 → 引擎全局 + 各项目 rules-as-data）

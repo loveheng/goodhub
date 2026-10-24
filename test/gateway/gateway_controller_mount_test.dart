@@ -110,7 +110,7 @@ class _FakeDiscovery implements LocalPluginSource {
 
 class _FakeTrustGate implements PluginTrustGate {
   @override
-  bool isTrusted(String packageName) => true;
+  bool isTrusted(String packageName, {String signatureSha256 = ''}) => true;
 }
 
 class _FakeSecure implements SecureKeyValue {

@@ -35,6 +35,7 @@ Future<ServerEndpointStore> serverEndpointStore({String? supportPath}) async {
     file: File('$support/mcp_servers.json'),
     prefs: flutterPrefsLike(
       (key) => SharedPreferences.getInstance().then((sp) => sp.getString(key)),
+      (key) => SharedPreferences.getInstance().then((sp) => sp.remove(key)),
     ),
   );
 }

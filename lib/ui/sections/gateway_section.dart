@@ -16,6 +16,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../core/security/flutter_secure_key_value.dart';
+import '../../core/security/secure_key_value.dart';
 import '../../gateway_api/gateway_control.dart';
 import '../tokens/console_tokens.dart';
 
@@ -31,7 +33,10 @@ typedef BatteryStatusFn = Future<bool> Function();
 /// 电池优化白名单申请注入位（测试替换）。
 typedef BatteryRequestFn = Future<bool> Function();
 
-/// prefs 键：配对 Token 值（沿用既有键名，不迁移）。
+/// 配对 Token 存储键。F11（review-fix-2026-10）：值迁移至 **SecureKeyValue**
+/// （Bearer Token 属凭证，明文落 SharedPreferences 违反 §6.3 零明文留痕——
+/// 本地取证/备份提取即得，可从局域网任一主机冒充已配对 PC）；键名沿用，
+/// 首启自动从旧 prefs 键迁移并删除明文残留。
 const String _kTokenKey = 'gateway.token';
 
 /// prefs 键：Token 鉴权模式（'auto' = 留空则自动生成 / 'open' = 用户显式免鉴权）。
@@ -48,6 +53,7 @@ class GatewaySection extends StatefulWidget {
     this.stopOverride,
     this.batteryStatusOverride,
     this.batteryRequestOverride,
+    this.secureOverride,
   });
 
   final void Function(String message) onFlash;
@@ -63,6 +69,9 @@ class GatewaySection extends StatefulWidget {
 
   /// 电池优化白名单申请注入位（测试可替换）。
   final BatteryRequestFn? batteryRequestOverride;
+
+  /// 测试注入位（F11）；null = 生产路径（[FlutterSecureKeyValue]）。
+  final SecureKeyValue? secureOverride;
 
   @override
   State<GatewaySection> createState() => _GatewaySectionState();
@@ -123,11 +132,23 @@ class _GatewaySectionState extends State<GatewaySection>
   /// 段自持初始化（不再由页面编排）：只读当前起停态与持久化 Token。
   Future<void> _bootstrap() async {
     try {
+      final secure = widget.secureOverride ?? FlutterSecureKeyValue();
+      // F11：Token 读安全存储；首启从旧明文 prefs 键迁移（读→写安全位→删明文）。
+      var token = await secure.read(_kTokenKey);
       final prefs = await SharedPreferences.getInstance();
+      if (token == null || token.isEmpty) {
+        final legacy = prefs.getString(_kTokenKey);
+        if (legacy != null && legacy.isNotEmpty) {
+          await secure.write(_kTokenKey, legacy);
+          await prefs.remove(_kTokenKey);
+          token = legacy;
+        }
+      }
       if (!mounted) return;
-      _gwTokenCtrl.text = prefs.getString(_kTokenKey) ?? '';
+      _gwTokenCtrl.text = token ?? '';
       // 「自动生成」模式随 Token 一起落盘：用户显式关过 → 免鉴权意图保留
-      // （否则每次开启都被自动补 Token，用户的显式选择被静默推翻）。
+      // （否则每次开启都被自动补 Token，用户的显式选择被静默推翻）。模式标记
+      // 非机密，仍在 prefs。
       _autoToken = prefs.getString(_kTokenAuthModeKey) != _kTokenAuthModeOpen;
       await _reloadGateway();
       await _refreshBatteryExemption();
@@ -162,8 +183,10 @@ class _GatewaySectionState extends State<GatewaySection>
       });
     }
     try {
+      // F11：Token 值走安全存储；authMode 标记留 prefs。
+      await (widget.secureOverride ?? FlutterSecureKeyValue())
+          .write(_kTokenKey, token);
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_kTokenKey, token);
       await prefs.setString(_kTokenAuthModeKey, _kTokenAuthModeAuto);
     } on Object catch (e) {
       debugPrint('[DEGRADE] gateway-panel: token 落盘失败: $e');
@@ -228,8 +251,10 @@ class _GatewaySectionState extends State<GatewaySection>
             _tokenVisible = true;
           });
         }
+        // F11：Token 值走安全存储；authMode 标记留 prefs。
+        await (widget.secureOverride ?? FlutterSecureKeyValue())
+            .write(_kTokenKey, token);
         final prefs = await SharedPreferences.getInstance();
-        await prefs.setString(_kTokenKey, token);
         await prefs.setString(
           _kTokenAuthModeKey,
           _autoToken ? _kTokenAuthModeAuto : _kTokenAuthModeOpen,

@@ -343,6 +343,34 @@ void main() {
       client.stopNotificationListener();
     });
 
+    // F2（review-fix-2026-10）：close() 必须停 GET SSE 监听循环——修复前循环
+    // 唯一出口是断连回调（McpConnection），close 后无人停：server 侧断流即对
+    // 已关 transport 无限退避重连（1s 起步 ×2 封顶 30s），client 被循环强引用
+    // 每次断连/Run 焚泄漏一份。撤修复即本用例红（流结束 ~1.2s 后重连计数变 2）。
+    test('F2：close() 后监听循环不再重连已关 transport', () async {
+      final transport = _EndableTransport((m, body) {
+        switch (m) {
+          case 'initialize':
+            return _initWithSubs();
+          case 'notifications/initialized':
+            return fakeNoContent();
+          default:
+            return fakeOk(<String, Object?>{});
+        }
+      });
+      final client = McpClient(transport);
+      await client.negotiate();
+      unawaited(client.startNotificationListener());
+      await _waitFor(() => transport.getCalls == 1); // 监听已挂上首条流
+
+      client.close(); // 修复点：close 内停监听
+      await transport.currentCtl!.close(); // 模拟 server 侧断流（触发旧循环重连路径）
+      await Future<void>.delayed(
+          const Duration(milliseconds: 1800)); // 越过首退避（1s + 20% 抖动）
+      expect(transport.getCalls, 1,
+          reason: 'F2：close 后监听循环不得对已关 transport 重连');
+    });
+
     test('readResource 读后自动订阅并启动监听 + 推送帧分发', () async {
       final transport = FakeTransport((m, body) {
         switch (m) {
@@ -399,4 +427,24 @@ void main() {
       expect(lines, contains('data: {"x":1}'));
     });
   });
+}
+
+/// F2 用：getStream 每次给独立可关闭流（模拟 server 断流），并计数调用。
+class _EndableTransport extends FakeTransport {
+  _EndableTransport(super.handler);
+
+  var getCalls = 0;
+  StreamController<String>? currentCtl;
+
+  @override
+  Future<StreamedTransportResponse> getStream() async {
+    getCalls++;
+    final ctl = StreamController<String>();
+    currentCtl = ctl;
+    return StreamedTransportResponse(
+      statusCode: 200,
+      contentType: 'text/event-stream',
+      lines: ctl.stream,
+    );
+  }
 }

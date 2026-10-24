@@ -10,7 +10,6 @@
 /// 出现判定（对齐 tool_visibility.dart 兜底口径，勿把兜底当「用户刻意私有」）。
 library;
 
-import 'package:goodhub/app/service_directory.dart';
 import 'package:goodhub/coordinator/mcp_runtime.dart';
 import 'package:goodhub/core/tool_visibility.dart';
 import 'package:goodhub/llm/cloud/cloud_llm.dart';
@@ -93,13 +92,15 @@ class McpCatalogTool {
 }
 
 /// 目录取数收口（注入位：测试可整体替换 discovery / endpointStore / runtime）。
+/// F16（review-fix-2026-10）：[endpointStore] **必传**——原缺省回退引
+/// app/service_directory（coordinator→app 反向边，矩阵红灯）；装配属窗口职责
+/// （ui→app 合法），调用方显式传入。
 class McpCatalog {
   McpCatalog({
+    required this.endpointStore,
     LocalPluginSource? discovery,
-    Future<ServerEndpointStore> Function({String? supportPath})? endpointStore,
     McpRuntime? runtime,
   })  : discovery = discovery ?? localPluginDiscovery,
-        endpointStore = endpointStore ?? serverEndpointStore,
         runtime = runtime ?? const McpRuntime();
 
   final LocalPluginSource discovery;

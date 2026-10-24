@@ -613,6 +613,12 @@ class McpClient {
   void close() {
     if (_closed) return;
     _closed = true;
+    // F2（review-fix-2026-10）：close 须先停 GET SSE 监听循环再关 transport——
+    // 循环唯一出口是 stopNotificationListener，此前无人从 close 侧调用：
+    // 关闭后对已死 transport 无限退避重连（30s 封顶），client 被循环强引用
+    // 无法回收（每次断连/Run 焚泄漏一份）。回归钉子：subscription_test
+    // 「close 后监听循环不再重连」。
+    stopNotificationListener();
     transport.close();
   }
 }

@@ -30,6 +30,9 @@ class _FakeTransport implements McpTransport {
 
   final bool failNegotiate;
 
+  /// F4 用：close 计数（Run 焚释放断言的观测点——句柄封死只能从传输层观测）。
+  int closeCount = 0;
+
   @override
   Future<TransportResponse> send(String requestBody) async {
     final req = json.jsonDecode(requestBody) as Map<dynamic, dynamic>;
@@ -114,7 +117,7 @@ class _FakeTransport implements McpTransport {
       );
 
   @override
-  void close() {}
+  void close() => closeCount++;
 }
 
 /// 全放行端口（联调流不测裁决策略，只测编排接线）。
@@ -254,6 +257,27 @@ void main() {
       isTrue,
       reason: 'run 的 finally 已 expireAll，临时句柄不残留',
     );
+  });
+
+  // F4（review-fix-2026-10）：Run 焚释放挂载的 client——此前 mount 未传
+  // release（close 退化为 noop）且 finally 只焚 refStore，每次联调 Run 泄一个
+  // client。成功路径经 release 统一关；握手指失败路径（mounted 为 null）由
+  // finally 兜底关。撤修复即红（closeCount 恒 0）。
+  test('F4 释放卫生：Run 焚关闭挂载 client（成功与握手指失败两路）', () async {
+    final orch = DebugRunOrchestrator();
+    final okTransport = _FakeTransport();
+    await orch
+        .run(buildConfig(client: McpClient(okTransport), pills: <String>[]))
+        .toList();
+    expect(okTransport.closeCount, 1,
+        reason: 'F4：正常 Run 结束须关 client（经 mount release）');
+
+    final failTransport = _FakeTransport(failNegotiate: true);
+    await orch
+        .run(buildConfig(client: McpClient(failTransport), pills: <String>[]))
+        .toList();
+    expect(failTransport.closeCount, 1,
+        reason: 'F4：握手指失败路径 mounted 为 null，finally 兜底关 client');
   });
 
   test('异常路径：握手指失败 → 危险注记 + 状态带转 danger', () async {

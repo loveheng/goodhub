@@ -13,6 +13,9 @@ class _FakePrefs implements SharedPreferencesLike {
 
   @override
   Future<String?> read(String key) async => _map[key];
+
+  @override
+  Future<void> remove(String key) async => _map.remove(key);
 }
 
 void main() {
@@ -86,10 +89,26 @@ void main() {
         reason: '旧令牌写入安全存储');
     expect(await file.exists(), isTrue, reason: '迁移即落盘，后续 load 不再走迁移');
 
-    // 旧键保留不删（回滚无损，双写一个版本期）——假件无删除口，且二次 load
-    // 不再触发迁移（文件已在位）。
+    // F12（review-fix-2026-10）：迁移成功即清理旧**明文 apiKey**（endpoint 键
+    // 非机密保留回滚）——此前「旧键保留不删」让明文密钥永久滞留 prefs，本地
+    // 取证即得（§6.3 零明文留痕）。撤修复即红（旧键仍读得到）。
     final again = await store.load();
     expect(again.single.id, 'goodshare');
+  });
+
+  test('F12：迁移后旧明文 apiKey 键被删除（endpoint 键保留）', () async {
+    final prefsMap = <String, String>{
+      'chat.mcp.endpoint': 'http://10.0.2.2:8000/mcp',
+      'chat.mcp.apiKey': 'legacy-token',
+    };
+    final prefs = _FakePrefs(prefsMap);
+    final store = buildStore(prefs: prefs);
+
+    await store.load(); // 触发迁移
+    expect(prefsMap.containsKey('chat.mcp.apiKey'), isFalse,
+        reason: 'F12：明文密钥不得滞留（撤修复即红）');
+    expect(prefsMap.containsKey('chat.mcp.endpoint'), isTrue,
+        reason: 'endpoint 非机密，保留供回滚');
   });
 
   test('文件在位时不触发旧迁移（文件优先）', () async {

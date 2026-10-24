@@ -150,16 +150,20 @@ class DiscoveryExecutor implements ToolExecutor {
     }
     final already = router.activatedServers.contains(serverId);
     if (router.privateServerIds.contains(serverId)) {
-      // 私有：占用单一槽位（抢占即替换，D-C）——不进公共激活集。
+      // F5（review-fix-2026-10）：私有激活与 use_server 同事务——此前直写
+      // activePrivateServerId，绕过 requestSlot 提交点（「提交前 Abort 槽位
+      // 不变」的保证对该路径失效，语义与 use_server 分裂）。改走 pending：
+      // 提交点 = ToolResultMessage 落历史后（commitPendingSlot），Run 内消费
+      // 启动快照，新槽位自下一轮生效——与 use_server 同拍。
       final previous = router.activePrivateServerId;
-      router.activePrivateServerId = serverId;
+      router.requestSlot(serverId);
       final count = router.schemasFor(serverId).length;
       return ToolExecutionResult(
         content: previous == serverId
             ? '私有服务 $serverId 已在槽位（$count 个工具）。'
             : '已激活私有服务 $serverId（$count 个工具，单一私有域）'
                 '${previous != null ? '，替换原私有域 $previous' : ''}；'
-                '其工具（${serverId}__*）可用。',
+                '新工具面自下一轮生效。',
       );
     }
     router.activatedServers.add(serverId);

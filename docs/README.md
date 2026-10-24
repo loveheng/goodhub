@@ -38,5 +38,6 @@ updated: 2026-10-23
   - [design/resource-center.md](design/resource-center.md) — 资源中心设计（本地文件库一期：ResourceStore 内核 / $ref 句柄注入对话 / read_local_resource 工具，draft）
   - [design/prompt-mgmt.md](design/prompt-mgmt.md) — Prompt 管理设计（全局 + 按服务 + 切换联动：私有槽位 appScoped 注入过滤 / user 全局 prompt 入口，draft）
   - [design/mcp-standard-eval.md](design/mcp-standard-eval.md) — goodhub MCP 实现对照官方 2025-06-18 标准合规评估（client + gateway 双角色能力矩阵 + 取舍原因）
-  - [design/host-tools-gateway-export.md](design/host-tools-gateway-export.md) — Host 原生工具经 HostTransport 导出至网关 + 策略投影管道（single / pruned / full，draft）
+  - [design/host-tools-gateway-export.md](design/host-tools-gateway-export.md) — Host 原生工具经 HostTransport 导出至网关 + 策略投影管道（single / pruned / full）
   - [design/meta-upgrade.md](design/meta-upgrade.md) — 元体系升舱：契约面漂移机械护栏 drift-guard（引擎全局 / registry 项目数据 / Dart 镜像 CI；BANNED 退役词条 / CONST 单源常量 / OVERSIZE 超标登记，draft）
+  - [design/review-fix-2026-10.md](design/review-fix-2026-10.md) — 全项目审查修复施工稿（2026-10-24 轮：P0 PopScope 失灵 + P1 资源收尾/事务竞态/网关/安全落盘 + 门禁矩阵账实修正，draft）

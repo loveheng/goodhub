@@ -240,6 +240,63 @@ const List<_Rule> _kDependencyRules = <_Rule>[
   ),
 ];
 
+
+// —— F16（review-fix-2026-10）：域级正向出向枚举（白名单制）——
+// 规则表 R1~R6 是「已知坏边黑名单」，新文件落错域不报警；本表镜像
+// coding-standards.md §1.0 分层矩阵的**允许出向**（改矩阵须同轮改此表），
+// 清单外任何域级出向即违例。
+const Map<String, Set<String>> kAllowedDomainEdges = <String, Set<String>>{
+  'core': <String>{}, // 叶层零出向
+  'llm': <String>{'core', 'mcp'}, // mcp = SamplingEngine 端口实现（依赖倒置）
+  'mcp': <String>{'core'},
+  'sandbox': <String>{'core'},
+  'task': <String>{'mcp', 'core'},
+  'resources': <String>{'core'},
+  'app': <String>{'mcp', 'coordinator', 'task', 'llm', 'resources'},
+  'coordinator': <String>{'core', 'llm', 'mcp', 'sandbox', 'task', 'resources'},
+  'gateway': <String>{'coordinator', 'mcp', 'llm', 'sandbox', 'app'},
+  'gateway_api': <String>{'gateway', 'coordinator', 'mcp'},
+  'ui': <String>{'coordinator', 'core', 'app', 'gateway', 'gateway_api', 'update'},
+  'update': <String>{}, // 独立叶子域
+};
+
+/// ui 对 mcp/sandbox/llm 的**文件级**白名单镜像（index.md「直连白名单基线」，
+/// 只减不增；清单外 ui 文件引这三域即违例——§1.4 类别 4）。
+const Map<String, Set<String>> kUiDirectLinkWhitelist = <String, Set<String>>{
+  'ui/settings_page.dart': <String>{'mcp', 'llm'},
+  'ui/sections/byok_section.dart': <String>{'llm'},
+  'ui/sections/nodes_section.dart': <String>{'mcp'},
+  'ui/sections/local_plugins_section.dart': <String>{'mcp'},
+  'ui/memory_board_page.dart': <String>{'sandbox'},
+  'ui/resource_center_page.dart': <String>{'mcp'},
+  'ui/trust_plugin_dialog.dart': <String>{'mcp'},
+  'ui/components/server_endpoint_forms.dart': <String>{'mcp'},
+  'ui/chat_page.dart': <String>{'llm', 'mcp', 'sandbox'},
+  'ui/components/conversation_drawer.dart': <String>{'sandbox'},
+  'ui/components/session_context_sheet.dart': <String>{'mcp'},
+  'ui/components/dual_track_stream.dart': <String>{'mcp'},
+  'ui/components/chat_gate_delegates.dart': <String>{'mcp'},
+  'ui/components/elicitation_card.dart': <String>{'mcp'},
+  'ui/gateway_loop_debug_page.dart': <String>{'llm', 'mcp'}, // 联调豁免（§1.4 类别 3）
+  // F16 账实补登（2026-10-24 正向矩阵首轮实证的漏登边）：
+  'ui/sections/resource_center_section.dart': <String>{'resources'},
+  'ui/sections/task_ledger_section.dart': <String>{'task'},
+};
+
+/// gateway → coordinator 执行面白名单（index.md §1.4 类别 5，默认拒绝）：
+/// gateway 只许 import 这 9 件；coordinator 新文件默认对 gateway 不可见。
+const Set<String> kGatewayCoordinatorAllowlist = <String>{
+  'coordinator/agent_loop.dart',
+  'coordinator/mcp_runtime.dart',
+  'coordinator/mcp_tool_face.dart',
+  'coordinator/permission_gateway.dart',
+  'coordinator/pii_fence.dart',
+  'coordinator/hybrid_assembly.dart',
+  'coordinator/ref_store.dart',
+  'coordinator/tool_router.dart',
+  'coordinator/host_tool_invoker.dart',
+};
+
 void main() {
   final refs = _collectRefs('lib');
 
@@ -320,6 +377,45 @@ import '../core/errors.dart';
       final local = _collectRefs('${tmp.path}/lib');
       final r6 = _kDependencyRules.firstWhere((r) => r.id == 'R6');
       expect(r6.violations(local).map((v) => v.file), <String>['coordinator/bad.dart']);
+    });
+  });
+
+  // F16：正向白名单——域级出向必须落在矩阵允许集内；ui→mcp/sandbox/llm 与
+  // gateway→coordinator 两处走文件级白名单（镜像 index.md 基线）。撤表即红。
+  group('F16 正向出向枚举（域级白名单制）', () {
+    test('所有域级出向都在 §1.0 矩阵允许集内（清单外即违例）', () {
+      final violations = <String>[];
+      for (final r in refs) {
+        if (r.from.isEmpty) continue; // main.dart 装配入口（矩阵立法例外）
+        if (r.to == null || r.to!.isEmpty || r.to == r.from) continue; // 外部包/同域内部不出矩阵
+        final allowed =
+            kAllowedDomainEdges[r.from] ?? const <String>{};
+        if (allowed.contains(r.to)) continue;
+        // 文件级例外：ui 直连白名单（§1.4 类别 1/3/4）。
+        final uiExtra = kUiDirectLinkWhitelist[r.file];
+        if (uiExtra != null && uiExtra.contains(r.to)) continue;
+        // gateway → coordinator 执行面白名单（§1.4 类别 5）。
+        if (r.from == 'gateway' && r.to == 'coordinator') {
+          final seg = r.uri
+              .replaceFirst('../', '')
+              .replaceFirst('package:goodhub/', '');
+          if (kGatewayCoordinatorAllowlist.contains(seg)) continue;
+          violations.add(
+              'gateway→coordinator 清单外执行面: ${r.file} → ${r.uri}');
+          continue;
+        }
+        violations.add(
+            '${r.from} → ${r.to} 不在允许矩阵: ${r.file} → ${r.uri}');
+      }
+      expect(violations, isEmpty,
+          reason: 'F16：域级出向白名单制（矩阵见 coding-standards §1.0 + 本表）');
+    });
+
+    test('金丝雀：矩阵确实会拦清单外边（防空转假绿）', () {
+      const r = _Ref(from: 'task', to: 'coordinator', file: 'task/x.dart', uri: '../coordinator/y.dart');
+      final allowed = kAllowedDomainEdges[r.from] ?? const <String>{};
+      expect(allowed.contains(r.to), isFalse,
+          reason: 'task 只许出向 mcp——若本断言红，说明矩阵表失守');
     });
   });
 }

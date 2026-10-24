@@ -148,6 +148,7 @@ Future<McpAssembly> _assemble({
   required List<McpTransport> transports,
   SessionContext? context,
   Map<String, McpToolFace> sharedFaces = const {},
+  Set<String> failFor = const {},
 }) async {
   final tmp = await _tmpDir();
   return const McpRuntime().assemble(
@@ -162,7 +163,7 @@ Future<McpAssembly> _assemble({
     documentsDirResolver: _tmpDir,
     sharedFaces: sharedFaces,
     clientFactory: (endpoint, apiKey) {
-      final transport = _CountingTransport();
+      final transport = _CountingTransport(failSend: failFor.contains(endpoint));
       transports.add(transport);
       final client = McpClient(transport);
       clients[endpoint] = client;
@@ -172,6 +173,32 @@ Future<McpAssembly> _assemble({
 }
 
 void _assembleTests() {
+  // F3（review-fix-2026-10）：端点装配失败（negotiate/listTools 抛错）路径
+  // 此前不 close client——client 未登记进任何回收表（外层兜底只清已登记句柄），
+  // 坏端点每轮聊天装配泄一个 client；且单端点失败会炸整轮装配。修复后语义 =
+  // 失败即关 + 通告降级继续（对齐 mountEndpoint/保留字分支的宁缺勿炸）。
+  test('F3：端点 negotiate 失败 → client 即关 + 好端点照常挂载', () async {
+    final transports = <McpTransport>[];
+    final clients = <String, McpClient>{};
+    final assembly = await _assemble(
+      // clientFactory 收到的键是 endpoint URL（非 id）——URL 带 id 便于定向注坏。
+      endpoints: const [
+        ServerEndpoint(id: 'bad', name: 'bad', endpoint: 'http://x/bad/mcp'),
+        ServerEndpoint(id: 'good', name: 'good', endpoint: 'http://x/good/mcp'),
+      ],
+      clients: clients,
+      transports: transports,
+      failFor: {'http://x/bad/mcp'},
+    );
+    addTearDown(assembly.close);
+
+    expect(assembly.router.serverIds, {'good'},
+        reason: '坏端点不进路由，单端点失败不炸整轮装配');
+    expect((transports[0] as _CountingTransport).closeCount, 1,
+        reason: 'F3：装配失败路径必须 close（修复前泄漏，撤修复即红）');
+    expect(assembly.serverSummaries.containsKey('good'), isTrue);
+  });
+
   test('装配产物等价性：私有槽位/激活集/回退链/摘要快照', () async {
     final transports = <McpTransport>[];
     final clients = <String, McpClient>{};
@@ -276,40 +303,41 @@ void _assembleTests() {
     });
   });
 
-  test('装配异常路径：第 2 个端点失败 → 已建端点传输全部回收（不泄漏）', () async {
+  // F3（review-fix-2026-10）语义变更：单端点装配失败从「抛错炸整轮 + 外层兜底
+  // 回收」改为「失败端点即关 + 通告降级继续」（对齐 mountEndpoint/保留字分支
+  // 的宁缺勿炸）——旧用例的 throwsA 断言随语义废弃，防泄漏断言保留并加强：
+  // 失败端点当场关、好端点装配态不关（随 assembly.close 释放）。
+  test('装配异常路径：单端点失败 → 降级继续，失败端点即关、好端点随 Run 焚释放',
+      () async {
     final transports = <McpTransport>[];
     final tmp = await _tmpDir();
-    await expectLater(
-      const McpRuntime().assemble(
-        context: SessionContext(),
-        endpoints: [ep('ok'), ep('boom')],
-        locals: const [],
-        apiKeyReader: (id) async => 'key-$id',
-        memoryStore: MemoryStore.underSupportDir(tmp.path),
-        skills: SkillRegistry(),
-        engine: _FakeEngine(),
-        tempDirResolver: _tmpDir,
-        documentsDirResolver: _tmpDir,
-        clientFactory: (endpoint, apiKey) {
-          final fail = (apiKey ?? '').contains('boom');
-          final transport = _CountingTransport(failSend: fail);
-          transports.add(transport);
-          return McpClient(transport);
-        },
-      ),
-      throwsA(isA<Object>()),
+    final assembly = await const McpRuntime().assemble(
+      context: SessionContext(),
+      endpoints: [ep('ok'), ep('boom')],
+      locals: const [],
+      apiKeyReader: (id) async => 'key-$id',
+      memoryStore: MemoryStore.underSupportDir(tmp.path),
+      skills: SkillRegistry(),
+      engine: _FakeEngine(),
+      tempDirResolver: _tmpDir,
+      documentsDirResolver: _tmpDir,
+      clientFactory: (endpoint, apiKey) {
+        final fail = (apiKey ?? '').contains('boom');
+        final transport = _CountingTransport(failSend: fail);
+        transports.add(transport);
+        return McpClient(transport);
+      },
     );
-    // ep('boom') 与 ep('ok') 共用 endpoint 形状——factory 按 id 注入失败件失败，
-    // ok 端点已建连接必须被回收：
-    expect(
-      transports.whereType<_CountingTransport>().where((t) => !t.failSend),
-      isNotEmpty,
-    );
-    expect(
-      transports.whereType<_CountingTransport>().where((t) => !t.failSend).every((t) => t.closeCount >= 1),
-      isTrue,
-      reason: '装配异常路径：成功协商的端点也必须 close（防泄漏）',
-    );
+    addTearDown(assembly.close);
+
+    final ok = transports.whereType<_CountingTransport>().where((t) => !t.failSend).single;
+    final boom =
+        transports.whereType<_CountingTransport>().where((t) => t.failSend).single;
+    expect(boom.closeCount, 1, reason: 'F3：失败端点装配失败当场 close（撤修复即红）');
+    expect(ok.closeCount, 0, reason: '好端点装配态不预关（随 assembly.close 统一释放）');
+    expect(assembly.router.serverIds, {'ok'}, reason: '坏端点不进路由，装配不抛错');
+    await assembly.close();
+    expect(ok.closeCount, 1, reason: 'Run 焚统一释放好端点');
   });
 
   group('ConversationSession 写回契约（真机验收③降级单测：transcript 不翻倍）', () {

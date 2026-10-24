@@ -149,11 +149,33 @@ flutter build apk --release --split-per-abi --target-platform android-arm64 --da
 [ -f "$APK" ] || { echo "FAIL: 构建产物不存在: $APK"; exit 1; }
 SHA="$(sha256sum "$APK" | cut -d' ' -f1)"
 
+# ---- 清单 versionCode 校验（机械护栏，2026-10-24）----
+# 历史坑：清单写 pub 号（2013）而拆分包真实 versionCode = pub 号 + 2000（4013），
+# 客户端 isNewerThan(已装 4012) 恒 false → 检测到新版本但下载按钮永不出现。
+# 此处用 aapt2 从 APK 真身读 versionCode，与清单将写入的推算值比对，不一致即中止。
+APK_VERSION_CODE_EXPECTED=$((VERSION_CODE + 2000))
+AAPT2="$(ls "$ANDROID_HOME"/build-tools/*/aapt2 2>/dev/null | sort -V | tail -1)"
+if [ -z "$AAPT2" ]; then
+  echo "FAIL: 找不到 aapt2（$ANDROID_HOME/build-tools/*/aapt2），无法校验清单 versionCode"
+  exit 1
+fi
+APK_VERSION_CODE_ACTUAL="$("$AAPT2" dump badging "$APK" | sed -nE 's/^package:.*versionCode='"'"'([0-9]+)'"'"'.*/\1/p' | head -1)"
+if [ "$APK_VERSION_CODE_ACTUAL" != "$APK_VERSION_CODE_EXPECTED" ]; then
+  echo "FAIL: 清单 versionCode 校验不过：APK 真身=${APK_VERSION_CODE_ACTUAL:-<未读到>} 推算（pub 号+2000）=${APK_VERSION_CODE_EXPECTED}"
+  echo "      拆分包偏移约定若变更，需同步改本脚本的清单口径，否则客户端恒判无新版"
+  exit 1
+fi
+echo "✓ 清单 versionCode 校验通过：${APK_VERSION_CODE_EXPECTED}（= APK 真身 versionCode）"
+
 # ---- 生成清单 ----
+# versionCode 口径 = 拆分包 APK 真实 versionCode（Flutter split-per-abi 自动加
+# 1000×ABI_VERSION，arm64-v8a = +2000），与本机 PackageInfo.buildNumber 同口径，
+# 客户端 isNewerThan 才能判出「有新版」——写 pub 号会恒小于已装值（下载按钮消失）。
+APK_VERSION_CODE=$((VERSION_CODE + 2000))
 mkdir -p updates
 cat > updates/goodhub-update.json <<EOF
 {
-  "versionCode": ${VERSION_CODE},
+  "versionCode": ${APK_VERSION_CODE},
   "versionName": "${VERSION_NAME}",
   "applicationId": "${APP_ID}",
   "apkUrl": "${APK_URL}",

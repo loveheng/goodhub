@@ -59,6 +59,22 @@ class _ScriptedInference implements TaskInference {
   }
 }
 
+/// 闸门队列（F8 用）：claim 挂起等测试放行——精确控制「在途轮次」时机。
+class _GatedApi extends _ScriptedApi {
+  _GatedApi() : super(const []);
+
+  final gates = <Completer<ClaimedTask>>[];
+
+  @override
+  Future<ClaimedTask> claim() {
+    final g = Completer<ClaimedTask>();
+    gates.add(g);
+    return g.future;
+  }
+
+  void release(int i, ClaimedTask t) => gates[i].complete(t);
+}
+
 void main() {
   const idle = ClaimedTask.idle;
   ClaimedTask claimed(String id) => ClaimedTask(
@@ -245,6 +261,53 @@ void main() {
     expect(api.claimCount, 0, reason: '解绑后不再消费');
     expect(l.isRunning, isFalse);
   });
+
+  // F8（review-fix-2026-10）：dispose 只在 _pump 入口检查一次的原实现，do/while
+  // 轮内无检查——dispose 后对已断通道继续 claim 直到失败熔断。闸门式 claim：
+  // 第一条在途时 dispose，放行后不得出现第二次 claim。撤修复即红（gates 长 2）。
+  test('F8：dispose 即停在途轮次——不再对已断通道 claim', () async {
+    final api = _GatedApi();
+    final service = TaskLoopService(
+      api: api,
+      inference: _ScriptedInference(),
+      heartbeatInterval: const Duration(milliseconds: 5),
+    );
+    final l = loop(service);
+    l.trigger();
+    await pumpEventQueue();
+    expect(api.gates.length, 1, reason: '前置：首轮 claim 在途（挂起等放行）');
+
+    l.dispose(); // 在途时销毁
+    api.release(0, claimed('t1'));
+    await pumpEventQueue();
+    await pumpEventQueue();
+    expect(api.gates.length, 1,
+        reason: 'F8：dispose 后不得再发起 claim（原实现会续 claim 到熔断）');
+  });
+
+  test('F8：轮内通道断开即停（单步间复查 isChannelAlive）', () async {
+    final api = _GatedApi();
+    final service = TaskLoopService(
+      api: api,
+      inference: _ScriptedInference(),
+      heartbeatInterval: const Duration(milliseconds: 5),
+    );
+    var alive = true;
+    final l = loop(service, isChannelAlive: () => alive);
+    l.trigger();
+    await pumpEventQueue();
+    expect(api.gates.length, 1);
+
+    alive = false; // 轮内断开
+    api.release(0, claimed('t1'));
+    await pumpEventQueue();
+    await pumpEventQueue();
+    expect(api.gates.length, 1,
+        reason: 'F8：通道断开后不得继续 claim（原实现仅在 pump 启动时查一次）');
+    l.dispose();
+  });
+
+
 }
 
 /// 受控推理：等外部 complete 才返回（用于构造「运行中」窗口）。

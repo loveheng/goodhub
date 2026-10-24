@@ -501,31 +501,40 @@ class McpRuntime {
         continue;
       }
       client.samplingEnabled = true; // 托管 server：声明 sampling（§3.11 消费面）
-      final caps = await client.negotiate();
-      serverCaps[ep.id] = caps;
-      note?.call(
-        '✓ 已连接 ${ep.name}'
-        '${caps.serverVersion != null ? ' v${caps.serverVersion}' : ''}',
-        danger: false,
-      );
-      final face = McpToolFace(
-        client: client,
-        serverId: ep.id,
-        opsLog: memoryStore, // N4 审计（remote 侧）
-        onProgress: (tool, progress, total, message) {
-          loopBox?.emitToolProgress(tool, progress, total, message);
-          delegates.onProgress?.call(tool, progress, total, message);
-        },
-      );
-      await face.listTools();
-      faces[ep.id] = face;
-      clients[ep.id] = client;
-      partialClients.add(client);
-      final conn = _startConnection(ep.id, client, face, delegates);
-      connections[ep.id] = conn;
-      partialConns.add(conn);
-      summaries[ep.id] =
-          '${caps.serverName ?? ep.name} ${caps.isTier1 ? 'Tier 1' : 'Tier 2'}';
+      // F3（review-fix-2026-10）：装配失败路径此前不 close client——negotiate/
+      // listTools 抛错时 client 不在任何回收表（外层兜底只清已登记句柄），
+      // 坏端点每轮聊天装配泄一个 client。对齐 mountEndpoint/保留字分支语义：
+      // 失败即关 + 可见通告 + 继续挂其余（宁缺勿炸，单端点失败不炸整轮）。
+      try {
+        final caps = await client.negotiate();
+        serverCaps[ep.id] = caps;
+        note?.call(
+          '✓ 已连接 ${ep.name}'
+          '${caps.serverVersion != null ? ' v${caps.serverVersion}' : ''}',
+          danger: false,
+        );
+        final face = McpToolFace(
+          client: client,
+          serverId: ep.id,
+          opsLog: memoryStore, // N4 审计（remote 侧）
+          onProgress: (tool, progress, total, message) {
+            loopBox?.emitToolProgress(tool, progress, total, message);
+            delegates.onProgress?.call(tool, progress, total, message);
+          },
+        );
+        await face.listTools();
+        faces[ep.id] = face;
+        clients[ep.id] = client;
+        partialClients.add(client);
+        final conn = _startConnection(ep.id, client, face, delegates);
+        connections[ep.id] = conn;
+        partialConns.add(conn);
+        summaries[ep.id] =
+            '${caps.serverName ?? ep.name} ${caps.isTier1 ? 'Tier 1' : 'Tier 2'}';
+      } catch (e) {
+        client.close();
+        note?.call('⚠ 端点 ${ep.name} 挂载失败: $e', danger: true);
+      }
     }
 
     // —— T-trans-4：本地插件自动挂载（信任闸门已由窗口裁决）——
@@ -538,8 +547,8 @@ class McpRuntime {
             info.serverId, shared, '${info.serverTitle} (本地·共享能力源)');
         continue;
       }
+      final client = localPluginDiscovery.createClient(info);
       try {
-        final client = localPluginDiscovery.createClient(info);
         assertServerIdMountable(info.serverId, client);
         client.samplingEnabled = true; // 托管 server：声明 sampling（§3.11 消费面）
         final caps = await client.negotiate();
@@ -567,6 +576,9 @@ class McpRuntime {
           danger: false,
         );
       } catch (e) {
+        // F3：失败路径补 client.close()——此前仅通告不关（negotiate/listTools/
+        // 保留字断言抛错时 client 未登记进任何回收表），坏插件每轮装配泄一个。
+        client.close();
         note?.call('⚠ 本地插件 ${info.serverTitle} 挂载失败: $e', danger: true);
       }
     }

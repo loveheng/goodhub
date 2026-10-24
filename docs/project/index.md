@@ -41,6 +41,7 @@ updated: 2026-10-23
 | 会话历史持久化（每会话一 JSON/原子重写） | `lib/sandbox/conversation_store.dart` | CloudChatMessage 编解码在此；恢复降级语义见 m4.md T3b 注记 |
 | 串行文件写队列（temp+rename 原子替换） | `lib/core/storage/sequential_file_writer.dart` | coding-standards §3.2 基准件；支持 `settled`/`ioDrained` 确定性握手 |
 | 多服务配置面（多端点 JSON + apiKey 安全存储 + 旧键迁移 + enabled 挂载位） | `lib/mcp/server_endpoints.dart`（`ServerEndpointStore`） | 服务全生命周期收敛到设置页 `_nodesPanel`；单测 `test/mcp/server_endpoints_test.dart` |
+| 安全存储升级健康检查（flutter_secure_storage 9→11 直升丢密钥显性化：unreadable/discarded 判丢失） | `lib/core/security/secure_storage_upgrade.dart`（`SecureStorageHealth` + `checkSecureStorageHealth` 纯映射单测钉子）+ `lib/ui/settings_page.dart`（`secureHealthOverride` 注入位 + 顶部 `secure-storage-notice` 行） | 节点卡「⚠ 令牌需重新录入」标签按安全存储实际读出判定（`nodes_section` `_authLabel`）；检查只读、失败按正常 DEGRADE 不拖垮页面；单测 `test/core/security/secure_storage_upgrade_test.dart` + `test/ui/settings_secure_notice_test.dart` + `test/ui/server_nodes_panel_test.dart`（令牌丢失组） |
 | 节点探活（握手+工具计数计时 / 401/403 鉴权态与离线区分） | `lib/mcp/server_probe.dart`（`ServerProber`/`NodeProbeResult`） | `McpClientFactory` 注入位；探活一次性建 client 用完即弃；单测 `test/mcp/server_probe_test.dart` |
 | Server 节点卡面板（端口/延迟/在线点/工具计数/鉴权态/挂载开关/增删改/默认私有钉选渲染） | `lib/ui/sections/nodes_section.dart`（`NodesSection`） | 增删改同 `mcp_servers.json`；探活按需不自动网络化；注入位 `endpointStoreOverride`/`probeOverride`/`autoProbe`；钉选 owner 在 settings_page（`isDefaultPrivate`/`onPinToggle` 透传）；段 State 混合 `AutomaticKeepAliveClientMixin`（滚动不丢态，闸见 `test/ui/settings_sections_keepalive_test.dart`）；单测 `test/ui/server_nodes_panel_test.dart` |
 | 本地插件面板（Binder 发现项渲染/信任态 pill/信任卡片入口；零配置自动挂载，不落用户 JSON） | `lib/ui/sections/local_plugins_section.dart`（`LocalPluginsSection`） | 注入位 `localScanOverride`/`localChangesOverride`；单测 `test/ui/local_plugins_panel_test.dart` |
@@ -144,7 +145,7 @@ updated: 2026-10-23
 
 | 类别 | 源文件 | 目标 |
 |---|---|---|
-| 配置类窗口（§1.4 类别 1 · 管理面直连） | `settings_page.dart` | `mcp/{default_private_server, local_plugin_discovery, server_endpoints}`、`llm/cloud/byok_store` |
+| 配置类窗口（§1.4 类别 1 · 管理面直连） | `settings_page.dart` | `mcp/{default_private_server, local_plugin_discovery, server_endpoints}`、`llm/cloud/byok_store`、`core/security/secure_storage_upgrade` |
 | | `sections/byok_section.dart` | `llm/cloud/{byok_store, cloud_llm}` |
 | | `sections/nodes_section.dart` | `mcp/{server_endpoints, server_probe}` |
 | | `sections/local_plugins_section.dart` | `mcp/{local_plugin_discovery, trusted_plugins}` |
@@ -157,6 +158,8 @@ updated: 2026-10-23
 | | `components/session_context_sheet.dart` | `mcp/{local_plugin_discovery, server_endpoints}` |
 | 交互组件（2026-10-23 账实补登） | `components/{dual_track_stream, chat_gate_delegates, elicitation_card}` | `mcp/elicitation`（交互协议 DTO 直连） |
 | 联调 / spike 页（§1.4 类别 3 豁免 · 登记备查） | `gateway_loop_debug_page.dart` | `llm/cloud/byok_store`、`mcp/{local_plugin_discovery, mcp_client, sampling}` |
+| 管理面直连（F16 账实补登 2026-10-24） | `sections/resource_center_section.dart` | `resources/resource_store` |
+| | `sections/task_ledger_section.dart` | `task/task_consume_ledger` |
 
 收敛方向 = 经 coordinator 门面（`ChatSessionService` / `McpRuntime` / `ChatRunOrchestrator`）+ 端口回传；每清一边同轮更新本表。
 

@@ -217,28 +217,44 @@ class ServerEndpointStore {
       ),
     ];
     await save(migrated);
+    // F12（review-fix-2026-10）：迁移成功即清理旧**明文 apiKey**（endpoint 键
+    // 非机密保留回滚；密钥残留 = 本地取证即得，违反 §6.3 零明文留痕）。
+    // remove 抛错不阻断迁移主链（下次启动重试清理）。
+    try {
+      await prefs.remove(_legacyApiKeyKey);
+    } on Object catch (e) {
+      debugPrint('[DEGRADE] server-endpoints: 旧明文密钥清理失败（下次重试）: $e');
+    }
     debugPrint('[DEGRADE] server-endpoints: 旧单端点配置已迁移'
-        '（endpoint=$endpoint，旧键保留）');
+        '（endpoint=$endpoint，明文密钥已清理）');
     return migrated;
   }
 }
 
 /// SharedPreferences 的最小读取面（避免 sandbox/mcp 层直依插件；生产装配在
-/// [flutterPrefsLike] 转接）。
+/// [flutterPrefsLike] 转接）。[remove] = 迁移后清理明文残留（F12）。
 abstract interface class SharedPreferencesLike {
   Future<String?> read(String key);
+
+  Future<void> remove(String key);
 }
 
-/// 生产转接：SharedPreferences（async get）→ [SharedPreferencesLike]。
+/// 生产转接：SharedPreferences（async get/remove）→ [SharedPreferencesLike]。
 SharedPreferencesLike flutterPrefsLike(
-        Future<String?> Function(String key) getter) =>
-    _FnPrefsLike(getter);
+  Future<String?> Function(String key) getter,
+  Future<void> Function(String key) remover,
+) =>
+    _FnPrefsLike(getter, remover);
 
 class _FnPrefsLike implements SharedPreferencesLike {
-  _FnPrefsLike(this._get);
+  _FnPrefsLike(this._get, this._remove);
 
   final Future<String?> Function(String key) _get;
+  final Future<void> Function(String key) _remove;
 
   @override
   Future<String?> read(String key) => _get(key);
+
+  @override
+  Future<void> remove(String key) => _remove(key);
 }

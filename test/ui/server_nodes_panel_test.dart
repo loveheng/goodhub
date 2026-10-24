@@ -43,6 +43,9 @@ void main() {
         endpoint: 'http://10.0.2.2:9000/mcp',
       ),
     ]);
+    // srv_a 的「已存令牌」语义 = 安全存储实际读出非空（JSON hasKey 只是落盘
+    // 标记；读空即「令牌需重新录入」，见 2026-10-24 升级丢密钥事故口径）。
+    await store.setApiKey('srv_a', 'sk-prefill');
   });
 
   tearDown(() async {
@@ -98,6 +101,16 @@ void main() {
     final swA =
         tester.widget<Switch>(find.byKey(const Key('node-switch-srv_a')));
     expect(swA.value, isTrue, reason: '缺省挂载');
+  });
+
+  testWidgets('令牌丢失：hasKey 但安全存储读出空 → ⚠ 令牌需重新录入', (tester) async {
+    // 升级丢密钥事故口径（2026-10-24）：JSON hasKey 仍 true、安全存储读出空
+    // ——不得再显示「已存令牌」误导用户对着 403 找因。
+    await tester.runAsync(() async => store.setApiKey('srv_a', null));
+    await pumpPanel(tester);
+
+    expect(find.textContaining('⚠ 令牌需重新录入'), findsOneWidget);
+    expect(find.textContaining('未探测 · 已存令牌'), findsNothing);
   });
 
   testWidgets('探测全部：在线结果回填延迟/工具计数/已授权', (tester) async {

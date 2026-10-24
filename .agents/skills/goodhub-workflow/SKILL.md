@@ -109,7 +109,7 @@ flutter pub get                 # 依赖拉取（改 pubspec.yaml 后）
 
 ```bash
 toolbox run arch-guard            # ag   # ① 架构红线扫描（秒级：UI 禁 dart:io/平台分支/MethodChannel + 依赖方向）
-toolbox run drift-guard           # dg   # ② 契约面漂移扫描（秒级：退役词条/单源常量/超标登记；数据 = scripts/agent-tools/drift-registry.txt）
+toolbox run drift-guard --root . # dg   # ② 契约面漂移扫描（秒级：退役词条/单源常量/超标登记；数据 = scripts/agent-tools/drift-registry.txt）。⚠️ 必须带 --root：引擎在全局池，裸命令把 root 解析到全局池自身，报「项目未接入…放行」= 假绿（F18 实证 2026-10-24）
 flutter analyze                   #      # ③ 静态检查 → 0 issue 为交付线
 flutter test --timeout 180s       #      # ④ 单测 → 全绿为交付线（⚠️ 务必带 --timeout，widget 测试默认 10 分钟超时）
 ```

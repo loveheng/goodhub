@@ -31,6 +31,11 @@
 /// **2026-10-19 资源中心迁出**：原第七段 `ResourceCenterSection` 移出本页，
 /// 独立为 `lib/ui/resource_center_page.dart`（数据管理面）——高频管理动作不该
 /// 沉在二级配置页；入口在会话侧边栏底部横排工具带（设置右侧）。
+///
+/// **2026-10-24 安全存储升级提示**：列表顶部按健康检查插入「安全存储旧密钥
+/// 不可读」提示行（检查件 `core/security/secure_storage_upgrade.dart`，注入位
+/// `secureHealthOverride`）——flutter_secure_storage 9→11 直升丢密钥事故的
+/// 显性化，不占加载态、失败按正常降级。
 library;
 
 import 'dart:async';
@@ -39,6 +44,7 @@ import 'package:flutter/material.dart';
 
 import '../../coordinator/cow_sync.dart';
 import '../../coordinator/user_prompt_store.dart';
+import '../../core/security/secure_storage_upgrade.dart';
 import '../../llm/cloud/byok_store.dart';
 import '../../mcp/default_private_server.dart';
 import '../../mcp/local_plugin_discovery.dart';
@@ -71,6 +77,7 @@ class SettingsPage extends StatefulWidget {
     this.autoProbe = true,
     this.localScanOverride,
     this.localChangesOverride,
+    this.secureHealthOverride,
   });
 
   /// 测试注入位；null = 生产路径（应用文档目录）。透传 CoW 段。
@@ -101,6 +108,10 @@ class SettingsPage extends StatefulWidget {
   /// 测试注入位（本地插件面板）；null = 生产路径（[localPluginDiscovery.changes]）。
   final Stream<void>? localChangesOverride;
 
+  /// 测试注入位（安全存储升级健康检查，2026-10-24）；null = 生产路径
+  /// （[checkSecureStorageHealth]）。判定 legacyDataLost 时列表顶部出行内提示。
+  final SecureStorageHealthCheck? secureHealthOverride;
+
   @override
   State<SettingsPage> createState() => _SettingsPageState();
 }
@@ -113,10 +124,26 @@ class _SettingsPageState extends State<SettingsPage> {
   // （跨段一致的唯一裁定点），渲染仍在各段卡片行内。
   var _defaultPrivateId = '';
 
+  /// 安全存储升级健康（null = 检查中/未检查；不占加载态，正常态无渲染痕迹）。
+  SecureStorageHealth? _secureHealth;
+
   @override
   void initState() {
     super.initState();
     unawaited(_loadDefaultPrivate());
+    unawaited(_checkSecureHealth());
+  }
+
+  /// 安全存储升级健康检查（独立初始化：失败按正常，不拖垮页面；命中
+  /// legacyDataLost 时 build 顶部出行内提示，重试钮 = 重跑本检查）。
+  Future<void> _checkSecureHealth() async {
+    try {
+      final check = widget.secureHealthOverride ?? checkSecureStorageHealth;
+      final health = await check();
+      if (mounted) setState(() => _secureHealth = health);
+    } on Object catch (e) {
+      debugPrint('[DEGRADE] secure-storage-health: 设置页检查失败按正常: $e');
+    }
   }
 
   /// 默认私有服务钉选读取（独立初始化：失败按空，不拖垮页面）。
@@ -179,6 +206,17 @@ class _SettingsPageState extends State<SettingsPage> {
       body: ListView(
         padding: const EdgeInsets.all(12),
         children: [
+          // 安全存储升级提示（2026-10-24 事故显性化）：升级后旧密文不可解时
+          // 全页置顶 Rose 行——重录密钥后重试检查（或重进页面）即消失。
+          if (_secureHealth == SecureStorageHealth.legacyDataLost) ...[
+            panelErrorRow(
+              consoleTokens(context),
+              '应用升级导致安全存储旧密钥不可读：MCP 服务令牌与云端模型密钥需重新录入',
+              () => unawaited(_checkSecureHealth()),
+              key: const ValueKey('secure-storage-notice'),
+            ),
+            const SizedBox(height: 12),
+          ],
           // 全局外观（暗/亮/暖）置于顶部：跨段、最先被用户调整。
           const AppearanceSection(),
           const SizedBox(height: 12),

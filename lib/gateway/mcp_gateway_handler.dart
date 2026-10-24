@@ -36,6 +36,7 @@ class GatewayHandler {
     this.privateServerIds = const {},
     this.activePrivateServerId,
     this.onListChanged,
+    this.onProjectionApplied,
     this.policy = const ProjectionPolicy.full(),
     this.blockedPlugins = const {},
     GatewayLoopGuard? loopGuard,
@@ -61,6 +62,12 @@ class GatewayHandler {
   /// 目录变更通知回调（本连接投影切换 → 通知 PC 重拉自身 tools/list）。
   /// 由 GatewayController 注入为共享 `_listChanged` 的触发（所有连接同播）。
   final void Function()? onListChanged;
+
+  /// F10（review-fix-2026-10）：投影切换（`gateway__select_private`）落定回调
+  /// ——server 侧接住并写回 `_GatewaySession` 条目，idle GC 重建 handler 时
+  /// 恢复最新投影而非建连旧值。null = 无人接（非 server 装配路径）。
+  void Function(
+      ProjectionPolicy policy, String? activePrivateServerId)? onProjectionApplied;
 
   /// **本连接绑定的投影策略**（host-tools-gateway-export PR2）：`initialize` 期
   /// 由服务器层解析 URL query 后经 [forSession] 派生注入；此后**可由本连接的
@@ -301,8 +308,10 @@ class GatewayHandler {
         );
       }
       policy = ProjectionPolicy.single(target);
-      activePrivateServerId =
-          privateServerIds.contains(target) ? target : activePrivateServerId;
+      // single 无条件绑定激活域（2026-10-24 裁决）：私有目标放行防火墙 +
+      // 公共目标使海关豁免生效——切入即信任边界，应见该服务全量工具面
+      // （修「single 切入公共档服务后私有声明工具不可见」的语义缺口）。
+      activePrivateServerId = target;
     } else if (requested == 'full') {
       policy = const ProjectionPolicy.full();
       activePrivateServerId = null;
@@ -318,6 +327,9 @@ class GatewayHandler {
       policy = ProjectionPolicy.private(target);
       activePrivateServerId = target;
     }
+    // F10：切换结果写回会话条目（idle GC 重建 handler 时恢复最新投影，而非
+    // 建连时的旧值——否则 PC 投影无感知回退）。
+    onProjectionApplied?.call(policy, activePrivateServerId);
     onListChanged?.call();
     return GatewayToolResult(
       content: sys.describeGatewayProjection(

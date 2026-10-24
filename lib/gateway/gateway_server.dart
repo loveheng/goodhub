@@ -175,17 +175,19 @@ class McpGatewayServer {
       }
       final sid =
           'gw-${DateTime.now().microsecondsSinceEpoch}-${_sessions.length}';
-      // `single` 目标是私有服务 → 本连接投影**绑定**到它（连接级，不改宿主
-      // 槽位）：否则四级管道的私有投影防火墙会拦掉它，PC 拿到空目录且
-      // `single` 下无 `gateway__select_private` 可自救。权限集合与既有
-      // `gateway__select_private` 完全相同（仅改本连接投影）。
+      // `single` 指向任意服务 → 本连接投影**绑定**到它（连接级，不改宿主
+      // 槽位）。私有目标：否则四级管道的私有投影防火墙会拦掉它，PC 拿到空
+      // 目录且 `single` 下无 `gateway__select_private` 可自救。公共目标：绑定
+      // 使海关豁免生效（切入即信任边界——用户显式指定该服务，应见其全量工
+      // 具面；2026-10-24 裁决，修「single 切入公共档服务后私有声明工具不可
+      // 见」的语义缺口）。权限集合与既有 `gateway__select_private` 完全相同
+      // （仅改本连接投影）。
       // 私有叠加绑定（连接级，不改宿主槽位）：
       // ① `policy=private` → 绑定该私有服务（联邦面 + 它）；
-      // ② `policy=single` 目标是私有服务 → 同样绑定（否则私有投影防火墙会拦
-      //    掉它，PC 拿到空目录且 `single` 下无 `gateway__select_private` 可自救）。
-      final bindPrivateTarget = policy.isPrivate ||
-          (policy.isSingle &&
-              template.privateServerIds.contains(policy.targetServerId));
+      // ② `policy=single` → 无条件绑定目标服务（私有目标防火墙放行 + 公共
+      //    目标海关豁免，同一语义：切入即绑定）。
+      final bindPrivateTarget =
+          policy.isPrivate || policy.isSingle;
       final activePrivate = bindPrivateTarget ? policy.targetServerId : null;
       final handler = template.forSession(
         policy: policy,
@@ -194,11 +196,13 @@ class McpGatewayServer {
       // 广播差分基线：会话建立时的投影集即为「无变化」基准（否则首次目录变更
       // 必然触发一次无意义广播）。
       handler.markProjectionBaseline();
-      _sessions[sid] = _GatewaySession(
+      final session = _GatewaySession(
         policy: policy,
         activePrivateServerId: activePrivate,
         handler: handler,
       );
+      _attachProjectionWriteback(handler, session);
+      _sessions[sid] = session;
       _lastActivity[sid] = DateTime.now(); // 新建会话即算活跃
       if (_sessions.length > _maxSessions) _evictOldestSessions();
       return _jsonRpcResult(req, id, template.initialize(),
@@ -398,6 +402,18 @@ class McpGatewayServer {
   /// 取该连接的 handler；**闲置被 GC 后按需重建**（策略与连接级私有绑定从
   /// 会话条目恢复）。重建只丢内存态——该连接的 L2 会话豁免集随之重置，属可
   /// 接受代价（用户重新确认一次即可）。
+  /// F10（review-fix-2026-10）：`gateway__select_private` 只改 handler 实例的
+  /// policy/activePrivateServerId——若不写回会话条目，idle GC 回收 handler 后
+  /// 重建按旧值恢复，PC 投影无感知回退（差分基线还抑制了 list_changed，
+  /// PC 无从得知）。经回调把切换后的投影态持久到会话条目，重建即恢复最新值。
+  void _attachProjectionWriteback(
+      GatewayHandler handler, _GatewaySession session) {
+    handler.onProjectionApplied = (policy, activePrivateServerId) {
+      session.policy = policy;
+      session.activePrivateServerId = activePrivateServerId;
+    };
+  }
+
   GatewayHandler? _handlerFor(String sid) {
     final ctx = _sessions[sid];
     if (ctx == null) return null;
@@ -408,6 +424,7 @@ class McpGatewayServer {
         activePrivateServerId: ctx.activePrivateServerId,
       );
       handler.markProjectionBaseline(); // 重建即重置差分基线
+      _attachProjectionWriteback(handler, ctx); // F10：重建后切换仍写回本条目
       ctx.handler = handler;
     }
     return handler;
@@ -419,15 +436,24 @@ class McpGatewayServer {
   /// 自己的投影集**判定——重算该连接投影并与上次快照比对，无变化即抑制。覆盖
   /// 两类噪音：`single` 会话对无关服务上下线无感 / `full` 会话对私有域变更无感。
   void _broadcastListChanged() {
-    for (final entry in _sseSubs.entries) {
+    // F9（review-fix-2026-10）：与 _heartbeatPing / stop 同形态——遍历**副本**
+    // + 单订阅者 try/catch。死连接 write 同步抛 StateError 会中断整轮循环，
+    // 排在其后的订阅者全部丢 `tools/list_changed`（且异常成未捕获异步错误）。
+    for (final entry in _sseSubs.entries.toList()) {
       final sid = entry.key;
       final handler = _sessions[sid]?.handler;
       if (handler == null) continue;
       if (!handler.projectionChangedSinceBaseline()) continue; // 无变化即抑制
-      _sseFrame(entry.value, {
-        'jsonrpc': '2.0',
-        'method': 'notifications/tools/list_changed',
-      });
+      try {
+        _sseFrame(entry.value, {
+          'jsonrpc': '2.0',
+          'method': 'notifications/tools/list_changed',
+        });
+      } on Object catch (_) {
+        // 非数据面（§4.2）：通知帧失败不丢用户数据——解绑死订阅，其余订阅者
+        // 照常收到目录变更信号。
+        _sseSubs.remove(sid);
+      }
     }
   }
 
@@ -541,11 +567,14 @@ class _GatewaySession {
     this.handler,
   });
 
-  /// 本连接绑定的投影策略（不可变值对象，随会话长期保留）。
-  final ProjectionPolicy policy;
+  /// 本连接绑定的投影策略（值对象本体不可变；条目可整体替换——F10：
+  /// `gateway__select_private` 切换须写回本条目，否则 idle GC 重建 handler
+  /// 时按旧值恢复 = PC 投影无感知回退）。
+  ProjectionPolicy policy;
 
   /// 连接级私有投影绑定（`single` 指向私有服务时）——重建 handler 时恢复。
-  final String? activePrivateServerId;
+  /// F10：同 [policy] 须随切换写回。
+  String? activePrivateServerId;
 
   /// 该连接当前的 handler（内存态；闲置被 GC 后为 null，按需重建）。
   GatewayHandler? handler;

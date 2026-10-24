@@ -19,6 +19,7 @@ library;
 
 import 'package:flutter/material.dart';
 
+import '../app/service_directory.dart';
 import '../coordinator/tool_catalog.dart';
 import '../mcp/local_plugin_discovery.dart';
 import 'components/panel_error_row.dart';
@@ -43,7 +44,8 @@ class _ResourceCenterPageState extends State<ResourceCenterPage>
       TabController(length: 2, vsync: this);
 
   /// 工具目录取数收口（生产默认；测试可整体替换内部 discovery/endpointStore/runtime）。
-  final McpCatalog _catalog = McpCatalog();
+  // F16：endpointStore 注入（coordinator 不再回退 app 工厂——反向边斩断）。
+  final McpCatalog _catalog = McpCatalog(endpointStore: serverEndpointStore);
 
   /// 段内动作反馈（导入成功/失败等）走页面级 toast，与设置页口径一致。
   void _flash(String message) {

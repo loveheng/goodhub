@@ -433,6 +433,67 @@ void main() {
     }
   });
 
+  // F10（review-fix-2026-10）：`gateway__select_private` 切换只改 handler 实例，
+  // 会话条目此前是 final 旧值——idle GC 重建 handler 按建连值恢复，PC 投影
+  // 无感知回退（差分基线还抑制了 list_changed，PC 无从得知）。修复 = 切换落定
+  // 经 onProjectionApplied 写回会话条目，重建恢复最新投影。撤修复即红（第 6
+  // 步变回全量前缀面）。
+  test('F10：select_private 切换在 idle GC 重建后保持（无感回退即红）', () async {
+    final face = McpToolFace(client: McpClient(_FakeTransport()), serverId: 'demo');
+    await face.listTools();
+    final server = McpGatewayServer(
+      GatewayHandler(faces: {'demo': face}),
+      idleTimeout: const Duration(milliseconds: 100),
+    );
+    await server.start(address: InternetAddress.loopbackIPv4, port: 0);
+    final base = 'http://127.0.0.1:${server.port}/mcp';
+    final c = HttpClient();
+    try {
+      Future<List<String>> toolNames(String sid, int id) async {
+        final r = await _post(c, base,
+            jsonEncode({'jsonrpc': '2.0', 'id': id, 'method': 'tools/list'}),
+            sessionId: sid);
+        final b = jsonDecode(await r.transform(utf8.decoder).join()) as Map;
+        return [
+          for (final t in (b['result'] as Map)['tools'] as List)
+            (t as Map)['name'] as String
+        ];
+      }
+
+      final r0 = await _post(c, base,
+          jsonEncode({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize'}));
+      final sid = r0.headers.value('mcp-session-id')!;
+      expect(await toolNames(sid, 2), contains('demo__echo'),
+          reason: '前置：默认全量前缀面');
+
+      final rSwitch = await _post(c, base,
+          jsonEncode({
+            'jsonrpc': '2.0',
+            'id': 3,
+            'method': 'tools/call',
+            'params': {
+              'name': 'gateway__select_private',
+              'arguments': {'server_id': 'demo', 'policy': 'single'},
+            },
+          }),
+          sessionId: sid);
+      final bSwitch =
+          jsonDecode(await rSwitch.transform(utf8.decoder).join()) as Map;
+      expect(bSwitch.containsKey('error'), isFalse,
+          reason: '切换成功：${bSwitch['error']}');
+      expect(await toolNames(sid, 4), isNot(contains('demo__echo')),
+          reason: '前置：single 投影 = 无前缀目标面');
+
+      // 远超 idleTimeout 无活动 → handler 内存态被回收。
+      await Future.delayed(const Duration(milliseconds: 350));
+      expect(await toolNames(sid, 5), isNot(contains('demo__echo')),
+          reason: 'F10：重建后投影仍为所选项（回退全量即红）');
+    } finally {
+      c.close(force: true);
+      await server.stop();
+    }
+  });
+
   test('TC12 Keep-Alive：长调用期间推 progress 帧喂狗（PC 60s 超时对策）',
       () async {
     // 设计稿 thirdconnect §10.4：PC 规则 = 连续 60s 收不到任何 HTTP 数据包即超时。

@@ -203,15 +203,22 @@ class DebugRunOrchestrator {
 
   Stream<DebugRunEvent> run(DebugRunConfig cfg) async* {
     RefStore? refStore;
+    // F4（review-fix-2026-10）：Run 焚必须释放挂载的 client——此前 mount 未传
+    // release（close 退化为 noop），finally 只焚 refStore，clientFactory 建的
+    // client 每次联调 Run 泄漏一个。mounted 成功路径经 release 统一关；mount
+    // 内部抛错（negotiate/listTools）时 mounted 为 null，client 兜底关（幂等）。
+    McpClient? client;
+    McpMount? mounted;
     try {
-      final client = cfg.clientFactory();
+      client = cfg.clientFactory();
       final serverId = cfg.serverId;
       AgentLoop? loopBox;
       // 复用内核挂载原语（与生产同路径，拒绝 isFakeDebug 特权分支——§8.1-11；
       // fake 传输经 clientFactory 注入）。
-      final mounted = await const McpRuntime().mount(
+      mounted = await const McpRuntime().mount(
         serverId: serverId,
         client: client,
+        release: client.close,
         // M2.5-T7：progress 通告 → 状态带 Running(progress) 最小呈现 + M3-T2
         // 桥接 AgentLoop 事件流（LoopToolProgress，卡状态机全量数据源）。
         onProgress: (tool, progress, total, message) {
@@ -448,6 +455,8 @@ class DebugRunOrchestrator {
       yield DebugRunNote('✕ $e', danger: true);
       cfg.onPill('failed', DebugPillTone.danger);
     } finally {
+      mounted?.close(); // F4：成功路径经 release（= client.close）统一释放
+      client?.close(); // F4：mount 内部抛错的兜底（McpClient.close 幂等）
       await refStore?.expireAll(); // §9：Session 结束直清临时文件
       refStore?.dispose();
       loop = null;

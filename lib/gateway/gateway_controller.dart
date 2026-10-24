@@ -292,7 +292,11 @@ class GatewayController {
       // §1.2.6 信任闸门：同签名私有生态默认自动信任；第三方非同签名且未入白名单
       // 则 headless 跳过（网关无 UI 无法弹信任卡片，需先在聊天页/设置中信任，持久化后
       // 下次装配即生效）。
-      if (!info.sameSignature && !trusted.isTrusted(info.packageName)) {
+      if (!info.sameSignature &&
+          !trusted.isTrusted(
+            info.packageName,
+            signatureSha256: info.signatureSha256, // F13：挂载期复核签名指纹
+          )) {
         // 记账给 gateway__list_servers 的 blocked 段（PC 侧排障用；仅 id+原因）。
         blockedPlugins[info.serverId] = '未信任的第三方插件：请先在宿主聊天页或 '
             '⚙ 设置 → 本地插件中信任一次，之后网关装配即自动挂载';

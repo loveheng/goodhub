@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/core/security/flutter_secure_key_value.dart';
+import 'package:goodhub/llm/cloud/cloud_llm.dart';
 import 'package:goodhub/mcp/server_endpoints.dart';
 import 'package:goodhub/ui/chat_page.dart';
 import 'package:goodhub/ui/settings_page.dart';
@@ -146,6 +147,70 @@ void main() {
     expect(find.text('帮我查待办'), findsOneWidget); // 输入保留，返回可续发
     expect(find.text('去配置'), findsOneWidget); // 幂等：不重复插卡
   });
+
+  // F1（review-fix-2026-10）：PopScope 的 canPop 必须随运行态即时重建。原实现
+  // 只在页面级 build 求值一次，运行态变更只通知 body 内的 ListenableBuilder——
+  // 首 Run 期间 canPop 恒 true，「运行中离开确认拦截」实际失灵。修复形态 =
+  // PopScope 挂进 statusListenable 的重建域（Scaffold 经 child 缓存不动）。
+  // 本用例钉结构：PopScope 与页面根之间必须有 ListenableBuilder 祖先（撤修复
+  // 即 PopScope 直接挂页面 build，红）。运行态翻转→canPop 翻转的功能路径由
+  // beginRun/endRun 通知单测（chat_status_controller_test）与结构共同保证——
+  // 不用整跑 Run 断言：widget 测试 fake-async 与真实 IO 双世界推进非确定
+  // （沙箱出站垫片行为不稳定，实证 400/永挂两态），功能态断言必 flaky。
+  testWidgets('F1：PopScope 在 statusListenable 重建域内（canPop 不再是陈旧值）',
+      (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ChatPage(
+          endpointStoreOverride: _FakeEpStore(),
+          engineOverride: _HangingEngine(),
+        ),
+      ),
+    );
+    await _settleAssembly(tester);
+
+    final psEl = tester.element(find.byType(PopScope<Object>));
+    var hasLbAncestor = false;
+    psEl.visitAncestorElements((el) {
+      if (el.widget is ListenableBuilder) {
+        hasLbAncestor = true;
+        return false;
+      }
+      if (el.widget is ChatPage) return false; // 页面根为止（不得越界命中外层）
+      return true;
+    });
+    expect(hasLbAncestor, isTrue,
+        reason: 'F1：PopScope 须被 statusListenable 驱动的 ListenableBuilder 包裹'
+            '（页面级 build 的 canPop = 陈旧值，运行中返回拦截失灵）');
+  });
+
+  // F6（review-fix-2026-10）：判 running 与 beginRun 之间有两个 await（装配
+  // 加载），窗口内双击发送 = 两个并发 Run（双 TrackUser + transcript 竞写）。
+  // 撤闩即红（同文案 TrackUser 变两条）。
+  testWidgets('F6：快速双击发送只产生一个 Run（发送闩）', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ChatPage(
+          endpointStoreOverride: _RunEpStore(),
+          engineOverride: _HangingEngine(),
+        ),
+      ),
+    );
+    await _settleAssembly(tester);
+    await tester.enterText(find.byType(TextField), '只发一次');
+    await tester.tap(find.byIcon(Icons.arrow_upward));
+    await tester.pump(const Duration(milliseconds: 1)); // 第一发进 await 窗口
+    await tester.tap(find.byIcon(Icons.arrow_upward)); // 窗口内第二发
+    await tester.runAsync(() async {
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+    });
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+    expect(find.text('只发一次'), findsOneWidget,
+        reason: 'F6：双击只入轨一条 TrackUser（闩前双 Run 即两条）');
+  });
+
 }
 
 /// initState 异步装配链（store 加载 / 本地插件通道 / SharedPreferences /
@@ -166,4 +231,36 @@ class _FakeEpStore extends ServerEndpointStore {
   Future<void> save(List<ServerEndpoint> endpoints) async {}
   @override
   Future<String?> apiKey(String id) async => null;
+}
+
+/// 单端点假 store（F6）：端点 URL 形状非法（Uri.parse 必抛 FormatException）
+/// ——装配期 negotiate 确定性失败走 F3 降级继续（通告 + 不进路由），双击窗口
+/// 在装配 await 之前即被发送闩拦截，与网络行为无关（确定性地基）。
+class _RunEpStore extends _FakeEpStore {
+  @override
+  Future<List<ServerEndpoint>> load() async => const [
+        ServerEndpoint(
+          id: 'srv_run',
+          name: 'run',
+          endpoint: '::invalid-uri::',
+        ),
+      ];
+}
+
+/// 悬挂假引擎（F6）：持续低频产出、永不 Done——Run 停在运行态供断言；取消
+/// 订阅时在 yield 点即时退出（勿用永不完成的 Future 等待，否则取消挂起）。
+class _HangingEngine implements CloudLlmEngine {
+  @override
+  String get name => 'hanging';
+
+  @override
+  Stream<CloudStreamEvent> send(
+    CloudChatRequest request, {
+    void Function()? onActivity,
+  }) async* {
+    while (true) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      yield const CloudTextDelta('…');
+    }
+  }
 }

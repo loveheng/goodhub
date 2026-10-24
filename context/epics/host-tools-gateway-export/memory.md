@@ -123,5 +123,5 @@ last-merge: 2026-10-23
 - **shiguang 真机端到端**：single 投影 14 只读工具进裸名面可调、跨服务调用被拒、full 面 `shiguang__` 收窄符合「声明非 ACL」；policy=private 私有域全量进面待宿主配置私有端点后真机验证（代码路径已由单测覆盖）。
 
 ## 断点
-- [断点] 下一步：装配层合一已落地（Expand+Contract，547 测试全绿）：下一步真机回归——build-apk 装机后验证聊天全链路借用路径（进度 UI/断连通告/sampling），并确认网关停服时共享 face 生命周期（_unmountAll 与在途借用会话的交互）
+- [断点] 下一步：single 切入即绑定已落地（552 测试全绿）：bump+release 新版供真机复测 shiguang（single 投影应见全量工具面）
 - [note] 旧名 `gateway__list_private_servers` 已从**代码与设计稿全量清零**（P0 已修，仅历史账与本段留档）；真机验收通过后设计稿 `status` 转 `active`，epic 归档。

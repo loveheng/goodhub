@@ -374,6 +374,9 @@ class _NodesSectionState extends State<NodesSection>
   ) {
     final probing = _probeStates.containsKey(ep.id) && probe == null;
     final eligible = ep.enabled && ep.tier == ServerPrivacyTier.private;
+    // 令牌存况以安全存储实际读出为准（JSON hasKey 只是落盘标记）：升级后旧
+    // 密文不可解时读出空，此处即「需重新录入」的判定源（2026-10-24 事故口径）。
+    final tokenStored = _epKeys[ep.id]?.isNotEmpty ?? false;
     return Container(
       key: Key('node-item-${ep.id}'),
       margin: const EdgeInsets.symmetric(vertical: 4),
@@ -425,7 +428,7 @@ class _NodesSectionState extends State<NodesSection>
                     Text(
                       '${ep.endpoint}\n'
                       '端口 ${_portLabel(ep.endpoint)} · ${_metricsLabel(probe)} · '
-                      '${_authLabel(ep, probe)}',
+                      '${_authLabel(ep, probe, tokenStored)}',
                       style: TextStyle(
                         fontFamily: t.monoFamily,
                         fontSize: Fsz.micro,
@@ -520,11 +523,17 @@ class _NodesSectionState extends State<NodesSection>
     return '延迟 ${probe.latencyMs}ms · 工具 $tool';
   }
 
-  /// 鉴权态（F1.17）：已授权 / 待授权 403（Rose）/ 离线；配合 hasKey 展示
-  /// 令牌存况（密钥纪律：永不回显真值）。
-  String _authLabel(ServerEndpoint ep, NodeProbeResult? probe) {
-    if (probe != null && probe.authDenied) return '⚠ 待授权(403)';
+  /// 鉴权态（F1.17）：已授权 / 令牌需重新录入 / 待授权 403（Rose）/ 离线；
+  /// 配合 hasKey 展示令牌存况（密钥纪律：永不回显真值）。
+  ///
+  /// [tokenStored] = 安全存储实际读出非空令牌。JSON `hasKey` 只证明「落盘过」，
+  /// 读出为空即令牌已不可用（flutter_secure_storage 9→11 直升丢密钥事故口径，
+  /// 2026-10-24）——此时「⚠ 令牌需重新录入」优先于探活结论（403 大概率即其
+  /// 果，修因优先报因）。
+  String _authLabel(ServerEndpoint ep, NodeProbeResult? probe, bool tokenStored) {
     if (probe != null && probe.online) return '已授权';
+    if (ep.hasKey && !tokenStored) return '⚠ 令牌需重新录入';
+    if (probe != null && probe.authDenied) return '⚠ 待授权(403)';
     if (probe != null) return '离线';
     return ep.hasKey ? '未探测 · 已存令牌' : '未探测 · 无令牌';
   }

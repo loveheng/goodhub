@@ -22,11 +22,26 @@ class UpdateManifest {
     if (versionName is! String || apkUrl is! String) {
       throw const FormatException('versionName / apkUrl 缺失或类型错误');
     }
+    // F14（review-fix-2026-10）：完整性链收紧——apkUrl 强制 https（明文源可被
+    // 中间人替换整包）+ sha256 必填（缺失即零完整性校验，仅剩安装器签名一致性
+    // 兜底）。控制/劫持更新源即可投递任意 APK 的面就此关闭。回环 http 豁免
+    // （127.0.0.1/localhost 不可被远程劫持；本地调试与单测地基）。
+    final apkUri = Uri.tryParse(apkUrl);
+    final loopbackHttp = apkUri != null &&
+        apkUri.isScheme('http') &&
+        (apkUri.host == '127.0.0.1' || apkUri.host == 'localhost');
+    if (apkUri == null || (!apkUri.isScheme('https') && !loopbackHttp)) {
+      throw const FormatException('apkUrl 必须为 https 源（明文源拒绝：可被劫持投递任意包）');
+    }
+    final sha256 = json['sha256'];
+    if (sha256 is! String || sha256.isEmpty) {
+      throw const FormatException('sha256 必填（缺失即无完整性校验，拒绝该清单）');
+    }
     return UpdateManifest(
       versionCode: versionCode,
       versionName: versionName,
       apkUrl: apkUrl,
-      sha256: json['sha256'] as String?,
+      sha256: sha256,
       changelog: json['changelog'] as String?,
       applicationId: json['applicationId'] as String?,
     );

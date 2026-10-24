@@ -2,8 +2,8 @@
 dev-loop: lessons
 format: v1
 epic: global
-total-merged: 6
-last-merge: 2026-10-23
+total-merged: 10
+last-merge: 2026-10-24
 ---
 
 # lessons
@@ -27,6 +27,10 @@ last-merge: 2026-10-23
 
 - jsonDecode 嵌套段是 Map<String, dynamic>，`is Map<String, Object?>` 恒 false（泛型不变、dynamic 运行时非 Object?）➔ JSON 持久化读路径必须逐层显式转换（for-comprehension 重建），顶层 as cast 穿不透嵌套段，嵌套判断静默返 null (Ref: m2-5-skill-refstore)
 - 持久化类读方法若不与写方法同走装载路径，新实例读回恒空（同实例测试路径被写方法的顺带装载掩盖）➔ 读方法首行强制触发 _load；『写→新实例→读回』用例是抓装载体空转的关键，同实例断言测不出这类 bug (Ref: m2-5-skill-refstore)
+
+## core / 安全存储
+
+- 现象: 升级 v1.1.1 后设置里 MCP 服务连不上（节点卡 403/离线，挂载开关无效），且 UI 仍显示「已存令牌」 | 根因: flutter_secure_storage 9.2.2→11.2.0 跨两个大版本直升，v11 移除 v9 默认算法（RSA_ECB_PKCS1Padding + AES_CBC_PKCS7Padding），官方要求先升 v10 迁移再上 v11；旧密文读出抛错/被删（v11 handleStorageError 按损坏处理），宿主按「无令牌」DEGRADE 吞掉——安全存储读空但 JSON hasKey 仍 true，静默丢 MCP 令牌/BYOK 密钥/归档 HMAC 密钥 | 处置: 恢复=重录密钥（MCP 令牌 + BYOK，端点配置在 mcp_servers.json 未丢）；显性化=lib/core/security/secure_storage_upgrade.dart 调 v11 checkUpgradeStatus()（unreadable/discarded→legacyDataLost）→ 设置页顶部提示行 + nodes_section「⚠ 令牌需重新录入」标签按实际读出判定；机械规则=升安全存储/密钥类依赖前必读破坏性 changelog，跨大版本禁直跳 | 回归: test/core/security/secure_storage_upgrade_test.dart（映射+裸环境降级）+ test/ui/settings_secure_notice_test.dart（提示行三态）+ test/ui/server_nodes_panel_test.dart「令牌丢失」组——撤标签/撤提示即红 (Ref: misc)
 
 ## coordinator / 执行链装配
 
@@ -71,14 +75,13 @@ last-merge: 2026-10-23
 - 域内 `todos.md` 机械件格式：标题须为 `# <epic名> · 域内待办`、frontmatter 须 `format: v3` + `epic: <名>`，否则 `todos add` 报「缺标题行」拒绝写入——存量 v2 域文件首次写入前先改头部 (Ref: misc)
 - 现象: `write_to_file` 大 content / `replace_in_file` 长 old_str 多次触发 IDE 参数丢失（写入内容被截断或丢失） | 根因: 工具入参长度上限 + IDE 传参链路对超长/多行入参不稳（非项目代码问题） | 处置: 改用 `cat >> file <<EOF` 分块落盘 + python 精确替换绕过；heredoc 命令有 8000 字节上限，超出再分块 | 回归: 机械规则——写入类操作入参超 8000 字节即分块（无自动化钉子，属操作纪律） (Ref: host-tools-gateway-export)
 - LiteRT-LM 迁移：R8 混淆致 JNI SIGABRT ➔ proguard 必须 keep `-keep class com.google.ai.edge.** { *; }` (Ref: init)
+- 现象: release-r2 构建报「GeneratedPluginRegistrant.java 找不到符号 PackageInfoPlugin」，单跑子项目 :package_info_plus:assembleRelease 成功但 :app javac 仍失败 | 根因: 插件 release 变体 Kotlin 增量编译产物脏——intermediates/runtime_library_classes_jar/release/classes.jar 里只有目录项+kotlin_module 无 class（debug 变体正常），`:app:compileReleaseJavaWithJavac` 因符号缺失失败；与 integration_test registrant 污染是同位置不同根因（该坑是增量产物脏，非 registrant 内容错） | 处置: flutter clean && flutter pub get 后重跑 release-r2 --commit 即过；诊断口诀=unzip -l 看 release classes.jar 是否有 class，空则清增量而非改脚本 | 回归: 无自动化钉子（发布脚本内联），机械规则=release javac 报插件类缺失且子项目单跑成功 → 先 flutter clean 再查脚本 (Ref: self-update)
 - release 构建踩坑（Flutter 3.47.5）：`dev_dependencies` 的 `integration_test` 会被 `flutter pub get`/`flutter analyze` 以非 release 语义反复写入 `android GeneratedPluginRegistrant.java`，但其原生类不进 release classpath ➔ `compileReleaseJavaWithJavac` 报「程序包 dev.flutter.plugins.integration_test 不存在」构建失败 ➔ `release-r2.sh` 在 analyze 之后用 python 剔除 registrant 中该 try/catch 注册块 + 构建带 `--no-pub`（patch 早于 analyze 会被覆盖；build 阶段 pub get 会再写脏）；上游修复后可删脚本中该段 (Ref: self-update)
 - [工具链/toolbox] 现象: toolbox run cl 裸跑（不传 --root）时 15 个 epic 伪报「挂载失效：docs/design/*.md 不存在」（文件实际存在），带 --root 跑仅 3 条真实告警 | 根因: context-lint.sh 的 lint_mounts/lint_pointers 用原始 $ROOT 拼路径（不传 --root 时为空串 → tp=/docs/... 绝对路径必不存在），而非 lint_data 解析后的 $R（含 pwd 回退）；toolbox 的 cwd 继承正常——QC1 曾误判为「工具库目录 exec 致基准错位」，「一律显式传 --root」绕行治标未治本 | 处置: 2026-10-19 根治——两处 $ROOT 改 $R + self-test 增「cd 进夹具无 --root 不假报」断言；显式传 --root 仍是良好习惯但不再必需 | 回归: context-lint.sh --self-test 含无 --root 断言（toolbox run cl 与 --root 直跑结论一致：0 违规 5 告警） (Ref: misc)
 
+- 现象: 单轴化改名（D1）后漏检 7 处契约面漂移（PC 文案旧键 3 + SSOT 文档矛盾 4），全靠人工评估轮发现 | 根因: 契约面变更需同时改「代码 / 面向下游文案 / SSOT 文档」三面，人工扫漏检率高且随项目数放大（框架级病害，非单项目问题） | 处置: 机械件化——引擎全局共用（零项目知识）+ 规则数据留各项目 registry（只加数据行不改代码）+ Dart 镜像进 CI；散文级集合描述一致性机械不可靠，明确不做扫描归人判 | 回归: drift-guard（BANNED/CONST/OVERSIZE 三类）+ test/architecture/drift_rules_test.dart 镜像；rules 文档 docs/design/meta-upgrade.md (Ref: meta-upgrade)
+- 现象: 扫描器逐文件 grep 后按 path:lineno:code 解析路径，取到的是行号当路径（如 FAIL 119: ...），且整行注释未被剔除（误报 /// 注释） | 根因: GNU grep 单文件操作数时 -n 只输出 lineno:code（不输出文件名；多文件/目录操作数才输出），解析器按多文件形态假设取值即错 | 处置: 扫描器一律加 -H 强制文件名输出（单/多操作数一致），并按扩展名分派行级过滤（.dart 整行注释 // 与 * 起头剔除） | 回归: drift-guard --self-test 金丝雀（坏样本含 // 注释与代码两种形态）+ 真实仓变异探针（注入即红/还原即绿） (Ref: meta-upgrade)
+
 ## 待归并（inbox）
 
-- [架构/契约面漂移] 现象: 单轴化改名（D1）后漏检 7 处契约面漂移（PC 文案旧键 3 + SSOT 文档矛盾 4），全靠人工评估轮发现 | 根因: 契约面变更需同时改「代码 / 面向下游文案 / SSOT 文档」三面，人工扫漏检率高且随项目数放大（框架级病害，非单项目问题） | 处置: 机械件化——引擎全局共用（零项目知识）+ 规则数据留各项目 registry（只加数据行不改代码）+ Dart 镜像进 CI；散文级集合描述一致性机械不可靠，明确不做扫描归人判 | 回归: drift-guard（BANNED/CONST/OVERSIZE 三类）+ test/architecture/drift_rules_test.dart 镜像；rules 文档 docs/design/meta-upgrade.md (Ref: meta-upgrade)
-
-- [工具链/grep] 现象: 扫描器逐文件 grep 后按 path:lineno:code 解析路径，取到的是行号当路径（如 FAIL 119: ...），且整行注释未被剔除（误报本仓两处 /// 注释） | 根因: GNU grep 单文件操作数时 -n 只输出 lineno:code（不输出文件名；多文件/目录操作数才输出），解析器按多文件形态假设取值即错 | 处置: 扫描器一律加 -H 强制文件名输出（单/多操作数一致），并按扩展名分派行级过滤（.dart 整行注释 // 与 * 起头剔除） | 回归: drift-guard --self-test 金丝雀（坏样本含 // 注释与代码两种形态）+ 真实仓变异探针（注入即红/还原即绿） (Ref: meta-upgrade)
-
-（空——2026-10-23 归并：coordinator/装配 ×2 →「coordinator / 执行链装配」节；工具链 ×1 →「工具链 / toolbox」节；mcp/传输 ×1 →「mcp / 传输」节）
-- [工具链/release] 现象: release-r2 构建报「GeneratedPluginRegistrant.java 找不到符号 PackageInfoPlugin」，单跑子项目 :package_info_plus:assembleRelease 成功但 :app javac 仍失败 | 根因: 插件 release 变体 Kotlin 增量编译产物脏——intermediates/runtime_library_classes_jar/release/classes.jar 里只有目录项+kotlin_module 无 class（debug 变体正常），`:app:compileReleaseJavaWithJavac` 因符号缺失失败；与 §74 integration_test registrant 污染是同位置不同根因（该坑是增量产物脏，非 registrant 内容错） | 处置: flutter clean && flutter pub get 后重跑 release-r2 --commit 即过；诊断口诀=unzip -l 看 release classes.jar 是否有 class，空则清增量而非改脚本 | 回归: 无自动化钉子（发布脚本内联），机械规则=release javac 报插件类缺失且子项目单跑成功 → 先 flutter clean 再查脚本 (Ref: self-update)
+（空——2026-10-24 归并：工具链 ×2 →「工具链 / toolbox」节；构建/发布 ×1、core/安全存储 ×1 各入节）

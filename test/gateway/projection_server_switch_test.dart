@@ -464,6 +464,27 @@ void main() {
       expect(names, isNot(contains('pubB__echo')));
     });
 
+    test('single 切入公共档服务 → 绑定激活域（海关豁免生效）', () async {
+      // 2026-10-24 裁决：切入即绑定，与目标 tier 无关。
+      final pubA = await _face('pubA');
+      final handler = GatewayHandler(faces: {'pubA': pubA});
+      final r = await handler.toolsCall(
+        name: GatewayHandler.kGatewaySelectPrivate,
+        arguments: const {'server_id': 'pubA', 'policy': 'single'},
+        onProgress: (_) {},
+      );
+      expect(r.isError, isFalse);
+      expect(handler.activePrivateServerId, 'pubA',
+          reason: 'single 无条件绑定激活域——海关豁免据此对公共档目标生效');
+      final listed = await handler.toolsCall(
+        name: GatewayHandler.kGatewayListServers,
+        arguments: const {},
+        onProgress: (_) {},
+      );
+      expect(listed.isError, isTrue,
+          reason: 'single 下列举工具被拒（唯一出口 = select_private）');
+    });
+
     test('policy=private → 联邦面 + 该私有服务（私有叠加）', () async {
       final privA = await _face('privA');
       final pubB = await _face('pubB');

@@ -23,12 +23,12 @@ updated: 2026-10-23
 | `llm/` | 引擎域（端侧 `llm.dart` + `cloud/` 双协议 BYOK + codec） | `core`；经端口实现可引 `mcp` 的接口定义（`SamplingEngine`，依赖倒置） |
 | `mcp/` | MCP 客户端域（json_rpc/client/transport/端点/探活/信任/sampling/`goodshare_task_api`） | `core` |
 | `sandbox/` | 记忆沙盒域（memory/conversation/workspace 三 store） | `core` |
-| `task/` | 任务循环域（goodshare 远程任务 claim→推理→apply） | `mcp` |
+| `task/` | 任务循环域（goodshare 远程任务 claim→推理→apply） | `mcp`、`core`（串行写基准件） |
 | `resources/` | 资源中心内核域（本地文件库 ResourceStore；resource-center M1） | `core` |
-| `app/` | 装配容器（依赖注入 seed，`service_directory.dart`） | `mcp`（装配目标域） |
+| `app/` | 装配容器（依赖注入 seed，`service_directory.dart`；`task_consume_bootstrap` 宿主接管装配） | `mcp`、`coordinator`（hybrid 装配件）、`task`（消费接管）、`llm`（引擎类型装配）、`resources`（资源中心单例 seed） |
 | `coordinator/` | 编排域（AgentLoop/权限/熔断/PII/上下文治理/`$ref`/内核四件套/Run 装配核） | `core`、`llm`、`mcp`、`sandbox`、`task`、`resources` |
 | `gateway/` | 聚合网关域（Server 角色，`:8766/mcp`；headless 窗口） | `coordinator` **执行面白名单**（§1.4）、`mcp`、`llm`、`sandbox`、`app`；**禁 `ui`**（红灯） |
-| `gateway_api/` | 网关 API 薄面 | `gateway` |
+| `gateway_api/` | 网关 API 薄面 | `gateway`；`coordinator`（mcp_tool_face，gateway_control 装配引用）、`mcp`（server_endpoints，同上） |
 | `ui/` | 窗口层（聊天/设置/看板/更新/联调页 + components/sections） | `coordinator`、`core`、`app`、`gateway`（仅窗口→窗口面，如 consent 弹层）、`gateway_api`、`update`；对 `mcp`/`sandbox`/`llm` 仅**白名单直连**（§1.4，只减不增） |
 | `update/` | 自更新域（manifest/service/installer） | 无内部出向（独立叶子域） |
 

@@ -702,10 +702,26 @@ class _ChatPageState extends State<ChatPage>
   /// M4-T3 发送（D11 多轮）：上轮 transcript 作 history 续接；一次一个 Run。
   /// [promptOverride] = 错误卡「重试」入口重跑上一句（ux-hardening P0-2）：
   /// 不重复插用户轮卡、不清输入框（用户可能正在预输入下一轮）。
+  /// F6（review-fix-2026-10）：发送闩——判 running 与 beginRun 之间有两个
+  /// await（support 目录/端点加载），窗口内 running 仍 false，双击发送 =
+  /// 两个并发 Run（双 TrackUser + transcript 竞写）。闩住重入；Run 收尾
+  /// （finally）释放，与 running 守卫等宽覆盖。
+  bool _sending = false;
+
   Future<void> _send([String? promptOverride]) async {
+    if (_sending) return;
     final isRetry = promptOverride != null;
     final prompt = (promptOverride ?? _inputCtrl.text).trim();
     if (prompt.isEmpty || _status.running) return;
+    _sending = true;
+    try {
+      await _sendGuarded(prompt, isRetry: isRetry);
+    } finally {
+      _sending = false;
+    }
+  }
+
+  Future<void> _sendGuarded(String prompt, {required bool isRetry}) async {
     // —— T6-2 多服务装配：ServerEndpointStore 读多端点（含旧 SharedPreferences
     // 迁移）→ 每端点一个 McpClient + McpToolFace → ToolRouter（实例随会话建）——
     // （support 目录另供 WorkspaceStateStore / MemoryStore 落点。）
@@ -803,7 +819,10 @@ class _ChatPageState extends State<ChatPage>
         // 确认后持久化入白名单，后续会话自动信任。
         if (!info.sameSignature) {
           final trusted = await TrustedPlugins.instance;
-          if (!trusted.isTrusted(info.packageName)) {
+          if (!trusted.isTrusted(
+            info.packageName,
+            signatureSha256: info.signatureSha256, // F13：挂载期复核签名指纹
+          )) {
             if (!mounted) continue;
             final ok = await showTrustCard(context, info);
             if (!ok) {
@@ -1255,15 +1274,13 @@ class _ChatPageState extends State<ChatPage>
   @override
   Widget build(BuildContext context) {
     final t = consoleTokens(context);
-    return PopScope(
-      canPop: !_status.running,
-      onPopInvokedWithResult: (didPop, _) async {
-        if (didPop) return;
-        final leave = await _confirmLeaveWhileRunning();
-        if (!leave) return;
-        if (!mounted) return;
-        Navigator.of(this.context).pop();
-      },
+    // F1（review-fix-2026-10）：PopScope 的 canPop 必须随运行态即时翻转——
+    // 原写法只在页面级 build 求值一次，而运行态变更只通知 body 内的
+    // ListenableBuilder，首 Run 期间 canPop 恒 true，返回手势直接弹栈（运行中
+    // 离开确认拦截实际失灵）。现仅 PopScope 一层随 statusListenable 重建；
+    // Scaffold 经 child 参数缓存原实例，状态带/输入集群的局部重建切分不变。
+    return ListenableBuilder(
+      listenable: _status.statusListenable,
       child: Scaffold(
         // P1：弹键盘时收起主区，避免遮挡表单（默认 true，此处显式锁定）。
         resizeToAvoidBottomInset: true,
@@ -1397,6 +1414,17 @@ class _ChatPageState extends State<ChatPage>
             ],
           ),
         ),
+      ),
+      builder: (context, child) => PopScope(
+        canPop: !_status.running,
+        onPopInvokedWithResult: (didPop, _) async {
+          if (didPop) return;
+          final leave = await _confirmLeaveWhileRunning();
+          if (!leave) return;
+          if (!mounted) return;
+          Navigator.of(this.context).pop();
+        },
+        child: child!,
       ),
     );
   }

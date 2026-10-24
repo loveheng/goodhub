@@ -25,7 +25,9 @@ class _FakeCatalog extends McpCatalog {
     this.services = const [],
     this.tools = const {},
     this.fail = false,
-  });
+  }) : super(endpointStore: ({String? supportPath}) async {
+          throw UnsupportedError('假目录不走端点装配');
+        });
 
   final List<McpCatalogService> services;
   final Map<String, List<McpCatalogTool>> tools;

@@ -1,6 +1,6 @@
 ---
-status: draft
-updated: 2026-10-23
+status: active
+updated: 2026-10-24
 ---
 
 # Host 原生工具经网关导出与策略投影（host__ 虚拟服务）
@@ -40,7 +40,7 @@ flowchart TD
 
 | 策略字面量 | URL 传参（`policy` 为主键） | 适用场景 | `tools/list` 行为 | 工具命名 | 系统工具 | `tools/call` 边界 |
 |---|---|---|---|---|---|---|
-| `single` | `?policy=single&server=<id>`（`id` 可为**私有**服务，见会话绑定契约） | 轻量 / 小上下文模型、单一目标服务 | 仅指定 `serverId` 的工具（指向私有服务时含其非 shared 工具，海关豁免），其余全隐匿 | 对外**剥前缀**直出原生名 | **完全隐藏**（不列出、收到调用显式拒绝） | **拒绝投影集外调用**（含他服务前缀、未投影的私有工具） |
+| `single` | `?policy=single&server=<id>`（`id` 可为**任意已挂载服务**） | 轻量 / 小上下文模型、单一目标服务 | 仅指定 `serverId` 的工具（**切入即绑定激活域**——私有目标放行防火墙 + 公共/私有目标均豁免海关，2026-10-24 裁决），其余全隐匿 | 对外**剥前缀**直出原生名 | **完全隐藏**（不列出、收到调用显式拒绝） | **拒绝投影集外调用**（含他服务前缀、未投影的私有工具） |
 | `private` | `?policy=private&server=<私有服务 id>` | 完整联邦面 + 某一个私有服务（**私有叠加**） | 公共面 shared 全量 + 该私有服务**全量工具**（含非 shared——绑定即信任边界，目录与调用面对齐；其余私有仍隐匿） | 保留 `<serverId>__<tool>` | 列出 | 维持既有「声明非 ACL」口径：调用不因可见性额外拦截 |
 | `pruned` | `?policy=pruned&tag=core` | 需编排但上下文受限的模型 | 跨服务聚合，仅含指定 tag 的工具 | 保留 `<serverId>__<tool>` | 列出 | 维持既有「声明非 ACL」口径：调用不因可见性额外拦截 |
 | `full`（默认） | `/mcp`（或 `?policy=full`） | 强推理主力模型 | 全量 `visibility == shared` 工具 | 保留 `<serverId>__<tool>` | 列出 | 维持既有「声明非 ACL」口径：调用不因可见性额外拦截 |
@@ -88,6 +88,7 @@ flowchart TD
 - 顺序不可调换：策略过滤必须在海关与防火墙**之后**，否则 `single` 会成为绕开私有投影的后门，并产生「目录看得到、调用被拒」的不一致。
 - **海关豁免（2026-10-23 用户裁决）**：激活私有域（`serverId == activePrivateServerId`，含 `policy=private` 叠加目标与指向私有的 `single`）不受 visibility 收窄——调用侧「声明非 ACL」放行一切该域工具，目录若收窄即成「能调不能看」反向不对称；豁免后**目录可见性 = 调用可达性恒成立**（公共面 shared、激活私有域全量）。防火墙（第 2 级）不豁免：非激活私有域依旧目录不可见 + 调用被拒，铁律防越权目的不变。
 - **owner 档（2026-10-23 方向裁决）**：宿主内部机主全权视图 = 海关整体豁免（**豁免二的超集**），私有防火墙照常。仅 App 内代码可构造（`ProjectionPolicy.owner()`），`parse` 对网关侧显式拒绝——owner 泄露给 PC 即 MO6 崩塌。目录集与 `ToolRouter.focusedSchemas` 等价（防漂移断言：`projection_pipeline_test.dart` owner 等价用例）；`describeGatewayProjection` 对 owner fail-loud（`StateError`，内部接线错误才可达）。
+- **single 切入即绑定（2026-10-24 裁决）**：`policy=single` 指向**任意**已挂载服务都无条件绑定本连接 `activePrivateServerId = target`（URL 初始化路径与 `gateway__select_private` 同语义）——切入即信任边界，与目标 tier 无关：私有目标放行防火墙、公共目标使海关豁免生效，目标服务全量工具面进投影。修「single 切入公共档服务后私有声明工具不可见」（v1.1.1 的可见性来自宿主默认私有绑定 `current:True` 偶然生效，非设计；绑定丢失即复现为 0 工具）。
 - `toolsCall` 侧的私有防火墙作为纵深防御**保留**，不因策略而解除。
 - 结构化过滤：在 `(String serverId, McpToolFace face, CloudToolSchema schema)` 元组层做对象比对，**禁止**在已拼装的 `name` 字符串上做 `startsWith` / 前缀剥离。
 

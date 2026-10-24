@@ -39,6 +39,8 @@ updated: 2026-10-14
 ```
 
 > `applicationId` = 串包防御字段（2026-10-14 增）：多 app 共用同一 R2 桶/域名时，客户端拉到清单先比对本机包名，不一致直接拒更。发布侧由 `release-r2.sh` 从 `android/app/build.gradle.kts` 提取写入；旧清单无该字段时客户端宽容跳过。
+>
+> `versionCode` 口径 = **拆分包 APK 真实 versionCode**（Flutter `--split-per-abi` 自动加 1000×ABI_VERSION，arm64-v8a = +2000），非 pubspec 的 pub build 号。客户端与本机 `PackageInfo.buildNumber` 严格比对，口径错位（写 pub 号）会恒判「无新版」，下载入口不出现（2026-10-24 修复）。
 
 ## 2. 客户端侧（应用内自动更新）
 

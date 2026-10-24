@@ -15,6 +15,7 @@ import 'package:goodhub/core/security/secure_key_value.dart';
 import 'package:goodhub/llm/cloud/byok_store.dart';
 import 'package:goodhub/mcp/default_private_server.dart';
 import 'package:goodhub/mcp/local_plugin_discovery.dart';
+import 'package:goodhub/mcp/trusted_plugins.dart';
 import 'package:goodhub/mcp/server_endpoints.dart';
 import 'package:goodhub/ui/settings_page.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -53,6 +54,7 @@ void main() {
 
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
+    TrustedPlugins.resetForTest();
     tmp = await Directory.systemTemp.createTemp('local_plugins_panel_test');
     file = File('${tmp.path}/mcp_servers.json');
     secure = InMemorySecureKeyValue();
