@@ -41,3 +41,4 @@ updated: 2026-10-23
   - [design/host-tools-gateway-export.md](design/host-tools-gateway-export.md) — Host 原生工具经 HostTransport 导出至网关 + 策略投影管道（single / pruned / full）
   - [design/meta-upgrade.md](design/meta-upgrade.md) — 元体系升舱：契约面漂移机械护栏 drift-guard（引擎全局 / registry 项目数据 / Dart 镜像 CI；BANNED 退役词条 / CONST 单源常量 / OVERSIZE 超标登记，draft）
   - [design/review-fix-2026-10.md](design/review-fix-2026-10.md) — 全项目审查修复施工稿（2026-10-24 轮：P0 PopScope 失灵 + P1 资源收尾/事务竞态/网关/安全落盘 + 门禁矩阵账实修正，draft）
+  - [design/task-orchestration.md](design/task-orchestration.md) — 多插件任务编排（TaskPlan 计划卡 · 写面围栏 PlanGuard · 批量授权 planGrant · 步骤台账聚合，draft）
