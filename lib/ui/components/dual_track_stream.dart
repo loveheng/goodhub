@@ -19,7 +19,11 @@ import 'package:flutter/material.dart';
 
 import '../../coordinator/permission_gateway.dart';
 import '../../coordinator/fenced_cloud_engine.dart';
+import '../../coordinator/plan_proposal_tool.dart';
+import '../../coordinator/task_plan.dart';
 import '../../coordinator/tool_breaker.dart';
+import '../task_plan_card.dart';
+import '../task_result_card.dart';
 import 'breaker_card.dart';
 import 'call_card.dart';
 import 'confirmation_card.dart';
@@ -140,6 +144,30 @@ class TrackCall extends TrackEntry with ChangeNotifier {
     if (resultText != null) this.resultText = resultText;
     notifyListeners();
   }
+}
+
+/// 任务计划批量确认卡（编排 B1；PlanProposalDelegate 待决挂起；确认/取消后
+/// 锁定审计行终态）。
+class TrackPlanConfirm extends TrackEntry {
+  TrackPlanConfirm({required this.card});
+
+  final PlanProposalCard card;
+  final Completer<PlanProposalDecision> completer =
+      Completer<PlanProposalDecision>();
+  PlanProposalDecision? decision;
+  DateTime? decidedAt;
+
+  /// 终态审计行（「✓ 已批准 N 项 · 剔除 M 项 · HH:mm」）。
+  String? lockedSummary;
+}
+
+/// 计划执行聚合卡（编排 B1）：Run 收口台账呈现；onResume 不序列化
+/// （恢复历史锁定为回看，不可续跑——可续跑仅存在于收口当刻的活会话）。
+class TrackPlanResult extends TrackEntry {
+  TrackPlanResult({required this.record, this.onResume});
+
+  final PlanAggregateRecord record;
+  VoidCallback? onResume;
 }
 
 /// L2 确认卡（GateDelegate 待决挂起；用户操作后锁定终态）。
@@ -555,6 +583,33 @@ class DualTrackStream extends StatelessWidget {
             description: e.description,
           ),
         );
+      case TrackPlanConfirm(
+        :final card,
+        :final decision,
+        :final decidedAt,
+        :final lockedSummary,
+        :final completer,
+      ):
+        return TaskPlanCard(
+          plan: card,
+          onDecision: decision == null
+              ? (d) {
+                  entry.decision = d;
+                  entry.decidedAt = DateTime.now();
+                  entry.lockedSummary = TaskPlanCard.lockedSummaryFor(
+                    d,
+                    writeCount: card.rows.where((r) => r.isWrite).length,
+                    destructiveCount:
+                        card.rows.where((r) => r.isWrite && r.destructive).length,
+                  );
+                  completer.complete(d);
+                }
+              : null,
+          lockedSummary: decidedAt == null ? null : lockedSummary,
+          lockedAt: decidedAt,
+        );
+      case TrackPlanResult(:final record, :final onResume):
+        return TaskResultCard(record: record, onResume: onResume);
       case TrackConfirm(
         :final pending,
         :final decision,
@@ -1148,6 +1203,58 @@ extension TrackEntryCodec on TrackEntry {
       // A2：描述全文持久化（恢复会话人话行不丢；缺省 = 旧数据无描述）。
       'description': ?e.description,
     },
+    TrackPlanConfirm(
+      :final card,
+      :final decision,
+      :final decidedAt,
+      :final lockedSummary,
+    ) =>
+      {
+        // 计划原文归档（goal + 全部步骤行，含读信息行）；决策后为审计态。
+        'type': 'plan_confirm',
+        'goal': card.goal,
+        'rows': [
+          for (final r in card.rows)
+            {
+              'id': r.step.id,
+              'server': r.step.server,
+              'tool': r.step.tool,
+              'intent': r.step.intent,
+              'write': r.isWrite,
+              if (r.destructive) 'destructive': true,
+              'blocked': ?r.blockedReason,
+            },
+        ],
+        'approved': ?decision?.approved,
+        'summary': ?lockedSummary ??
+            (decision == null ? null : '会话中断于计划确认'),
+        'decidedAt': ?decidedAt?.millisecondsSinceEpoch,
+      },
+    TrackPlanResult(:final record) => {
+      'type': 'plan_result',
+      'goal': record.goal,
+      'status': record.status.name,
+      'rows': [
+        for (final r in record.rows)
+          {
+            'id': r.step.id,
+            'server': r.step.server,
+            'tool': r.step.tool,
+            'intent': r.step.intent,
+            'note': ?r.step.note,
+            'calls': r.calls,
+            'ok': r.ok,
+            'failed': r.failed,
+            'skippedByUser': r.skippedByUser,
+            'closedPending': r.closedPending,
+          },
+      ],
+      'outOfBand': [
+        for (final e in record.outOfBand.entries)
+          {'pair': e.key, 'count': e.value},
+      ],
+      'echoes': record.echoByStep,
+    },
     TrackConfirm(:final pending, :final decision, :final decidedAt) => {
       'type': 'confirm',
       'toolName': pending.toolName,
@@ -1245,6 +1352,56 @@ extension TrackEntryCodec on TrackEntry {
           ? DateTime.fromMillisecondsSinceEpoch(m['decidedAt'] as int)
           : null;
       switch (m['type']) {
+        case 'plan_confirm':
+          // 决策审计行（终态）；无决策的历史降级 Rose 通告行。
+          final summary = m['summary'] as String?;
+          out.add(TrackNote(
+            summary ?? '⚠ 计划卡无决策记录（会话中断）',
+            danger: summary == null || !(m['approved'] == true),
+          ));
+        case 'plan_result':
+          final status = PlanAggregateStatus.values.firstWhere(
+            (s) => s.name == m['status'],
+            orElse: () => PlanAggregateStatus.failed,
+          );
+          final rows = <PlanLedgerStepView>[
+            for (final raw in (m['rows'] as List? ?? const []))
+              if (raw is Map)
+                PlanLedgerStepView(
+                  step: FrozenPlanStep(
+                    id: raw['id'] as String? ?? '',
+                    server: raw['server'] as String? ?? '',
+                    tool: raw['tool'] as String? ?? '',
+                    intent: raw['intent'] as String? ?? '',
+                    note: raw['note'] as String?,
+                  ),
+                  calls: raw['calls'] is int ? raw['calls'] as int : 0,
+                  ok: raw['ok'] is int ? raw['ok'] as int : 0,
+                  failed: raw['failed'] is int ? raw['failed'] as int : 0,
+                  skippedByUser: raw['skippedByUser'] == true,
+                  closedPending: raw['closedPending'] == true,
+                ),
+          ];
+          final echoes = <String, String>{
+            if (m['echoes'] is Map)
+              for (final e in (m['echoes'] as Map).entries)
+                if (e.key is String) e.key as String: '${e.value}',
+          };
+          out.add(TrackPlanResult(
+            record: PlanAggregateRecord(
+              goal: m['goal'] as String? ?? '',
+              status: status,
+              rows: rows,
+              outOfBand: {
+                for (final e in (m['outOfBand'] as List? ?? const []))
+                  if (e is Map && e['pair'] is String)
+                    e['pair'] as String:
+                        e['count'] is int ? e['count'] as int : 0,
+              },
+              echoByStep: echoes,
+            ),
+            // onResume 不恢复（历史不可续跑；回调不可序列化）。
+          ));
         case 'user':
           out.add(TrackUser(m['text'] as String? ?? ''));
         case 'thinking':

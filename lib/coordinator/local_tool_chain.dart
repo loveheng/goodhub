@@ -25,7 +25,10 @@ import 'discovery_executor.dart';
 import 'local_resource_tool_executor.dart';
 import 'memory_tool_executor.dart';
 import 'permission_gateway.dart'
-    show GateDelegate, PermissionGateway, ToolNotice;
+    show GateDelegate, GatewayLevel, PermissionGateway, ToolNotice;
+import 'plan_guard.dart';
+import 'plan_proposal_tool.dart' show PlanProposalDelegate, PlanProposalTool;
+import 'task_plan.dart';
 import 'ref_hydrator.dart' show CrossSourceDelegate, HydratingExecutor;
 import 'ref_store.dart';
 import 'skill_activation_executor.dart';
@@ -57,6 +60,10 @@ class GuardedExecutor implements ToolExecutor {
 typedef LocalToolChain = ({
   ToolExecutor executor,
   PermissionGateway gateway,
+
+  /// 计划围栏（编排 B1；planState == null 时为 null）——toolsProvider 据此
+  /// 对冻结集写工具注入 step-id Schema。
+  PlanGuard? planGuard,
 });
 
 /// 组装本机工具执行链（T6 链路序唯一 owner）。
@@ -78,8 +85,15 @@ LocalToolChain composeLocalToolChain({
   required CrossSourceDelegate? consentDelegate,
   required void Function(ToolNotice)? onNotice,
   required void Function(String message, {bool danger})? onNote,
+  PlanRunState? planState,
+  PlanProposalDelegate? planDelegate,
+  void Function(String message)? onPlanEcho,
 }) {
   PermissionGateway? gatewayRef;
+  PlanGuard? guardRef;
+  bool planIsWriteTool(String name, Map<String, Object?>? annotations) =>
+      gatewayRef!.classify(name, annotations) == GatewayLevel.l2Write;
+
   final executor = composeToolExecutorChain([
     (inner) => GuardedExecutor(connections, router, inner),
     // T6-3 JIT 两级发现：DiscoveryExecutor 挂最外层（SkillActivation 之前），
@@ -101,11 +115,38 @@ LocalToolChain composeLocalToolChain({
       targetResolver: router.serverFor,
       crossSourceDelegate: consentDelegate,
     ),
+    // 计划围栏（编排 B1）：PlanProposalTool → PlanGuard → Gateway（铁律链序
+    // ——围栏在网关之前，阶段外写不产生确认卡）。planState == null = 不挂
+    // （网关 headless 装配无编排语义，二者仅共享 faces）。
+    if (planState != null)
+      (inner) {
+        final guard = PlanGuard(
+          inner: inner,
+          state: planState,
+          isWriteTool: planIsWriteTool,
+          annotationsFor: gatewayRef!.annotationsFor,
+          onStepEcho: onPlanEcho,
+        );
+        guardRef = guard;
+        return guard;
+      },
+    if (planState != null)
+      (inner) => PlanProposalTool(
+            inner: inner,
+            router: router,
+            state: planState,
+            isWriteTool: planIsWriteTool,
+            delegate: planDelegate,
+            // 起草期预检（R6）：连接缺失 = 服务已离线（卡面置灰口径）。
+            availabilityIssue: (id) =>
+                connections.containsKey(id) ? null : '服务已离线',
+          ),
     (inner) {
       final g = PermissionGateway(
         inner: inner,
         delegate: gateDelegate, // null = headless fail-closed（§8.1-2）
         onNotice: onNotice,
+        planGrants: planState,
       );
       gatewayRef = g;
       return g;
@@ -114,5 +155,9 @@ LocalToolChain composeLocalToolChain({
       (inner) => LocalResourceToolExecutor(inner: inner, store: resourceStore),
     (inner) => MemoryToolExecutor(inner: inner, store: memoryStore),
   ], fallback: router);
-  return (executor: executor, gateway: gatewayRef!);
+  return (
+    executor: executor,
+    gateway: gatewayRef!,
+    planGuard: guardRef,
+  );
 }

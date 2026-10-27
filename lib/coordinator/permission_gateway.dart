@@ -21,18 +21,35 @@ import 'package:flutter/foundation.dart';
 
 import '../llm/cloud/cloud_llm.dart';
 import 'agent_loop.dart';
+import 'tool_router.dart' show parsePrefixedToolName;
 
 /// 权限级：L1 只读（静默+药丸）/ L2 写操作（拦截+确认卡）。
 enum GatewayLevel { l1ReadOnly, l2Write }
 
-/// L1 静默执行 / 会话豁免放行的药丸通告（L2 确认卡不经此通道）。
+/// L1 静默执行 / 会话豁免放行 / planGrant 放行的药丸通告（L2 确认卡不经此通道）。
 class ToolNotice {
-  const ToolNotice({required this.toolName, required this.viaSessionGrant});
+  const ToolNotice({
+    required this.toolName,
+    required this.viaSessionGrant,
+    this.viaPlanGrant = false,
+  });
 
   final String toolName;
 
   /// true = 凭会话豁免放行（非首次确认），UI 可弱化展示。
   final bool viaSessionGrant;
+
+  /// true = 凭已确认计划授权放行（多插件任务编排 B1）：planGrant 免卡 ≠ 免视，
+  /// UI 仍展示（弱化）——实参透明化由 PlanGuard 首笔回显承担。
+  final bool viaPlanGrant;
+}
+
+/// 计划授权源（多插件任务编排 B1）：planGrant 在位时，冻结集内非毁坏写免卡
+/// 放行。授权本体 Run 级（PlanRunState 实现本接口）；毁坏性工具一律不走本
+/// 通道（D1 拍板：无实参的毁坏预授权等于盲签，由网关在放行前显式排除）。
+abstract interface class PlanGrantSource {
+  /// (serverId, toolName) 是否在已确认计划的冻结集内（用户未剔除步）。
+  bool grants(String serverId, String toolName);
 }
 
 /// 提交用户确认的 L2 待决调用（确认卡参数区数据源）。
@@ -71,12 +88,16 @@ class PermissionGateway implements ToolExecutor {
     required this.inner,
     this.delegate,
     this.onNotice,
+    this.planGrants,
   });
 
   /// 被装饰的真实执行环（McpToolFace）。
   final ToolExecutor inner;
   final GateDelegate? delegate;
   final void Function(ToolNotice notice)? onNotice;
+
+  /// 计划授权源（编排 B1；null = 无计划授权，全部走既有 L1/L2 裁决）。
+  final PlanGrantSource? planGrants;
 
   /// tools/list annotations 目录（[loadCatalog] 全量刷新，§8 缓存失效语义）。
   final Map<String, Map<String, Object?>?> _annotations = {};
@@ -106,6 +127,10 @@ class PermissionGateway implements ToolExecutor {
       ..clear()
       ..addEntries([for (final t in tools) MapEntry(t.name, t.annotations)]);
   }
+
+  /// 注解目录查询面（PlanGuard 围栏复用同一份目录——禁第二判定源）。
+  Map<String, Object?>? annotationsFor(String prefixedName) =>
+      _annotations[prefixedName];
 
   /// 会话结束 / Abort 时清空豁免（C7：豁免不跨会话存活）。
   void resetSessionGrants() => _sessionGrants.clear();
@@ -141,6 +166,24 @@ class PermissionGateway implements ToolExecutor {
     if (level == GatewayLevel.l1ReadOnly) {
       onNotice?.call(ToolNotice(toolName: call.name, viaSessionGrant: false));
       return inner.execute(call);
+    }
+    // planGrant 通道（编排 B1）：冻结集内非毁坏写免卡放行。毁坏性显式排除
+    // （D1）；授权按 (serverId, toolName) 裸对判定（step-id 已被 PlanGuard
+    // 剥离，本层无感知）。放行≠免视：onNotice 照发（viaPlanGrant 供 UI 弱化）。
+    if (planGrants != null) {
+      final parsed = parsePrefixedToolName(call.name);
+      final destructiveHint = _annotations[call.name]?['destructiveHint'];
+      final destructive = destructiveHint is bool && destructiveHint;
+      if (parsed != null &&
+          !destructive &&
+          planGrants!.grants(parsed.serverId, parsed.toolName)) {
+        onNotice?.call(ToolNotice(
+          toolName: call.name,
+          viaSessionGrant: false,
+          viaPlanGrant: true,
+        ));
+        return inner.execute(call);
+      }
     }
     if (_sessionGrants.contains(call.name)) {
       onNotice?.call(ToolNotice(toolName: call.name, viaSessionGrant: true));

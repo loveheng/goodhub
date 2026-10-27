@@ -17,6 +17,7 @@ updated: 2026-10-23
 | LLM 引擎（端侧 LiteRT-LM / 云端） | `lib/llm/` + `android/`（LlmBridge.kt） | M2 自 goodshare 随迁；proguard keep 教训查 `context/lessons.md` |
 | 云端 BYOK 引擎（双协议/SSE 流式/BYOK 配置） | `lib/llm/cloud/` | 密钥走 `core/security/` SecureKeyValue；装配入口 `engineFor` |
 | 混合编排 Coordinator（降级状态机/云↔端路由/Agent Loop/MCP 工具面） | `lib/coordinator/` | `HybridCloudEngine` 路由 + `AgentLoop` 工具环（maxTurns=10）+ `McpToolFace`；默认装配 `assembleDefaultHybridEngine` |
+| 多插件任务编排（TaskPlan 计划卡 · 写面围栏 · 批量授权 · 台账聚合） | `lib/coordinator/task_plan.dart` + `plan_guard.dart` + `plan_proposal_tool.dart` + `permission_gateway.dart`（planGrant 源）+ `local_tool_chain.dart`（插链）+ `lib/ui/task_plan_card.dart` + `task_result_card.dart`（新，2026-10-24） | 设计 SSOT = `docs/design/task-orchestration.md`；链序铁律 `PlanProposalTool→PlanGuard→PermissionGateway`（经 `composeToolExecutorChain`）；Run 收口 = `McpAssembly.close` → `PlanRunState.endRun`（聚合卡经窗口回调）；step-id Schema 注入仅 App 内聊天工具面，网关投影不见此属性 |
 | 任务循环（认领→心跳→回写） | `lib/task/`（TaskLoopService + TaskInference 接口） | 推理期 5s 心跳（契约 §3.3）；apply 产出按 task_action 分叉 summary_md/tags/note；**毒丸防护（§3.12.2-6）**：推理失败须 apply failed 终态，不留 processing 等 30s 回收反复认领 |
 | 宿主侧任务消费循环（catch-up / 单飞 dirty / 达顶继续 / 空拉终止 / 熔断 / 算力让路 / 生命周期解绑） | `lib/task/task_consume_loop.dart`（新，2026-10-18） | 契约 = goodshare 仓 ai-app-split.md §3.12（宿主侧消费纪律 8 条）；通道存活与前台忙碌为注入端口（不 import ui/gateway） |
 | 任务消费对账账本（按来源服务分组列表 + 自然日过滤，跨会话持久化） | `lib/task/task_consume_ledger.dart`（新，2026-10-18；`underSupportDir` + SequentialFileWriter 原子写） | 条目含 `serverId`（按 MCP 服务领域划分的键，当前恒 goodshare 包名，预留多 server）；`recentEntries`（自然日过滤，>今天隐藏但持久化全量保留）+ `groupedByServer`；聚合降级为组头元信息（不抢眼）；损坏文件返空账 + DEGRADE |
@@ -138,6 +139,7 @@ updated: 2026-10-23
 | `McpRuntime`（MCP 侧 Run 级装配唯一入口，含 `ConversationSession`） | 装配 = 应用级 / Run 句柄 = Run 级 | `lib/coordinator/mcp_runtime.dart` |
 | `ChatSessionService`（会话内核，transcript 过边界走中立数据） | 会话级 | `lib/coordinator/chat_session_service.dart` |
 | `MemoryKernel`（记忆内核，含 `onWriteFailure` 可观测端口） | 会话级 | `lib/coordinator/memory_kernel.dart` |
+| `PlanRunState`（多插件任务编排状态：冻结集/台账/配额跨续跑累计；planGrant 本体 Run 级随 Run 焚） | 会话级 + Run 级（`PlanGuard`/`PlanProposalTool` 随链装配） | `lib/coordinator/task_plan.dart` + `plan_guard.dart` + `plan_proposal_tool.dart` |
 
 ### 直连白名单基线（standards §1.4 · 只减不增）
 

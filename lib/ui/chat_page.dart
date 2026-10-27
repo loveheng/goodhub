@@ -30,6 +30,9 @@ import '../coordinator/degradation_controller.dart';
 
 import '../coordinator/chat_run_orchestrator.dart';
 import '../coordinator/mcp_runtime.dart';
+import '../coordinator/plan_proposal_tool.dart'
+    show PlanProposalDecision;
+import '../coordinator/task_plan.dart' show PlanAggregateRecord;
 import '../llm/cloud/cloud_llm.dart';
 
 import '../coordinator/user_prompt_store.dart';
@@ -129,7 +132,10 @@ class _ChatPageState extends State<ChatPage>
   /// （轮数/体量）并投影 systemTail + contextFooter。切会话即重置。
   // Run 编排下沉件（window-slim P1-A）：记忆内核接线/冷热分层/系统前缀/slot
   // 写回/governor 生命周期收口 coordinator——本页只持展示态与 UI 端口实现。
-  final ChatRunOrchestrator _runOrchestrator = ChatRunOrchestrator();
+  // 编排 B1：会话级编排状态随编排件持有；聚合卡出口回调直插轨道
+  // （onResume 闭包走续跑手势——Run 收口当刻的活会话才可续跑）。
+  late final ChatRunOrchestrator _runOrchestrator =
+      ChatRunOrchestrator(onPlanAggregate: _onPlanAggregate);
 
   // 会话持久化（archive-memory-claim 步 1）：落盘事实 owner = ConversationArchive
   // 内核（懒建/快照组装/恢复/删除门面），窗口只持侧边栏列表投影（已下沉
@@ -651,6 +657,9 @@ class _ChatPageState extends State<ChatPage>
             // 空态无独立附件行，靠本菜单发现（消「功能堆砌」的物理痕迹）。
             onPickResource: _pickResource,
             onManageResources: _openResourceCenter,
+            planArmed: _runOrchestrator.planState.armed,
+            onTogglePlanArmed: () =>
+                _togglePlanArmed(refreshSheet: () => setSheet(() {})),
           ),
         ),
       ),
@@ -715,20 +724,24 @@ class _ChatPageState extends State<ChatPage>
   /// （finally）释放，与 running 守卫等宽覆盖。
   bool _sending = false;
 
-  Future<void> _send([String? promptOverride]) async {
+  Future<void> _send([String? promptOverride, bool asSystemEvent = false]) async {
     if (_sending) return;
     final isRetry = promptOverride != null;
     final prompt = (promptOverride ?? _inputCtrl.text).trim();
     if (prompt.isEmpty || _status.running) return;
     _sending = true;
     try {
-      await _sendGuarded(prompt, isRetry: isRetry);
+      await _sendGuarded(prompt, isRetry: isRetry, asSystemEvent: asSystemEvent);
     } finally {
       _sending = false;
     }
   }
 
-  Future<void> _sendGuarded(String prompt, {required bool isRetry}) async {
+  Future<void> _sendGuarded(
+    String prompt, {
+    required bool isRetry,
+    bool asSystemEvent = false,
+  }) async {
     // —— T6-2 多服务装配：ServerEndpointStore 读多端点（含旧 SharedPreferences
     // 迁移）→ 每端点一个 McpClient + McpToolFace → ToolRouter（实例随会话建）——
     // （support 目录另供 WorkspaceStateStore / MemoryStore 落点。）
@@ -770,7 +783,10 @@ class _ChatPageState extends State<ChatPage>
     // 自动跟随/已耗时起点，合并为单次状态通知（替代原 4 行整页 setState）。
     _status.beginRun(startedAt: DateTime.now());
     _activeThinkingEntry = null; // 思考轨按 Run 生灭（多轮内按工具卡分段）
-    if (!isRetry) _add(TrackUser(prompt));
+    if (!isRetry) {
+      // 编排 B1：续跑合成消息渲染为灰阶系统事件行（非普通用户气泡）。
+      asSystemEvent ? _add(TrackNote(prompt, danger: false)) : _add(TrackUser(prompt));
+    }
     // T3b：会话懒建（首个任务起落盘；标题截取策略在 Archive 内核）。
     await _archive!.ensureCurrent(prompt: prompt);
     // P2-6（§3.6/G3）：会话级事实库懒建——In-band 捎带 session 域落点。
@@ -928,6 +944,7 @@ class _ChatPageState extends State<ChatPage>
             return r == true;
           },
           elicitationDelegate: ChatElicitationDelegate(this),
+          planDelegate: ChatPlanDelegate(this), // 编排 B1：计划确认卡
           onNote: (message, {danger = false}) =>
               _add(TrackNote(message, danger: danger)),
           onProgress: (tool, progress, total, message) {
@@ -973,6 +990,8 @@ class _ChatPageState extends State<ChatPage>
           },
         ),
         quota: _session.samplingQuota,
+        // 编排 B1：会话级编排状态（围栏/台账/配额跨续跑；close 即 Run 收口）。
+        planState: _runOrchestrator.planState,
         onSamplingBegin: () => _watcher?.samplingBegin(),
         onSamplingEnd: () => _watcher?.samplingEnd(),
       );
@@ -1195,6 +1214,16 @@ class _ChatPageState extends State<ChatPage>
     _activeAssembly?.abort(
       reason: 'user abort',
     ); // 内核遍历全部 face 取消在途 + loop.abort
+    // T4 Abort 兜底（编排 B1）：未决计划卡以取消完成——completer 无超时路径，
+    // 漏兜底即永挂（propose execute 不返回，Run 无法收口）。
+    for (final e in _status.tracks) {
+      if (e is TrackPlanConfirm && !e.completer.isCompleted) {
+        e.decision = const PlanProposalDecision(approved: false);
+        e.decidedAt = DateTime.now();
+        e.lockedSummary = '✕ 已取消（计划与同批并入的写作废）';
+        e.completer.complete(e.decision!);
+      }
+    }
     final entry = _activeCallEntry;
     if (entry != null && entry.phase == CallCardPhase.running) {
       // 切片 C：工具卡相位自管，patch 仅本卡局部重绘（无整页 setState）。
@@ -1204,6 +1233,36 @@ class _ChatPageState extends State<ChatPage>
       );
     }
     _setPill('idle', CapsuleTone.idle);
+  }
+
+  /// 编排 B1：Run 收口聚合卡出口（McpAssembly.close → PlanRunState.endRun
+  /// 广播回调）。续跑按钮仅在收口当刻的活会话有效（历史恢复态锁定回看）。
+  void _onPlanAggregate(PlanAggregateRecord record) {
+    if (!mounted) return;
+    _add(TrackPlanResult(
+      record: record,
+      onResume: _resumePlan,
+    ));
+  }
+
+  /// 聚合卡续跑手势（防重写三件套）：台账快照合成续跑消息 → 系统事件行 +
+  /// 常规发送（冻结集重激活不重弹卡、配额跨续跑累计、模型仅补剩余）。
+  void _resumePlan() {
+    if (_status.running) return;
+    final snapshot = _runOrchestrator.planState.resume();
+    if (snapshot == null) return;
+    unawaited(_send(snapshot, true));
+  }
+
+  /// 总管模式开关（上下文菜单入口；开启即状态带琥珀提示）。
+  void _togglePlanArmed({required void Function() refreshSheet}) {
+    final state = _runOrchestrator.planState;
+    state.armed = !state.armed;
+    setState(() {});
+    refreshSheet();
+    if (state.armed) {
+      _add(const TrackNote('总管模式已开启：跨插件写操作将先出计划再一次确认', danger: false));
+    }
   }
 
   /// D13 侧边栏（会话维度）：布局体外提 ConversationDrawer（步 4 Epic C），

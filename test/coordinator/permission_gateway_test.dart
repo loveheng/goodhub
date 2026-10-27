@@ -202,6 +202,62 @@ void main() {
     expect(delegate.confirmations, hasLength(2));
   });
 
+  group('planGrant 授权源（多插件任务编排 B1）', () {
+    test('冻结集内非毁坏写免卡放行（不经确认卡）', () async {
+      final delegate = ScriptedDelegate();
+      final gw = PermissionGateway(
+        inner: inner,
+        delegate: delegate,
+        planGrants: _FakeGrants(const {'shiguang|create_event'}),
+      );
+      gw.loadCatalog(
+          [schema('shiguang__create_event', annotations: writeHint)]);
+      final r = await gw.execute(call('shiguang__create_event'));
+      expect(inner.executed, hasLength(1));
+      expect(delegate.confirmations, isEmpty);
+      expect(r.content, 'ok:shiguang__create_event');
+    });
+
+    test('毁坏性 ∈ 冻结集仍逐条实参级确认（D1：毁坏不批量）', () async {
+      final delegate = ScriptedDelegate();
+      final gw = PermissionGateway(
+        inner: inner,
+        delegate: delegate,
+        planGrants: _FakeGrants(const {'shiguang__delete_all'}),
+      );
+      gw.loadCatalog([
+        schema('shiguang__delete_all',
+            annotations: const {'destructiveHint': true}),
+      ]);
+      delegate.decisions.add(const GateDecision(approved: true));
+      await gw.execute(call('shiguang__delete_all'));
+      expect(delegate.confirmations, hasLength(1)); // 出卡
+      expect(inner.executed, hasLength(1));
+    });
+
+    test('∉ 冻结集写照常出卡（围栏不旁路网关）', () async {
+      final delegate = ScriptedDelegate();
+      final gw = PermissionGateway(
+        inner: inner,
+        delegate: delegate,
+        planGrants: _FakeGrants(const {'shiguang__create_event'}),
+      );
+      gw.loadCatalog([schema('note__create_note', annotations: writeHint)]);
+      delegate.decisions.add(const GateDecision(approved: true));
+      await gw.execute(call('note__create_note'));
+      expect(delegate.confirmations, hasLength(1));
+    });
+
+    test('planGrants null = 既有裁决（headless/网关装配不受影响）', () async {
+      final delegate = ScriptedDelegate();
+      final gw = PermissionGateway(inner: inner, delegate: delegate);
+      gw.loadCatalog([schema('shiguang__create_event', annotations: writeHint)]);
+      delegate.decisions.add(const GateDecision(approved: true));
+      await gw.execute(call('shiguang__create_event'));
+      expect(delegate.confirmations, hasLength(1));
+    });
+  });
+
   test('loadCatalog 全量刷新（旧目录不留存，§8 缓存失效）', () async {
     gateway.loadCatalog([schema('list_items'), schema('add_item')]);
     gateway.loadCatalog([schema('get_item')]);
@@ -214,4 +270,15 @@ void main() {
     expect(gateway.classify('add_item', const {'readOnlyHint': true}),
         GatewayLevel.l1ReadOnly);
   });
+}
+
+/// 计划授权假件（(serverId, toolName) 对集合）。
+class _FakeGrants implements PlanGrantSource {
+  _FakeGrants(this.pairs);
+
+  final Set<String> pairs;
+
+  @override
+  bool grants(String serverId, String toolName) =>
+      pairs.contains('$serverId|$toolName');
 }

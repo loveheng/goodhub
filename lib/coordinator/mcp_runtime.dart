@@ -27,6 +27,9 @@ import 'local_resource_tool_executor.dart';
 import 'local_tool_chain.dart';
 import 'memory_tool_executor.dart';
 import 'mcp_tool_face.dart';
+import 'plan_proposal_tool.dart'
+    show PlanProposalDelegate, PlanProposalTool;
+import 'task_plan.dart' show PlanRunState;
 import 'permission_gateway.dart' show GateDelegate, ToolNotice;
 import 'ref_store.dart';
 import 'ref_hydrator.dart' show CrossSourceDelegate;
@@ -153,6 +156,7 @@ class RuntimeDelegates {
     this.consentDelegate,
     this.majorJumpDelegate,
     this.elicitationDelegate,
+    this.planDelegate,
     this.onNote,
     this.onProgress,
     this.onNotice,
@@ -178,6 +182,9 @@ class RuntimeDelegates {
 
   /// elicitation 交互卡委托（server→宿主结构化提问；null = 无人值守 decline）。
   final ElicitationDelegate? elicitationDelegate;
+
+  /// 计划确认卡委托（编排 B1；null = headless fail-closed——提议恒拒绝）。
+  final PlanProposalDelegate? planDelegate;
 
   // —— 广播（void）——
 
@@ -219,6 +226,7 @@ class McpAssembly {
     required List<McpToolFace> faces,
     required List<McpConnection> connections,
     this.resourceContextFooter,
+    this.planState,
 
     /// 借用面监听器（装配层合一 · Contract 件）：close 只摘监听不关 client
     /// （client 归共享能力源所有）；abort 不遍历借用面（跨消费者取消风险）。
@@ -250,6 +258,10 @@ class McpAssembly {
   /// Run 级（§9：Session 结束直清临时文件；refStore 封死不外泄）。
   final RefStore refStore;
 
+  /// 会话级编排状态（编排 B1）：close = Run 收口唯一咽喉——销毁 grant、
+  /// 剩余 pending 归 skipped、聚合卡出口回调（广播）。null = 无编排态。
+  final PlanRunState? planState;
+
   bool _closed = false;
 
   /// 中断在途（同步完成、可重复）：遍历全部 face 发 cancel notify +
@@ -272,6 +284,9 @@ class McpAssembly {
     if (_closed) return;
     _closed = true;
     abort(reason: 'closed');
+    // Run 收口（编排 B1，含 abort 路径）：planGrant 销毁 + pending→skipped +
+    // 聚合卡（PlanRunState.endRun 幂等；无活跃计划 no-op）。
+    planState?.endRun();
     for (final c in _connections) {
       try {
         c.stop();
@@ -357,6 +372,12 @@ class McpRuntime {
     void Function()? onSamplingBegin,
     void Function()? onSamplingEnd,
     CloudLlmEngine? engine,
+
+    /// 会话级编排状态（多插件任务编排 B1；比照 quota 独立实例入参不进
+    /// SessionContext 快照——台账/配额跨续跑累计，grant 仍 Run 级）。
+    /// null = 不挂计划围栏（网关 headless 装配无编排语义）。
+    PlanRunState? planState,
+
     Future<Directory> Function()? tempDirResolver,
     Future<Directory> Function()? documentsDirResolver,
 
@@ -403,6 +424,7 @@ class McpRuntime {
         partialConns: partialConns,
         partialClients: partialClients,
         partialRefStore: (rs) => partialRefStore = rs,
+        planState: planState,
       );
     } on Object {
       for (final c in partialConns) {
@@ -450,6 +472,11 @@ class McpRuntime {
     required List<McpConnection> partialConns,
     required List<McpClient> partialClients,
     required void Function(RefStore refStore) partialRefStore,
+
+    /// 会话级编排状态（多插件任务编排 B1；比照 quota 独立实例入参不进
+    /// SessionContext 快照——台账/配额跨续跑累计，grant 仍 Run 级）。
+    /// null = 不挂计划围栏（网关 headless 装配无编排语义）。
+    PlanRunState? planState,
   }) async {
     final factory = clientFactory ??
         ((String endpoint, String? apiKey) =>
@@ -639,6 +666,10 @@ class McpRuntime {
       consentDelegate: delegates.consentDelegate,
       onNotice: delegates.onNotice,
       onNote: note,
+      planState: planState,
+      planDelegate: delegates.planDelegate,
+      // R1 实参透明化：每步首笔写调用实参摘要回显轨道（灰阶注记）。
+      onPlanEcho: (message) => note?.call(message, danger: false),
     );
     final executor = chain.executor;
     final gateway = chain.gateway;
@@ -716,13 +747,20 @@ class McpRuntime {
       // 切域事务提交点（prompt-mgmt §8.2.2）：ToolResultMessage 落历史后提交
       // pending 槽位请求——前 Abort 槽位不变，后 Abort 不回滚。
       onRoundCommitted: router.commitPendingSlot,
-      toolsProvider: () => [
-        ...router.focusedSchemas(),
-        ...DiscoveryExecutor.staticSchemas(),
-        skills.activationToolSchema(),
-        ...MemoryToolExecutor.toolSchemas(),
-        if (resourceStore != null) ...LocalResourceToolExecutor.toolSchemas(),
-      ],
+      toolsProvider: () {
+        final base = chain.planGuard?.injectStepIds(router.focusedSchemas()) ??
+            router.focusedSchemas();
+        return [
+          ...base,
+          ...DiscoveryExecutor.staticSchemas(),
+          // 编排 B1：宿主元工具（裸名，本地拦截）——随 planState 在场才声明
+          //（无编排态不进工具面；assemble 仅聊天路径调用，PC 网关走 mount 原语不可见）。
+          if (planState != null) PlanProposalTool.schema(),
+          skills.activationToolSchema(),
+          ...MemoryToolExecutor.toolSchemas(),
+          if (resourceStore != null) ...LocalResourceToolExecutor.toolSchemas(),
+        ];
+      },
     );
     loopBox = loop;
     return McpAssembly._(
@@ -739,6 +777,7 @@ class McpRuntime {
       ],
       connections: connections.values.toList(),
       borrowedListeners: borrowedListeners,
+      planState: planState,
     );
   }
 

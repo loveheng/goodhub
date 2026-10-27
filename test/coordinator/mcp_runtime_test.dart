@@ -13,6 +13,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/coordinator/mcp_runtime.dart';
+import 'package:goodhub/coordinator/task_plan.dart';
 import 'package:goodhub/coordinator/mcp_tool_face.dart';
 import 'package:goodhub/coordinator/skill_registry.dart';
 import 'package:goodhub/llm/cloud/cloud_llm.dart';
@@ -149,6 +150,7 @@ Future<McpAssembly> _assemble({
   SessionContext? context,
   Map<String, McpToolFace> sharedFaces = const {},
   Set<String> failFor = const {},
+  PlanRunState? planState,
 }) async {
   final tmp = await _tmpDir();
   return const McpRuntime().assemble(
@@ -162,6 +164,7 @@ Future<McpAssembly> _assemble({
     tempDirResolver: _tmpDir,
     documentsDirResolver: _tmpDir,
     sharedFaces: sharedFaces,
+    planState: planState,
     clientFactory: (endpoint, apiKey) {
       final transport = _CountingTransport(failSend: failFor.contains(endpoint));
       transports.add(transport);
@@ -173,6 +176,50 @@ Future<McpAssembly> _assemble({
 }
 
 void _assembleTests() {
+  // 编排 B1：聊天装配路径断言——toolsProvider 恒含 propose_task_plan 元工具；
+  // 冻结集激活期对冻结集写工具注入 _plan_step_id（非编排态/收口后 Schema 干净）；
+  // close = Run 收口 → grant 销毁（phase completed）。
+  test('编排 B1 装配：元工具在场 + step-id 注入随 grant 生命周期', () async {
+    final transports = <McpTransport>[];
+    final clients = <String, McpClient>{};
+    final planState = PlanRunState();
+    final assembly = await _assemble(
+      endpoints: const [
+        ServerEndpoint(id: 'good', name: 'good', endpoint: 'http://x/good/mcp'),
+      ],
+      clients: clients,
+      transports: transports,
+      planState: planState,
+    );
+    final tools = assembly.loop.toolsProvider!();
+    expect(tools.any((t) => t.name == 'propose_task_plan'), isTrue,
+        reason: '聊天装配路径已接 propose_task_plan 元工具');
+    bool hasStepId(List<CloudToolSchema> list, String name) {
+      final props = list.firstWhere((t) => t.name == name,
+          orElse: () => throw StateError('missing $name'));
+      return (props.parametersSchema['properties'] as Map?)
+              ?.containsKey(kPlanStepIdKey) ??
+          false;
+    }
+
+    expect(hasStepId(tools, 'good__a'), isFalse,
+        reason: '非编排态 Schema 恒干净');
+    planState.adoptProposal(
+      goal: 'g',
+      steps: const [
+        FrozenPlanStep(id: 's1', server: 'good', tool: 'a', intent: 'i'),
+      ],
+    );
+    expect(hasStepId(assembly.loop.toolsProvider!(), 'good__a'), isTrue,
+        reason: 'propose 回填后的首轮即生效（toolsProvider 每轮重取）');
+    await assembly.close();
+    expect(planState.phase, PlanRunPhase.completed,
+        reason: 'close = Run 收口：grant 销毁、pending 归 skipped');
+    expect(planState.grants('good', 'a'), isFalse);
+    expect(hasStepId(assembly.loop.toolsProvider!(), 'good__a'), isFalse,
+        reason: 'Run 收口后注入自然消失');
+  });
+
   // F3（review-fix-2026-10）：端点装配失败（negotiate/listTools 抛错）路径
   // 此前不 close client——client 未登记进任何回收表（外层兜底只清已登记句柄），
   // 坏端点每轮聊天装配泄一个 client；且单端点失败会炸整轮装配。修复后语义 =

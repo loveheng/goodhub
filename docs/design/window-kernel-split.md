@@ -79,7 +79,7 @@ flowchart TD
     M --> MEM
 ```
 
-### 3.1 内核全清单（11 个）
+### 3.1 内核全清单（12 个）
 
 | # | 内核 | 持有 | 生命周期 | 现有实现侧面（立契约，不是新建文件） |
 |---|---|---|---|---|
@@ -94,6 +94,7 @@ flowchart TD
 | 9 | **Gateway** 对外代理（host） | 起停、配对 Token、命名空间 / 工具面虚拟化、循环守护、背压 | 应用级（起停） | `gateway/*` 七个文件 |
 | 10 | **TaskLoop** 对上服务 | claim → 心跳 → 推理 → apply 状态机 | 应用级（长跑循环） | `task/task_loop_service.dart` + `mcp/goodshare_task_api.dart` |
 | 11 | **Updater** 自更新 | 清单、下载、安装、串包防御 | 应用级 | `update/*` + `ui/update_page.dart` |
+| 12 | **PlanOrchestration** 多插件任务编排 | 冻结集、步骤台账（PlanLedger）、每对配额、总管开关；planGrant 本体 Run 级随 Run 焚 | **二分** 台账/配额会话级（跨续跑累计）/ grant Run 级 | `coordinator/task_plan.dart` + `coordinator/plan_guard.dart` + `coordinator/plan_proposal_tool.dart`（2026-10-24 编排 B1 登记） |
 
 > **认领状态（2026-10-16 二轮）**：本轮**只碰 3 个**——#1 ServiceDirectory、#2 McpRuntime、#6 ConversationSession。其余 8 个（#3 EngineSupply / #4 TrustGovernance / #5 ConversationArchive / #7 Memory / #8 SkillSupply / #9 Gateway / #10 TaskLoop / #11 Updater）统一标注 **已识别·未认领（Deferred / Catalog Only）**：无 owner 判定、无接口契约、不构成承诺。
 > **防误读**：Deferred 指**不改其内部**；装配**必然依赖**其接口（`skills` / `memoryStore` / `engine` / `trusted_plugins` 均为装配入参）。

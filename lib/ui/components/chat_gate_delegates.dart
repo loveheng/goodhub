@@ -1,5 +1,7 @@
 import '../../coordinator/fenced_cloud_engine.dart'
     show PiiFenceDelegate, PiiMaskBlockInfo;
+import '../../coordinator/plan_proposal_tool.dart'
+    show PlanProposalCard, PlanProposalDecision, PlanProposalDelegate;
 import '../../coordinator/permission_gateway.dart'
     show GateDelegate, ToolPendingConfirmation, GateDecision;
 import '../../coordinator/tool_breaker.dart'
@@ -26,6 +28,20 @@ class ChatGateDelegate implements GateDelegate {
   @override
   Future<GateDecision> confirm(ToolPendingConfirmation pending) {
     final entry = TrackConfirm(pending: pending);
+    host.addTrack(entry);
+    return entry.completer.future;
+  }
+}
+
+/// 计划确认卡委托（多插件任务编排 B1）：轨道插待决卡并 await 用户手势
+/// （与 ChatGateDelegate 同口径；Abort 级联由页面统一兜底完成 completer）。
+class ChatPlanDelegate implements PlanProposalDelegate {
+  ChatPlanDelegate(this.host);
+  final ChatTrackSink host;
+
+  @override
+  Future<PlanProposalDecision> confirmPlan(PlanProposalCard card) {
+    final entry = TrackPlanConfirm(card: card);
     host.addTrack(entry);
     return entry.completer.future;
   }

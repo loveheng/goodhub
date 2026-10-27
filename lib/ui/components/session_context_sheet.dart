@@ -78,6 +78,8 @@ class SessionContextSheetBody extends StatelessWidget {
     this.onManageResources,
     this.scrollController,
     this.bindLocked = false,
+    this.planArmed = false,
+    this.onTogglePlanArmed,
   });
 
   final ConsoleTokens t;
@@ -109,6 +111,11 @@ class SessionContextSheetBody extends StatelessWidget {
   /// 的装配语义。true = 绑定项置灰 + 说明行；「查看」与「挂载资源/管理资源」
   /// （视图态/其他面的动作）不受影响（曾一并置灰，纯添堵且策略不一致）。
   final bool bindLocked;
+
+  /// 总管模式开关（多插件任务编排 B1，低暴露位：藏于本菜单、不常驻——
+  /// 弱模型兜底而非主路径；null 回调 = 不渲染该项）。
+  final bool planArmed;
+  final VoidCallback? onTogglePlanArmed;
 
   /// 当前是否处于公共态（''=显式公共；null=遗留「未绑定」，2026-10-18 起
   /// 新会话一律公共起步，null 在弹层按公共显示）。公共项据此不可再点。
@@ -264,6 +271,25 @@ class SessionContextSheetBody extends StatelessWidget {
                   Navigator.pop(context);
                   onManageResources?.call();
                 },
+              ),
+            ],
+            // —— 组 4：总管模式（编排 B1，弱模型兜底开关）————————————————
+            if (onTogglePlanArmed != null) ...[
+              const Divider(height: 16),
+              const _GroupHeader(
+                title: '任务编排',
+                hint: '跨插件写任务先出计划、一次批量授权',
+              ),
+              SwitchListTile(
+                key: const ValueKey('menu-plan-armed'),
+                value: planArmed,
+                onChanged: (_) => onTogglePlanArmed?.call(),
+                contentPadding: EdgeInsets.zero,
+                title: const Text('总管模式'),
+                subtitle: Text(
+                  planArmed ? '已开启：写操作先出计划（琥珀提示）' : '写操作先出计划，再一次确认执行',
+                  style: TextStyle(fontSize: Fsz.note, color: t.terminalMuted),
+                ),
               ),
             ],
           ],

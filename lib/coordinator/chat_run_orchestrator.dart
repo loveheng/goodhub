@@ -15,6 +15,7 @@ import '../sandbox/memory_store.dart';
 import '../sandbox/workspace_state_store.dart';
 import 'context_governor.dart' show estimateTokens;
 import 'mcp_runtime.dart';
+import 'task_plan.dart' show PlanAggregateRecord, PlanRunState;
 import 'memory_governor.dart';
 import 'memory_kernel.dart';
 import 'skill_registry.dart';
@@ -58,13 +59,22 @@ class ChatRunPlan {
 }
 
 /// Run 编排 owner：每次 Run 由窗口经 [plan] 取编排产物、经 [writebackSlot]
-/// 收尾、经 [markRunEnded] 交还 TTL 判定起点。实例无跨 Run 态（除 governor）。
+/// 收尾、经 [markRunEnded] 交还 TTL 判定起点。实例无跨 Run 态（除 governor
+/// 与 [planState]——会话级编排状态，多插件任务编排 B1）。
 class ChatRunOrchestrator {
-  ChatRunOrchestrator({MemoryGovernor? governor})
-      : memGovernor = governor ?? MemoryGovernor();
+  ChatRunOrchestrator({
+    MemoryGovernor? governor,
+    void Function(PlanAggregateRecord record)? onPlanAggregate,
+  })  : memGovernor = governor ?? MemoryGovernor(),
+        planState = PlanRunState(onAggregate: onPlanAggregate);
 
   /// 记忆冷热分层策略 owner（§6 滑窗高水位/TTL/体量突发）。
   final MemoryGovernor memGovernor;
+
+  /// 会话级编排状态 owner（多插件任务编排 B1）：冻结集/台账/配额跨续跑
+  /// 累计；总管模式开关（armed）由窗口直写；Run 收口（McpAssembly.close）
+  /// 经 onAggregate 回调渲染聚合卡。
+  final PlanRunState planState;
 
   Future<ChatRunPlan> plan({
     required McpAssembly assembly,
@@ -85,6 +95,9 @@ class ChatRunOrchestrator {
     // （toolsProvider 经 effectiveSlot）与本处 composeSystemPrompt / maskTool
     // 同源同拍，本 Run 内任何中途变异（切域/断连）不再撕裂投影。
     final slotNotice = router.beginRun();
+    // 编排 Run 启动（B1）：completed 态未被显式续跑（用户直接发新消息）=
+    // 放弃续跑，冻结集清空回 idle（续跑只经聚合卡手势）。
+    planState.beginRun();
     final slot = router.effectiveSlot;
     // In-band 提取面（archive-memory-claim 步 2）：session 域落 wsStates
     //（所有权仍在 Session，按调用传入）；user/srv 域走 MemoryStore keyed 映射
@@ -156,6 +169,7 @@ class ChatRunOrchestrator {
             activePrivateSlotId: slot,
             mountedSection: mountedSection,
           ) +
+          planConventionSection(armed: planState.armed) +
           WorkspaceStreamFilter.promptInstructions,
       memSection: memSection,
       contextFooter: contextFooter.isEmpty ? null : contextFooter,
@@ -234,6 +248,24 @@ class ChatRunOrchestrator {
           ? '未锁定服务用 get_connected_apps 查看、use_server 锁定。'
           : '未激活服务用 get_connected_apps 查看、activate_server_tools 激活。');
     return buffer.toString();
+  }
+
+  /// 多插件任务编排系统提示约定段（B1/D2 双入口之一）：约定为主路径（模型
+  /// 按任务形态自发提议），总管模式开关为兜底（armed = phase-0 武装，计划
+  /// 确认前一切 L2 写拒绝并引导提议）。
+  static String planConventionSection({required bool armed}) {
+    final header = '\n\n## 多插件任务编排（跨服务写任务）\n';
+    final body = '当任务需要 ≥2 个不同服务的写操作配合完成时：先用各服务只读'
+        '工具探测并备齐写工具必填上下文（目标账本/分类/笔记本等 ID），'
+        '在发起首个跨服务写操作之前调用 propose_task_plan 提议计划——'
+        '每步 {id, server, tool 裸名, intent 一句话}，不带参数；写步骤 ≤8；'
+        '只列写步骤。计划确认后逐步执行剩余写步骤，调用带 _plan_step_id '
+        '标注归属。单服务写任务无需计划，直接调用（逐条确认）。\n';
+    final armedLine = armed
+        ? '当前为总管模式：计划确认前一切写操作会被拒绝并引导提议，'
+            '严禁在计划确认前直接发起写操作。\n'
+        : '';
+    return '$header$body$armedLine';
   }
 
   /// 服务行状态标记：私有看槽位（占槽无标记；未锁 = use_server），公共看
