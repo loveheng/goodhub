@@ -38,8 +38,9 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
-# dev-loop 个人指针（不入库）
+# dev-loop 个人指针与运行时锁（不入库）
 context/CURRENT
+context/**/*.bp.lock
 .mcp.json
 
 # R2 更新源本地凭证（self-update）
