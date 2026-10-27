@@ -4,5 +4,5 @@
   "applicationId": "com.zzh.goodhub",
   "apkUrl": "https://r2.oklhj.eu.org/updates/goodhub/app-release-2015.apk",
   "sha256": "854f6c6efb5935a4260cde34ed34386b83d49e2fb8257dfd1a316d66a9a7f2c7",
-  "changelog": "v1.1.2：无功能性变更，版本推进发布"
+  "changelog": "v1.2.0：任务编排 B1 落地——多步计划提议卡（步骤开关/叮嘱/毁坏徽标/预检置灰）、计划围栏与执行台账、计划外补调与续跑手势"
 }
