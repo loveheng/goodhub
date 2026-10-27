@@ -1,8 +1,8 @@
 {
-  "versionCode": 4014,
-  "versionName": "1.1.4",
+  "versionCode": 4015,
+  "versionName": "1.2.0",
   "applicationId": "com.zzh.goodhub",
-  "apkUrl": "https://r2.oklhj.eu.org/updates/goodhub/app-release-2014.apk",
-  "sha256": "ec33e825869635070d7bd84eba372fe7502aaad54d2e895abea4acbf7a05ddb6",
+  "apkUrl": "https://r2.oklhj.eu.org/updates/goodhub/app-release-2015.apk",
+  "sha256": "854f6c6efb5935a4260cde34ed34386b83d49e2fb8257dfd1a316d66a9a7f2c7",
   "changelog": "v1.1.2：无功能性变更，版本推进发布"
 }
