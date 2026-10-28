@@ -454,7 +454,7 @@ class FlashlightMcpPlugin : GoodHubPluginService(
 |---|---|
 | 插件 SDK 与 AIDL 契约拆独立仓 `loveheng/goodhub-mcp-sdk`，契约采「物理单副本 + Maven 坐标消费」 | 取代「宿主留副本 + golden 指纹比对」——副本必然漂移，而 AIDL 包名/DESCRIPTOR 永久冻结，漂移即存量插件 bind 失败；复合构建优先、mavenLocal 与 GitHub Packages 兜底 |
 | 契约门禁升 v2：禁宿主自拷 AIDL + 坐标版本与契约仓 VERSION 绑定一致 | 机械防漂移，取代逐字节 golden 比对 |
-| 工具可见性标记由 `annotations["x-mcp-export-to-shared"]` 改为 `_meta.goodhub.visibility` | 访问控制标记不得塞进 MCP `annotations`（规范定位 advisory hints，`x-` 顶官方命名空间）；私有维度收在 `_meta.goodhub` 子树，为标准 hints 与未来 `hidden` 等正交维度留位 |
+| 工具可见性标记由 MCP `annotations` 内的私有字面量改为 `_meta.goodhub.visibility` <!-- drift:keep：变更记录须点名退役拼写 --> | 访问控制标记不得塞进 MCP `annotations`（规范定位 advisory hints，`x-` 顶官方命名空间）；私有维度收在 `_meta.goodhub` 子树，为标准 hints 与未来 `hidden` 等正交维度留位 |
 | 可见性「声明≠访问控制」：过滤只在目录层、只在对外暴露面 | SDK 不剔条目、不拦调用；本机链路保持能力全集，避免私有工具在本机发现/调用路径上被误伤 |
 | L1/L2 裁决口径由「双缺从严落 L2」改为「按是否显式声明」 | SDK 0.2.0 起 hints 选择性下发（`annotations` 可整体缺席），旧的从严条款会把未声明工具全部打成 L2；取舍 = 生态体验 vs 保守，选前者并以显式 `destructiveHint` 兜住危险面 |
 | 云端 SSE 流内断连统一映射 `CloudNetworkException`，且必须 `await for` 而非 `yield*` | `yield*` 把内层流错误事件直接转发消费者、不在生成器体内抛出，外围 try 捕不到（实测证实） |

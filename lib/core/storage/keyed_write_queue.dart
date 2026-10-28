@@ -65,6 +65,29 @@ class KeyedWriteQueue {
     return result;
   }
 
+  /// 原子写**唯一入口**（§S4 收口）：以规范化路径键排队，任务内执行
+  /// `tmp → flush → rename`。业务域**禁止**再手写该形态（arch-guard R10 拦
+  /// `File.writeAs*` 裸写）——此前六处手写副本崩溃安全语义逐份漂移，全部收此。
+  ///
+  /// 失败透传给调用方且清理残档（`.tmp` 不留孤儿）；不毒化队列（续链语义同 [enqueue]）。
+  Future<void> enqueueAtomicWrite(String path, List<int> bytes) =>
+      enqueue(keyForPath(path), () async {
+        final file = File(path);
+        await file.parent.create(recursive: true);
+        final tmp = File('$path.tmp');
+        try {
+          await tmp.writeAsBytes(bytes, flush: true);
+          await tmp.rename(file.path);
+        } on Object {
+          try {
+            if (await tmp.exists()) await tmp.delete();
+          } on Object catch (_) {
+            // 非数据面：残档清理失败不掩盖原始 IO 异常（原始异常照常上抛）。
+          }
+          rethrow;
+        }
+      });
+
   /// 链尾快照（确定性握手）：await 它 = 该键**当前已入队**的全部任务完成。
   ///
   /// **跨实例可见**——同路径的其他实例也排在同一条链上，故可替代「固定延迟

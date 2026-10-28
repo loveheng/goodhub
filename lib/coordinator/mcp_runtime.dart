@@ -32,6 +32,7 @@ import 'plan_proposal_tool.dart'
 import 'task_plan.dart' show PlanRunState;
 import 'permission_gateway.dart' show GateDelegate, ToolNotice;
 import 'ref_store.dart';
+import 'run_profile.dart';
 import 'ref_hydrator.dart' show CrossSourceDelegate;
 import 'skill_registry.dart';
 import 'tool_breaker.dart' show BlockDelegate;
@@ -42,8 +43,7 @@ import '../llm/cloud/cloud_llm.dart'
 import '../mcp/connection_manager.dart';
 import '../mcp/local_plugin_discovery.dart';
 import '../mcp/mcp_client.dart';
-import '../llm/cloud/sampling_engine.dart';
-import '../mcp/sampling.dart' show SamplingQuota, samplingRequestHandler;
+import '../mcp/sampling.dart' show SamplingQuota;
 import '../mcp/elicitation.dart'
     show ElicitationDelegate, elicitationRequestHandler;
 import '../mcp/server_capabilities.dart';
@@ -54,6 +54,7 @@ import '../resources/resource_store.dart';
 import '../sandbox/memory_store.dart';
 import '../sandbox/workspace_state_store.dart';
 import 'resource_attachment_binder.dart' show ResourceAttachment, bindResourceAttachments;
+import 'reverse_wiring.dart';
 
 // ---------------------------------------------------------------------------
 // T1 · SessionContext —— 纯不可变快照（§8.1-4：不含配额）
@@ -395,6 +396,13 @@ class McpRuntime {
     /// 风险），sampling/elicitation/CoW 接线保留源侧现状。缺省空表 = 旧路径
     /// 全量自建（测试隔离不受影响）。
     Map<String, McpToolFace> sharedFaces = const {},
+
+    /// S1：CoW 覆写库的应用级单实例来源（null = 装配内就地构造，兼容旧调用方）。
+    Future<CowOverridesStore> Function()? cowStoreProvider,
+
+    /// S2 运行场景（默认 `chat`）：决定本次装配的**能力上限**（哪些反向能力/
+    /// 同步/编排围栏参与接线）。调用主体（Actor）的每请求裁决不在此处，见 §S6。
+    RunProfile profile = RunProfile.chat,
   }) async {
     // 装配中途失败（如第 N 个端点 negotiate 抛）：回收已建连接/客户端/RefStore
     // 再上抛——原 chat_page 实现里这些资源都在 _send 的 try-finally 保护下，
@@ -421,6 +429,8 @@ class McpRuntime {
         resourceAttachments: resourceAttachments,
         resourceStore: resourceStore,
         sharedFaces: sharedFaces,
+        cowStoreProvider: cowStoreProvider,
+        profile: profile,
         partialConns: partialConns,
         partialClients: partialClients,
         partialRefStore: (rs) => partialRefStore = rs,
@@ -469,6 +479,8 @@ class McpRuntime {
     required List<ResourceAttachment> resourceAttachments,
     required ResourceStore? resourceStore,
     required Map<String, McpToolFace> sharedFaces,
+    required Future<CowOverridesStore> Function()? cowStoreProvider,
+    required RunProfile profile,
     required List<McpConnection> partialConns,
     required List<McpClient> partialClients,
     required void Function(RefStore refStore) partialRefStore,
@@ -482,6 +494,8 @@ class McpRuntime {
         ((String endpoint, String? apiKey) =>
             McpClient.http(baseUrl: endpoint, apiKey: apiKey));
     final note = delegates.onNote;
+    // S2：能力上限一次求值，贯穿本装配（链装配 / 反向能力 / 同步 / 编排围栏）。
+    final caps = capabilitiesFor(profile);
     final faces = <String, McpToolFace>{};
     final clients = <String, McpClient>{};
     final summaries = <String, String>{};
@@ -666,8 +680,8 @@ class McpRuntime {
       consentDelegate: delegates.consentDelegate,
       onNotice: delegates.onNotice,
       onNote: note,
-      planState: planState,
-      planDelegate: delegates.planDelegate,
+      planState: caps.planFence ? planState : null,
+      planDelegate: caps.planFence ? delegates.planDelegate : null,
       // R1 实参透明化：每步首笔写调用实参摘要回显轨道（灰阶注记）。
       onPlanEcho: (message) => note?.call(message, danger: false),
     );
@@ -697,23 +711,25 @@ class McpRuntime {
         );
     note?.call('✓ 引擎就绪：${effectiveEngine.name}', danger: false);
 
+    // —— S2：反向能力接线由 profile 声明驱动（**能力上限**，非主体裁剪）——
     // —— T6：每个 client 接管自身采样反向请求（serverKey = serverId；
-    // stuck 判定钩子由窗口注入，顺延判定语义见 StuckWatcher）——
+    // stuck 判定钩子由窗口注入，顺延判定语义见 StuckWatcher）；仅 profile 声明
+    // sampling 时接线——无人值守路径不外借宿主推理资源。
     final effectiveQuota = quota ?? SamplingQuota();
-    for (final entry in clients.entries) {
-      final sampling = samplingRequestHandler(
-          engine: CloudSamplingEngine(effectiveEngine),
-          quota: effectiveQuota,
-          serverKey: entry.key);
-      entry.value.onServerRequest = (method, params) {
-        onSamplingBegin?.call();
-        return sampling(method, params).whenComplete(() => onSamplingEnd?.call());
-      };
+    if (caps.sampling) {
+      // §S2 二期：sampling 接线唯一实现（网关同款共享件，消装配第二副本）。
+      wireSampling(
+        faces: faces,
+        engine: effectiveEngine,
+        quota: effectiveQuota,
+        onSamplingBegin: onSamplingBegin,
+        onSamplingEnd: onSamplingEnd,
+      );
     }
-    // —— T6：elicitation 反向请求（server→宿主结构化提问）；仅当装配层注入了
-    // 委托（有人值守 UI）时声明能力并接线，否则保持 false（无委托 → decline）。
+    // —— T6：elicitation 反向请求（server→宿主结构化提问）；双条件：profile 允许
+    // **且** 装配层注入了委托——无 UI 委托接线即悬挂，恒 decline。
     final elicitation = delegates.elicitationDelegate;
-    if (elicitation != null) {
+    if (caps.elicitation && elicitation != null) {
       for (final entry in clients.entries) {
         entry.value.elicitationEnabled = true;
         entry.value.onElicitation =
@@ -723,16 +739,20 @@ class McpRuntime {
 
     // —— T6：逐 server CoW 同步（有 prompts 能力者）；skill 名保持
     // cow/<promptName>，撞名跳过并通告用户（design 口径）——
-    // 注入语义独立成件（#18 体量治理）：`cow_skill_sync.dart`。
-    await syncCowSkillsIntoRegistry(
-      clients: clients,
-      serverCaps: serverCaps,
-      skills: skills,
-      documentsDirResolver:
-          documentsDirResolver ?? getApplicationDocumentsDirectory,
-      majorJumpDelegate: delegates.majorJumpDelegate,
-      note: note,
-    );
+    // 注入语义独立成件（#18 体量治理）：`cow_skill_sync.dart`；
+    // 常驻/无人值守路径关：模板变更由聊天侧驱动。
+    if (caps.cowSync) {
+      await syncCowSkillsIntoRegistry(
+        clients: clients,
+        serverCaps: serverCaps,
+        skills: skills,
+        documentsDirResolver:
+            documentsDirResolver ?? getApplicationDocumentsDirectory,
+        storeProvider: cowStoreProvider,
+        majorJumpDelegate: delegates.majorJumpDelegate,
+        note: note,
+      );
+    }
 
 
     final loop = AgentLoop(
@@ -755,7 +775,7 @@ class McpRuntime {
           ...DiscoveryExecutor.staticSchemas(),
           // 编排 B1：宿主元工具（裸名，本地拦截）——随 planState 在场才声明
           //（无编排态不进工具面；assemble 仅聊天路径调用，PC 网关走 mount 原语不可见）。
-          if (planState != null) PlanProposalTool.schema(),
+          if (caps.planFence && planState != null) PlanProposalTool.schema(),
           skills.activationToolSchema(),
           ...MemoryToolExecutor.toolSchemas(),
           if (resourceStore != null) ...LocalResourceToolExecutor.toolSchemas(),

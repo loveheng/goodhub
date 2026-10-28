@@ -23,6 +23,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 
 import 'mcp_gateway_handler.dart';
 import 'projection_pipeline.dart';
+import '../core/actor.dart';
 
 /// 网关默认监听端口（单源：`gateway_controller` 起服入参缺省亦引此常量——
 /// 双声明会漂移，由 drift-guard CONST 登记机械守护）。
@@ -314,7 +315,11 @@ class McpGatewayServer {
             (_) => _keepAlivePing(resp, id, name, progressToken))
         : null;
     try {
-      final r = await _handlerFor(sessionId)!.toolsCall(
+      // S6：主体由鉴权层推导（本请求已过 Bearer 校验；当前配对 Token 为共享
+      // 凭证 → 粒度 = 通道级；UID 白名单落地后细化）。禁从载荷字段读。
+      final handler = _handlerFor(sessionId)!;
+      handler.actor = Actor.external('gateway');
+      final r = await handler.toolsCall(
         name: name,
         arguments: args,
         onProgress: onProgress,

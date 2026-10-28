@@ -173,18 +173,12 @@ class ServerEndpointStore {
   Future<void> save(List<ServerEndpoint> endpoints) =>
       // window-slim P1-D：裸 tmp→rename 在并发 save 下交错（A.tmp 写一半被 B
       // rename）→ 接进程级 keyed 写队列串行化（P0-A 底座，键=配置文件绝对路径）。
-      KeyedWriteQueue.instance.enqueue(KeyedWriteQueue.keyForPath(file.path),
-          () async {
-        await file.parent.create(recursive: true);
-        final tmp = File('${file.path}.tmp');
-        await tmp.writeAsString(
-          const JsonEncoder.withIndent('  ').convert([
-            for (final e in endpoints) e.toJson(),
-          ]),
-          flush: true,
-        );
-        await tmp.rename(file.path);
-      });
+      KeyedWriteQueue.instance.enqueueAtomicWrite(
+        file.path,
+        utf8.encode(const JsonEncoder.withIndent('  ').convert([
+          for (final e in endpoints) e.toJson(),
+        ])),
+      );
 
   Future<String?> apiKey(String id) => _secure.read('$_keyPrefix$id');
 

@@ -77,19 +77,9 @@ class ConversationArchive {
       final hits = quota.snapshotHits(DateTime.now());
       final payload = jsonEncode(hits);
       final sig = _sign(await _quotaHmacKey(), payload);
-      // §3.2：接进程级按路径串行写队列 + 原子 temp→rename，防并发落盘交错。
-      await KeyedWriteQueue.instance.enqueue(
-        KeyedWriteQueue.keyForPath(_quotaFile.path),
-        () async {
-          await store.dir.create(recursive: true);
-          final tmp = File('${_quotaFile.path}.tmp');
-          await tmp.writeAsString(
-            jsonEncode(<String, Object?>{'hits': hits, 'sig': sig}),
-            flush: true,
-          );
-          await tmp.rename(_quotaFile.path);
-        },
-      );
+      // §3.2 + §S4：原子写唯一入口（队列内 tmp→flush→rename，防并发落盘交错）。
+      await KeyedWriteQueue.instance.enqueueAtomicWrite(_quotaFile.path,
+          utf8.encode(jsonEncode(<String, Object?>{'hits': hits, 'sig': sig})));
       return true;
     } on Object catch (e) {
       // DEGRADE: 配额落盘失败日志可查即可（下次 Run 收尾重试），不抛穿。

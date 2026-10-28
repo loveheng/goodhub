@@ -24,7 +24,6 @@ import '../coordinator/host_tool_invoker.dart';
 import '../coordinator/hybrid_assembly.dart';
 import '../coordinator/mcp_runtime.dart';
 import '../coordinator/mcp_tool_face.dart';
-import '../llm/cloud/sampling_engine.dart';
 import '../mcp/local_plugin_discovery.dart';
 import '../mcp/mcp_client.dart';
 import '../mcp/server_endpoints.dart';
@@ -36,6 +35,7 @@ import 'gateway_security.dart';
 import 'gateway_server.dart';
 import 'gateway_service_channel.dart';
 import 'mcp_gateway_handler.dart';
+import '../coordinator/reverse_wiring.dart';
 
 /// host 虚拟服务的一次装配产出（执行端口 + schema 解析端口，同源）。
 typedef HostToolPorts = ({
@@ -379,16 +379,14 @@ class GatewayController {
 
     // —— sampling 反向请求接线（best-effort；失败仅 -32601 拒绝，不起服失败）——
     try {
-      final engine = await assembleDefaultHybridEngine();
-      final quota = SamplingQuota();
-      for (final entry in faces.entries) {
-        if (entry.key == kHostServerId) continue; // host 面不供给反向请求
-        entry.value.client.onServerRequest = samplingRequestHandler(
-          engine: CloudSamplingEngine(engine),
-          quota: quota,
-          serverKey: entry.key,
-        );
-      }
+      // §S2 二期：sampling 接线唯一实现（与 McpRuntime 装配同款共享件；
+      // 差异仅参数——host 导出面不回调宿主推理）。
+      wireSampling(
+        faces: faces,
+        engine: await assembleDefaultHybridEngine(),
+        quota: SamplingQuota(),
+        excludedServerIds: const <String>{kHostServerId},
+      );
     } on Object catch (e) {
       debugPrint('[DEGRADE] gateway: sampling wiring skipped: $e');
     }

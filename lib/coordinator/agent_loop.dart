@@ -211,7 +211,7 @@ class AgentLoop {
   /// 用户中止（M3-T2，architecture §10 级联的环内侧）：在下一个边界（引擎
   /// 流 / 工具执行前）停下并发 [LoopFinished]。已 Started 的在途调用不打断
   /// （Dart Future 不可中断）——其 Finished 事件照常回填后收尾；未 Started
-  /// 的调用不再执行。UI Abort 级联的 ③ $/cancelRequest 由 McpToolFace 负责。
+  /// 的调用不再执行。UI Abort 级联的 ③ notifications/cancelled 由 McpToolFace 负责。
   void abort() => _aborted = true;
 
   /// 控制器承载：进度回调与 abort 检查要求在工具执行 await 期间仍能注入

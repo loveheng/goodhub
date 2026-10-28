@@ -19,6 +19,7 @@ import 'package:goodhub/mcp/server_endpoints.dart';
 import 'package:goodhub/mcp/transport/host_transport.dart';
 import 'package:goodhub/mcp/transport/mcp_transport.dart';
 import 'package:goodhub/sandbox/memory_store.dart';
+import 'package:goodhub/core/actor.dart';
 
 /// 外部服务传输 fake（冒充第三方插件 / 远端端点：非 HostTransport）。
 class _ForeignTransport implements McpTransport {
@@ -109,8 +110,9 @@ void main() {
       final client = McpClient(HostTransport(
         invoker: ({required String name, required String argumentsJson}) async =>
             const ToolExecutionResult(content: 'host-ok'),
-        allowlist: const [
+        allowlist: [
           HostExportEntry(
+            allowedActors: <Actor>{Actor.owner},
             name: 'get_host_status',
             description: '测试用只读工具',
             inputSchema: <String, Object?>{'type': 'object'},

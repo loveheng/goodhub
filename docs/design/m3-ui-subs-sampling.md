@@ -67,7 +67,7 @@ updated: 2026-10-15
 - **事件流**：`AgentLoopEvent` sealed（`agent_loop.dart:25`）增 `LoopToolProgress` 子类（call + progress/total/message）；数据源 = `McpToolFace.onProgress` 回调桥接入 `run()` 事件通道（StreamController 或执行段闭包 yield），事件序 `Started → Progress* → Finished`；onProgress opt-in 语义保留（null 不注入 progressToken，`mcp_tool_face.dart:94-95`）。
 - **操作轨卡状态机**：debug 页 `_CallEntry` 改三段——Started 即插卡（Emerald 执行中）→ Running(progress) 更新（微型百分比，ui-design §3.1）→ 终态锁定（成功/失败/取消，终态灰阶弱化 ui-design §3.2）；色语义沿用 tokens。落点 = debug 页操作轨（正式双轨消息流不在 M3 五项范围）。
 - **卡死判定**：AgentLoop 全链零超时现状（`executor.execute` 裸 await）下新增宿主侧 per 活跃调用 Timer——有 progress 通道按「最近 progress 帧」计时、无通道按总时长兜底（取值 = §4 D4）；疑似卡死 = 卡片提示 + Abort 入口强化，不自动中止（写操作半程悬挂，architecture §10 风险）；心跳帧（SSE `:` comment）不作推进证据（D2 正交语义）。**交汇点（T1 评审问答 2026-10-11）：sampling 反向请求在途时须暂停/重置卡死计时**——工具等待的是宿主自己的 LLM（宿主 `onServerRequest` 处理中是宿主可知状态），D4 的 30s 无 progress 帧口径会误报「疑似卡死」；宿主侧感知即可，无需协议变更。附带：sampling 在途期间同流的 progress/心跳帧在 socket 缓冲延迟（不丢失），对 D2 正交语义无影响。
-- **Abort 链路补全（architecture §10 级联的 M3 落地段）**：UI Abort → MCP 标准 `$/cancelRequest` 下发 → 卡片 Cancelled 态（区别 Failed）；取消下发失败 `[DEGRADE]` 留痕禁静默。
+- **Abort 链路补全（architecture §10 级联的 M3 落地段）**：UI Abort → MCP 标准 `notifications/cancelled` 下发 → 卡片 Cancelled 态（区别 Failed）；取消下发失败 `[DEGRADE]` 留痕禁静默。
 - **联调接线**：progress 药丸中途帧真机验证（debug 页 onProgress→药丸映射已有，`gateway_loop_debug_page.dart:265-274`）；goodshare 侧已加**真实中途帧源**——sampling 反向请求前发一帧 `请求宿主推理中` progress 通告（T2 已实施）。
 - **实施定稿（2026-10-11）**：卡抽象拍板 = 状态机抽组件单实现（`CallCard`，ui-design §3.2 语义色 + 终态灰阶锁定）、不做接口+多实现；`StuckWatcher` 纯类（D4 双档 + sampling 在途顺延）；`run()` 改控制器承载（async* 无法在工具执行 await 期间插入 progress 事件）；abort = 环边界停下（LoopFinished 收尾，在途调用结果照常回填）+ face `notifications/cancelled` 下发（architecture §10 ③，取消失败 DEGRADE 留痕）；附带修复 `notify()` 丢鉴权头（initialized 通知此前每连接必现 401 被 DEGRADE 吞）。
 
@@ -98,7 +98,7 @@ updated: 2026-10-15
 - **D1 范围切分（2026-10-11 拍板 ✅）**：一期全做——单 epic T1~T5 一次排完，goodshare 协议线同程做（沿用 M2.5 ADR-007「同程做消解第二排期」先例），联调第二批随 T2/T3 收口。
 - **D2 胶囊系统化（2026-10-11 拍板 ✅）**：不纳入本期——保持五项范围。ui-design §3.1 预留的 M3+ 演进（应用内胶囊 → 系统通知/悬浮形态）涉 Overlay 权限与双端纪律（iOS Live Activity 延后），独立评估后另定。
 - **D3 sampling 配额语义（2026-10-11 拍板 ✅）**：per-server 滑动窗口次数制——20 次/60min 内存滑动窗口 + 单次输出 maxTokens 宿主硬顶 clamp；不落盘（重启清零，定位防滥用非计费）；超限 = JSON-RPC error（-32000 区间、message 带 hint）；独立临时会话隔离（architecture §15）+ N7 围栏自然覆盖（sampling 走云引擎单咽喉）。（否决：日 Token 预算持久化——无计费场景过度设计；会话级次数——重连即刷新防滥用面弱。）
-- **D4 卡死阈值取值（2026-10-11 拍板 ✅；心跳正交语义 = D2）**：双档·仅提示——有 progress 通道 30s 无 progress 帧转「疑似卡死」（与任务心跳 30s 回收线同数量级，契约 §3.3）；无通道工具 120s 总时长兜底；只提示 + 强化 Abort 入口，不自动中止（写操作半程悬挂，architecture §10）；初值 T5 真机调参。（否决：超时自动 `$/cancelRequest`——半程悬挂风险；单档 60s——无 progress 工具误报率高。）
+- **D4 卡死阈值取值（2026-10-11 拍板 ✅；心跳正交语义 = D2）**：双档·仅提示——有 progress 通道 30s 无 progress 帧转「疑似卡死」（与任务心跳 30s 回收线同数量级，契约 §3.3）；无通道工具 120s 总时长兜底；只提示 + 强化 Abort 入口，不自动中止（写操作半程悬挂，architecture §10）；初值 T5 真机调参。（否决：超时自动下发取消通知——半程悬挂风险；单档 60s——无 progress 工具误报率高。）
 - **D5 跨源授权卡权限级（2026-10-11 拍板 ✅）**：恒 L2 弹卡、会话豁免不适用——豁免按工具粒度（C7），跨源风险在数据面（每张卡句柄内容不同），工具级豁免防不住；与 N7 围栏「显式确认不记忆不豁免」同精神；architecture §9 既定。（否决：同方向会话豁免——粒度与数据面错配；降 L1——违反 §9。）
 - **D6 `create_skill` 复评（2026-10-11 拍板 ✅）**：本期不复评维持剥离——五项范围满载；内容审计门禁是独立设计议题（Prompt Injection 提权防护，architecture §3 裁撤理由）；Skill 来源三通道（官方预置 + CoW 同步 + UI 手动编辑）已覆盖 M3 场景，缺位无阻塞；M3 收官按「Skill 上线后真实需求验证」（分期路线）再启。（否决：本期仅出设计稿——无真实场景反推形态易过度设计；本期实现——范围膨胀，D1 五项不含。）
 

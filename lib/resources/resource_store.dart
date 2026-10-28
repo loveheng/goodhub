@@ -24,12 +24,13 @@ library;
 import 'dart:convert';
 import 'dart:developer' as developer;
 import 'dart:io';
-import 'dart:isolate';
 import 'dart:math';
 
 import 'package:crypto/crypto.dart';
 
 import '../core/storage/sequential_file_writer.dart';
+import '../core/storage/keyed_write_queue.dart';
+import '../core/concurrency/offload.dart';
 
 /// 单文件大小上限（一期拍板 RC1 = 10MB）。
 const int kResourceMaxFileBytes = 10 * 1024 * 1024;
@@ -221,17 +222,20 @@ class ResourceStore {
       // 真不可读区分——自读字节后用 utf8 严格解码（FormatException 即非文本）；
       // >1MB 时解码与哈希**一次 Isolate 内算完**（§3.1 纪律；既防主 isolate
       // 掉帧，也避免为算哈希再扫一遍字节）。
-      decoded = rawBytes.length > _isolateDecodeThreshold
-          ? await Isolate.run(
-              () => (
-                content: utf8.decode(rawBytes, allowMalformed: false),
-                hash: sha256.convert(rawBytes).toString(),
-            ),
-          )
-          : (
-              content: utf8.decode(rawBytes, allowMalformed: false),
-              hash: sha256.convert(rawBytes).toString(),
-            );
+      // §S5：统一卸载助手——超阈值（crypto 口径）才进 Worker 池，且受有限
+      // 并发约束（池满退主 isolate，DEGRADE 留痕）。
+      decoded = await offloadIfHeavy(
+        kind: OffloadKind.crypto,
+        inputBytes: rawBytes.length,
+        heavy: () => (
+          content: utf8.decode(rawBytes, allowMalformed: false),
+          hash: sha256.convert(rawBytes).toString(),
+        ),
+        light: () => (
+          content: utf8.decode(rawBytes, allowMalformed: false),
+          hash: sha256.convert(rawBytes).toString(),
+        ),
+      );
     } on FileSystemException {
       throw ResourceStoreException('io', '文件不可读: $sourcePath');
     } on FormatException {
@@ -288,10 +292,9 @@ class ResourceStore {
       await dir.create(recursive: true);
     }
     final target = _entityFile(entry.id);
-    final temp = File('${target.path}.tmp');
     try {
-      await temp.writeAsBytes(bytes, flush: true);
-      await temp.rename(target.path);
+      // §S4：原子写唯一入口（队列内 tmp→flush→rename）。
+      await KeyedWriteQueue.instance.enqueueAtomicWrite(target.path, bytes);
     } on FileSystemException catch (e) {
       throw ResourceStoreException('io', '文件落位失败: ${e.message}');
     }
@@ -561,7 +564,6 @@ String _baseName(String path) {
 }
 
 /// >1MB 的解码入 Worker Isolate（§3.1：>1MB 数据处理禁止主 isolate 承担）。
-const int _isolateDecodeThreshold = 1 * 1024 * 1024;
 
 /// headPreview 静态截取（规格 §2）：首个非空行，截前 200 字符。
 /// 先剥离 UTF-8 BOM（\uFEFF，Windows 导出件常见）防隐藏字符进清单/上下文；

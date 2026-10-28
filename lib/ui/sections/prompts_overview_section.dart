@@ -28,7 +28,6 @@ library;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
 
 import '../../coordinator/cow_sync.dart';
 import '../../coordinator/skill_registry.dart';
@@ -36,6 +35,7 @@ import '../../coordinator/user_prompt_store.dart';
 import '../../core/tokens.dart';
 import '../components/panel_error_row.dart';
 import '../tokens/console_tokens.dart';
+import '../../app/service_directory.dart';
 
 /// 一条「全局 Prompt」展示行（活态注册面或基线投影统一）。
 class _GlobalPromptRow {
@@ -134,12 +134,8 @@ class _PromptsOverviewSectionState extends State<PromptsOverviewSection>
 
   Future<void> _bootstrap() async {
     try {
-      final userStore =
-          widget.userStoreOverride ??
-          UserGlobalPromptsStore(dir: await getApplicationDocumentsDirectory());
-      final cowStore =
-          widget.cowStoreOverride ??
-          CowOverridesStore(dir: await getApplicationDocumentsDirectory());
+      final userStore = widget.userStoreOverride ?? await userGlobalPromptsStore();
+      final cowStore = widget.cowStoreOverride ?? await cowOverridesStore();
       await _reload(userStore, cowStore);
       if (mounted) setState(() => _error = null);
     } catch (e) {

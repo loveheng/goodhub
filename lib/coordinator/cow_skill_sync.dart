@@ -23,6 +23,10 @@ Future<void> syncCowSkillsIntoRegistry({
   required Map<String, ServerCapabilities> serverCaps,
   required SkillRegistry skills,
   required Future<Directory> Function() documentsDirResolver,
+
+  /// S1：应用级单实例来源（生产由窗口经 `lib/app/service_directory` 传入）。
+  /// null = 退回 [documentsDirResolver] 就地构造（兼容旧调用方）。
+  Future<CowOverridesStore> Function()? storeProvider,
   CowMajorJumpDelegate? majorJumpDelegate,
   void Function(String message, {bool danger})? note,
 }) async {
@@ -31,7 +35,8 @@ Future<void> syncCowSkillsIntoRegistry({
     if (caps == null || !caps.hasPrompts) continue;
     try {
       final cow = CowSyncService(
-        store: CowOverridesStore(dir: await documentsDirResolver()),
+        store: await (storeProvider?.call() ??
+            Future.value(CowOverridesStore(dir: await documentsDirResolver()))),
         onMajorJump: majorJumpDelegate,
       );
       final items = await cow.sync(entry.value, serverId: entry.key);

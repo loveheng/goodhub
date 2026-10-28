@@ -16,7 +16,7 @@
 library;
 
 import 'dart:async';
-import 'dart:isolate';
+import '../core/concurrency/offload.dart';
 
 /// 遮蔽失败（Isolate 异常/超时）——调用方必须拦截发送，禁止吞掉继续明文出站。
 class PiiMaskException implements Exception {
@@ -82,8 +82,9 @@ class PiiRedactionSession {
     try {
       // 已知映射传值进 Isolate（Map 可 send）；会话映射只在主 Isolate 增量合并。
       final known = Map.of(_valueToPlaceholder);
-      out = await Isolate.run(() => redactSync(text, known))
-          .timeout(isolateTimeout);
+      // §S5：统一卸载助手（有限并发池 + 超时守卫；超时语义不变）。
+      out = await OffloadPool.shared
+          .run(() => redactSync(text, known), timeout: isolateTimeout);
     } on TimeoutException catch (e) {
       throw PiiMaskException('PII 遮蔽超时（${isolateTimeout.inSeconds}s）', e);
     } on Object catch (e) {

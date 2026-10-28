@@ -140,9 +140,9 @@ B1 零新增设置项（配额为宿主常量，Q1 观测后再议入设置）�
 
 | 模块 | 动作 |
 |---|---|
-| `lib/coordinator/orchestration/task_plan.dart`（新） | 计划模型 + 元工具入参校验（可见面合规、存在性与 annotations 识别、预检、步数上限、单服务降级、跨 private 拒绝） |
-| `lib/coordinator/orchestration/plan_proposal_tool.dart`（新） | `propose_task_plan` 元工具执行器（`DiscoveryExecutor` 同族拦截位）：同批伴随写 deferred、弹卡挂起、ToolResult 回填（approved/user_skipped/user_note/user_rejected）、abort 路径 |
-| `lib/coordinator/orchestration/plan_guard.dart`（新） | `[ToolExecutor]` 装饰器：phase-0/1 围栏 + step-id Schema 注入与剥离归属 + 每对配额（跨续跑累计）+ 拒绝文案分类 + 实参摘要回显钩子 |
+| `lib/coordinator/task_plan.dart`（新） | 计划模型 + 元工具入参校验（可见面合规、存在性与 annotations 识别、预检、步数上限、单服务降级、跨 private 拒绝） |
+| `lib/coordinator/plan_proposal_tool.dart`（新） | `propose_task_plan` 元工具执行器（`DiscoveryExecutor` 同族拦截位）：同批伴随写 deferred、弹卡挂起、ToolResult 回填（approved/user_skipped/user_note/user_rejected）、abort 路径 |
+| `lib/coordinator/plan_guard.dart`（新） | `[ToolExecutor]` 装饰器：phase-0/1 围栏 + step-id Schema 注入与剥离归属 + 每对配额（跨续跑累计）+ 拒绝文案分类 + 实参摘要回显钩子 |
 | `lib/coordinator/permission_gateway.dart` | 增 planGrant 授权源（与 C7 并列；毁坏性显式排除；Run 收口销毁钩子） |
 | `lib/coordinator/chat_run_orchestrator.dart` | 计划模式装配：约定入静态前缀、装饰链挂接、step-id 注入组进 `toolsProvider` 每轮组装（冻结集激活期）、grant 生命周期与 Run 收口挂钩、续跑消息合成（台账快照） |
 | `lib/ui/task_plan_card.dart` / `lib/ui/task_result_card.dart`（新） | 确认卡（步骤开关 + 叮嘱输入 + 徽标 + 预检置灰 + 二次校验结果）/ 聚合卡（逐笔实参摘要 + 配额用量 + 续跑按钮） |

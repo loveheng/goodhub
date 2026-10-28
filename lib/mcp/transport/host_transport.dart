@@ -24,6 +24,7 @@ import '../../core/tool_result.dart';
 import '../../core/tool_visibility.dart';
 import '../server_capabilities.dart' show kMcpProtocolVersion;
 import 'mcp_transport.dart';
+import '../../core/actor.dart';
 
 /// 宿主虚拟服务的系统保留 serverId（`host__` 前缀的唯一归属方）。
 ///
@@ -54,7 +55,18 @@ class HostExportEntry {
     this.annotations,
     this.visibility = ToolVisibility.shared,
     this.tags = const <String>[],
+    required this.allowedActors,
   });
+
+  /// 允许调用本工具的主体集（§S6 主体 × 工具矩阵）。
+  ///
+  /// **必填**：新增导出项未声明主体即不合格（编译期强制）；
+  /// 校验发生在网关 `toolsCall` 的**每请求运行时**（[Actor] 由鉴权层推导），
+  /// 不在装配期做静态裁剪——能力上限（profile/投影）与主体裁决正交。
+  final Set<Actor> allowedActors;
+
+  /// 运行时裁决谓词。
+  bool allowsActor(Actor actor) => allowedActors.contains(actor);
 
   /// 裸工具名（与本机 executor 一致，不带 `host__` 前缀）。
   final String name;
@@ -89,7 +101,7 @@ class HostExportEntry {
 ///
 /// 登记新项须同轮过三关：① 产品价值（对 PC 确有推理增益，非空操作工具）
 /// ② 隐私影响评估 ③ 单测断言「至少一个 shared 且 `readOnlyHint: true` 的条目」。
-const List<HostExportEntry> kHostExportAllowlist = <HostExportEntry>[
+final List<HostExportEntry> kHostExportAllowlist = <HostExportEntry>[
   // 宿主环境事实只读工具（首项，2026-10-23）：零隐私 + 有真实推理增益
   // （PC 据此对齐语言/时区/协议版本），非 host_ping 类占位工具。
   // schema 与描述由 `HostStatusToolExecutor` 单点拥有。
@@ -98,6 +110,8 @@ const List<HostExportEntry> kHostExportAllowlist = <HostExportEntry>[
     annotations: <String, Object?>{'readOnlyHint': true},
     visibility: ToolVisibility.shared,
     tags: <String>['core'],
+    // 零隐私只读事实：宿主本人与配对 PC 均可读（§S6 主体矩阵首条声明）。
+    allowedActors: <Actor>{Actor.owner, Actor.external('gateway')},
   ),
 ];
 
@@ -142,9 +156,9 @@ typedef HostSchemaResolver = Map<String, Object?>? Function(String toolName);
 class HostTransport implements McpTransport {
   HostTransport({
     required this.invoker,
-    this.allowlist = kHostExportAllowlist,
+    List<HostExportEntry>? allowlist,
     this.schemaResolver,
-  });
+  }) : allowlist = allowlist ?? kHostExportAllowlist;
 
   /// 宿主工具执行端口（注入位；生产 = 宿主执行链 tearoff）。
   final HostToolInvoker invoker;

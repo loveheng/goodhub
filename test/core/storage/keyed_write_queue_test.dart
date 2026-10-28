@@ -9,6 +9,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -155,4 +156,49 @@ void main() {
       expect((await a.listMemories()).length, 2);
     });
   });
+  group('S4 · enqueueAtomicWrite（原子写唯一入口）', () {
+    test('写透：内容落位、父目录自动建、无残档', () async {
+      final dir = await Directory.systemTemp.createTemp('kq_atomic');
+      addTearDown(() => dir.delete(recursive: true));
+      final path = '${dir.path}/nested/file.json';
+
+      await KeyedWriteQueue.instance
+          .enqueueAtomicWrite(path, utf8.encode('{"a":1}'));
+
+      expect(File(path).readAsStringSync(), '{"a":1}');
+      expect(File('$path.tmp').existsSync(), isFalse, reason: 'rename 后不留残档');
+    });
+
+    test('并发两次写同一路径：串行化，最终内容为后写者（不撕裂不丢）', () async {
+      final dir = await Directory.systemTemp.createTemp('kq_atomic2');
+      addTearDown(() => dir.delete(recursive: true));
+      final path = '${dir.path}/f.txt';
+
+      await Future.wait([
+        KeyedWriteQueue.instance.enqueueAtomicWrite(path, utf8.encode('first')),
+        KeyedWriteQueue.instance.enqueueAtomicWrite(path, utf8.encode('second')),
+      ]);
+
+      expect(File(path).readAsStringSync(), 'second');
+      expect(File('$path.tmp').existsSync(), isFalse);
+    });
+
+    test('失败透传：写入失败时异常上抛且残档清理（不毒化队列）', () async {
+      final dir = await Directory.systemTemp.createTemp('kq_atomic3');
+      addTearDown(() => dir.delete(recursive: true));
+      final path = '${dir.path}/f.txt';
+      // 预置同名**目录**使 tmp 写入必然失败。
+      await Directory('$path.tmp').create(recursive: true);
+
+      await expectLater(
+        KeyedWriteQueue.instance.enqueueAtomicWrite(path, utf8.encode('x')),
+        throwsA(isA<FileSystemException>()),
+      );
+      // 队列未毒化：后续写仍可完成。
+      await Directory('$path.tmp').delete();
+      await KeyedWriteQueue.instance.enqueueAtomicWrite(path, utf8.encode('ok'));
+      expect(File(path).readAsStringSync(), 'ok');
+    });
+  });
+
 }

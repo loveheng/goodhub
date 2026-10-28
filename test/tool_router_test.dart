@@ -64,7 +64,7 @@ void main() {
           'inputSchema': {'type': 'object'},
           // 旧口径 annotations["x-mcp-export-to-shared"]（2026-10-21 作废）
           // 不再生效——访问控制标记不得塞进 MCP annotations。
-          'annotations': {'x-mcp-export-to-shared': true}
+          'annotations': {'x-mcp-export-to-shared': true} // drift:keep：负向 fixture，钉死旧口径不再生效
         },
         {
           'name': 'misplaced_tool',

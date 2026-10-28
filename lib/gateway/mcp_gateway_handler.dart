@@ -22,12 +22,13 @@ import '../coordinator/pii_fence.dart' show redactSync;
 import '../coordinator/ref_store.dart' show parseRefHandle;
 import '../coordinator/tool_router.dart';
 import '../mcp/server_capabilities.dart' show kMcpProtocolVersion;
-import '../mcp/transport/host_transport.dart' show kHostServerId;
+import '../mcp/transport/host_transport.dart';
 import 'gateway_backpressure.dart' show PerServerBackpressure;
 import 'gateway_loop_guard.dart';
 import 'gateway_system_tools.dart' as sys;
 import 'gateway_security.dart';
 import 'projection_pipeline.dart';
+import '../core/actor.dart';
 
 class GatewayHandler {
   GatewayHandler({
@@ -40,7 +41,9 @@ class GatewayHandler {
     this.policy = const ProjectionPolicy.full(),
     this.blockedPlugins = const {},
     GatewayLoopGuard? loopGuard,
-  }) : _loopGuard = loopGuard ?? GatewayLoopGuard();
+    Actor? actor,
+  })  : _loopGuard = loopGuard ?? GatewayLoopGuard(),
+        actor = actor ?? Actor.external('gateway');
 
   /// 已挂载 face 集（serverId → face；GatewayController 装配/重扫时**原地**刷新，
   /// 所有会话投影共享同一引用——改一地全连接可见）。
@@ -78,6 +81,11 @@ class GatewayHandler {
   /// ——绝不触碰宿主私有槽位机、不影响其他连接，故 MO6「PC 无权改写宿主状态」
   /// 不受影响（被禁的 `use_server` 改的是宿主槽位，二者不同源）。
   ProjectionPolicy policy;
+
+  /// 本连接的调用主体（§S6 主体 × 工具矩阵）。**由鉴权层推导**——server 层
+  /// Bearer 校验通过即置 `Actor.external('gateway')`（当前配对 Token 为单一
+  /// 共享凭证，粒度 = 通道级；UID 白名单落地后细化）。**严禁从请求载荷读**。
+  Actor actor;
 
   /// **已发现但未挂载**的本地插件（serverId → 原因；仅 id 与原因，不含包名 /
   /// 签名 / Service 类名）。装配层（`GatewayController`）在信任闸门拦下插件时
@@ -461,6 +469,21 @@ class GatewayHandler {
         isError: true,
       );
     }
+    // S6 主体 × 工具矩阵（**每请求运行时校验**，先于路由/环路防护）：
+    // host 导出面逐条声明 `allowedActors`——不在集内即协议级拒绝。
+    // 未登记的 host 工具不在导出面，交由后续 face 调用自然落「工具不存在」。
+    if (parsed.serverId == kHostServerId) {
+      final entry = _hostEntryFor(parsed.toolName);
+      if (entry != null && !entry.allowsActor(actor)) {
+        return GatewayToolResult(
+          content: '主体 ${actor.label} 无权调用 host__${parsed.toolName}：允许主体 '
+              '${entry.allowedActors.map((a) => a.label).join(' / ')}。调整属产品定位决策'
+              '（architecture「宿主长期记忆是否向外部 AI 开放」），非网关侧可放宽',
+          isError: true,
+          errorCode: kGatewayActorDeniedCode,
+        );
+      }
+    }
     // 环路防护（A2 止血）：**先于路由**——① 协议级错误优先于业务路由；
     // ② 级联风暴下被阻断的流量连注册表都不查（不为无效请求付查询成本）。
     final trace = traceId ?? _loopGuard.newTraceId();
@@ -644,6 +667,17 @@ class GatewayHandler {
 }
 
 /// tools/call 网关侧扁平结果（MCP result 形状由服务器层重组）。
+/// S6：主体矩阵拒绝的协议级错误码（区别于环路 -32000）。
+const int kGatewayActorDeniedCode = -32003;
+
+/// host 导出面条目查找（裸名匹配；不在 Allowlist = 不在导出面）。
+HostExportEntry? _hostEntryFor(String bareName) {
+  for (final e in kHostExportAllowlist) {
+    if (e.name == bareName) return e;
+  }
+  return null;
+}
+
 class GatewayToolResult {
   const GatewayToolResult({
     required this.content,

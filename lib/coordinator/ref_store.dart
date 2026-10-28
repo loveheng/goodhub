@@ -222,15 +222,8 @@ class RefStore {
     final file = File('${cacheDir.path}/$_filePrefix$id$_fileSuffix');
     // §3.2：接进程级按路径串行写队列 + 原子 temp→rename，防同 id spill/delete
     // 竞争与崩溃中途写留半截文件（孤儿由 TTL/启动清扫兜底）。
-    await KeyedWriteQueue.instance.enqueue(
-      KeyedWriteQueue.keyForPath(file.path),
-      () async {
-        await cacheDir.create(recursive: true);
-        final tmp = File('${file.path}.tmp');
-        await tmp.writeAsBytes(bytes, flush: true);
-        await tmp.rename(file.path);
-      },
-    );
+    // §S4：原子写唯一入口（队列内 tmp→flush→rename）。
+    await KeyedWriteQueue.instance.enqueueAtomicWrite(file.path, bytes);
     return RefEntry(
       serverId: serverId,
       id: id,

@@ -14,15 +14,15 @@ library;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
 
 import '../../coordinator/cow_sync.dart';
 import '../tokens/console_tokens.dart';
+import '../../app/service_directory.dart';
 
 /// appScoped 覆写正文的防呆上限（无硬预算闸，防呆防手滑）。
 const kCowOverrideMaxChars = 10000;
 
-/// 段 widget：注入 [storeOverride]（生产 = `CowOverridesStore(dir: documents)`，
+/// 段 widget：注入 [storeOverride]（生产 = 注册中心 `cowOverridesStore()`，
 /// 测试传假件）、[onFlash]（页面级 toast 口径）、[errorRowBuilder]（面板级
 /// 错误态统一件）。
 class CowSection extends StatefulWidget {
@@ -86,9 +86,7 @@ class _CowSectionState extends State<CowSection>
   Future<void> _bootstrap() async {
     // ignore: avoid_print
     try {
-      final store =
-          widget.storeOverride ??
-          CowOverridesStore(dir: await getApplicationDocumentsDirectory());
+      final store = widget.storeOverride ?? await cowOverridesStore();
       await _reload(store);
       if (mounted) setState(() => _error = null);
     } catch (e) {

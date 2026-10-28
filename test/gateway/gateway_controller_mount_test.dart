@@ -24,6 +24,7 @@ import 'package:goodhub/mcp/transport/host_transport.dart';
 import 'package:goodhub/core/tool_result.dart';
 import 'package:goodhub/mcp/transport/mcp_transport.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:goodhub/core/actor.dart';
 
 /// 计数假传输：协议面最小实现，close 可观测。
 class _CountingTransport implements McpTransport {
@@ -242,8 +243,9 @@ void main() {
   test('3 host 虚拟服务：faces[host] 装配，合成面经网关 tools/call 端到端实调',
       () async {
     final calls = <String>[];
-    c.hostExportAllowlist = const [
+    c.hostExportAllowlist = [
       HostExportEntry(
+        allowedActors: <Actor>{Actor.owner, Actor.external('gateway')},
         name: 'echo_host',
         description: '测试用宿主只读工具',
         inputSchema: <String, Object?>{'type': 'object'},

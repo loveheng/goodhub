@@ -107,6 +107,13 @@ scan_all() {
   scan_pattern "R2-ui-platform" "lib/ui" \
     "UI 层出现 Platform.isX 分支，平台差异须收敛到接口实现/工厂" \
     'Platform\.is[A-Z]' ""
+  # R10 原子写唯一入口（coding-standards §3.2 + 施工稿 §S4）：业务域禁直接
+  # File.writeAs*——落盘一律经 KeyedWriteQueue.enqueueAtomicWrite / SequentialFileWriter。
+  # 白名单仅基准件所在目录（lib/core/storage）；`File.rename` 不拦（损坏备份等合法用法）。
+  scan_pattern "R10-atomic-write" "lib" \
+    "业务域裸写 File.writeAs*，落盘必须经 KeyedWriteQueue.enqueueAtomicWrite / SequentialFileWriter" \
+    '\.writeAsString(Sync)?\(|\.writeAsBytes(Sync)?\(' \
+    "lib/core/storage/keyed_write_queue.dart lib/core/storage/sequential_file_writer.dart"
   # R3 UI 层禁 MethodChannel 直连（平台通道统一在 lib/app 装配期注入）
   scan_pattern "R3-ui-methodchannel" "lib/ui" \
     "UI 层直连 MethodChannel，平台通道须收敛到抽象接口实现" \

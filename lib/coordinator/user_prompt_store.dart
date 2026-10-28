@@ -162,15 +162,9 @@ class UserGlobalPromptsStore {
   }
 
   Future<void> _save() async {
-    await KeyedWriteQueue.instance.enqueue(
-      KeyedWriteQueue.keyForPath(_file.path),
-      () async {
-        await dir.create(recursive: true);
-        final tmp = File('${_file.path}.tmp');
-        await tmp.writeAsString(jsonEncode(_cache), flush: true);
-        await tmp.rename(_file.path);
-      },
-    );
+    // §S4：原子写唯一入口（队列内 tmp→flush→rename；手写副本已收口）。
+    await KeyedWriteQueue.instance
+        .enqueueAtomicWrite(_file.path, utf8.encode(jsonEncode(_cache)));
   }
 
   Map<String, Object?>? get _section {
@@ -255,10 +249,15 @@ final class BaseSkillRegistry {
 /// 跳过不裁剪，跳过项经 [BaseSkillRegistry.skipped] 回窗口可见通告。
 Future<BaseSkillRegistry> buildBaseSkillRegistry({
   required Future<Directory> Function() dirResolver,
+
+  /// S1：应用级单实例来源（生产由窗口经 `lib/app/service_directory` 传入）。
+  /// null = 退回 [dirResolver] 就地构造（兼容旧调用方）。
+  Future<UserGlobalPromptsStore> Function()? storeProvider,
 }) async {
   final registry = SkillRegistry()..registerAll(builtinSkills());
   final skipped = <String>[];
-  final store = UserGlobalPromptsStore(dir: await dirResolver());
+  final store = await (storeProvider?.call() ??
+      Future.value(UserGlobalPromptsStore(dir: await dirResolver())));
   for (final p in await store.load()) {
     try {
       registry.register(p.toSkill());

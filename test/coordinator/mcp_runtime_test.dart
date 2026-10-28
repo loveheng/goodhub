@@ -71,6 +71,95 @@ void main() {
   });
 
   _assembleTests();
+  _assemblyEquivalenceTests();
+}
+
+// ---------------------------------------------------------------------------
+// S0 保护网 · 装配产物等价性（施工稿 docs/design/arch-consolidation.md §S0）
+// ---------------------------------------------------------------------------
+
+/// S0 的两条判据：① 同输入 → 同产物（顺序敏感的工具面快照）；② 释放幂等且
+/// 全覆盖。二者是 S1（owner 注册中心）与 S3（发送链路下沉）重构的回滚判据。
+void _assemblyEquivalenceTests() {
+  group('S0 装配产物等价性', () {
+    test('同输入两次装配：工具面快照逐项一致（顺序敏感）', () async {
+      final eps = <ServerEndpoint>[
+        ServerEndpoint(id: 'good', name: 'g', endpoint: 'http://x/good/mcp'),
+        ServerEndpoint(id: 'todo', name: 't', endpoint: 'http://x/todo/mcp'),
+      ];
+
+      final a = await _assemble(
+        endpoints: eps,
+        clients: <String, McpClient>{},
+        transports: <McpTransport>[],
+      );
+      final b = await _assemble(
+        endpoints: eps,
+        clients: <String, McpClient>{},
+        transports: <McpTransport>[],
+      );
+
+      final toolsA = a.loop.toolsProvider!().map((t) => t.name).toList();
+      final toolsB = b.loop.toolsProvider!().map((t) => t.name).toList();
+      expect(toolsA, toolsB, reason: '装配产物必须可复现，含顺序');
+      expect(toolsA, contains('good__a'));
+      expect(a.serverSummaries, b.serverSummaries);
+
+      await a.close();
+      await b.close();
+    });
+
+    test('两次装配互不串扰：refStore 各持一份，planState 为显式透传', () async {
+      final eps = <ServerEndpoint>[
+        ServerEndpoint(id: 'good', name: 'g', endpoint: 'http://x/good/mcp'),
+      ];
+      final plan = PlanRunState();
+
+      final a = await _assemble(
+        endpoints: eps,
+        clients: <String, McpClient>{},
+        transports: <McpTransport>[],
+        planState: plan,
+      );
+      final b = await _assemble(
+        endpoints: eps,
+        clients: <String, McpClient>{},
+        transports: <McpTransport>[],
+      );
+
+      expect(identical(a.refStore, b.refStore), isFalse,
+          reason: 'refStore 恒 Run 级，两次装配不得共享');
+      expect(identical(a.planState, plan), isTrue, reason: 'planState 会话级，装配期透传');
+      expect(b.planState, isNull);
+
+      await a.close();
+      await b.close();
+    });
+
+    test('close 幂等且释放全覆盖：每个传输恰好关一次', () async {
+      final transports = <McpTransport>[];
+      final clients = <String, McpClient>{};
+      final assembly = await _assemble(
+        endpoints: <ServerEndpoint>[
+          ServerEndpoint(id: 'good', name: 'g', endpoint: 'http://x/good/mcp'),
+          ServerEndpoint(id: 'todo', name: 't', endpoint: 'http://x/todo/mcp'),
+        ],
+        clients: clients,
+        transports: transports,
+      );
+
+      await assembly.close();
+      await assembly.close(); // 幂等：第二次不得再关、不得抛
+
+      final counted = transports.cast<_CountingTransport>();
+      expect(counted.length, 2);
+      expect(
+        counted.map((t) => t.closeCount).toList(),
+        everyElement(1),
+        reason: '每个挂载的传输恰好释放一次（多关=重复释放，少关=泄漏）',
+      );
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------

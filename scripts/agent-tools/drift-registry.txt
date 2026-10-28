@@ -16,6 +16,12 @@ BANNED|gateway__list_private_servers|lib,docs|旧工具名，PC 照抄即幻觉�
 BANNED|?strategy=|lib/gateway|D1 单轴化后旧 URL 键（现行键 policy=）
 # D1 单轴化后旧参数名（工具 schema 只暴露 policy；docs 叙述兼容别名合法，故只禁 PC copy）。
 BANNED|scope=|lib/gateway|D1 单轴化后旧参数名（现行参数 policy）
+# —— 审查轮补登（2026-10-28）：docs 域正式纳入扫描面。此前退役只清了 lib/gateway，
+# 导致 SSOT 内部出现「§1.1 规则 7 作废 vs §5.6 仍强制」的互斥条款（P0-4）。
+# 豁免：禁令本身须点名退役拼写的地方用行内 drift:keep（index.md / coding-standards /
+# requirements.md / thirdconnect.md 各叙述行已标注）。
+BANNED|x-mcp-export-to-shared|lib,docs,test|可见性标记旧口径；现行 _meta.goodhub.visibility（§1.1 规则 7）
+BANNED|$/cancelRequest|lib,docs,test|取消通知草案名；现行 notifications/cancelled（§2.3）
 
 # —— D2 CONST：单源常量（字面量级）——
 # 搜索面 = lib/ + test/ 的 Dart 代码（注释剥除）；docs 散文提及不判。

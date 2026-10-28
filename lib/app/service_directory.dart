@@ -21,8 +21,12 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../coordinator/cow_sync.dart';
+import '../coordinator/user_prompt_store.dart';
+import '../llm/cloud/byok_store.dart';
 import '../mcp/server_endpoints.dart';
 import '../resources/resource_store.dart';
+import '../sandbox/workspace_state_store.dart';
 
 /// 服务目录 store 生产装配：文件 = 应用支持目录/mcp_servers.json，
 /// 旧单端点 SharedPreferences 经 [flutterPrefsLike] 注入迁移。
@@ -61,6 +65,86 @@ Future<ResourceStore> resourceStore() async {
   await store.load(); // 幂等；损坏 → 空库 + DEGRADE。
   _resourceStore = store;
   return store;
+}
+
+/// CoW 覆写库（应用级单实例；跨会话持久，随进程存亡）。
+///
+/// 2026-10-28 S1 第一批：此前消费点各自 `CowOverridesStore(dir: ...)` 就地构造
+/// （`cow_section` / `prompts_overview_section` / `cow_skill_sync`），多实例各自
+/// 持 `_cache` 且写回为**全量覆盖** → 跨实例静默丢失更新（实证见
+/// `test/coordinator/multi_instance_lost_update_test.dart`）。
+CowOverridesStore? _cowStore;
+
+/// 测试注入位（非空时 [cowOverridesStore] 恒返回之）。
+CowOverridesStore? cowOverridesStoreOverride;
+
+Future<CowOverridesStore> cowOverridesStore() async {
+  final injected = cowOverridesStoreOverride;
+  if (injected != null) return injected;
+  final cached = _cowStore;
+  if (cached != null) return cached;
+  final docs = await getApplicationDocumentsDirectory();
+  return _cowStore = CowOverridesStore(dir: docs);
+}
+
+/// user 全局 prompt 库（应用级单实例；同上丢失更新实证）。
+UserGlobalPromptsStore? _userPromptStore;
+
+/// 测试注入位（非空时 [userGlobalPromptsStore] 恒返回之）。
+UserGlobalPromptsStore? userGlobalPromptsStoreOverride;
+
+Future<UserGlobalPromptsStore> userGlobalPromptsStore() async {
+  final injected = userGlobalPromptsStoreOverride;
+  if (injected != null) return injected;
+  final cached = _userPromptStore;
+  if (cached != null) return cached;
+  final docs = await getApplicationDocumentsDirectory();
+  return _userPromptStore = UserGlobalPromptsStore(dir: docs);
+}
+
+/// 测试隔离复位（S1 契约）：清掉全部进程内缓存与注入位，单测在 `setUp` /
+/// `tearDown` 成对调用——否则静态缓存跨用例串扰。
+void resetAllForTest() {
+  _resourceStore = null;
+  _cowStore = null;
+  _userPromptStore = null;
+  _byokStore = null;
+  _wsStates = null;
+  _appVersion = null;
+  resourceStoreOverride = null;
+  cowOverridesStoreOverride = null;
+  userGlobalPromptsStoreOverride = null;
+  byokStoreOverride = null;
+  workspaceStateStoreOverride = null;
+  appVersionOverride = null;
+}
+
+/// BYOK 配置库（应用级单实例）：`hybrid_assembly` 与设置页此前各自 `ByokStore()`，
+/// 每轮装配重读安全存储；收此复用同一实例。
+///
+/// **同步访问器**：`ByokStore` 构造自身无 IO（密钥读取才走平台通道），故不必
+/// 让窗口层在 `build` 里 await——同步即可满足「UI 只注入同步件」（§S1）。
+ByokStore? _byokStore;
+
+/// 测试注入位（非空时 [byokStore] 恒返回之）。
+ByokStore? byokStoreOverride;
+
+ByokStore byokStore() => byokStoreOverride ?? (_byokStore ??= ByokStore());
+
+/// 工作区状态库（应用级单实例）：此前 `chat_page` 每轮发送都
+/// `WorkspaceStateStore.underSupportDir(...)` 新造一份。
+WorkspaceStateStore? _wsStates;
+
+/// 测试注入位（非空时 [workspaceStateStore] 恒返回之）。
+WorkspaceStateStore? workspaceStateStoreOverride;
+
+Future<WorkspaceStateStore> workspaceStateStore() async {
+  final injected = workspaceStateStoreOverride;
+  if (injected != null) return injected;
+  final cached = _wsStates;
+  if (cached != null) return cached;
+  final support = await getApplicationSupportDirectory();
+  return _wsStates = WorkspaceStateStore.underSupportDir(support.path);
 }
 
 /// 应用版本字符串（`version+buildNumber`）——进程内缓存，读取失败按 `unknown`

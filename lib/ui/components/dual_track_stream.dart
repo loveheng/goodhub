@@ -422,418 +422,676 @@ class DualTrackStream extends StatelessWidget {
 
   /// 条目 → 轨道 widget（公开静态：T3b 恢复装配复用 + 单测直测映射）。
   static Widget renderEntry(BuildContext context, TrackEntry entry) {
-    switch (entry) {
-      case TrackText():
-        if (entry.text.isEmpty) return const SizedBox.shrink();
-        final t = consoleTokens(context);
-        // P1（stream-perf §4）：流式前缀块缓存 + 隔离重绘——解析与渲染隔离
-        // 收编于 StreamingRichText（RichTextView 仍为块渲染器）。切片 C：本件自管
-        // Listenable，delta 追加仅本条目局部重绘，不牵连整页（ListenableBuilder）。
-        return ListenableBuilder(
-          listenable: entry,
-          builder: (context, _) => Padding(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // C4：轮次标识——与用户轮「你」标签对称的极轻 assistant 标
-                // （microSm 灰阶等宽），长会话多轮回看时轮次边界不再融化。
-                Text(
-                  'GoodHub',
-                  style: TextStyle(
-                    fontFamily: t.monoFamily,
-                    fontSize: Fsz.microSm,
-                    color: t.terminalMuted,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                StreamingRichText(text: entry.text.toString()),
-              ],
-            ),
-          ),
-        );
-      case TrackThinking e:
-        // 切片 C：本件自管 Listenable，思维流 delta 追加与展开切换仅本条目
-        // 局部重绘（ListenableBuilder），不牵连整页。
-        final t = consoleTokens(context);
-        return ListenableBuilder(
-          listenable: e,
-          builder: (context, _) => Container(
-            margin: const EdgeInsets.symmetric(vertical: 2),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(t.cardRadius),
-              border: Border.all(color: t.hairline),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                InkWell(
-                  borderRadius: BorderRadius.circular(t.cardRadius),
-                  onTap: e.toggle,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          '思考过程',
-                          style: TextStyle(
-                            fontFamily: t.monoFamily,
-                            fontSize: Fsz.note,
-                            color: t.terminalMuted,
-                          ),
-                        ),
-                        Text(
-                          e.expanded ? ' ▾' : ' ▸',
-                          style: TextStyle(
-                            fontFamily: t.monoFamily,
-                            fontSize: Fsz.note,
-                            color: t.terminalMuted,
-                          ),
-                        ),
-                        // P2-12（2026-10-22）：默认收起是对的，但只露「思考过程
-                        // ▸」时用户要自己猜「这坨要不要看、看了算不算数」。补
-                        // 一句自述把决策成本降到零——它不进 transcript、不参与
-                        // 结果（CloudThinkingDelta 四不契约），故明说「不影响结果」。
-                        const SizedBox(width: 8),
-                        Text(
-                          kThinkingHint,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: Fsz.microSm,
-                            color: t.terminalMuted,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                if (e.expanded)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(8, 0, 8, 6),
-                    child: SelectableText(
-                      e.text.toString(),
-                      style: TextStyle(
-                        fontSize: Fsz.note,
-                        height: 1.5,
-                        color: t.terminalMuted,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        );
-      case TrackUser(:final text):
-        final t = consoleTokens(context);
-        return Container(
-          margin: const EdgeInsets.symmetric(vertical: 4),
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(t.cardRadius),
-            border: Border.all(color: t.hairline),
-          ),
-          child: IntrinsicHeight(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Container(width: 3, color: t.dataRef),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        '你',
-                        style: TextStyle(
-                          fontFamily: t.monoFamily,
-                          fontSize: Fsz.microSm,
-                          color: t.dataRef,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        text,
-                        style: const TextStyle(
-                          fontSize: Fsz.reading,
-                          height: 1.5,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      case TrackCall e:
-        // 切片 C：本件自管 Listenable，运行期相位/进度/结果变更仅本卡局部重绘
-        // （ListenableBuilder），不再整页 setState。
-        return ListenableBuilder(
-          listenable: e,
-          builder: (context, _) => CallCard(
-            tool: e.tool,
-            phase: e.phase,
-            progressNote: e.progressNote,
-            preview: e.preview,
-            fullResult: e.resultText.isEmpty ? null : e.resultText,
-            description: e.description,
-          ),
-        );
-      case TrackPlanConfirm(
+    return switch (entry) {
+      TrackText() => _TrackTextEntry(entry),
+      TrackThinking e => _TrackThinkingEntry(e),
+      TrackUser(:final text) => _TrackUserEntry(text: text),
+      TrackCall e => _TrackCallEntry(e),
+      TrackPlanConfirm(
         :final card,
         :final decision,
         :final decidedAt,
         :final lockedSummary,
         :final completer,
-      ):
-        return TaskPlanCard(
-          plan: card,
-          onDecision: decision == null
-              ? (d) {
-                  entry.decision = d;
-                  entry.decidedAt = DateTime.now();
-                  entry.lockedSummary = TaskPlanCard.lockedSummaryFor(
-                    d,
-                    writeCount: card.rows.where((r) => r.isWrite).length,
-                    destructiveCount:
-                        card.rows.where((r) => r.isWrite && r.destructive).length,
-                  );
-                  completer.complete(d);
-                }
-              : null,
-          lockedSummary: decidedAt == null ? null : lockedSummary,
-          lockedAt: decidedAt,
-        );
-      case TrackPlanResult(:final record, :final onResume):
-        return TaskResultCard(record: record, onResume: onResume);
-      case TrackConfirm(
+      ) =>
+        _TrackPlanConfirmEntry(
+          entry: entry,
+          card: card,
+          decision: decision,
+          decidedAt: decidedAt,
+          lockedSummary: lockedSummary,
+          completer: completer,
+        ),
+      TrackPlanResult(:final record, :final onResume) =>
+        _TrackPlanResultEntry(record: record, onResume: onResume),
+      TrackConfirm(
         :final pending,
         :final decision,
         :final decidedAt,
         :final completer,
-      ):
-        return ConfirmationCard(
-          toolName: pending.toolName,
-          argumentsJson: pending.argumentsJson,
-          onDecision: decision == null
-              ? (d) {
-                  entry.decision = d;
-                  entry.decidedAt = DateTime.now();
-                  completer.complete(d);
-                }
-              : null,
-          lockedDecision: decision,
-          lockedAt: decidedAt,
-        );
-      case TrackBreaker(
+      ) =>
+        _TrackConfirmEntry(
+          entry: entry,
+          pending: pending,
+          decision: decision,
+          decidedAt: decidedAt,
+          completer: completer,
+        ),
+      TrackBreaker(
         :final report,
         :final wall,
         :final lockedText,
         :final decidedAt,
         :final completer,
-      ):
-        return BreakerCard(
+      ) =>
+        _TrackBreakerEntry(
+          entry: entry,
           report: report,
           wall: wall,
           lockedText: lockedText,
-          lockedAt: decidedAt,
-          onBreaker: report == null
-              ? null
-              : (r) {
-                  entry.lockedText = switch (r) {
-                    RetryOnce() => '⟳ 已单步重试',
-                    SkipOnce() => '⤼ 已跳过（错误回填）',
-                    ManualResult() => '👤 已人工接管',
-                  };
-                  entry.decidedAt = DateTime.now();
-                  completer.complete(r);
-                },
-          onStepWall: wall == null
-              ? null
-              : (relax) {
-                  entry.lockedText = relax ? '⤒ 已放宽 +10 续跑' : '⊘ 已终止';
-                  entry.decidedAt = DateTime.now();
-                  completer.complete(relax);
-                },
-        );
-      case TrackFence(
+          decidedAt: decidedAt,
+          completer: completer,
+        ),
+      TrackFence(
         :final info,
         :final decision,
         :final decidedAt,
         :final completer,
-      ):
-        return FenceBlockCard(
-          engineName: info.engineName,
-          failureMessage: info.failureMessage,
-          onDecision: decision == null
-              ? (sendRaw) {
-                  entry.decision = sendRaw;
-                  entry.decidedAt = DateTime.now();
-                  completer.complete(sendRaw);
-                }
-              : null,
-          lockedSendRaw: decision,
-          lockedAt: decidedAt,
-        );
-      case TrackElicitation(
+      ) =>
+        _TrackFenceEntry(
+          entry: entry,
+          info: info,
+          decision: decision,
+          decidedAt: decidedAt,
+          completer: completer,
+        ),
+      TrackElicitation(
         :final request,
         :final answer,
         :final decidedAt,
         :final completer,
-      ):
-        return ElicitationCard(
+      ) =>
+        _TrackElicitationEntry(
+          entry: entry,
           request: request,
-          onDecision: answer == null
-              ? (a) {
-                  entry.answer = a;
-                  entry.decidedAt = DateTime.now();
-                  completer.complete(a);
-                }
-              : null,
-          lockedAnswer: answer,
-          lockedAt: decidedAt,
-        );
-      case TrackNote(:final text, :final danger):
-        final t = consoleTokens(context);
-        return Padding(
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          // 排障场景通告（尤其 ✕ 错误行）可长按复制。
-          child: SelectableText(
-            text,
-            style: TextStyle(
-              fontSize: Fsz.note,
-              color: danger ? t.danger : t.terminalMuted,
-            ),
-          ),
-        );
-      case TrackGuide(:final text, :final actionLabel, :final onAction):
-        return _TrackActionCard(
-          danger: false,
+          answer: answer,
+          decidedAt: decidedAt,
+          completer: completer,
+        ),
+      TrackNote(:final text, :final danger) =>
+        _TrackNoteEntry(text: text, danger: danger),
+      TrackGuide(:final text, :final actionLabel, :final onAction) =>
+        _TrackGuideEntry(
+          text: text,
           actionLabel: actionLabel,
           onAction: onAction,
-          child: Text(
-            text,
-            style: const TextStyle(fontSize: Fsz.note, height: 1.4),
-          ),
-        );
-      case TrackError(
+        ),
+      TrackError(
         :final title,
         :final advice,
         :final detail,
         :final retried,
         :final onAction,
-      ):
-        final t = consoleTokens(context);
-        return _TrackActionCard(
-          danger: true,
-          actionLabel: retried ? null : '重试',
-          onAction: retried ? null : onAction,
-          lockedLabel: retried ? '↻ 已重试' : null,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                '✕ $title',
-                style: TextStyle(
-                  fontSize: Fsz.note,
-                  fontWeight: FontWeight.w600,
-                  color: t.danger,
+      ) =>
+        _TrackErrorEntry(
+          title: title,
+          advice: advice,
+          detail: detail,
+          retried: retried,
+          onAction: onAction,
+        ),
+      TrackMemoryCapsule(:final key, :final value, :final onUndo, :final undone) =>
+        _TrackMemoryEntry(
+          memKey: key,
+          value: value,
+          onUndo: onUndo,
+          undone: undone,
+        ),
+      TrackContextAttribution(
+        :final memories,
+        :final services,
+        :final droppedCount,
+        :final onItemExclude,
+        :final onViewMemories,
+      ) =>
+        _TrackContextAttributionEntry(
+          memories: memories,
+          services: services,
+          droppedCount: droppedCount,
+          onItemExclude: onItemExclude,
+          onViewMemories: onViewMemories,
+        ),
+    };
+  }
+
+}
+
+/// 阅读轨文本条目（按卡片类型拆出的子组件；原 [DualTrackStream.renderEntry]
+/// 巨型 switch 拆分，行为等价）。
+class _TrackTextEntry extends StatelessWidget {
+  const _TrackTextEntry(this.entry);
+  final TrackText entry;
+  @override
+  Widget build(BuildContext context) {
+    if (entry.text.isEmpty) return const SizedBox.shrink();
+    final t = consoleTokens(context);
+    return ListenableBuilder(
+      listenable: entry,
+      builder: (context, _) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'GoodHub',
+              style: TextStyle(
+                fontFamily: t.monoFamily,
+                fontSize: Fsz.microSm,
+                color: t.terminalMuted,
+              ),
+            ),
+            const SizedBox(height: 2),
+            StreamingRichText(text: entry.text.toString()),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TrackThinkingEntry extends StatelessWidget {
+  const _TrackThinkingEntry(this.entry);
+  final TrackThinking entry;
+  @override
+  Widget build(BuildContext context) {
+    final t = consoleTokens(context);
+    return ListenableBuilder(
+      listenable: entry,
+      builder: (context, _) => Container(
+        margin: const EdgeInsets.symmetric(vertical: 2),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(t.cardRadius),
+          border: Border.all(color: t.hairline),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            InkWell(
+              borderRadius: BorderRadius.circular(t.cardRadius),
+              onTap: entry.toggle,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      '思考过程',
+                      style: TextStyle(
+                        fontFamily: t.monoFamily,
+                        fontSize: Fsz.note,
+                        color: t.terminalMuted,
+                      ),
+                    ),
+                    Text(
+                      entry.expanded ? ' ▾' : ' ▸',
+                      style: TextStyle(
+                        fontFamily: t.monoFamily,
+                        fontSize: Fsz.note,
+                        color: t.terminalMuted,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      kThinkingHint,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: Fsz.microSm,
+                        color: t.terminalMuted,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              Text(
-                advice,
-                style: const TextStyle(fontSize: Fsz.note, height: 1.4),
-              ),
-              if (detail.isNotEmpty)
-                SelectableText(
-                  detail,
+            ),
+            if (entry.expanded)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 0, 8, 6),
+                child: SelectableText(
+                  entry.text.toString(),
                   style: TextStyle(
-                    fontFamily: t.monoFamily,
-                    fontSize: Fsz.telemetrySm,
+                    fontSize: Fsz.note,
+                    height: 1.5,
                     color: t.terminalMuted,
                   ),
                 ),
-            ],
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TrackUserEntry extends StatelessWidget {
+  const _TrackUserEntry({required this.text});
+  final String text;
+  @override
+  Widget build(BuildContext context) {
+    final t = consoleTokens(context);
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(t.cardRadius),
+        border: Border.all(color: t.hairline),
+      ),
+      child: IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(width: 3, color: t.dataRef),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '你',
+                    style: TextStyle(
+                      fontFamily: t.monoFamily,
+                      fontSize: Fsz.microSm,
+                      color: t.dataRef,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    text,
+                    style: const TextStyle(
+                      fontSize: Fsz.reading,
+                      height: 1.5,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TrackCallEntry extends StatelessWidget {
+  const _TrackCallEntry(this.entry);
+  final TrackCall entry;
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: entry,
+      builder: (context, _) => CallCard(
+        tool: entry.tool,
+        phase: entry.phase,
+        progressNote: entry.progressNote,
+        preview: entry.preview,
+        fullResult: entry.resultText.isEmpty ? null : entry.resultText,
+        description: entry.description,
+      ),
+    );
+  }
+}
+
+class _TrackPlanConfirmEntry extends StatelessWidget {
+  const _TrackPlanConfirmEntry({
+    required this.entry,
+    required this.card,
+    required this.decision,
+    required this.decidedAt,
+    required this.lockedSummary,
+    required this.completer,
+  });
+  final TrackPlanConfirm entry;
+  final PlanProposalCard card;
+  final PlanProposalDecision? decision;
+  final DateTime? decidedAt;
+  final String? lockedSummary;
+  final Completer<PlanProposalDecision> completer;
+  @override
+  Widget build(BuildContext context) {
+    return TaskPlanCard(
+      plan: card,
+      onDecision: decision == null
+          ? (d) {
+              entry.decision = d;
+              entry.decidedAt = DateTime.now();
+              entry.lockedSummary = TaskPlanCard.lockedSummaryFor(
+                d,
+                writeCount: card.rows.where((r) => r.isWrite).length,
+                destructiveCount:
+                    card.rows.where((r) => r.isWrite && r.destructive).length,
+              );
+              completer.complete(d);
+            }
+          : null,
+      lockedSummary: decidedAt == null ? null : lockedSummary,
+      lockedAt: decidedAt,
+    );
+  }
+}
+
+class _TrackPlanResultEntry extends StatelessWidget {
+  const _TrackPlanResultEntry({required this.record, required this.onResume});
+  final PlanAggregateRecord record;
+  final VoidCallback? onResume;
+  @override
+  Widget build(BuildContext context) => TaskResultCard(record: record, onResume: onResume);
+}
+
+class _TrackConfirmEntry extends StatelessWidget {
+  const _TrackConfirmEntry({
+    required this.entry,
+    required this.pending,
+    required this.decision,
+    required this.decidedAt,
+    required this.completer,
+  });
+  final TrackConfirm entry;
+  final ToolPendingConfirmation pending;
+  final GateDecision? decision;
+  final DateTime? decidedAt;
+  final Completer<GateDecision> completer;
+  @override
+  Widget build(BuildContext context) {
+    return ConfirmationCard(
+      toolName: pending.toolName,
+      argumentsJson: pending.argumentsJson,
+      onDecision: decision == null
+          ? (d) {
+              entry.decision = d;
+              entry.decidedAt = DateTime.now();
+              completer.complete(d);
+            }
+          : null,
+      lockedDecision: decision,
+      lockedAt: decidedAt,
+    );
+  }
+}
+
+class _TrackBreakerEntry extends StatelessWidget {
+  const _TrackBreakerEntry({
+    required this.entry,
+    required this.report,
+    required this.wall,
+    required this.lockedText,
+    required this.decidedAt,
+    required this.completer,
+  });
+  final TrackBreaker entry;
+  final BreakerReport? report;
+  final StepWallReport? wall;
+  final String? lockedText;
+  final DateTime? decidedAt;
+  final Completer<Object?> completer;
+  @override
+  Widget build(BuildContext context) {
+    return BreakerCard(
+      report: report,
+      wall: wall,
+      lockedText: lockedText,
+      lockedAt: decidedAt,
+      onBreaker: report == null
+          ? null
+          : (r) {
+              entry.lockedText = switch (r) {
+                RetryOnce() => '⟳ 已单步重试',
+                SkipOnce() => '⤼ 已跳过（错误回填）',
+                ManualResult() => '👤 已人工接管',
+              };
+              entry.decidedAt = DateTime.now();
+              completer.complete(r);
+            },
+      onStepWall: wall == null
+          ? null
+          : (relax) {
+              entry.lockedText = relax ? '⤒ 已放宽 +10 续跑' : '⊘ 已终止';
+              entry.decidedAt = DateTime.now();
+              completer.complete(relax);
+            },
+    );
+  }
+}
+
+class _TrackFenceEntry extends StatelessWidget {
+  const _TrackFenceEntry({
+    required this.entry,
+    required this.info,
+    required this.decision,
+    required this.decidedAt,
+    required this.completer,
+  });
+  final TrackFence entry;
+  final PiiMaskBlockInfo info;
+  final bool? decision;
+  final DateTime? decidedAt;
+  final Completer<bool> completer;
+  @override
+  Widget build(BuildContext context) {
+    return FenceBlockCard(
+      engineName: info.engineName,
+      failureMessage: info.failureMessage,
+      onDecision: decision == null
+          ? (sendRaw) {
+              entry.decision = sendRaw;
+              entry.decidedAt = DateTime.now();
+              completer.complete(sendRaw);
+            }
+          : null,
+      lockedSendRaw: decision,
+      lockedAt: decidedAt,
+    );
+  }
+}
+
+class _TrackElicitationEntry extends StatelessWidget {
+  const _TrackElicitationEntry({
+    required this.entry,
+    required this.request,
+    required this.answer,
+    required this.decidedAt,
+    required this.completer,
+  });
+  final TrackElicitation entry;
+  final ElicitationRequest request;
+  final ElicitationAnswer? answer;
+  final DateTime? decidedAt;
+  final Completer<ElicitationAnswer> completer;
+  @override
+  Widget build(BuildContext context) {
+    return ElicitationCard(
+      request: request,
+      onDecision: answer == null
+          ? (a) {
+              entry.answer = a;
+              entry.decidedAt = DateTime.now();
+              completer.complete(a);
+            }
+          : null,
+      lockedAnswer: answer,
+      lockedAt: decidedAt,
+    );
+  }
+}
+
+class _TrackNoteEntry extends StatelessWidget {
+  const _TrackNoteEntry({required this.text, required this.danger});
+  final String text;
+  final bool danger;
+  @override
+  Widget build(BuildContext context) {
+    final t = consoleTokens(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: SelectableText(
+        text,
+        style: TextStyle(
+          fontSize: Fsz.note,
+          color: danger ? t.danger : t.terminalMuted,
+        ),
+      ),
+    );
+  }
+}
+
+class _TrackGuideEntry extends StatelessWidget {
+  const _TrackGuideEntry({
+    required this.text,
+    required this.actionLabel,
+    required this.onAction,
+  });
+  final String text;
+  final String actionLabel;
+  final VoidCallback? onAction;
+  @override
+  Widget build(BuildContext context) {
+    return _TrackActionCard(
+      danger: false,
+      actionLabel: actionLabel,
+      onAction: onAction,
+      child: Text(
+        text,
+        style: const TextStyle(fontSize: Fsz.note, height: 1.4),
+      ),
+    );
+  }
+}
+
+class _TrackErrorEntry extends StatelessWidget {
+  const _TrackErrorEntry({
+    required this.title,
+    required this.advice,
+    required this.detail,
+    required this.retried,
+    required this.onAction,
+  });
+  final String title;
+  final String advice;
+  final String detail;
+  final bool retried;
+  final VoidCallback? onAction;
+  @override
+  Widget build(BuildContext context) {
+    final t = consoleTokens(context);
+    return _TrackActionCard(
+      danger: true,
+      actionLabel: retried ? null : '重试',
+      onAction: retried ? null : onAction,
+      lockedLabel: retried ? '↻ 已重试' : null,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '✕ $title',
+            style: TextStyle(
+              fontSize: Fsz.note,
+              fontWeight: FontWeight.w600,
+              color: t.danger,
+            ),
           ),
-        );
-      case TrackMemoryCapsule(
-        :final key,
-        :final value,
-        :final onUndo,
-        :final undone,
-      ):
-        final t = consoleTokens(context);
-        return Container(
-          margin: const EdgeInsets.symmetric(vertical: 2),
-          padding: const EdgeInsets.fromLTRB(8, 4, 4, 4),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(t.cardRadius),
-            border: Border.all(color: t.hairline),
+          Text(
+            advice,
+            style: const TextStyle(fontSize: Fsz.note, height: 1.4),
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                '⚡ 已记录 $key=$value',
+          if (detail.isNotEmpty)
+            SelectableText(
+              detail,
+              style: TextStyle(
+                fontFamily: t.monoFamily,
+                fontSize: Fsz.telemetrySm,
+                color: t.terminalMuted,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TrackMemoryEntry extends StatelessWidget {
+  const _TrackMemoryEntry({
+    required this.memKey,
+    required this.value,
+    required this.onUndo,
+    required this.undone,
+  });
+  final String memKey;
+  final String value;
+  final void Function()? onUndo;
+  final bool undone;
+  @override
+  Widget build(BuildContext context) {
+    final t = consoleTokens(context);
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 2),
+      padding: const EdgeInsets.fromLTRB(8, 4, 4, 4),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(t.cardRadius),
+        border: Border.all(color: t.hairline),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '⚡ 已记录 $key=$value',
+            style: TextStyle(
+              fontFamily: t.monoFamily,
+              fontSize: Fsz.note,
+              color: t.terminalMuted,
+            ),
+          ),
+          if (!undone && onUndo != null)
+            TextButton(
+              onPressed: onUndo,
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                minimumSize: const Size(0, 28),
+              ),
+              child: Text(
+                '✕ 撤销',
+                style: TextStyle(
+                  fontFamily: t.monoFamily,
+                  fontSize: Fsz.note,
+                  color: t.dataRef,
+                ),
+              ),
+            )
+          else if (undone)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              child: Text(
+                '✕ 已撤销',
                 style: TextStyle(
                   fontFamily: t.monoFamily,
                   fontSize: Fsz.note,
                   color: t.terminalMuted,
                 ),
               ),
-              if (!undone && onUndo != null)
-                TextButton(
-                  onPressed: onUndo,
-                  style: TextButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 6),
-                    minimumSize: const Size(0, 28),
-                  ),
-                  child: Text(
-                    '✕ 撤销',
-                    style: TextStyle(
-                      fontFamily: t.monoFamily,
-                      fontSize: Fsz.note,
-                      color: t.dataRef,
-                    ),
-                  ),
-                )
-              else if (undone)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 6),
-                  child: Text(
-                    '✕ 已撤销',
-                    style: TextStyle(
-                      fontFamily: t.monoFamily,
-                      fontSize: Fsz.note,
-                      color: t.terminalMuted,
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        );
-      case TrackContextAttribution(
-        :final memories,
-        :final services,
-        :final droppedCount,
-        :final onItemExclude,
-        :final onViewMemories,
-      ):
-        return _ContextAttributionRow(
-          memories: memories,
-          services: services,
-          droppedCount: droppedCount,
-          onItemExclude: onItemExclude,
-          onViewMemories: onViewMemories,
-        );
-    }
+            ),
+        ],
+      ),
+    );
   }
 }
+
+class _TrackContextAttributionEntry extends StatelessWidget {
+  const _TrackContextAttributionEntry({
+    required this.memories,
+    required this.services,
+    required this.droppedCount,
+    required this.onItemExclude,
+    required this.onViewMemories,
+  });
+  final List<ContextAttributionItem> memories;
+  final List<ContextAttributionItem> services;
+  final int droppedCount;
+  final void Function(ContextAttributionItem item)? onItemExclude;
+  final VoidCallback? onViewMemories;
+  @override
+  Widget build(BuildContext context) {
+    return _ContextAttributionRow(
+      memories: memories,
+      services: services,
+      droppedCount: droppedCount,
+      onItemExclude: onItemExclude,
+      onViewMemories: onViewMemories,
+    );
+  }
+}
+
+
 
 /// 轨道行动卡（引导卡 / 错误卡共用，ux-hardening P0-1/P0-2）：细边框容器
 /// + 危险态 Rose 左竖条（同 TrackUser 数据指针条族，ui-design §3.2 同轴

@@ -18,14 +18,14 @@ library;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
 
 import '../../coordinator/skill_registry.dart';
 import '../../coordinator/user_prompt_store.dart';
 import '../../core/tokens.dart';
 import '../tokens/console_tokens.dart';
+import '../../app/service_directory.dart';
 
-/// 段 widget：注入 [storeOverride]（生产 = `UserGlobalPromptsStore(dir: documents)`，
+/// 段 widget：注入 [storeOverride]（生产 = 注册中心 `userGlobalPromptsStore()`，
 /// 测试传假件）、[onFlash]（页面级 toast 口径）、[errorRowBuilder]（面板级错误态统一件）。
 class UserPromptsSection extends StatefulWidget {
   const UserPromptsSection({
@@ -83,10 +83,7 @@ class _UserPromptsSectionState extends State<UserPromptsSection>
 
   Future<void> _bootstrap() async {
     try {
-      final store = widget.storeOverride ??
-          UserGlobalPromptsStore(
-            dir: await getApplicationDocumentsDirectory(),
-          );
+      final store = widget.storeOverride ?? await userGlobalPromptsStore();
       await _reload(store);
       if (mounted) setState(() => _error = null);
     } catch (e) {

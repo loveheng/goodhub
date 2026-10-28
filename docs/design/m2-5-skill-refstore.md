@@ -16,13 +16,13 @@ updated: 2026-10-11
 4. **Resources URI 合流（§12）**：只读数据注入走 `resources/list` + `resources/read`；`$ref` 收缩定位为「跨 App 写管道参数传引用」，两者正交；`$ref` 元数据可指向 Resource URI 合流命名。订阅（`resources/subscribe`）归 M3。
 5. **Progress 通告（§12）**：客户端下发 `progressToken`，Server 经 `notifications/progress`（progress/total）回传；操作轨卡片状态机补 `Running(progress)` 态；无更新超阈值提示疑似卡死。
 6. **Tier 2 降级垫片（§14）**：能力协商走标准 `initialize` capabilities；无 prompts → 无 Skill 注入；无 resources → 只读工具照常暴露；无 progress → 纯 Loading 态；**降级是默认行为，不抛异常**。Tier 2 静态摘要 = 首次挂载读 `tools/list` 前 3 个工具 name+description 拼接，须标注「自动生成」。
-7. **MeshWireController 接线管道**：goodshare `x-mcp-export-to-shared` 产出 → 宿主 `$ref` 注水管道接线（依赖第 3 项）。
+7. **MeshWireController 接线管道**：goodshare `_meta.goodhub.visibility` 声明产出 → 宿主 `$ref` 注水管道接线（依赖第 3 项）。
 
 ## 2. 现状取证（2026-10-11）
 
 | 项 | 现状 | M2.5 缺口 |
 |---|---|---|
-| goodshare server（`lib/mcp/mcp_server.dart`） | Streamable HTTP POST-only 单响应，无 SSE 推送通道（GET/DELETE 405）；`initialize` 仅声明 `tools`；`resources/list` / `prompts/list` 已留空桩返回空数组 | `prompts/get`、`resources/read`、progress 通知通道、capabilities 声明扩展 |
+| goodshare server（goodshare 仓 `lib/mcp/mcp_server.dart`） | Streamable HTTP POST-only 单响应，无 SSE 推送通道（GET/DELETE 405）；`initialize` 仅声明 `tools`；`resources/list` / `prompts/list` 已留空桩返回空数组 | `prompts/get`、`resources/read`、progress 通知通道、capabilities 声明扩展 |
 | goodhub client（`lib/mcp/mcp_client.dart`） | 无状态逐请求 POST；`_decodePayload` 已兼容 SSE 帧响应；无 `initialize` 握手与能力协商 | capabilities 协商 + 协商结果缓存、prompts/resources 方法封装、$ref 暂存池、Skill 注入 |
 | 接缝契约（goodshare 仓 `docs/design/ai-app-split.md`） | 零覆盖 prompts / resources / progress / Tier 分类 | 契约扩展回写（M2.5 前置，改接缝须同轮修该文档） |
 

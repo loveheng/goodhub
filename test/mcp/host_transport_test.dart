@@ -15,6 +15,7 @@ import 'package:goodhub/core/tool_result.dart';
 import 'package:goodhub/core/tool_visibility.dart';
 import 'package:goodhub/mcp/mcp_client.dart';
 import 'package:goodhub/mcp/transport/host_transport.dart';
+import 'package:goodhub/core/actor.dart';
 
 /// 记录调用参数的假执行端口。
 class _SpyInvoker {
@@ -65,6 +66,7 @@ HostExportEntry _entry(
   ToolVisibility visibility = ToolVisibility.shared,
 }) =>
     HostExportEntry(
+      allowedActors: <Actor>{Actor.owner},
       name: name,
       description: '测试工具 $name（怎么用才对：仅用于单测）',
       inputSchema: const <String, Object?>{'type': 'object'},

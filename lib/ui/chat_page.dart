@@ -26,7 +26,6 @@ import '../app/task_consume_bootstrap.dart';
 import '../coordinator/agent_loop.dart';
 import '../coordinator/conversation_archive.dart';
 import '../coordinator/chat_session_service.dart';
-import '../coordinator/degradation_controller.dart';
 
 import '../coordinator/chat_run_orchestrator.dart';
 import '../coordinator/mcp_runtime.dart';
@@ -35,7 +34,6 @@ import '../coordinator/plan_proposal_tool.dart'
 import '../coordinator/task_plan.dart' show PlanAggregateRecord;
 import '../llm/cloud/cloud_llm.dart';
 
-import '../coordinator/user_prompt_store.dart';
 
 import '../mcp/connection_manager.dart';
 import '../mcp/local_plugin_discovery.dart';
@@ -44,8 +42,6 @@ import '../mcp/server_endpoints.dart';
 import '../mcp/default_private_server.dart';
 import '../gateway_api/gateway_control.dart';
 import '../sandbox/conversation_store.dart';
-import '../sandbox/memory_store.dart';
-import '../sandbox/workspace_state_store.dart';
 import 'components/call_card.dart';
 import 'components/cross_source_consent_card.dart';
 import 'components/conversation_drawer.dart';
@@ -60,6 +56,7 @@ import 'tokens/console_tokens.dart';
 import 'components/stuck_watcher.dart';
 import 'resource_center_page.dart';
 import 'settings_page.dart';
+import '../coordinator/chat_send_use_case.dart';
 
 /// 连接配置持久化（T6-2）：改走 [ServerEndpointStore]（多端点 JSON + apiKey
 /// 走安全存储）；旧单端点 SharedPreferences 由该 store 在首次 load 时迁移。
@@ -157,7 +154,8 @@ class _ChatPageState extends State<ChatPage>
   /// 上一句发送的任务文本（ux-hardening P0-2：错误卡「重试」重跑语料）。
   String? _lastPrompt;
 
-  McpAssembly? _activeAssembly; // Run 期句柄（Abort/finally 释放；步 1 内核化后窗口只持句柄）
+  McpAssembly? _activeAssembly; // 装配就绪标志（F19 预中止判定；实际中止经 [_useCase]）
+  ChatSendUseCase? _useCase; // 取消统一入口（S3：取消经 useCase.cancel 收口）
   // F19（review-fix-2026-10）：装配期（连接中）点停止时句柄未就绪，无取消
   // 通道——置预中止标志，装配完成后立即对 assembly 补发 abort（否则 Run 挂着
   // 悬挂引擎空转，pill 已 idle 而 running 卡 true）。
@@ -790,12 +788,10 @@ class _ChatPageState extends State<ChatPage>
     // T3b：会话懒建（首个任务起落盘；标题截取策略在 Archive 内核）。
     await _archive!.ensureCurrent(prompt: prompt);
     // P2-6（§3.6/G3）：会话级事实库懒建——In-band 捎带 session 域落点。
-    _session.bindWsStates(WorkspaceStateStore.underSupportDir(support.path));
+    _session.bindWsStates(await workspaceStateStore());
     final convId = _archive!.currentId!;
-    McpAssembly? assembly; // Run 级句柄：finally 统一释放（内核持资源谁释放）
-    try {
-      final memoryStore = MemoryStore.underSupportDir(support.path);
-      // 记忆内核接线收口编排件（window-slim P1-A）；窗口只留胶囊 UI
+        try {
+            // 记忆内核接线收口编排件（window-slim P1-A）；窗口只留胶囊 UI
       // （TrackMemoryCapsule 渲染与撤销挂载）与写失败可见轨道（P1-C）。
       void onCapsule(
         String key,
@@ -859,48 +855,13 @@ class _ChatPageState extends State<ChatPage>
         mountedLocals.add(info);
       }
       _watcher = StuckWatcher(onStuck: _markActiveCallStuck);
-      // 步 3-T4：激活集/降级判据懒建收编进 session（新会话 = 新实例 = 重开）。
-      // prompt-mgmt §3.3：user 全局 prompt 随基础注册表落盘装载——注册闸
-      // （300 Token/重名）fail-fast 跳过项可见通告，不阻断装配。
-      final existingSkills = _session.skills;
-      final BaseSkillRegistry baseSkills = existingSkills != null
-          ? BaseSkillRegistry(registry: existingSkills, skipped: const [])
-          : await buildBaseSkillRegistry(
-              dirResolver: () async => await getApplicationDocumentsDirectory(),
-            );
-      for (final skip in baseSkills.skipped) {
-        // P0-3 降噪（同上）：注册跳过项迟早仍在（文件没修就在），每轮重插 = 每行
-        // 必出的重复危险通告，反而稀释真正的错误。同会话同条目只告一次。
-        if (_status.claimSessionNotice('skill-skip:$skip')) {
-          _add(TrackNote('⚠ 全局 Prompt 注册跳过: $skip', danger: true));
-        }
-      }
-      _session.bindSkills(baseSkills.registry);
-      _session.bindDegradation(_session.degradation ?? DegradationController());
       // A2（page-beautify）：工具名人话化映射（前缀名 → 服务端 description
       // 全文）——onProgress/onNotice 等委托先于 assembly 建成，故此处持可变
       // 映射由委托闭包捕获，装配完成后（下方 router 就绪即 run 起步前）填充。
       final toolDescriptions = <String, String>{};
       final attachmentsSnapshot = List.of(_pendingResources);
-      assembly = await const McpRuntime().assemble(
-        engine: widget.engineOverride,
-        resourceAttachments: attachmentsSnapshot,
-        // 装配层合一（Contract 件）：共享能力源 face 表——已由网关挂载的服务
-        // 借用复用（跳过新建/协商/连接），未挂载的走旧自建路径兜底。
-        sharedFaces: sharedFaces,
-        context: SessionContext(
-          activePrivateServerId: _session.activePrivateServerId,
-          conversationId: convId,
-          degradation: _session.degradation,
-          transcript: _session.transcript,
-          wsStates: _session.wsStates,
-        ),
-        endpoints: endpoints,
-        locals: mountedLocals,
-        apiKeyReader: epStore.apiKey,
-        memoryStore: memoryStore,
-        skills: _session.skills!,
-        delegates: RuntimeDelegates(
+      // S2/S3 二期：装配段下沉用例件（skills 装载/会话绑定/assemble）。
+      final delegates = RuntimeDelegates(
           gateDelegate: ChatGateDelegate(this),
           fenceDelegate: ChatFenceDelegate(this), // D4 有人值守拦截卡
           blockDelegate: ChatBlockDelegate(this),
@@ -988,14 +949,46 @@ class _ChatPageState extends State<ChatPage>
                 );
             }
           },
+        );
+      final useCase = ChatSendUseCase(
+        sink: _RunSink(this, toolDescriptions),
+        orchestrator: _runOrchestrator,
+      );
+      _useCase = useCase;
+      final built = await useCase.assembleRun(
+        session: _session,
+        sessionContext: SessionContext(
+          activePrivateServerId: _session.activePrivateServerId,
+          conversationId: convId,
+          degradation: _session.degradation,
+          transcript: _session.transcript,
+          wsStates: _session.wsStates,
         ),
+        endpoints: endpoints,
+        mountedLocals: mountedLocals,
+        epStore: epStore,
+        supportPath: support.path,
+        documentsDirResolver: getApplicationDocumentsDirectory,
+        delegates: delegates,
         quota: _session.samplingQuota,
-        // 编排 B1：会话级编排状态（围栏/台账/配额跨续跑；close 即 Run 收口）。
+        engine: widget.engineOverride,
+        resourceAttachments: attachmentsSnapshot,
+        sharedFaces: sharedFaces,
+        cowStoreProvider: cowOverridesStore,
         planState: _runOrchestrator.planState,
         onSamplingBegin: () => _watcher?.samplingBegin(),
         onSamplingEnd: () => _watcher?.samplingEnd(),
+        userPromptStoreProvider: userGlobalPromptsStore,
+        onNoticeOnce: (key, message) {
+          if (_status.claimSessionNotice(key)) {
+            _add(TrackNote(message, danger: true));
+          }
+        },
       );
+      final assembly = built.assembly;
+      final memoryStore = built.memoryStore;
       _activeAssembly = assembly;
+      final asm = assembly;
       // F19：装配期间用户已点停止 → 对刚就绪的 assembly 补发 abort（预中止：
       // loop 首个 _aborted 检查即 LoopFinished 收尾，Run 立即结束而非空转）。
       if (_pendingAbort) assembly.abort(reason: 'user abort (connecting phase)');
@@ -1007,185 +1000,50 @@ class _ChatPageState extends State<ChatPage>
           toolDescriptions[s.name] = s.description;
         }
       }
-      // Run 编排核下沉（window-slim P1-A）：workspaceFilter/记忆冷热分层/
-      // 系统前缀/归因数据/maskTool 由编排件组装，窗口只映射到轨道。
-      final plan = await _runOrchestrator.plan(
-        assembly: assembly,
-        memoryStore: memoryStore,
-        wsStates: _session.wsStates,
-        conversationId: convId,
-        transcript: _session.transcript,
-        skills: _session.skills!,
-        baseSystemPrompt: _systemPrompt,
-        onCapsule: onCapsule,
-        onWriteFailure: onWriteFailure,
-      );
-      // 断连降级通告（prompt-mgmt §8.2.1）：激活私有服务掉线，本 Run 已收敛
-      // 降级纯公共模式——可见通告，禁幽灵上下文静默。
-      if (plan.slotNotice != null) {
-        _add(TrackNote(plan.slotNotice!, danger: true));
-      }
-      // 上下文归因（展示 only）：本轮注入的记忆/服务快照挂轨道，点开 BottomSheet
-      // 查详情。「本轮排除」为预留钩子——当前不接线（onItemExclude=null）。
-      _add(
-        TrackContextAttribution(
-          memories: [
-            for (final e in plan.memoryEntries)
-              ContextAttributionItem(source: e.scope, text: e.content),
-          ],
-          services: [
-            for (final id in router.serverIds)
-              ContextAttributionItem(
-                source: id,
-                text: assembly.serverSummaries[id] ?? '(无摘要)',
-              ),
-          ],
-          droppedCount: plan.droppedCount,
-          // P1-7：记忆不再在此重列——给直达 AppBar「本轮记忆」的入口
-          // （同一份内容只留一处可管理位）。
-          onViewMemories: _showMemoryListSheet,
-        ),
-      );
       _setPill('thinking', CapsuleTone.l1);
       // 附件属单次发送（M1-T3）：装配已消费快照，起步即清药丸。
       if (_pendingResources.isNotEmpty && mounted) {
         setState(_pendingResources.clear);
       }
-      await for (final e in assembly.loop.run(
-        systemPrompt: plan.systemPrompt, // 静态前缀（P1-3b 断点 A，编排件组装）
-        systemTail: plan.memSection,
-        // 记忆增量区沉底（context-stepped-pruning §6.5）：周期内提取的变更
-        // 只追加在稳定前缀之后、本轮提问之前，不推移快照+窗口原文。
-        contextFooter: plan.contextFooter,
-        // 资源附件 footer（M1-T3）拼在用户文本之前（模型先见附件再见图）。
-        userPrompt: (assembly.resourceContextFooter ?? '') + prompt,
-        history: List.of(_session.transcript), // D11：上轮 transcript 续接
-        workspaceFilter: plan.workspaceFilter, // P2-6：In-band 分流+胶囊
-        maskTool: plan.maskTool, // P3-2：让位私有域发送边界脱敏
-        tools: const [],
-      )) {
-        switch (e) {
-          case LoopThinkingDelta(:final text):
-            // 思考轨（2026-10-21 M1，默认收起）：首 delta 经 _add 建条目
-            // （保序铁律：先刷文本缓冲），后续追加。PII 边界：思考流与正文
-            // 同域（宿主本机视图——不进 transcript/工具结果，无跨端暴露面），
-            // 出站遮蔽与占位符还原由 FencedCloudEngine 统一覆盖，本层不重复遮。
-            final activeThinking = _activeThinkingEntry;
-            if (activeThinking != null) {
-              activeThinking.append(text);
-            } else {
-              final entry = TrackThinking(text);
-              _activeThinkingEntry = entry;
-              _add(entry);
-            }
-          case LoopTextDelta(:final text):
-            _appendText(text);
-          case LoopToolCallStarted(:final call):
-            // A2：状态带人话相位「执行中 · 动作」；原名 + 描述全文归 CallCard
-            // （头部等宽遥测轨 + 灰阶人话行，可展开全文）。
-            _setPill(
-              '执行中 · ${StatusStrip.toolAction(call.name, toolDescriptions)}',
-              CapsuleTone.l1,
-            );
-            final entry = TrackCall(tool: call.name)
-            ..description = toolDescriptions[call.name];
-            _activeCallEntry = entry;
-            // 思考轨分段断开：工具卡之后的下一轮思维另起条目（保轨迹顺序，
-            // 不把新思维追加到工具卡之前的旧条目里）。
-            _activeThinkingEntry = null;
-            // 工具卡插入打断文本流：先刷盘残余保序（尾帧不被卡甩后），后续
-            // 文本另起条目。
-            _status.breakTextStream();
-            _add(entry);
-            _watcher?.start();
-          case LoopToolProgress(
-            :final call,
-            :final progress,
-            :final total,
-            :final message,
-          ):
-            final entry = _activeCallEntry;
-            if (entry != null && entry.tool == call.name) {
-              // 切片 C：工具卡相位自管，进度更新仅本卡局部重绘（无整页 setState）。
-              final tail = message == null ? '' : ' · $message';
-              entry.patch(
-                progressNote: total != null
-                    ? '$progress/$total$tail'
-                    : '$progress$tail',
-              );
-            }
-            _watcher?.onProgressFrame();
-          case LoopToolCallFinished(:final call, :final result):
-            final rejected = result.content.contains('"user_rejected"');
-            final entry = _activeCallEntry;
-            final phase = result.isError
-                ? CallCardPhase.failed
-                : CallCardPhase.success;
-            if (entry != null && entry.tool == call.name) {
-              // 真实结果优先于 Abort 的 cancelled 标记（在途调用完成后照常回填）
-              // 切片 C：工具卡相位自管，patch 仅本卡局部重绘（无整页 setState）。
-              entry.patch(
-                phase: phase,
-                preview: _preview(result.content),
-                resultText: result.content,
-                progressNote: null,
-              );
-            } else {
-              _add(
-                TrackCall(tool: call.name)
-                  ..phase = phase
-                  ..preview = _preview(result.content)
-                  ..resultText = result.content,
-              );
-            }
-            _activeCallEntry = null;
-            _watcher?.stop();
-            // P1-4：工具结束 ≠ Run 结束——回「思考中」（环回到模型推理），
-            // 杜绝旧行为置 idle 让用户误判任务已完成。
-            _setPill(rejected ? 'rejected' : 'thinking', CapsuleTone.l1);
-          case LoopFinished(:final text, :final transcript):
-            // 步 3 写回契约（§8.1-1）：全量替换（非 append）——D11 下轮续接
-            //（未配对尾巴已截断），同会话多轮后条数不翻倍 = 行为变更③。
-            _session.replaceTranscript(transcript);
-            _appendText(text.isEmpty ? '' : '\n');
-            // C6：完成通告走常量（dual_track_stream 据此把它从 Run 概要
-            // 折叠中摘出、单独 Emerald 成行——重要反馈不被遥测通告稀释）。
-            // P0-3 降噪（2026-10-22）：本轮已产出可见正文时，**答案本身即完成
-            // 信号**（流式停止 + pill 转「已完成」），不再另起一行「✓ 任务完成」
-            // ——多轮会话里每轮必出即为纯占位。仅当本轮**零正文**（纯工具调用/
-            // 纯思考）才补这一行，避免「任务结束了吗」的悬空感。
-            if (text.trim().isEmpty) {
-              _add(const TrackNote(kTaskDoneNote, danger: false));
-            }
-            _setPill('done', CapsuleTone.idle);
-            // §4.1：L1 药丸完成 → 极轻微 tick
-            unawaited(HapticFeedback.selectionClick());
-        }
-      }
-      // 会话绑定捕获（window-slim P1-A：三态写回契约收口编排件）——模型可能
-      // 在本轮经 use_server/activate 改写私有槽位，收尾前落会话元数据。
-      _runOrchestrator.writebackSlot(router: router, session: _session);
+      await useCase.run(
+        assembly: asm,
+        session: _session,
+        memoryStore: memoryStore,
+        conversationId: convId,
+        transcript: _session.transcript,
+        skills: _session.skills!,
+        baseSystemPrompt: _systemPrompt,
+        userPrompt: prompt,
+        onCapsule: onCapsule,
+        onWriteFailure: onWriteFailure,
+        onSlotNotice: (notice) => _add(TrackNote(notice!, danger: true)),
+        onAttribution: (plan) {
+          // 上下文归因（展示 only）：本轮注入的记忆/服务快照挂轨道，点开
+          // BottomSheet 查详情。
+          _add(
+            TrackContextAttribution(
+              memories: [
+                for (final e in plan.memoryEntries)
+                  ContextAttributionItem(source: e.scope, text: e.content),
+              ],
+              services: [
+                for (final id in router.serverIds)
+                  ContextAttributionItem(
+                    source: id,
+                    text: asm.serverSummaries[id] ?? '(无摘要)',
+                  ),
+              ],
+              droppedCount: plan.droppedCount,
+              onViewMemories: _showMemoryListSheet,
+            ),
+          );
+        },
+      );
     } on Object catch (e) {
-      // ux-hardening P0-2：白话错误卡（标题/建议/可复制原始异常）+ 重试入口，
-      // 替代原始异常栈直怼轨道。
+      // ux-hardening P0-2：白话错误卡（标题/建议/可复制原始异常）+ 重试入口。
       _addErrorCard(e);
       _setPill('failed', CapsuleTone.danger);
     } finally {
-      _watcher?.stop();
-      _watcher = null;
-      _activeCallEntry = null;
-      _activeThinkingEntry = null; // Run 收尾：思考轨句柄断开（条目已入轨）
-      // §6.4 TTL 机会主义压实的判定起点：本 Run 结束时刻（governor 持有，
-      // 随编排件——window-slim P1-A）。
-      _runOrchestrator.markRunEnded();
-      // P0 尾帧铁律（stream-perf §3）：快照与终态渲染前强制清空流控缓冲——
-      // 覆盖正常收尾 / Abort / 异常三条路径，缓冲期内到达的尾帧不得丢失。
-      _status.breakTextStream();
-      // 资源释放内核化（谁持资源谁释放）：connections stop + client.close +
-      // refStore 焚，全部在内核 close() 内（幂等；失败 DEGRADE 不抛穿 finally）。
-      await assembly?.close();
-      _activeAssembly = null;
-      assembly = null;
       _pendingAbort = false; // F19：Run 收尾清预中止标志（下 Run 干净起步）
       await _persistCurrent(); // T3b：Run 收尾快照（含 Cancelled 终态）
       if (mounted) _status.endRun();
@@ -1211,9 +1069,7 @@ class _ChatPageState extends State<ChatPage>
       // F19：Run 仍在装配期（negotiate/加载未完）——置预中止标志，赋值点补发。
       _pendingAbort = true;
     }
-    _activeAssembly?.abort(
-      reason: 'user abort',
-    ); // 内核遍历全部 face 取消在途 + loop.abort
+    _useCase?.cancel(); // 统一取消入口（S3）：useCase 自持在途装配锚点→abort
     // T4 Abort 兜底（编排 B1）：未决计划卡以取消完成——completer 无超时路径，
     // 漏兜底即永挂（propose execute 不返回，Run 无法收口）。
     for (final e in _status.tracks) {
@@ -1567,5 +1423,104 @@ class _ScrollToBottomFab extends StatelessWidget {
             )
           : icon,
     );
+  }
+}
+
+/// S3 渲染端口实现：把 [AgentLoop] 事件映射为轨道条目与状态带（原 `_sendGuarded`
+/// 内的事件 switch 整体下沉至此，逻辑逐条照搬不改语义）。
+///
+/// 同库私有可见：直接访问 [_ChatPageState] 的轨道与状态带成员。
+class _RunSink implements ChatRunSink {
+  _RunSink(this._state, this._descriptions);
+
+  final _ChatPageState _state;
+  final Map<String, String> _descriptions;
+
+  @override
+  void onThinking(String text) {
+    final active = _state._activeThinkingEntry;
+    if (active != null) {
+      active.append(text);
+    } else {
+      final entry = TrackThinking(text);
+      _state._activeThinkingEntry = entry;
+      _state._add(entry);
+    }
+  }
+
+  @override
+  void onText(String text) => _state._appendText(text);
+
+  @override
+  void onCallStarted(AssembledToolCall call) {
+    _state._setPill(
+      '执行中 · ${StatusStrip.toolAction(call.name, _descriptions)}',
+      CapsuleTone.l1,
+    );
+    final entry = TrackCall(tool: call.name)..description = _descriptions[call.name];
+    _state._activeCallEntry = entry;
+    // 思考轨分段断开：工具卡之后的下一轮思维另起条目。
+    _state._activeThinkingEntry = null;
+    // 工具卡插入打断文本流：先刷盘残余保序。
+    _state._status.breakTextStream();
+    _state._add(entry);
+    _state._watcher?.start();
+  }
+
+  @override
+  void onCallProgress(
+    AssembledToolCall call,
+    num progress,
+    num? total,
+    String? message,
+  ) {
+    final entry = _state._activeCallEntry;
+    if (entry != null && entry.tool == call.name) {
+      final tail = message == null ? '' : ' · $message';
+      entry.patch(
+        progressNote: total != null ? '$progress/$total$tail' : '$progress$tail',
+      );
+    }
+    _state._watcher?.onProgressFrame();
+  }
+
+  @override
+  void onCallFinished(AssembledToolCall call, ToolExecutionResult result) {
+    final rejected = result.content.contains('"user_rejected"');
+    final entry = _state._activeCallEntry;
+    final phase = result.isError ? CallCardPhase.failed : CallCardPhase.success;
+    if (entry != null && entry.tool == call.name) {
+      // 真实结果优先于 Abort 的 cancelled 标记（在途调用完成后照常回填）。
+      entry.patch(
+        phase: phase,
+        preview: _ChatPageState._preview(result.content),
+        resultText: result.content,
+        progressNote: null,
+      );
+    } else {
+      _state._add(
+        TrackCall(tool: call.name)
+          ..phase = phase
+          ..preview = _ChatPageState._preview(result.content)
+          ..resultText = result.content,
+      );
+    }
+    _state._activeCallEntry = null;
+    _state._watcher?.stop();
+    // P1-4：工具结束 ≠ Run 结束——回「思考中」。
+    _state._setPill(rejected ? 'rejected' : 'thinking', CapsuleTone.l1);
+  }
+
+  @override
+  void onFinished(String text, List<CloudChatMessage> transcript) {
+    // 步 3 写回契约（§8.1-1）：全量替换（非 append），防止多轮后条数翻倍。
+    _state._session.replaceTranscript(transcript);
+    _state._appendText(text.isEmpty ? '' : '\n');
+    // P0-3 降噪：本轮已有可见正文时答案本身即完成信号；零正文才补完成行。
+    if (text.trim().isEmpty) {
+      _state._add(const TrackNote(kTaskDoneNote, danger: false));
+    }
+    _state._setPill('done', CapsuleTone.idle);
+    unawaited(HapticFeedback.selectionClick());
   }
 }

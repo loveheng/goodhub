@@ -95,7 +95,7 @@ goodhub 不是纯客户端。除 `lib/mcp/` 客户端外，`lib/gateway/` 是一
 
 ## 6. 其他债务
 
-- `lib/mcp/tool_router.dart` 为**未接线**实现（注释明示 F1.9 / P0 唯一实现，仅 test 引用；生产走 `coordinator/tool_router.dart`）。它带海关过滤，因现网 server 普遍不下发标记而不敢启用（启用会全部过滤归零）。属已写未用债务，非 bug。**2026-10-21 进展**：标记口径随插件 SDK 0.2.0 更正为 `_meta.goodhub.visibility`（旧 `annotations["x-mcp-export-to-shared"]` 作废），过滤已接线在对外暴露面（网关 PC 投影），本机链路仍不过滤；本件继续保留待收编（架构债 #9）。
+- `lib/mcp/tool_router.dart` 为**未接线**实现（注释明示 F1.9 / P0 唯一实现，仅 test 引用；生产走 `coordinator/tool_router.dart`）。它带海关过滤，因现网 server 普遍不下发标记而不敢启用（启用会全部过滤归零）。属已写未用债务，非 bug。**2026-10-21 进展**：标记口径随插件 SDK 0.2.0 更正为 `_meta.goodhub.visibility`（旧 MCP `annotations` 私有字面量口径作废）<!-- drift:keep：演进叙述 -->，过滤已接线在对外暴露面（网关 PC 投影），本机链路仍不过滤；本件继续保留待收编（架构债 #9）。
 
 ## 7. 结论与建议
 

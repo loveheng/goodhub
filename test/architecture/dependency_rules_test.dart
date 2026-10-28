@@ -252,9 +252,9 @@ const Map<String, Set<String>> kAllowedDomainEdges = <String, Set<String>>{
   'sandbox': <String>{'core'},
   'task': <String>{'mcp', 'core'},
   'resources': <String>{'core'},
-  'app': <String>{'mcp', 'coordinator', 'task', 'llm', 'resources'},
+  'app': <String>{'mcp', 'coordinator', 'task', 'llm', 'resources', 'sandbox'},
   'coordinator': <String>{'core', 'llm', 'mcp', 'sandbox', 'task', 'resources'},
-  'gateway': <String>{'coordinator', 'mcp', 'llm', 'sandbox', 'app'},
+  'gateway': <String>{'core', 'coordinator', 'mcp', 'llm', 'sandbox', 'app'},
   'gateway_api': <String>{'gateway', 'coordinator', 'mcp'},
   'ui': <String>{'coordinator', 'core', 'app', 'gateway', 'gateway_api', 'update'},
   'update': <String>{}, // 独立叶子域

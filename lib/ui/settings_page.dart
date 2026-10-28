@@ -60,6 +60,7 @@ import 'sections/user_prompts_section.dart';
 import 'components/panel_error_row.dart';
 import 'sections/appearance_section.dart';
 import 'tokens/console_tokens.dart';
+import '../../app/service_directory.dart';
 
 /// 测试兼容位：既有节点卡面板测试经 `ui/settings_page.dart` 引用探活入口类型
 /// （`server_nodes_panel_test.dart:60`）——typedef 已随段迁至 nodes_section，
@@ -222,7 +223,7 @@ class _SettingsPageState extends State<SettingsPage> {
           const SizedBox(height: 12),
           // 顺序按使用频率：先选引擎，再接服务，后管放行与覆写。
           ByokSection(
-            store: widget.byokStoreOverride ?? ByokStore(),
+            store: widget.byokStoreOverride ?? byokStore(),
             onFlash: _flash,
             errorRowBuilder: _panelError,
           ),

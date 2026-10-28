@@ -25,11 +25,11 @@ updated: 2026-10-23
 | `sandbox/` | 记忆沙盒域（memory/conversation/workspace 三 store） | `core` |
 | `task/` | 任务循环域（goodshare 远程任务 claim→推理→apply） | `mcp`、`core`（串行写基准件） |
 | `resources/` | 资源中心内核域（本地文件库 ResourceStore；resource-center M1） | `core` |
-| `app/` | 装配容器（依赖注入 seed，`service_directory.dart`；`task_consume_bootstrap` 宿主接管装配） | `mcp`、`coordinator`（hybrid 装配件）、`task`（消费接管）、`llm`（引擎类型装配）、`resources`（资源中心单例 seed） |
+| `app/` | 装配容器（依赖注入 seed，`service_directory.dart`；`task_consume_bootstrap` 宿主接管装配） | `mcp`、`coordinator`（hybrid 装配件）、`task`（消费接管）、`llm`（引擎类型装配）、`resources`（资源中心单例 seed）、`sandbox`（会话/工作区 store 的应用级 seed，2026-10-28 随 S1 增） |
 | `coordinator/` | 编排域（AgentLoop/权限/熔断/PII/上下文治理/`$ref`/内核四件套/Run 装配核） | `core`、`llm`、`mcp`、`sandbox`、`task`、`resources` |
-| `gateway/` | 聚合网关域（Server 角色，`:8766/mcp`；headless 窗口） | `coordinator` **执行面白名单**（§1.4）、`mcp`、`llm`、`sandbox`、`app`；**禁 `ui`**（红灯） |
+| `gateway/` | 聚合网关域（Server 角色，`:8766/mcp`；headless 窗口） | `core`（Actor 值对象等跨域 DTO，2026-10-28 随 S6 增）、`coordinator` **执行面白名单**（§1.4）、`mcp`、`llm`、`sandbox`、`app`；**禁 `ui`**（红灯） |
 | `gateway_api/` | 网关 API 薄面 | `gateway`；`coordinator`（mcp_tool_face，gateway_control 装配引用）、`mcp`（server_endpoints，同上） |
-| `ui/` | 窗口层（聊天/设置/看板/更新/联调页 + components/sections） | `coordinator`、`core`、`app`、`gateway`（仅窗口→窗口面，如 consent 弹层）、`gateway_api`、`update`；对 `mcp`/`sandbox`/`llm` 仅**白名单直连**（§1.4，只减不增） |
+| `ui/` | 窗口层（聊天/设置/看板/更新/联调页 + components/sections） | `coordinator`、`core`、`app`、`gateway`（仅窗口→窗口面，如 consent 弹层）、`gateway_api`、`update`；对 `mcp`/`sandbox`/`llm` 仅**白名单直连**（§1.4，只减不增）；对 `task`/`resources` 仅**管理面窗口**直连（§1.4 类别 1） |
 | `update/` | 自更新域（manifest/service/installer） | 无内部出向（独立叶子域） |
 
 `main.dart`（装配入口）可 import 任意域——装配层唯一例外，收敛纯装配职责（引擎预热 / 记忆清扫 / `$ref` 启动清池 / 首页挂载），**业务逻辑不得回灌 `main.dart`**。
@@ -105,7 +105,7 @@ flowchart TD
    - **编解码归模型所有方**：transcript/协议 codec 住模型域（`llm/cloud/chat_message_codec.dart`），存储层只认 core DTO + JSON Map，**禁止在存储层 import 模型域类型**。
    - **无 UI 裁决 fail-closed**：服务域触达 Human-In-The-Loop 能力（确认卡/弹层）时，UI 实现住窗口层、经端口注入；**桥缺位/超时/异常三路必须恒 `approved: false` 快速拒绝**（范式：`gateway_security.dart` + `ui/gateway_consent_dialog.dart`，reason 前缀 `headless_no_ui_prompt`），严禁悬挂 Completer 或静默放行（详见 §4.3）。
    - **生命周期 Owner 随端口声明**：注入对象「谁创建谁销毁、有无独立 dispose」必须写进端口文件头注释（范式：`connection_face.dart`——face 无独立 dispose，释放唯一入口 = owner 调 `client.close()`）。
-7. **海关过滤（F1.9）：已接线在对外暴露面，本机链路不过滤**（2026-10-21 随插件 SDK 0.2.0 更正）。标记口径 = `tools/list` 条目的 **`_meta.goodhub.visibility`**（`shared` / `private`；缺失 / 形状异常 / 未知取值一律 private）；**旧口径 `annotations["x-mcp-export-to-shared"] 已作废**（不得把访问控制标记塞进 MCP `annotations`——其规范定位是 advisory hints，且 `x-` 顶官方命名空间）。三条纪律：
+7. **海关过滤（F1.9）：已接线在对外暴露面，本机链路不过滤**（2026-10-21 随插件 SDK 0.2.0 更正）。标记口径 = `tools/list` 条目的 **`_meta.goodhub.visibility`**（`shared` / `private`；缺失 / 形状异常 / 未知取值一律 private）；**旧 `annotations` 私有字面量口径已作废** <!-- drift:keep：旧口径特指禁令叙述 -->（不得把访问控制标记塞进 MCP `annotations`——其规范定位是 advisory hints，且 `x-` 顶官方命名空间）。三条纪律：
    - **声明非 ACL**：服务端 / SDK 不得因标记剔除 `tools/list` 条目或拦截 `tools/call`；过滤只在**目录层**收窄，且**只发生在对外暴露面**（`gateway/mcp_gateway_handler.dart` 的 PC 投影只回 shared）。**本机链路（`coordinator/tool_router.dart` 与宿主聊天装配面）保持能力全集**——未打标服务端在此口径下全量归 private，过滤即生产工具面归零。
    - **不合成安全边界**：调用方可信性另由同签名 / 信任白名单 / L2 确认卡把关，可见性标记不得与之合并成一套。
    - `lib/mcp/tool_router.dart` 是规则的独立实现与单测面，**不删不引**（机械红灯：§1.0 护栏表；收编进 `coordinator/tool_router.dart` 记为架构债 #9）。落地须带等价性单测 + 全量工具可见性回归（已随本轮补）。
@@ -127,7 +127,7 @@ flowchart TD
 
 窗口对下层域、gateway 对 coordinator 的直连按以下四类处置，白名单**只减不增**；**现状边与存量基线数据查 [`index.md`](index.md)「直连白名单基线」**：
 
-1. **配置类窗口**：设置/看板/更新类窗口即该服务的管理面，**允许**直接依赖目标域的 store/配置模型/服务面；新增此类直连须在段文件头注释声明「管理面直连」理由。
+1. **配置类 / 管理面窗口**：设置 / 看板 / 更新 / 资源中心 / 任务对账等窗口即该服务的管理面，**允许**直接依赖目标域的 store / 配置模型 / 服务面（含 `task` / `resources` 域，与 §1.0 ui 行一致）；新增此类直连须在段文件头注释声明「管理面直连」理由，并登记 `index.md` 直连白名单。
 2. **装配容器消费**（`ui/` → `app/service_directory.dart`）：**允许**，且是**推荐路径**——跨域 store 一律经装配容器取单一实例（§1.1 规则 2），不手拼。
 3. **联调/spike 窗口**：非生产路径，**豁免**直接依赖内部件（含 coordinator 内部编排、mcp 假传输）——但**不得复制装配胶水**（复用 `McpRuntime.mount/mountEndpoint` 挂载原语 + `clientFactory` 注入 fake 传输）；新增 spike 页须先登记于 `index.md`。
 4. **存量直连（遗留债）**：存量清单逐边登记于 `index.md`，**新增任何清单外直连即违例**；收敛方向 = 经 coordinator 门面 + 端口回传，每清一边同轮更新 index.md。
@@ -193,7 +193,7 @@ class ActionCardFailed extends ActionCardState { final String error; /* ... */ }
 
 - **Cancelled ≠ Failed（§10 纪律）**：用户 Abort / `notifications/cancelled` 级联终态必须落 `Cancelled`；仅真实错误落 `Failed`。**禁止混用**——审计语义不可逆。
 - **Abort 级联固定顺序（§10）**：UI Abort → ① 终止本地 LLM Generator → ② 终结本地执行队列 → ③ 对外部 Server 下发 `notifications/cancelled`（不只断 SSE）→ ④ 卡片终结为 `Cancelled`。实现必须按此顺序，不得乱序/跳步。
-- **命名口径**：取消通知一律用 MCP 2025-06-18 规范名 **`notifications/cancelled`**，禁止早期草案名 `$/cancelRequest`。
+- **命名口径**：取消通知一律用 MCP 2025-06-18 规范名 **`notifications/cancelled`**，禁止早期草案名 <!-- drift:keep：禁令条款须点名退役拼写 -->`$/cancelRequest`。
 
 ### 2.4 状态归属纪律
 
@@ -220,7 +220,7 @@ class ActionCardFailed extends ActionCardState { final String error; /* ... */ }
 - **复合「读-改-写」单元同样必须接入**：只串行化底层 `write` 不够——两个实例仍会各自读到同一份旧内容、后写覆盖前写。键粒度：MemoryStore 取沙盒目录（三件套共锁），WorkspaceStateStore 取目录 + 会话 id（不同会话仍可并行）。
 - **排空握手一律用 `settled` / `ioDrained`，禁止用固定 `Future.delayed` 猜等**（全量并发 CPU 饱和即 flaky）。
 - ops.log 轮转（10MB 上限 + `.1` 单代滚动 + 启动清理）由调用方在 append 链路上检查触发，**轮转本身也必须入队串行执行**。
-- 禁止并发裸写磁盘；禁止绕过 writer 直接 `File.writeAsString`。
+- 禁止并发裸写磁盘；禁止绕过 writer 直接 `File.writeAsString`。**原子写唯一入口 = `KeyedWriteQueue.instance.enqueueAtomicWrite(path, bytes)`**（队列内 `tmp → flush → rename`；手写副本禁止再造，机械门禁 R10）——2026-10-28 §S4 收口后，六处手写副本已全部迁入该入口。
 
 ## 4. 容错、熔断与降级（Fault Tolerance & Degradation）
 
@@ -271,7 +271,8 @@ class ActionCardFailed extends ActionCardState { final String error; /* ... */ }
 
 - **MCP 命名空间隔离（F1.2）**：工具与路由统一 `<server_id>__<tool_name>`——**双下划线仅作两段分隔符**，各段自身 snake_case（如 `goodshare__list_notes`）；工具名内部禁止再出现双下划线。生产路由只引 `lib/coordinator/tool_router.dart`（`lib/mcp/tool_router.dart` 为海关隔离件，§1.1 规则 7）。
 - **数据引用前缀（F1.7）**：惰性注水句柄统一 `$ref:<server_id>:<unique_id>`。
-- **自定义注解（F1.9）**：对外共享声明统一 `x-` 前缀：`x-mcp-export-to-shared`。
+- **能力可见性声明（F1.9）**：对外共享声明统一收在 `tools/list` 条目的 **`_meta.goodhub.visibility`**（取值 `shared` / `private`；解析口径、三条纪律与 ISOLATED 实现见 §1.1 规则 7）；GoodHub 私有扩展一律落在 `_meta.goodhub` 子树，**不得占用 MCP `annotations` 命名空间**（其规范定位是 advisory hints）。
+- **取消通知命名**：一律用 MCP 2025-06-18 规范名 **`notifications/cancelled`**，早期草案名作废（§2.3）。
 - **文件命名**：小写蛇形（`session_manager.dart` ↔ `SessionManager`），文件名与主要暴露类型严格对应。
 
 ### 5.7 新增工具自查清单（任一缺失即不合格）
@@ -327,6 +328,7 @@ class ActionCardFailed extends ActionCardState { final String error; /* ... */ }
 | 释放完整性（注入 fake 计数断言） | `test/mcp/release_hygiene_test.dart` 等（§7/§8.1） | `flutter test` |
 | 契约面漂移（退役词条 / 单源常量 / 超标登记核对） | `test/architecture/drift_rules_test.dart`（flutter test 版，读 `scripts/agent-tools/drift-registry.txt`） | `flutter test` |
 | 同上（引擎，跨项目共用） | 全局 `toolbox run drift-guard`（shell 版，读同一 registry） | pre-commit 钩子 |
+| 原子写唯一入口（§3.2 + §S4） | `arch-guard.sh` R10 + `test/architecture/atomic_write_rules_test.dart`（CI 镜像，含金丝雀） | pre-commit 钩子 / `flutter test` |
 | 文件膨胀控制 | 单文件软红线 800 行（§8.3） | 评审 + `index.md` 清单 |
 
 > **契约面漂移的规则数据 = `scripts/agent-tools/drift-registry.txt`**（唯一数据源；引擎与 Dart 镜像同读，registry 缺行即漏检）。三类登记：`BANNED` 退役词条（token 级，面向下游 copy 与 docs）· `CONST` 单源常量（字面量级，只许出现在声明处 + 登记镜像）· `OVERSIZE` 超标登记核对（行数级，>800 行的 lib/ 件须登记在 `index.md` 超标清单）。**新规则只加数据行、不改引擎代码**——新退役词条 / 新单源常量 / 新超标件须**同轮登记**，缺登记即被门禁拦下（发现即维护）。诚实边界：docs 与代码的散文级集合描述一致性（如三档 vs 四档）机械不可靠，**不做扫描**，归 `::audit` 人判。

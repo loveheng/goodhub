@@ -148,7 +148,7 @@ flowchart TB
 
 **模型**：服务端通过 `tools/list` 条目的 **`_meta.goodhub.visibility`** 声明可见性范围（`shared` / `private`），**字段缺失 / 形状异常 / 取值未知一律按 `private` 兜底**；客户端共享层做「海关过滤 → 命名空间隔离 → 虚拟接线管道 → 共享总线 Facade」。
 
-> **口径更正（2026-10-21，随插件 SDK 0.2.0 落地）**：早期方案把访问控制标记塞进 MCP `annotations`（`x-mcp-export-to-shared`）——`annotations` 的规范定位是 advisory hints（提示非保证），且 `x-` 顶了官方命名空间。**现行走 `_meta.goodhub`**：GoodHub 私有命名空间收在 `goodhub` 子树下（为 `hidden` 等正交维度留位置），与标准 `annotations`（`readOnlyHint` / `destructiveHint`）正交分离。
+> **口径更正（2026-10-21，随插件 SDK 0.2.0 落地）**：早期方案把访问控制标记塞进 MCP `annotations` 的私有字面量——`annotations` 的规范定位是 advisory hints（提示非保证），且 `x-` 顶了官方命名空间。**现行走 `_meta.goodhub`**：GoodHub 私有命名空间收在 `goodhub` 子树下（为 `hidden` 等正交维度留位置），与标准 `annotations`（`readOnlyHint` / `destructiveHint`）正交分离。
 
 - **采纳且升格为硬约束**：服务端自治权——能力边界由服务端声明决定，客户端零业务入侵；对外暴露（F1.5 Server 角色）的 tools/list **只返回海关过滤后的目录**，第一天即如此，不留全量暴露过渡态。
 - **声明 ≠ 访问控制（责任边界，SDK 侧明确定位）**：SDK 永不因该标记剔除 `tools/list` 条目（目录恒为能力全集）、永不拦截 `tools/call`——「要不要收进共享目录 / 要不要向外部 Agent 暴露」完全是本仓 client 端判断；真正的调用方可信性（同签名 / 信任白名单）是另一条独立维度，不得与本标记合成一套安全边界。
@@ -156,7 +156,7 @@ flowchart TB
   1. **权限裁决双源**：`read_only` 注解与客户端 L1/L2 网关冲突时——服务端注解只作建议值，客户端权限网关保持最终裁决权，冲突按更严格者执行（防御性：不信任声明，只信任验证）；
   2. **注解非标准字段**：MCP 规范 annotations 标准字段为 `readOnlyHint`（Hint 后缀=提示非保证，恰好支持裁决建议）；`export_to_shared` 为自定义扩展——落地前核对 goodshare MCP SDK 对 annotations 的透传支持，并将字段组写入接缝契约；
   3. **payloadTransformer 隐式清洗**：接线管道的脱敏/截断对模型不可见，须静默失真风险——transformer 结果必须附带截断/脱敏说明回传（对齐「正文不预截断」契约精神）。
-- **注解命名规范（2026-10-10 评审修正，2026-10-21 更正）**：标准 hint 用 MCP 规范 `readOnlyHint` / `destructiveHint`；**GoodHub 私有扩展一律收在 `_meta.goodhub` 子树**（不再用 `annotations` 的 `x-` 前缀——`x-` 顶官方命名空间且混淆「提示」与「访问控制」）。早期草案裸命名 `export_to_shared` 与中期 `x-mcp-export-to-shared` 均已作废。
+- **注解命名规范（2026-10-10 评审修正，2026-10-21 更正）**：标准 hint 用 MCP 规范 `readOnlyHint` / `destructiveHint`；**GoodHub 私有扩展一律收在 `_meta.goodhub` 子树**（不再用 `annotations` 的 `x-` 前缀——`x-` 顶官方命名空间且混淆「提示」与「访问控制」）。早期草案命名与中期私有字面量形态均已作废。
 - **L1/L2 裁决（2026-10-21 修订，「双缺从严」条款下线）**：按**是否显式声明**裁决——显式 `destructiveHint: true` / `readOnlyHint: false` → L2；显式 `readOnlyHint: true` → L1；**未声明 hints（`annotations` 整体缺席或无该字段）→ L1**。hints 自 SDK 0.2.0 起**选择性下发**，没有 `readOnlyHint` 不等于有副作用；原「表未命中一律 L2（未知从严）」是为堵 annotations 未就绪期的表漂移洞，现该前提已消失。本地只读白名单表（goodshare 纯查询七项：list_items / get_item / query_machine_data / list_workspaces / list_jobs / get_job_status / get_timeline_context）**降级为台账，不再参与裁决**。
 - **缓存失效**：服务端改标（shared→private）后客户端共享池不得继续暴露旧能力——能力目录带版本/时间戳，`tools/list` 变更时全量刷新（复用 F1.4 探活心跳时机）。
 - **分期落位**：海关过滤进 M1（ToolRouter 注册表加门控）；`getExportedCatalog()` 作为 Server tools/list 数据源进 M1.5；MeshWireController 接线管道进 M2.5（依赖 `$ref` 暂存池）。
@@ -171,7 +171,7 @@ flowchart TB
 
 ### 10. 取消与异常链路（Abort & Cancellation Flow，2026-10-10 二轮评审补齐）
 
-- **级联顺序（评审建议修正）**：UI Abort → ① 终止本地 LLM Generator → ② 终结本地执行队列 → ③ 对外部 Server 下发 MCP 标准 `notifications/cancelled` 通知（不只断 SSE；原文 `$/cancelRequest` 为早期草案方法名，2026-10-11 随 M3-T2 实施修正为 MCP 2025-06-18 规范名）→ ④ 操作轨卡片状态机终结为 `Cancelled`（区别于 `Failed`）。
+- **级联顺序（评审建议修正）**：UI Abort → ① 终止本地 LLM Generator → ② 终结本地执行队列 → ③ 对外部 Server 下发 MCP 标准 `notifications/cancelled` 通知（不只断 SSE；早期草案命名已于 2026-10-11 作废）→ ④ 操作轨卡片状态机终结为 `Cancelled`（区别于 `Failed`）。
 - **设计原则（2026-10-10 三轮评审升格）**：**用户交互不占用网络连接生命周期**——L2 拦截发生时立即以 `finish_reason: tool_calls` 正常结算当前流式会话（落盘上下文），用户确认后作为新 Turn 触发下一轮推理。LLM 流式响应本就以 tool_calls 为合法终点，等待用户操作而挂起长连接从根上就是错误设计（Socket 超时断裂风险）。
 - **写操作半程悬挂**：已提交的写调用不可撤销——Abort 时 UI 必须明示「已部分完成 N/M 步」，不得假装全部取消。**补偿语义设计稿（2026-10-11 拍板 C6，实现归 M3 UI 全量）**：
   1. **步骤溯源零新采集**：AgentLoop 的 `LoopToolCallStarted/Finished` 事件流已含每次调用与结果——Abort 收尾卡按事件流生成三态清单（已完成 / 未执行 / 被拒），N/M = 已完成写调用数 / 总写调用数；
@@ -233,7 +233,7 @@ flowchart TB
 ### 14. 极简兼容与能力协商（2026-10-10 五轮评审：采纳）
 
 **问题**：接缝契约前置依赖已膨胀至 7 项，第三方 Vanilla MCP Server（官方 SQLite/Filesystem Server 等）不可能全量实现——必须非对称降级。
-- **Tier 1（全量生态契约）**：goodshare 类深度集成 App——Resources/Progress/Prompts/Sampling + 私有扩展（x-mcp-export-to-shared/端口发现/Intent 唤醒）。
+- **Tier 1（全量生态契约）**：goodshare 类深度集成 App——Resources/Progress/Prompts/Sampling + 私有扩展（可见性声明 / 端口发现 / Intent 唤醒）。
 - **Tier 2（Vanilla MCP）**：仅 `tools/list` + `tools/call`——宿主自动提供降级垫片（Polyfill）：无 resources → 只读工具照常暴露；无 progress → 纯 Loading 态；无 prompts → 无 Skill 注入；无订阅 → 不做失效感知。**降级是默认行为，不抛异常**。
 - **能力协商走 MCP 标准 `initialize` 握手 capabilities 字段**（规范现成，不自造协议）；7 项依赖重分类：标准 MCP 能力（prompts/resources/sampling/progress，按 capabilities 声明有无）vs 生态私有扩展（Tier 1 专属，缺失即降级）。
 - **静态摘要生成策略（六轮评审：补 Tier 2 数据源）**：Tier 1 在契约注解声明 `x-mcp-app-summary`；Tier 2 首次挂载时读取 `tools/list` 前 3 个工具 name+description 自动拼接摘要回填配置表，用户可在设置页手动编辑——自动生成摘要**须标注「自动生成」**（防模型把拼凑摘要当服务端权威声明）。
@@ -259,7 +259,7 @@ flowchart TB
 - [x] ~~双端策略确认~~ → **建议拍板采纳**：Android 首发 + 双端纪律 N1，iOS 壳工程后接入（Linux 无 macOS 为硬约束）
 - [x] ~~端侧降级触发判据~~ → **已定初值**：断网即切（模型就绪）/ 连接 >5s / 首 Token >30s（2026-10-21 调参，原 8s）/ 连续 2 次 5xx/429；M2 实测调参
 - [ ] ~~JIT 激活权限级~~ → **已定并实现**：L1 静默 + 药丸（T6 元工具经 `discovery_executor` 落地）。**预算部分仅定口径、代码未实现**：已激活 Schema 预算默认 1200 Tokens（用户可配）与「超限精简模式（name + description 首句）」——`lib/` 无对应实现（M4-T6 剩余自注，见 `docs/design/m4.md` §T6 剩余）。**缺口影响**：多 Server 全量激活时 Schema 可能挤占上下文预算，现靠 JIT 聚焦（`use_server`）人工规避
-- [x] ~~`export_to_shared` 字段规范~~ → **已定**：`x-mcp-export-to-shared`（x- 前缀）+ `readOnlyHint`；缓存失效语义随契约回写
+- [x] ~~私有字面量字段规范~~ → **已定**：`tools/list` 条目 `_meta.goodhub.visibility`（2026-10-21 随插件 SDK 0.2.0 落地，取代早期草案命名与 `readOnlyHint` 混写形态，见 §8）；缓存失效语义随契约回写
 - [ ] Server 端口策略（:8766 固定 + 被占报错 + ContentProvider 端口发现）与局域网鉴权 + Doze 唤醒机制 → 回写 goodshare 仓 `ai-app-split.md`（接缝扩展）
 - [ ] goodshare prompts 能力是否实现（Skill 继承前置依赖）
 - [x] ~~端侧模型抽取质量（extractActionItems 类任务）实测标准 + LiteRT-LM grammar 约束解码支持实证 + INT4 内存占用实测~~ → **已实测（2026-10-11 T7）**：① grammar 约束解码 T3 真机实证通过（三探测合规）；② 抽取质量——qwen25-1.5b-Q8 真机产出可用摘要（结构完整、中文通顺，CPH2767），任务 note 内核单发提取路径闭环；③ 内存实测——**部署包实为 Q8 非 INT4**：增量 ~1.9GB / 峰值 PSS 2.70GB（§16 拍板项：门槛重校准 or 换 INT4 包，定案前 Q8 维持现网）

@@ -1,0 +1,42 @@
+---
+dev-loop: devlog
+format: v1
+epic: arch-review-2026-10
+total-merged: 8
+last-merge: 2026-10-28
+---
+- [2026-10-28] [变更]: 立临时 epic 承接「大型功能开工前架构核查」的定性分流；产出 A（架构设计缺陷）/ B（规范表达力缺陷）/ C（维护一致性缺陷）三分判据与 10 项定性总表、根因四条（RC1 能力 profile 缺位 / RC2 应用级 owner 缺注册中心 / RC3 规则不可判定退化人治 / RC4 SSOT 链过长且退役不全局），结论落 `memory.md`，待办落 `todos.md`
+- [2026-10-28] [变更]: C 类 P0-4 文档口径归一——① `coding-standards.md` §5.6 由「`x-` 前缀 + 旧口径字面量」改写为「`tools/list` 条目 `_meta.goodhub.visibility`，指针 §1.1 规则 7」，消除 §5.6 与 §1.1 规则 7 的互斥；② 取消通知统一为 `notifications/cancelled`（`requirements.md` F1.13、`docs/design/m3-ui-subs-sampling.md` 两条、`architecture.md` §10 级联、`agent_loop.dart` 注释）；③ `index.md`、`requirements.md` F1.9、`architecture.md` §8 口径更正段与 Tier 表、`thirdconnect.md`、`mcp-standard-eval.md`、`m2-5-skill-refstore.md` 的旧口径叙述同步为正解或合法留档
+- [2026-10-28] [变更]: `scripts/agent-tools/drift-registry.txt` 增两条 BANNED（`x-mcp-export-to-shared`、`$/cancelRequest`，scope `lib,docs,test`）——docs 域此前未进扫描面是 P0-4 的成因；合法留档与禁令行以行内 `drift:keep` 显式豁免（含 `test/tool_router_test.dart` 钉住「旧口径不再生效」的负向 fixture）
+- [2026-10-28] [变更]: C 类 P2-9 账实对齐——§1.0 ui 行增「对 `task` / `resources` 仅管理面窗口直连（§1.4 类别 1）」，§1.4 类别 1 扩为「配置类 / 管理面窗口」并把 `task` / `resources` 纳入授权口径
+- [2026-10-28] [变更]: A 类登记进 `docs/project/index.md` 活跃债 #20~#26（owner 注册中心 / 装配 profile 化 / 发送链路下沉 / 写通道收口 / 保护网 / 卸载阈值 / 主体矩阵）；新建施工稿 `docs/design/arch-consolidation.md`（S0~S6 分期、依赖顺序、每步验收），同步 `docs/README.md` 条目
+- [2026-10-28] [变更]: `context/CURRENT` 由 task-orchestration 切至本 epic（原 epic 断点 #11「真机 e2e 云南四插件场景 + 毒丸 A~F」未结，留在原 epic `memory.md` 断点区）
+- [2026-10-28] [验证]: drift-guard（指定 `--root` 本仓）全清 OK；两条退役词条的残留已全部消除或显式 `drift:keep` 豁免。本机无 Flutter SDK，`flutter analyze` / `flutter test` 未实跑——静态证据不构成 CI 绿灯
+- [2026-10-28] [变更]: 施工稿深水区补丁（五条外部批评经证据核实后）——① S1 立「两段式生命周期」表（`SyncInitializable` vs `AsyncStore`），异步屏障止于用例层 + `resetAllForTest()` 测试隔离契约；② S0 golden 增三类边缘切片（Abort / Reject / Watchdog），S3 内建 `CancellationToken` 取消协议；③ S4 删除脱离队列的静态 `writeAtomic`，收口为 `KeyedWriteQueue.enqueueAtomicWrite`（`SequentialFileWriter` 退化为内部实现）；④ S5 删除「预估耗时」与「文件 IO ≥1MB」两条规则（`dart:io` 由 native 线程池驱动），收窄为同步 CPU 密集 + 入参体积阈值 + 有限并发池（超时不中断底层 Isolate）；⑤ S6 明确 `assemble` 定能力上限、`ToolDispatcher.call` 做运行时 `allowedActors` 校验；⑥ 新增 §2.7 机械镜像抗脆弱性（按 AST 构造形态 + 调用签名禁令，而非字符串字面量）
+- [2026-10-28] [验证]: 核实证据——`KeyedWriteQueue.keyForPath` 已用 `File.absolute` 规范化（跨实例同链），故 S4 风险只在「裸静态入口绕过队列」；目标平台目录仅 `android` + `ios`（无 windows 目录），Windows rename 竞争场景不适用；docs-lint 通过
+- [2026-10-28] [变更]: 施工稿二次复核——前一轮五条深水区补丁均已落地（S1 两段式生命周期 + Widget 仅注入同步件 / S4 反模式标注 + 队列唯一入口 / S5 删 IO 与预估耗时阈值 / S6 Ceiling 与运行时校验分野 / §2.7 调用签名禁令），本轮只做表述硬化：① S1 显式写入「AsyncStore 不进 Widget 入参」；② S4 把静态 writeAtomic 标为「反模式（禁止实现）」；③ S5 采讷加解密/散列 ≥128KB 阈值行，并把排除表改名；④ §2.7 补机核落点澄清——形态禁令落 test/architecture/ + arch-guard，不落 drift_rules_test（后者是 registry 数据驱动的契约面漂移镜像）
+- [2026-10-28] [验证]: grep 复核——`必填构造参数` / `10ms` / `assemble 期注入` 三词在文档中已零命中；`writeAtomic` 与 `'.tmp'` 仅出现在「反模式/不采用」语境；docs-lint 通过
+- [2026-10-28] [变更]: S0 保护网落地——① `test/coordinator/agent_loop_golden_test.dart` 新增 Golden 四切片（Happy / Abort / Reject / Watchdog）：事件序列归一化快照顺序敏感，Abort 用「多跑一轮即抛」的脚本假件钉住「取消生效则不再起新推理轮」，Reject 断言 user_rejected 不进熔断计数，Watchdog 断言同工具连续 2 次报错触发一次排查卡且人工接管结果回填后继续；② `mcp_runtime_test.dart` 增「S0 装配产物等价性」组：同输入工具面快照一致、refStore 各 Run 独立、planState 会话级透传、close 幂等且每个传输恰好关一次
+- [2026-10-28] [验证]: flutter analyze → 0 issue；arch-guard → OK；全量 flutter test --timeout 180s → **1266/1266 全绿**（开工前基线 1259 + 新增 7）。四切片 golden 首次运行即与实码行为吻合（未为过检调整断言）
+- [2026-10-28] [变更]: S1 前置取证 + 第一批——① `test/coordinator/multi_instance_lost_update_test.dart`：Cow / UserGlobalPrompts 跨实例丢更新实证（含同实例对照与并发不撕裂对照），MemoryStore 因读改写整段入 `KeyedWriteQueue` 跨实例安全；② `service_directory.dart` 增两访问器（应用级单实例 + override 注入位）与 `resetAllForTest()`；③ `cow_section` / `prompts_overview_section` / `user_prompts_section` 三处与 `buildBaseSkillRegistry` / `syncCowSkillsIntoRegistry`（经 `McpRuntime.assemble.cowStoreProvider`）改走注入，窗口层零构造落机核
+- [2026-10-28] [验证]: flutter analyze → 0 issue；全量 flutter test --timeout 180s → 1274/1274 全绿。遗留：内核侧 `storeProvider == null` 兼容回退（S2 profile 化时退役），其余 5 类 store 待第二批
+- [2026-10-28] [变更]: S1 第二批——`byokStore()`（同步访问器：ByokStore 构造无 IO，窗口层不必在 build 里 await）+ `workspaceStateStore()`（原 chat_page 每轮发送 new 一份）收进注册中心；`resetAllForTest()` 扩到五类缓存；机核扩到四类受管 store（联调页豁免）
+- [2026-10-28] [裁决]: 三件**核实后不迁**——TrustedPlugins（已进程级单例 + resetForTest）、ConversationStore（会话内核 ChatSessionService 持有，属会话级）、MemoryStore（会话级 + 读改写整段入队已自保）。S1 第二批到此为止，不再无差别收编
+- [2026-10-28] [变更]: 规则链同步——`app` 域出向矩阵增 `sandbox`（coding-standards §1.0 + dependency_rules_test F16 镜像），理由 = 注册中心需装配 sandbox 侧应用级 seed；依赖护栏先拦后修，未为过检放宽代码
+- [2026-10-28] [验证]: flutter analyze → 0 issue；arch-guard → OK；全量 flutter test --timeout 180s → 1276/1276 全绿
+- [2026-10-28] [变更]: S2 一期——新增 `run_profile.dart`（`RunProfile` = chat/gateway/headless + `capabilitiesFor()` 唯一映射）；`McpRuntime.assemble(profile:)` 按能力上限接线：sampling 随 profile、elicitation 需「profile 允许 且 有 UI 委托」双条件、cowSync 仅 chat、planFence 关闸时 planState/planDelegate 不下传（`propose_task_plan` 不进能力面）；planFence 提前求值贯穿链装配
+- [2026-10-28] [裁决]: 网关/任务管道真正调用同一 `assemble` 列为**二期**——阻塞点是生命周期（McpAssembly 现 Run 级随 Run 焚，网关需常驻），不是能力表；在支持常驻形态前，「debug 联调页不并回 assemble」红线维持（已写进施工稿 §S2 二期段，不掩饰）
+- [2026-10-28] [验证]: 新增 run_profile_test 5 例全绿；flutter analyze 0 issue；arch-guard OK；全量 flutter test → 1281/1281 全绿（1276 + S2 5 例）
+- [2026-10-28] [变更]: S3 一期——`ChatSendUseCase`（coordinator 纯 Dart 132 行）承接 plan → 事件消费 → writeback → 收口；窗口实现 `ChatRunSink`（`_RunSink`，事件 switch 逐条照搬），`_sendGuarded` 缩至 ~380 行；finally 里 markRunEnded/close 随用例件收口（错误卡时序由先卡后收口变为先收口后卡，语义等价——卡是纯 UI 呈现）
+- [2026-10-28] [验证]: 新增 chat_send_use_case_test 3 例（事件转发顺序 / F19 预中止仍正常收口 / cancel 幂等 + close 恰好一次）；flutter analyze 0 issue；arch-guard OK；全量 flutter test → 1284/1284 全绿
+- [2026-10-28] [变更]: S4 写通道收口——`KeyedWriteQueue.enqueueAtomicWrite` 唯一入口；六站点迁入（盘点五处，实施扫出第六处 server_endpoints——「清单外还有副本」根因的现场证明）；arch-guard R10 按调用签名禁 `File.writeAs*`（白名单仅两基准件；File.rename 不拦——损坏备份合法）；Dart 镜像含金丝雀；coding-standards §3.2/§8.2 同轮同步；R10 白名单首版写目录前缀不匹配 rel 路径，改文件级精确路径后通过
+- [2026-10-28] [验证]: keyed_write_queue S4 组 3 例 + atomic_write_rules_test 2 例（含金丝雀）；flutter analyze 0 issue；arch-guard OK；全量 flutter test → 1289/1289 全绿；index #23 结项归档
+- [2026-10-28] [变更]: S5 卸载助手一期——`core/concurrency/offload.dart`：三档体积阈值（无预估耗时）+ `OffloadPool`（默认并发 2；**僵尸占位**：槽位挂底层 future，超时弃等不弃占，Isolate 真结束才释放；超池快速失败 OffloadBusyException）+ `offloadIfHeavy`（池满退主 isolate + DEGRADE）；示范迁移 pii_fence / resource_store，后者阈值口径 1MB→128KB 收紧（行为变更已记录）
+- [2026-10-28] [验证]: 新增 offload_test 7 例（阈值边界 / 槽位回收 / 僵尸占位与释放 / 超池快速失败 / 轻重分派 / 池满降级）；flutter analyze 0 issue；arch-guard OK；全量 flutter test → 1296/1296 全绿
+- [2026-10-28] [变更]: S6 一期——`core/actor.dart`（`Actor` sealed：owner / external(id)；const factory；label 供文案）；`HostExportEntry.allowedActors` 必填（声明面唯一）；网关 `toolsCall` host__ 分支加**运行时主体闸**（先于路由/环路防护；不在集内 → kGatewayActorDeniedCode=-32003 且不触达执行面）；server 层鉴权后置 `Actor.external('gateway')`（注释写明「禁从载荷读」与粒度演进路径）
+- [2026-10-28] [验证]: host_actor_gate_test 4 例（放行且真实触达 / 集外拒绝零触达 / owner 恒可读 / 非 host 不辖制）；flutter analyze 0 issue；arch-guard OK；全量 flutter test → 1300/1300 全绿。期间 F16 拦下 gateway→core 新边（矩阵漏登记叶层），按规则链同轮补齐——护栏先拦后修第二例
+- [2026-10-28] [变更]: S2 二期——实施前全仓核挂载原语：网关 face 本就经 `McpRuntime.mount/mountEndpoint`（共享原语），真实第二副本仅 sampling 接线循环；收口为 `reverse_wiring.dart` 的 `wireSampling()`（两处调用，差异仅参数）；任务管道经 `goodshare_task_api` 直连、非 MCP 装配面——「三路并行」表述实证有误，#21 以「结论修正」结项（生命周期差异是设计而非债，强并 assemble 属过度设计）
+- [2026-10-28] [变更]: S3 二期——`ChatSendUseCase.assembleRun()` 承接装配段（skills 装载 / 会话绑定 / assemble；`onNoticeOnce` 承载注册闸降噪；`userPromptStoreProvider` / `cowStoreProvider` 注入沿用 S1 注册中心；信任闸门留窗口——信任卡片是 UI）；`chat_page` 1571→1526 行、`_sendGuarded` 方法体 ~330 行
+- [2026-10-28] [变更]: S3 尾项两件独立小步收口——① 取消统一入口：`ChatSendUseCase` 自 `assembleRun` 起置 `_active` 取消锚点（连接期预中止即经 `cancel()` 触达，与窗口旧 `_activeAssembly?.abort()` 语义等价），窗口 `_abort()` 改调 `_useCase?.cancel()`（`_activeAssembly` 退化为装配就绪标志，仅服务 F19 预中止判定）；② `dual_track_stream.renderEntry` 巨型 switch 拆为 15 个按卡片类型的 `_TrackXEntry` `StatelessWidget`（`renderEntry` 退化为薄 switch 委托，签名/调用点不变，行为等价；`_TrackMemoryEntry` 字段 `key`→`memKey` 避让 `Widget.key`）。未新增 `CancellationToken` 空壳件（`_resetSessionState` 经核实纯会话切换复位，与取消解耦，强行造类属 churn）
+- [2026-10-28] [验证]: flutter analyze（三文件）0 issue；arch-guard OK；全量 flutter test --timeout 180s → **1300/1300 全绿**（含 chat_send_use_case_test 的 F19 预中止 + cancel 幂等；dual_track_stream_test 22 例）。drift-guard 本环境无裸脚本（仅 toolbox 入口），本次纯重构未动 registry/常量/API，无漂移风险
+- [2026-10-28] [验证]: flutter analyze 0 issue；arch-guard OK；drift-guard OK；docs-lint OK；全量 flutter test → 1300/1300 全绿

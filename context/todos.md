@@ -36,3 +36,5 @@ format: v2
 - [ ] [2026-10-16] (风险) [long] [window-kernel-split 移交] 内核↔内核具体类型直连无注入位（hybrid_assembly.dart:36 硬 new ByokStore()）：出现第二个 Directory/Memory 实现需求时再抽 abstract interface class（现裁决=接口爆炸收益低） (src: ai, window-kernel-split 改造评估)
 - [ ] [2026-10-16] (风险) [long] [window-kernel-split 移交] 事件循环（chat_page 991-1105）留窗口含两处写内核态（transcript 回写/绑定捕获）：写回收口需重开裁决（代价=执行期事件流进内核） (src: ai, window-kernel-split 改造评估)
 - [ ] [2026-10-16] (风险) [long] [window-kernel-split 移交] ServiceDirectory 变更通知通道（场景暂不成立）：若跨页一致性出问题，用纯 Dart revision 计数比对，不引 ChangeNotifier/事件总线 (src: agent, 二轮评估)
+
+- [ ] [2026-10-28] (文档) (重:低) [arch-review 移交] 视稳定性决定是否把两条 BANNED 再扩到 `test` 之外／拆分 scope（当前 `lib,docs,test` 已过 drift-guard 全清） (src: ai)

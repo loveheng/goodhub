@@ -102,15 +102,9 @@ class CowOverridesStore {
   Future<void> _save() async {
     // §3.2：接进程级按路径串行写队列 + 原子 temp→rename，防并发 save 交错与
     // 崩溃中途写留半截文件（下次 load 当损坏备份，P2-1 口径）。
-    await KeyedWriteQueue.instance.enqueue(
-      KeyedWriteQueue.keyForPath(_file.path),
-      () async {
-        await dir.create(recursive: true);
-        final tmp = File('${_file.path}.tmp');
-        await tmp.writeAsString(jsonEncode(_cache), flush: true);
-        await tmp.rename(_file.path);
-      },
-    );
+    // §S4：原子写唯一入口（队列内 tmp→flush→rename；手写副本已收口）。
+    await KeyedWriteQueue.instance
+        .enqueueAtomicWrite(_file.path, utf8.encode(jsonEncode(_cache)));
   }
 
   Map<String, Object?>? _section(String key) {
