@@ -16,3 +16,9 @@ last-merge: 2026-10-16
 - **收敛度量**：替身 2/2 清零；窗口仅存三处 underSupportDir 内核装配位（设计允许）；本轮 3 处 DEGRADE 标记合规保留（测试实证），UNCERTAIN 0
 - **判据沉淀**：「分离的标尺 = 领域态是否还有 owner 在窗口，非行数」；TrackEntry codec 留 UI 层、Session 只立 toJson/fromJson 签名（激活集跨会话重开 §15）
 - **挂起项（移交全局 todos）**：真机冒烟——Archive 新建/切换/删除/恢复/损坏五路径 + 配额杀进程保留 + 胶囊/撤销 + 外提视图件回归（待用户侧载）
+
+## 决策过程归档（2026-10-16 devlog 9 条提炼）
+- **SSOT 修正·步3 tool_router 接线移出本 epic**：上游 goodshare annotations 未落地（thirdconnect 后续项①），维持保留待接线（SA-Q6）；条件齐备直接接两点（assemble 建 face 后 + mcp_gateway_handler.toolsList），不造 speculative 基建。
+- **SSOT 修正·瘦身目标校准**：原估 ~850 行未达（实测 chat_page 1402→1109）——CRUD 对话框/守卫/toast 属视图编排本职留窗，行数不当门禁。
+- **落点**：`lib/coordinator/{conversation_archive,memory_kernel}.dart`（纯 Dart）；测试 +19 例（步0 4 / archive 6 / quota 5 / memory_kernel 5）；analyze 0 issue；全量 625 绿（基线 601 → +24）。
+- **验证账本**：步0-4 每步 `flutter analyze` 0 issue + 全量 test 绿（620→625）；grep 门禁确认窗口替身（`_persistConversation`/`memoryFilter` 等）零残留。
