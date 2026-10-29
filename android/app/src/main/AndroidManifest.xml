@@ -8,6 +8,9 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- 端侧引擎 :engine 长生成 FGS 类型（on-device-npu-deployment §6.2：长生成选
+         dataSync，禁 shortService 3min 超时；Android 14+ 类型强制权限） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
@@ -50,6 +53,13 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- 端侧引擎（on-device S2-1 真机实证）：libQnnHtpV79Stub.so 的 NEEDED
+             libcdsprpc.so 在 /vendor/lib64，不在应用链接命名空间搜索路径——
+             uses-native-library 把它加入命名空间（Android 12+；required=false
+             保持无 NPU 机型可装）。 -->
+        <uses-native-library
+            android:name="libcdsprpc.so"
+            android:required="false" />
         <!-- TC-debug: 该 Oppo/ColorOS 机型的 Impeller(Vulkan) 后端静默不出首帧、
              闪屏不移除→黑屏；回退 Skia/OpenGL 以解锁真机验证。生产构建可按需移除。 -->
         <meta-data
@@ -60,6 +70,16 @@
             android:name=".GatewayForegroundService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+        <!-- 端侧 NPU 引擎独立进程（on-device-npu-deployment §6.2 / on-device-capability §2）：
+             常驻 1.8~2.4GB 模型，OOM/驱动 Panic 仅令主进程收 EngineDiedException 切云，
+             不拖垮 Flutter 主进程；isolatedProcess 必须为 false（需访问 NPU 驱动/HAL）；
+             foregroundServiceType=dataSync（长生成，禁 shortService；FGS 预挂时序归 S3-2）。 -->
+        <service
+            android:name=".EngineService"
+            android:exported="false"
+            android:isolatedProcess="false"
+            android:foregroundServiceType="dataSync"
+            android:process=":engine" />
         <!-- TC12 L2 醒目呼叫：专用全屏确认 Activity（息屏也能亮屏置顶；singleInstance
              避免与 MainActivity 同栈堆叠）；由网关全屏通知（FULL_SCREEN_INTENT）拉起。 -->
         <activity

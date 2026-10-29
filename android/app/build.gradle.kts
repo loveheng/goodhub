@@ -9,6 +9,33 @@ android {
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
+    buildFeatures {
+        // 端侧引擎控制面 AIDL（on-device S1-2）：IOnDeviceEngineService
+        aidl = true
+    }
+
+    // S3 换线（2026-10-29）：cpp/ 探针三件（engine_probe/genie_smoke/
+    // genie_session）随裸 Genie C API 链整体退役——推理后端 = geniex-android
+    // AAR（Maven，自带 QNN 2.45 运行时全家桶）。
+    // S3-6（2026-10-29）：数据面消费 worker 回归——engine_data_worker.cpp 仅做
+    // RingBuffer 消费 + Dart 端口投递（§6.4 管道件），推理闭环仍在 :engine。
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
+    packaging {
+        jniLibs {
+            // QNN HTP DSP Skel（libQnnHtpV79Skel.so）必须以真实文件存在于
+            // /data/app/.../lib/ 供 QNN 运行时读取（无法从 APK 内 mmap 直读），
+            // 故强制解压打包（extractNativeLibs=true）——否则 dlopen 绝对路径
+            // 全空、探针四项全 FAIL（2026-10-28 真机实证）。
+            useLegacyPackaging = true
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -38,13 +65,33 @@ android {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
+
+    packaging {
+        // geniex-android AAR 捆绑的 QNN 离线图编译库（87MB）：运行时推理不加载
+        // （S2-5 A/B 实证），排除防 APK 膨胀；换 DLC/在线编译路线时取回。
+        jniLibs.excludes += "**/libQnnHtpPrepare.so"
+    }
 }
 
 dependencies {
+    // :engine 数据面 TokenRingBuffer JVM 单测（on-device S1-3）。
+    testImplementation("junit:junit:4.13.2")
+
     // 端侧 LLM 运行时（M2 自 goodshare 随迁）：LiteRT-LM 纯 Kotlin 引擎（Maven Central，
     // 无 NDK/CMake），跑 .litertlm 模型包。坐标经 AndroLLM 实际工程核实（2026-09-29）：
     // artifact 为 litertlm-android，非 litert-lm（后者在 Maven Central 不存在，构建期即解析失败）。
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.16.0")
+
+    // :engine 端侧推理后端（S3 换线，2026-10-29）：官方 GenieX Android 绑定
+    // （官方 GenieX Chat 同款管线）。4B 同资产同参数对照钉死裸 libGenie C API
+    // 存在 2.5× 运行时代差（详见 on-device epic devlog），此为达标唯一路径。
+    // AAR 自带 QNN 2.45 全家桶（jni/）——jniLibs 的同名 2.51 库已移除让位；
+    // libQnnHtpPrepare.so（87MB，离线编译用）经 packaging excludes 排除。
+    implementation("com.qualcomm.qti:geniex-android:0.3.5")
+
+    // geniex-android 绑定 API 面为 Kotlin 协程（Flow/runBlocking）；AAR pom
+    // 未带传递依赖，显式钉住（官方 App 同样显式引 kotlinx-serialization 族）。
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
     // 插件接入契约（AIDL + 发现约定常量）的唯一物理副本在独立仓 goodhub-mcp-sdk
     // 的 :contract 模块。宿主此前自带的 AIDL 副本已删除（2026-10-20）——

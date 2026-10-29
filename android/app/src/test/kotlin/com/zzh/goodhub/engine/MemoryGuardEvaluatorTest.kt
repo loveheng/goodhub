@@ -1,0 +1,61 @@
+package com.zzh.goodhub.engine
+
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * 内存预算护栏评估器单测（on-device S3 内存面）：availMem 基线增量预算、
+ * 绝对地板、采样噪声容忍、非法采样防护。
+ */
+class MemoryGuardEvaluatorTest {
+    private val gb = 1024L * 1024 * 1024
+
+    @Test
+    fun `足迹增量未达预算返回 null`() {
+        // 基线 6GB，当前 4608MB → 持有 1536MB < 2.5GB 预算
+        assertNull(MemoryGuardEvaluator.evaluate(6144L * 1024 * 1024, 4608L * 1024 * 1024))
+    }
+
+    @Test
+    fun `足迹增量达预算触发驱逐并给出理由`() {
+        // 基线 6GB，当前 3277MB → 持有 2867MB ≥ 2.5GB
+        val reason = MemoryGuardEvaluator.evaluate(6144L * 1024 * 1024, 3277L * 1024 * 1024)
+        assertTrue(reason != null && reason.contains("availMem-delta"))
+    }
+
+    @Test
+    fun `绝对地板独立触发——增量小但系统可用内存见底也驱逐`() {
+        // 基线 1638MB，当前 819MB：持有 819MB 未达预算，但跌破 1GB 地板
+        val reason = MemoryGuardEvaluator.evaluate(1638L * 1024 * 1024, 819L * 1024 * 1024)
+        assertTrue(reason != null && reason.contains("floor"))
+    }
+
+    @Test
+    fun `地板判定带 8MB 采样噪声容忍`() {
+        // 地板 +8MB（容差带内）：不触发
+        assertNull(MemoryGuardEvaluator.evaluate(2 * gb, MemoryGuardEvaluator.ABSOLUTE_FLOOR_BYTES + 8 * 1024 * 1024))
+        // 跌破容差带（地板 −8MB）：触发
+        val reason = MemoryGuardEvaluator.evaluate(2 * gb, MemoryGuardEvaluator.ABSOLUTE_FLOOR_BYTES - 8 * 1024 * 1024)
+        assertTrue(reason != null && reason.contains("floor"))
+    }
+
+    @Test
+    fun `非法采样（非正值）不触发——防采集侧故障误杀会话`() {
+        assertNull(MemoryGuardEvaluator.evaluate(0, 4 * gb))
+        assertNull(MemoryGuardEvaluator.evaluate(6 * gb, 0))
+        assertNull(MemoryGuardEvaluator.evaluate(-1, 4 * gb))
+    }
+
+    @Test
+    fun `阈值可注入（接线方口径，评估器无魔法数纪律）`() {
+        // 自定义收紧预算：持有 600MB 即触发（1408MB = 2GB − 600MB）
+        val reason = MemoryGuardEvaluator.evaluate(
+            baselineAvailMemBytes = 2 * gb,
+            currentAvailMemBytes = 1408L * 1024 * 1024,
+            heldBudgetBytes = 512 * 1024 * 1024,
+            floorBytes = 0,
+        )
+        assertTrue(reason != null && reason.contains("availMem-delta"))
+    }
+}

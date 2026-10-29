@@ -19,5 +19,7 @@ class MainActivity : FlutterActivity() {
         GatewayServiceBridge.register(this, flutterEngine.dartExecutor.binaryMessenger)
         // 网关 L2 醒目呼叫通道（TC12）：goodhub/gateway_consent
         GatewayConsentBridge.register(this, flutterEngine.dartExecutor.binaryMessenger)
+        // 端侧引擎绑定桥（on-device S1-1）：goodhub/on_device_engine
+        EngineServiceBridge.register(this, flutterEngine.dartExecutor.binaryMessenger)
     }
 }

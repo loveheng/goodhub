@@ -17,6 +17,7 @@ import '../core/errors/cloud_llm_error.dart';
 import '../core/errors/inference_error.dart';
 import '../llm/cloud/cloud_llm.dart';
 import '../llm/llm.dart';
+import '../llm/on_device_engine.dart';
 import 'degradation_controller.dart';
 
 class HybridCloudEngine implements CloudLlmEngine {
@@ -26,7 +27,17 @@ class HybridCloudEngine implements CloudLlmEngine {
     this.onDevice,
     this.isOfflineProbe,
     this.deviceTierGate,
-  });
+    this.deviceToolPolicy,
+    this.preferOnDevice = false,
+    this.forceOnDevice = false,
+  }) : _enableCapable = onDevice is OnDeviceEnableCapable
+            ? onDevice as OnDeviceEnableCapable
+            : null;
+
+  /// 端侧显式加载能力（探测：onDevice 实现 [OnDeviceEnableCapable] 才非 null）。
+  /// 首次命中端侧路径前由 [send] 触发 [OnDeviceEnableCapable.enable]，加载过程
+  /// 对用户可见；加载失败显式报错、不走云端。
+  final OnDeviceEnableCapable? _enableCapable;
 
   final DegradationController controller;
 
@@ -43,6 +54,26 @@ class HybridCloudEngine implements CloudLlmEngine {
   /// 设备分级门禁（§16，注入；null = 不门禁）。裁决 (pass, reason)；
   /// 关闸 ≡ 端侧不可用（路由语义与 onDevice=null 一致），reason 留痕可观测。
   final Future<({bool pass, String reason})> Function()? deviceTierGate;
+
+  /// 端侧工具面判据（S2 正式接线，注入；null = 严格 `tools.isEmpty`）。
+  ///
+  /// §2 端侧硬约束的本意是「需要**云端工具编排**的请求不得走端侧」。但
+  /// AgentLoop 的工具面恒定含宿主本地元工具（get_connected_apps / 记忆 /
+  /// 资源等，宿主本地拦截执行），按字面 `tools.isEmpty` 纯聊天永远不可端侧。
+  /// 注入方（hybrid_assembly）以「tools 全为宿主本地元工具 → 放行」收口——
+  /// 端侧单发不产工具调用，元工具静默缺席 = 离线降级的可接受语义。
+  final bool Function(List<CloudToolSchema> tools)? deviceToolPolicy;
+
+  /// 用户偏好优先端侧（设置页持久化，默认 false）：即便云端健康也想走端侧；
+  /// 门禁关闸 / 引擎死亡仍无缝切云（兜底语义不变）。默认 false = 云端优先，
+  /// 避免 1.5B 弱模型在未选时默认降质。
+  final bool preferOnDevice;
+
+  /// 紧急强行启用（设置页持久化，危险，默认 false）：bypass 全部门禁（含 RAM
+  /// 总量 / 电量 / 温控），仅紧急 / 弱设备场景由用户显式开启。仍不绕过 §2 工具面
+  /// （带 MCP 服务端工具的请求仍走云端编排，否则功能崩）。强行失败（OOM /
+  /// EngineDied）由 `:engine` 进程隔离 + 切云兜底防主进程闪退（§6.5）。
+  final bool forceOnDevice;
 
   /// 断网探测（无探测位 = 视作在线）。
   ///
@@ -92,13 +123,53 @@ class HybridCloudEngine implements CloudLlmEngine {
   }) async* {
     final offline = await _isOffline();
     final gate = await _deviceGate();
-    if (!gate.pass) {
-      // 门禁关闸留痕（§16）：关闸 ≡ 端侧不可用，路由语义与 onDevice=null 一致
-      debugPrint('[HybridEngine] 端侧门禁未过（${gate.reason}）');
+    // 紧急强行启用：门禁视为通过（仍不绕过 §2 工具面）。危险操作，留痕警示。
+    final gatePass = forceOnDevice || gate.pass;
+    if (forceOnDevice && !gate.pass) {
+      // 强行启用绕过了本应关闸的门禁——显式留痕，供排查与可观测。
+      debugPrint('[HybridEngine] ⚠ 紧急强行启用端侧（门禁原未过：${gate.reason}）');
     }
-    final canDevice = request.tools.isEmpty && onDevice != null && gate.pass;
-    if (canDevice && (offline || !controller.shouldUseCloud)) {
-      yield* _deviceSend(request, reason: offline ? '物理断网' : '云端降级冷却期');
+    final toolFaceOk = request.tools.isEmpty ||
+        (deviceToolPolicy?.call(request.tools) ?? false);
+    final canDevice = toolFaceOk && onDevice != null && gatePass;
+    String? deviceSkipReason;
+    if (!canDevice && onDevice != null) {
+      // 可观测性（S2 收口）：无云端兜底且端侧被挡时，把挡点随错误透出——
+      // 「端侧没被调用」此前只有 debugPrint 留痕，用户/排查者从提示无法定位。
+      final skips = <String>[
+        if (!toolFaceOk) '工具面含云端编排工具（判据不放行）',
+        if (onDevice == null) '端侧引擎未挂载',
+        if (!gatePass) '端侧门禁未过（${gate.reason}）',
+      ];
+      deviceSkipReason = skips.join('；');
+      debugPrint('[HybridEngine] 端侧跳过：$deviceSkipReason');
+    }
+    // 走端侧触发：① 自动（断网 / 云端降级冷却）② 用户偏好优先（云端健康也走）
+    // ③ 紧急强行（绕过门禁，即便云端健康）。三类都要求 canDevice（含 §2 工具面）。
+    final wantDevice = offline ||
+        !controller.shouldUseCloud ||
+        preferOnDevice ||
+        forceOnDevice;
+    if (canDevice && wantDevice) {
+      // 懒加载兜底（用户定调）：首次命中端侧路径才显式加载——bind→就绪→资产→
+      // loadModel→数据面 worker，加载过程对用户可见（loadState=loading）。加载
+      // 失败显式报错、不走云端（q-1：显式失败不切云）。
+      final cap = _enableCapable;
+      if (cap != null && cap.loadState.value != OnDeviceLoadState.ready) {
+        try {
+          await cap.enable();
+        } on OnDeviceLoadException catch (e) {
+          throw InferenceException('端侧加载失败：${e.reason}');
+        }
+      }
+      yield* _deviceSend(
+        request,
+        reason: forceOnDevice
+            ? '紧急强行启用'
+            : (offline
+                ? '物理断网'
+                : (preferOnDevice ? '用户偏好优先端侧' : '云端降级冷却期')),
+      );
       return;
     }
     final c = cloud;
@@ -107,7 +178,8 @@ class HybridCloudEngine implements CloudLlmEngine {
         yield* _deviceSend(request, reason: '云端未配置');
         return;
       }
-      throw const InferenceException('无可用推理引擎：云端未配置且端侧不可用');
+      throw InferenceException(
+          '无可用推理引擎：云端未配置且端侧不可用${deviceSkipReason == null ? '' : '（$deviceSkipReason）'}');
     }
     yield* _cloudSend(
       c,
@@ -304,7 +376,27 @@ class HybridCloudEngine implements CloudLlmEngine {
         ctrl.add(CloudTextDelta(text));
         ctrl.add(const CloudDone(finishReason: CloudFinishReason.stop));
       } catch (e) {
-        ctrl.addError(e);
+        if (e is EngineDiedException) {
+          // on-device S1-5（总纲 §2）：`:engine` 进程死亡/驱动 Panic 无缝切云，
+          // 绝不闪退主进程、绝不让用户会话炸错误卡。切云一次直达（端侧已死，
+          // 云端再失败只能原样上抛）。同一 ctrl 承载——§10 取消联动（onCancel →
+          // device.cancelActive）保持原直连链不变；无云可切时原样上抛。
+          final c = cloud;
+          if (c == null) {
+            ctrl.addError(e);
+          } else {
+            debugPrint('[HybridEngine] :engine 死亡 → 无缝切云（$reason）');
+            try {
+              await for (final ev in c.send(request)) {
+                ctrl.add(ev);
+              }
+            } catch (cloudError) {
+              ctrl.addError(cloudError);
+            }
+          }
+        } else {
+          ctrl.addError(e);
+        }
       } finally {
         completed = true;
         await ctrl.close();

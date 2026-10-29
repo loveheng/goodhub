@@ -59,27 +59,46 @@ abstract final class DeviceTierGate {
   static const int _thermalSevere = 3;
 
   /// §16 初值门禁裁决。pass=false 时 [reason] 给人类可读原因（留痕可观测）。
-  static ({bool pass, String reason}) check(DeviceProbe p) {
+  ///
+  /// [sessionResident]（S2 正式接线）：Genie 常驻会话豁免——权重已驻留
+  /// （~1.9GB 已占用）时跳过**可用 RAM** 门槛。口径：本门槛守「能否承担冷
+  /// 加载」，驻留态边际检查失义（自锁：常驻自己把 availMem 压到阈值下）；
+  /// 极端 OOM 由 `:engine` 进程隔离 + EngineDiedException 切云兜底（§6.5）。
+  /// 总量准入 / 电量 / 温控**不豁免**（保护语义不变）。
+  ///
+  /// 用户覆盖位（设置页 §16「用户授权覆盖」层）：[ignoreAvailRam] / [ignoreBattery]
+  /// / [ignoreThermal] 分别跳过对应物理门槛——仅在用户显式开启时放宽。RAM 总量
+  /// 6GB 硬件准入**不受 ignore 影响**（真弱设备 1.5B 也跑不动），绕过它需
+  /// [HybridCloudEngine.forceOnDevice]（紧急强行，bypass 全部含总量）。
+  static ({bool pass, String reason}) check(
+    DeviceProbe p, {
+    bool sessionResident = false,
+    bool ignoreAvailRam = false,
+    bool ignoreBattery = false,
+    bool ignoreThermal = false,
+  }) {
     final total = p.totalRamBytes;
     if (total != null && total < minTotalRamBytes) {
       return (pass: false, reason: 'RAM ${total >> 20}MB < 6GB 门槛（§16 硬件准入）');
     }
     final avail = p.availRamBytes;
-    if (avail != null && avail < minAvailRamBytes) {
+    if (!sessionResident && !ignoreAvailRam && avail != null && avail < minAvailRamBytes) {
       return (pass: false, reason: '可用 RAM ${avail >> 20}MB < 2.5GB 门槛');
     }
-    final battery = p.batteryPct;
-    if (battery != null && battery >= 0 && battery < minBatteryPct) {
-      final charging = p.isCharging;
-      if (charging != true) {
-        return (pass: false, reason: '电量 $battery% < $minBatteryPct%（未充电）');
+    if (!ignoreBattery) {
+      final battery = p.batteryPct;
+      if (battery != null && battery >= 0 && battery < minBatteryPct) {
+        final charging = p.isCharging;
+        if (charging != true) {
+          return (pass: false, reason: '电量 $battery% < $minBatteryPct%（未充电）');
+        }
+      }
+      if (p.isPowerSave == true) {
+        return (pass: false, reason: '系统省电模式（§16 环境门禁）');
       }
     }
-    if (p.isPowerSave == true) {
-      return (pass: false, reason: '系统省电模式（§16 环境门禁）');
-    }
     final thermal = p.thermalStatus;
-    if (thermal != null && thermal >= _thermalSevere) {
+    if (!ignoreThermal && thermal != null && thermal >= _thermalSevere) {
       return (pass: false, reason: '温控 SEVERE+ 档（status=$thermal，§16 环境门禁）');
     }
     return (pass: true, reason: 'ok');

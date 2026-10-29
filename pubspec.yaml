@@ -31,13 +31,9 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # The following adds the Cupertino Icons font to your application.
-  # Use with the CupertinoIcons class for iOS style icons.
-  cupertino_icons: ^1.0.8
-
-  # 端侧 LLM 模型下载（M2 自 goodshare 随迁）：dio 下载 + 断点续传；路径与本地存储
-  dio: ^5.7.0
-  path: ^1.9.0
+  # 端侧 LLM 模型下载与路径处理：M2 自 goodshare 随迁的 dio 下载链已随
+  # archive/local_model 归档退役（2026-10-29 清理，0 引用）；现下载链在
+  # :engine Kotlin 侧（资产 OTA）。path_provider 保留（12 处引用）。
   path_provider: ^2.1.4
   shared_preferences: ^2.3.2
 

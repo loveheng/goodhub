@@ -265,6 +265,7 @@ const Map<String, Set<String>> kAllowedDomainEdges = <String, Set<String>>{
 const Map<String, Set<String>> kUiDirectLinkWhitelist = <String, Set<String>>{
   'ui/settings_page.dart': <String>{'mcp', 'llm'},
   'ui/sections/byok_section.dart': <String>{'llm'},
+  'ui/sections/on_device_model_section.dart': <String>{'llm'}, // 端侧模型下载/选择（S2-5 正式功能化，资产面 manager 直连）
   'ui/sections/nodes_section.dart': <String>{'mcp'},
   'ui/sections/local_plugins_section.dart': <String>{'mcp'},
   'ui/memory_board_page.dart': <String>{'sandbox'},

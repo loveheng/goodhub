@@ -31,6 +31,7 @@ import 'package:goodhub/ui/sections/cow_section.dart';
 import 'package:goodhub/ui/sections/gateway_section.dart';
 import 'package:goodhub/ui/sections/local_plugins_section.dart';
 import 'package:goodhub/ui/sections/nodes_section.dart';
+import 'package:goodhub/ui/sections/on_device_model_section.dart';
 import 'package:goodhub/ui/sections/user_prompts_section.dart';
 import 'package:goodhub/ui/tokens/console_tokens.dart';
 
@@ -66,6 +67,7 @@ void main() {
         home: SingleChildScrollView(
           child: Column(
             children: [
+              OnDeviceModelSection(onFlash: (_) {}, errorRowBuilder: errorRow),
               ByokSection(
                 store: ByokStore(secure: InMemorySecureKeyValue()),
                 onFlash: (_) {},
@@ -110,6 +112,7 @@ void main() {
     await tester.pump();
 
     for (final type in const <Type>[
+      OnDeviceModelSection,
       ByokSection,
       NodesSection,
       LocalPluginsSection,

@@ -5,8 +5,14 @@ library;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/core/security/flutter_secure_key_value.dart';
+import 'package:goodhub/coordinator/discovery_executor.dart';
 import 'package:goodhub/coordinator/hybrid_assembly.dart';
+import 'package:goodhub/coordinator/local_resource_tool_executor.dart';
+import 'package:goodhub/coordinator/memory_tool_executor.dart';
+import 'package:goodhub/coordinator/plan_proposal_tool.dart';
+import 'package:goodhub/coordinator/skill_registry.dart';
 import 'package:goodhub/llm/cloud/byok_store.dart';
+import 'package:goodhub/llm/cloud/cloud_llm.dart';
 
 /// 读取即抛的假 BYOK 库（模拟安全存储/配置读取失败）。
 class _ThrowingByok extends ByokStore {
@@ -45,5 +51,32 @@ void main() {
     );
     expect(notes, isEmpty, reason: '没配 key = 正常态，不是故障');
     expect(engine.cloud, isNull);
+  });
+
+  test('端侧工具面判据白名单覆盖全部宿主本地元工具（query_memory 漏单回归钉）', () {
+    // AgentLoop 纯聊天工具面全集（mcp_runtime assemble 实际下发的元工具），
+    // 逐个 owner 单源常量取名——白名单漏任何一个都会让纯聊天永不可端侧。
+    final metaFace = <CloudToolSchema>[
+      ...DiscoveryExecutor.staticSchemas(),
+      SkillRegistry().activationToolSchema(),
+      ...MemoryToolExecutor.toolSchemas(),
+      ...LocalResourceToolExecutor.toolSchemas(),
+      PlanProposalTool.schema(),
+    ];
+    expect(deviceToolFaceAllow(metaFace), isTrue,
+        reason: '纯聊天元工具面必须端侧放行（端云行为一致性）');
+  });
+
+  test('含 MCP 服务端工具 → 不放行（§2 编排硬约束不变）', () {
+    final withServerTool = [
+      ...DiscoveryExecutor.staticSchemas(),
+      ...MemoryToolExecutor.toolSchemas(),
+      const CloudToolSchema(
+        name: 'goodshare__claim_task',
+        description: '远端服务端工具',
+        parametersSchema: {'type': 'object', 'properties': {}},
+      ),
+    ];
+    expect(deviceToolFaceAllow(withServerTool), isFalse);
   });
 }

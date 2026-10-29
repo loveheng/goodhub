@@ -37,6 +37,30 @@ void main() {
     expect(v.reason, contains('2.5GB'));
   });
 
+  test('会话常驻豁免：availMem < 2.5GB 但驻留 → 放行（S2 自锁修正）', () {
+    final v = DeviceTierGate.check(
+      probe(availRamBytes: 2 << 30),
+      sessionResident: true,
+    );
+    expect(v.pass, isTrue, reason: '权重已驻留，冷加载门槛对驻留态失义');
+  });
+
+  test('会话常驻不豁免总量/温控（保护语义不变）', () {
+    final total = DeviceTierGate.check(
+      probe(totalRamBytes: 4 << 30),
+      sessionResident: true,
+    );
+    expect(total.pass, isFalse);
+    expect(total.reason, contains('6GB'));
+
+    final thermal = DeviceTierGate.check(
+      probe(thermalStatus: 3),
+      sessionResident: true,
+    );
+    expect(thermal.pass, isFalse);
+    expect(thermal.reason, contains('温控'));
+  });
+
   test('电量 < 15% 且未充电 → 禁用；充电豁免', () {
     final low = DeviceTierGate.check(probe(batteryPct: 14));
     expect(low.pass, isFalse);

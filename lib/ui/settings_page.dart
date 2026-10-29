@@ -56,6 +56,7 @@ import 'sections/cross_source_section.dart';
 import 'sections/gateway_section.dart';
 import 'sections/local_plugins_section.dart';
 import 'sections/nodes_section.dart';
+import 'sections/on_device_model_section.dart';
 import 'sections/user_prompts_section.dart';
 import 'components/panel_error_row.dart';
 import 'sections/appearance_section.dart';
@@ -221,7 +222,9 @@ class _SettingsPageState extends State<SettingsPage> {
           // 全局外观（暗/亮/暖）置于顶部：跨段、最先被用户调整。
           const AppearanceSection(),
           const SizedBox(height: 12),
-          // 顺序按使用频率：先选引擎，再接服务，后管放行与覆写。
+          // 顺序按使用频率：先选引擎（含端侧模型下载），再接服务，后管放行与覆写。
+          OnDeviceModelSection(onFlash: _flash, errorRowBuilder: _panelError),
+          const SizedBox(height: 12),
           ByokSection(
             store: widget.byokStoreOverride ?? byokStore(),
             onFlash: _flash,

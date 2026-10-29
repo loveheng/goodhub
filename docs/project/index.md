@@ -91,7 +91,7 @@ updated: 2026-10-23
 | M4 施工设计（双轨/记忆/多 Server/T4 韧性） | 本仓 `docs/design/m4.md` | active |
 | 自更新（整包/清单/串包防御） | 本仓 `docs/design/self-update.md` | active |
 | Binder 联调评估与修复请求 | 本仓 `docs/design/goodhub-goodshare-binder-eval.md` + `goodshare-binder-poc-fix-request.md` | active（结果回写投 thirdconnect 域） |
-| 端侧 LLM 设计（LiteRT-LM / FoundationModels） | goodshare 仓 `docs/design/on-device-llm.md` | active（跨仓只读） |
+| 端侧 LLM 设计（LiteRT-LM / FoundationModels） | goodshare 仓 `docs/design/on-device-llm.md` | superseded（跨仓只读，留作历史参考）——本仓路线已由 `docs/design/on-device-capability.md` v2 收敛为芯片厂商官方 SDK（高通 QNN / 联发科 NeuroPilot），LiteRT 仅承载百兆级轻量小模型 |
 | Host 网关架构 · 访问性模型 · 记忆捎带提取（Provider×Tier 解耦 / 聚合反向代理 / In-band `<workspace_update>`） | 本仓 `docs/design/host-gateway-accessibility-memory.md` | active；绑定 epic = `chatmessage`（§3 记忆提取主战场，§1/§2 依赖项）；§1.4 无前缀约束已收窄至本机调度域 |
 | Host 原生工具网关导出与策略投影（host__ 虚拟服务 / HostTransport 伪装客户端 / Allowlist 静态注册表 / 四级过滤管道 / 保留字门禁） | 本仓 `docs/design/host-tools-gateway-export.md` | draft |
 | 窗口解耦（内核 + 多投影：ServiceDirectory / McpRuntime / ConversationSession） | 本仓 `docs/design/window-kernel-split.md` | 内容 SSOT（架构裁决十二项 §8.1、路线图 §7.5）；施工已由 arch-hardening 承接 |

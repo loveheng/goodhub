@@ -43,6 +43,12 @@ void main() {
   }
 
   Future<void> pumpHall(WidgetTester tester) async {
+    // 大视口（页面物理高度 ×6）：SettingsPage 的 ListView 懒构建只建视口内
+    // 子项——OnDeviceModelSection 增高（模型选择/白名单行）后 ByokSection 被
+    // 推出首屏构建窗，finder 只匹配已构建 widget → 0 命中假失败。
+    tester.view.physicalSize = const Size(1080, 6000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
     await tester.pumpWidget(MaterialApp(
       home: SettingsPage(
         storeOverride: cowStore,

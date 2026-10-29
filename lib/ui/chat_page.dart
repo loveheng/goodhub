@@ -33,6 +33,8 @@ import '../coordinator/plan_proposal_tool.dart'
     show PlanProposalDecision;
 import '../coordinator/task_plan.dart' show PlanAggregateRecord;
 import '../llm/cloud/cloud_llm.dart';
+import '../llm/on_device_engine.dart';
+import '../llm/on_device_engine_aidl.dart';
 
 
 import '../mcp/connection_manager.dart';
@@ -177,6 +179,9 @@ class _ChatPageState extends State<ChatPage>
     // 算力让路端口（契约 §3.12.2-2）：后台批处理遇前台对话进行中即暂缓。
     // 窗口层只注入运行态，装配与消费逻辑在 app 层装配件。
     taskConsumeBootstrap.isHostBusy = () => _status.running;
+    // 端侧显式加载指示：首次命中端侧路径时引擎进入 loading，轨道显式呈现
+    // 「端侧模型加载中…」，加载完成/失败自动撤下（失败另有请求级错误卡）。
+    sharedOnDeviceEngine.loadState.addListener(_onOnDeviceLoadStateChanged);
     unawaited(_loadConfig());
     unawaited(_initConversations());
     unawaited(_loadEndpoints());
@@ -185,11 +190,29 @@ class _ChatPageState extends State<ChatPage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    sharedOnDeviceEngine.loadState.removeListener(_onOnDeviceLoadStateChanged);
     taskConsumeBootstrap.isHostBusy = null; // 解绑运行态端口（防悬空引用）
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
     _status.dispose(); // 含流控缓冲定时器取消（P0：widget 已销毁，残余无处可刷）
     super.dispose();
+  }
+
+  /// 端侧显式加载状态变化 → 轨道呈现「加载中」指示（loading 显示，ready/failed
+  /// 撤下；failed 由请求级错误卡显式说明，不重复提示）。
+  static const String _kOnDeviceLoadingNote = '⏳ 端侧模型加载中…';
+
+  void _onOnDeviceLoadStateChanged() {
+    if (!mounted) return;
+    final loading = sharedOnDeviceEngine.loadState.value == OnDeviceLoadState.loading;
+    final hasNote = _status.tracks
+        .any((e) => e is TrackNote && e.text == _kOnDeviceLoadingNote);
+    if (loading && !hasNote) {
+      _add(TrackNote(_kOnDeviceLoadingNote, danger: false));
+    } else if (!loading && hasNote) {
+      _status.removeWhere(
+          (e) => e is TrackNote && e.text == _kOnDeviceLoadingNote);
+    }
   }
 
   /// D：键盘遮挡收敛——键盘升降改 viewInsets 后，自动跟随时重新锚定底部，

@@ -7,6 +7,8 @@ import 'package:goodhub/core/errors/cloud_llm_error.dart';
 import 'package:goodhub/core/errors/inference_error.dart';
 import 'package:goodhub/llm/cloud/cloud_llm.dart';
 import 'package:goodhub/llm/llm.dart';
+import 'package:goodhub/llm/on_device_engine.dart';
+import 'package:goodhub/llm/device_tier.dart';
 import 'package:http/http.dart' as http;
 
 /// 可编程云端 fake：按脚本逐次返回流。
@@ -42,6 +44,9 @@ class FakeDeviceEngine implements OnDeviceLlmEngine {
   /// 非空时 generate 挂起到此 Completer 完成（模拟长生成，供取消联动测试）。
   Completer<void>? hangUntil;
 
+  /// 置位时 generate 抛 EngineDiedException（on-device S1-5 切云联调）。
+  bool dieOnGenerate = false;
+
   @override
   String get name => 'fake-device';
 
@@ -63,6 +68,9 @@ class FakeDeviceEngine implements OnDeviceLlmEngine {
   }) async {
     prompts.add(system == null ? prompt : '$system|$prompt');
     formats.add(responseFormat);
+    if (dieOnGenerate) {
+      throw const EngineDiedException('mock :engine died');
+    }
     final hang = hangUntil;
     if (hang != null) {
       await hang.future;
@@ -110,6 +118,24 @@ Stream<CloudStreamEvent> gapStream(Duration gap, String second) async* {
 
 void main() {
   const noTools = CloudChatRequest(messages: [UserMessage('u')]);
+
+  /// 宿主本地元工具面（S2 纯聊天收口测试夹具）：AgentLoop 实际恒发的形态。
+  const localMetaToolsOnly = CloudChatRequest(
+    messages: [UserMessage('u')],
+    tools: [
+      CloudToolSchema(name: 'get_connected_apps', description: '', parametersSchema: {}),
+      CloudToolSchema(name: 'update_memory', description: '', parametersSchema: {}),
+    ],
+  );
+
+  /// 含 MCP 服务端工具（本地元工具 + 服务端工具混合，判据须拒绝）。
+  const withServerTool = CloudChatRequest(
+    messages: [UserMessage('u')],
+    tools: [
+      CloudToolSchema(name: 'get_connected_apps', description: '', parametersSchema: {}),
+      CloudToolSchema(name: 'server__query', description: '', parametersSchema: {}),
+    ],
+  );
   const withTools = CloudChatRequest(
     messages: [UserMessage('u')],
     tools: [CloudToolSchema(name: 'f', description: '', parametersSchema: {})],
@@ -546,6 +572,174 @@ void main() {
         throwsA(isA<InferenceException>()),
       );
       expect(device.prompts, isEmpty);
+    });
+  });
+
+  group('端侧引擎死亡无缝切云（on-device S1-5，总纲 §2）', () {
+    test('降级态端侧路径 EngineDiedException → 无缝切云产出', () async {
+      controller.reportTransportTimeout(); // 进入降级态 → 主入口走端侧
+      device.dieOnGenerate = true;
+      cloud.script.add(() => textStream('云端接管'));
+      final events = await engine.send(noTools).toList();
+      expect(events.whereType<CloudTextDelta>().single.text, '云端接管');
+      expect(cloud.calls, hasLength(1), reason: '死亡即切云，一次直达');
+    });
+
+    test('云端未配置态端侧死亡 → EngineDiedException 原样上抛（无云可切）', () async {
+      final bare = HybridCloudEngine(
+        controller: controller,
+        cloud: null,
+        onDevice: device,
+      );
+      device.dieOnGenerate = true;
+      await expectLater(
+        bare.send(noTools).toList(),
+        throwsA(isA<EngineDiedException>()),
+      );
+    });
+
+    test('端侧正常产出不经死亡兜底（云端零调用）', () async {
+      controller.reportTransportTimeout();
+      device.next = '端侧产出';
+      final events = await engine.send(noTools).toList();
+      expect(events.whereType<CloudTextDelta>().single.text, '端侧产出');
+      expect(cloud.calls, isEmpty);
+    });
+  });
+
+  group('deviceToolPolicy 端侧工具面判据（S2 纯聊天收口）', () {
+    test('全为宿主本地元工具 → 端侧放行（降级态云端零调用）', () async {
+      controller.reportTransportTimeout();
+      device.next = '端侧答复';
+      final policyEngine = HybridCloudEngine(
+        controller: controller,
+        cloud: cloud,
+        onDevice: device,
+        deviceToolPolicy: (tools) => tools.every(
+          (t) => const {'get_connected_apps', 'update_memory'}.contains(t.name),
+        ),
+      );
+      final events = await policyEngine.send(localMetaToolsOnly).toList();
+      expect(events.whereType<CloudTextDelta>().single.text, '端侧答复');
+      expect(cloud.calls, isEmpty);
+    });
+
+    test('含 MCP 服务端工具 → 不放行，走云端（§2 编排约束不变）', () async {
+      controller.reportTransportTimeout();
+      cloud.script.add(() => textStream('云端编排'));
+      final policyEngine = HybridCloudEngine(
+        controller: controller,
+        cloud: cloud,
+        onDevice: device,
+        deviceToolPolicy: (tools) =>
+            tools.every((t) => t.name == 'get_connected_apps'),
+      );
+      final events = await policyEngine.send(withServerTool).toList();
+      expect(events.whereType<CloudTextDelta>().single.text, '云端编排');
+      expect(device.prompts, isEmpty);
+    });
+
+    test('未注入判据 → 保守默认：带工具不放行（既有语义回归钉）', () async {
+      controller.reportTransportTimeout();
+      cloud.script.add(() => textStream('云端'));
+      final events = await engine.send(localMetaToolsOnly).toList();
+      expect(events.whereType<CloudTextDelta>().single.text, '云端');
+      expect(device.prompts, isEmpty);
+    });
+  });
+
+  group('端侧启用用户覆盖（§16 用户授权覆盖层）', () {
+    test('偏好优先端侧：云端健康态也走端侧（云端零调用）', () async {
+      device.next = '偏好端侧';
+      final e = HybridCloudEngine(
+        controller: controller,
+        cloud: cloud,
+        onDevice: device,
+        preferOnDevice: true,
+      );
+      final events = await e.send(noTools).toList();
+      expect(cloud.calls, isEmpty);
+      expect(events.whereType<CloudTextDelta>().single.text, '偏好端侧');
+    });
+
+    test('紧急强行启用：门禁关闸仍走端侧（即便云端健康）', () async {
+      device.next = '强行端侧';
+      final e = HybridCloudEngine(
+        controller: controller,
+        cloud: cloud,
+        onDevice: device,
+        forceOnDevice: true,
+        deviceTierGate: () async => (pass: false, reason: '省电模式'),
+      );
+      final events = await e.send(noTools).toList();
+      expect(device.prompts, hasLength(1));
+      expect(cloud.calls, isEmpty);
+      expect(events.whereType<CloudTextDelta>().single.text, '强行端侧');
+    });
+
+    test('紧急强行 + 无云端 + 门禁关闸 → 端侧路径（不报错）', () async {
+      device.next = '强行端侧无云';
+      final e = HybridCloudEngine(
+        controller: controller,
+        cloud: null,
+        onDevice: device,
+        forceOnDevice: true,
+        deviceTierGate: () async => (pass: false, reason: 'RAM 不足'),
+      );
+      final events = await e.send(noTools).toList();
+      expect(events.whereType<CloudTextDelta>().single.text, '强行端侧无云');
+    });
+
+    test('§2 工具面不可被偏好/强行绕过（带 MCP 工具仍走云端）', () async {
+      device.next = '不应到达';
+      final e = HybridCloudEngine(
+        controller: controller,
+        cloud: cloud,
+        onDevice: device,
+        preferOnDevice: true,
+        forceOnDevice: true,
+        deviceToolPolicy: (tools) => tools.every((t) => t.name == 'get_connected_apps'),
+      );
+      cloud.script.add(() => textStream('云端编排'));
+      final events = await e.send(withServerTool).toList();
+      expect(device.prompts, isEmpty, reason: '§2 工具面不受偏好/强行影响');
+      expect(events.whereType<CloudTextDelta>().single.text, '云端编排');
+    });
+  });
+
+  group('DeviceTierGate.ignore 维度放宽（设置页门禁覆盖）', () {
+    const bigRam = 12 << 30;
+    const bigAvail = 6 << 30;
+
+    test('ignoreAvailRam：可用 RAM 不足但忽略 → 放行（解 12GB 痛点）', () {
+      final probe = DeviceProbe(totalRamBytes: bigRam, availRamBytes: 1 << 30);
+      expect(DeviceTierGate.check(probe).pass, isFalse);
+      expect(DeviceTierGate.check(probe, ignoreAvailRam: true).pass, isTrue);
+    });
+
+    test('ignoreBattery：低电量但忽略 → 放行', () {
+      final probe = DeviceProbe(
+        totalRamBytes: bigRam,
+        availRamBytes: bigAvail,
+        batteryPct: 5,
+      );
+      expect(DeviceTierGate.check(probe).pass, isFalse);
+      expect(DeviceTierGate.check(probe, ignoreBattery: true).pass, isTrue);
+    });
+
+    test('ignoreThermal：过热但忽略 → 放行', () {
+      final probe = DeviceProbe(
+        totalRamBytes: bigRam,
+        availRamBytes: bigAvail,
+        thermalStatus: 4,
+      );
+      expect(DeviceTierGate.check(probe).pass, isFalse);
+      expect(DeviceTierGate.check(probe, ignoreThermal: true).pass, isTrue);
+    });
+
+    test('RAM 总量 6GB 硬件准入不受 ignoreAvailRam 影响（需 force 绕过）', () {
+      final weak = DeviceProbe(totalRamBytes: 4 << 30, availRamBytes: bigAvail);
+      expect(DeviceTierGate.check(weak, ignoreAvailRam: true).pass, isFalse);
     });
   });
 }

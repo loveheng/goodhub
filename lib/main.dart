@@ -11,11 +11,26 @@ import 'package:path_provider/path_provider.dart';
 import 'app/task_consume_bootstrap.dart';
 import 'coordinator/ref_store.dart';
 import 'task/task_consume_ledger.dart';
-import 'llm/llm.dart';
+import 'llm/on_device_engine.dart';
+import 'llm/on_device_bench.dart';
+import 'llm/on_device_engine_aidl.dart';
+import 'llm/on_device_asset_manager.dart';
+import 'llm/on_device_model_catalog.dart';
 import 'sandbox/memory_store.dart';
 import 'ui/chat_page.dart';
 import 'ui/navigator_key.dart';
 import 'ui/tokens/app_theme.dart';
+
+/// S2-5 熔断全链诊断触发（测量期构建专用，PATCH 验证收口后退役）：
+///   flutter run/build --dart-define=ON_DEVICE_BREAKER_DIAG=true
+const bool kOnDeviceBreakerDiag =
+    bool.fromEnvironment('ON_DEVICE_BREAKER_DIAG', defaultValue: false);
+
+/// S2-5 一次性熔断复位触发（测量期构建专用，PATCH 验证收口后退役）：
+///   --dart-define=ON_DEVICE_BREAKER_RESET=true
+/// §6.5 reset 语义 = 手动清缓存/模型版本更新路径；用于验证轮间清锁。
+const bool kOnDeviceBreakerReset =
+    bool.fromEnvironment('ON_DEVICE_BREAKER_RESET', defaultValue: false);
 
 void main() async {
   // 三态主题（暗/亮/暖）持久化于 SharedPreferences，启动期读取后注入单例，
@@ -42,6 +57,7 @@ class _GoodHubAppState extends State<GoodHubApp> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _warmEngine();
+    _bootstrapOnDeviceEngine();
     _sweepMemoryStartup();
     _sweepRefStoreStartup();
     _startTaskConsume();
@@ -62,17 +78,83 @@ class _GoodHubAppState extends State<GoodHubApp> with WidgetsBindingObserver {
       case AppLifecycleState.paused:
       case AppLifecycleState.hidden:
       case AppLifecycleState.detached:
-        unawaited(ChannelLlmEngine().release());
+        // 释放真正在用的端侧引擎（AIDL `:engine` 进程权重内存）；旧
+        // `goodhub/llm` 桥（ChannelLlmEngine）仅承载设备探针，不再走生成
+        // 路径，对其 warmup/release 是挂错通道的死调用（2026-10-29 清理）。
+        unawaited(sharedOnDeviceEngine.release());
       case AppLifecycleState.inactive:
         break; // 系统弹层等瞬态，不折腾引擎
     }
   }
 
+  /// 端侧引擎预热（§2 前台驻留策略）：resumed 时后台预热 AIDL `:engine` 进程
+  /// （bind + 等就绪事件，由 `sharedOnDeviceEngine` 承接）。已热时幂等 no-op；
+  /// 预热失败只留痕不阻断（端侧为兜底路径，下一次 generate 自有懒加载兜底）。
   Future<void> _warmEngine() async {
-    final engine = ChannelLlmEngine();
-    if (!await engine.isAvailable) return;
-    final ok = await engine.warmup();
-    debugPrint('[LlmEngine] warmup(${ok ? 'done' : 'no model'})');
+    await sharedOnDeviceEngine.warmup();
+    debugPrint('[on-device] warmup requested');
+  }
+
+  /// 端侧引擎启动引导（S2 正式接线，接替 S2-1 冒烟）：bind + 等就绪事件
+  /// （bind 竞态正式收口，无固定 sleep）→ 查询结构化状态 → assetMissing 时
+  /// 经 S2-2 正式 OTA 通道（OnDeviceAssetManager：manifest 分发 + sha256
+  /// 校验 + ≥5GB 门禁 + 原子替换，NPU 稿 §4.5/§4.6）补齐模型资产；已装资产
+  /// 先过驱动指纹漂移自愈（§4.8：系统 OTA 更新 DSP 驱动 → 脏删重拉，不计
+  /// 熔断）→ 受理 loadModel 异步会话创建。失败 DEGRADE 留痕不阻断启动
+  /// （端侧为可选加速路径，云端默认通路不受影响）。
+  Future<void> _bootstrapOnDeviceEngine() async {
+    try {
+      if (kOnDeviceBreakerReset) {
+        // §6.5 reset 语义（手动清缓存路径）：测量轮间清 L1/L2 锁。
+        await sharedOnDeviceEngine.breaker.reset();
+        debugPrint('[on-device-breaker-diag] reset done state=${await sharedOnDeviceEngine.diagBreakerState()}');
+      }
+      // 端侧改为「按需显式加载」：启动**不再**自动 bind / loadModel——模型权重
+      // （~1.9GB）不驻留、:engine 进程不预启，端侧默认不启用。仅做轻量驱动指纹
+      // 漂移自愈（脏资产标记，首次 enable 重拉），不占内存。实际装载 + 数据面
+      // worker 推迟到首次命中端侧路径（HybridCloudEngine 懒加载兜底 + 显式
+      // loading 指示，见 on_device_engine_aidl.enable）。
+      final model = await OnDeviceModelSelection.read();
+      await OnDeviceAssetManager.instance.recoverIfDriverChanged(model: model);
+      final engine = sharedOnDeviceEngine;
+      if (kOnDeviceBenchOnReady) {
+        // §1.2 吞吐正式测量：先显式加载（bind→就绪→资产→loadModel→worker），
+        // 就绪后跑测量（enable 已保证 ready，无需额外就绪轮询）。
+        await engine.enable();
+        await OnDeviceBench.run();
+      }
+      if (kOnDeviceBreakerDiag) {
+        // S2-5 熔断全链诊断：先确保装载，再跑 diagPanic 序列。
+        await engine.enable();
+        // 序列：① diagPanic×2 → L1 触发 → generate 闸门快速失败；
+        // ② 再 diagPanic×2 → 当天第 2 次 L1 → L2 持久化 24h 锁。
+        debugPrint('[on-device-breaker-diag] start state=${await engine.diagBreakerState()}');
+        await engine.diagPanic();
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        await engine.diagPanic();
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        debugPrint('[on-device-breaker-diag] after L1 pair state=${await engine.diagBreakerState()}');
+        try {
+          await for (final _ in sharedOnDeviceEngine.generate(
+            requestId: 'diag-gate-${DateTime.now().microsecondsSinceEpoch}',
+            prompt: '熔断闸门探测',
+            config: const GenerationConfig(maxTokens: 4),
+          )) {
+            debugPrint('[on-device-breaker-diag] gate: UNEXPECTED token (breaker NOT gating!)');
+          }
+          debugPrint('[on-device-breaker-diag] gate: stream closed without error (UNEXPECTED)');
+        } catch (e) {
+          debugPrint('[on-device-breaker-diag] gate: fast-fail OK -> $e');
+        }
+        await engine.diagPanic();
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        await engine.diagPanic();
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        debugPrint('[on-device-breaker-diag] after 2nd L1 pair state=${await engine.diagBreakerState()}');
+      }
+    } catch (e) {
+      debugPrint('[DEGRADE] on-device bootstrap: $e');
+    }
   }
 
   /// M4-T2 记忆沙盒启动清扫（architecture §11「启动时清理超限旧档」+ 崩溃

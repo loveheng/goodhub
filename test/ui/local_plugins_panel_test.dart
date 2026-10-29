@@ -78,6 +78,11 @@ void main() {
   }
 
   Future<void> pumpPanel(WidgetTester tester) async {
+    // 大视口：ListView 懒构建只建视口内子项，OnDeviceModelSection 增高后
+    // 本段被推出首屏构建窗 → finder 0 命中假失败（同 byok_panel_test 口径）。
+    tester.view.physicalSize = const Size(1080, 6000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
     await tester.pumpWidget(MaterialApp(
       home: SettingsPage(
         // 其余面板同注入假件：其默认装配走平台通道，测试环境不可达，失败会置

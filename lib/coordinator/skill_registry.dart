@@ -96,8 +96,13 @@ class SkillRegistry {
 
   /// activate_skill 元工具声明（§7：L1 静默 + 药丸——readOnlyHint true 走
   /// 网关建议值；宿主本地工具，不下发 server）。随 tools 列表一并下发。
+  ///
+  /// 工具名常量 [activateSkillToolName] 同步暴露：hybrid_assembly 的端侧
+  /// 工具面判据（deviceToolPolicy）须引用同一出处（防字符串双源漂移）。
+  static const String activateSkillToolName = 'activate_skill';
+
   CloudToolSchema activationToolSchema() => CloudToolSchema(
-        name: 'activate_skill',
+        name: activateSkillToolName,
         description: '按需激活一个宿主 Skill（技能指引）。激活后本会话后续轮次生效；'
             '可激活项见系统提示中的「可激活」清单。',
         parametersSchema: {
