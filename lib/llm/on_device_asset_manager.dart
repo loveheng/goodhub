@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:archive/archive_io.dart' show extractFileToDisk;
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -70,6 +71,11 @@ class OnDeviceAssetManager {
       'http://127.0.0.1:8090/qwen3_1_7b-geniex_qairt-w4a16-qualcomm_snapdragon_8_elite_for_galaxy';
   static const String _defaultDirName = 'qwen3_1_7b-geniex_qairt-w4a16';
 
+  /// 本地导入资产的 meta 版本前缀（2026-10-30 用户裁决：模型改导入制，
+  /// 废弃在线 OTA 依赖——模型体积过大无在线存储）。带此前缀的资产在
+  /// [ensureAssets] 里完全跳过 manifest/网络面，尺寸校验过即用。
+  static const String _importedVersionPrefix = 'local-import';
+
   /// 装载目标解析（§4.5 分发键经 catalog 选项承载）：显式 model（设置页
   /// 选择）优先 > 实例构造 override（测试注入）> 默认（1.7B 首发资产）。
   String _baseOf(OnDeviceModelOption? model) =>
@@ -80,6 +86,11 @@ class OnDeviceAssetManager {
 
   /// §4.6 双倍空间门禁（≈2.5× 1.8GB 模型体积，含解压峰值余量）。
   static const int _minFreeBytes = 5 * 1024 * 1024 * 1024;
+
+  /// 导入内容体积与所选档位预期值的容差（±20%）：超出即判「档位错配」拒绝
+  /// 导入——真机实证「1.7B 档装 4B 分片」把装载内存峰值翻倍，装载必被 LMK
+  /// 打断（端侧永远装不上）。
+  static const double _assetSizeTolerance = 0.2;
 
   /// 可注入探针（测试面）：磁盘余量 / 驱动指纹。真机走平台通道。
   final Future<int?> Function()? freeBytesProvider;
@@ -106,6 +117,14 @@ class OnDeviceAssetManager {
       final support = await (supportDirResolver ?? getApplicationSupportDirectory)();
       final modelsRoot = Directory('${support.path}/models');
       final target = Directory('${modelsRoot.path}/${_dirOf(model)}');
+
+      // 导入资产优先（2026-10-30 拍板：模型改导入制）：在盘且尺寸全对即
+      // 直接返回，manifest 不可达/在线通道退役都不影响装载。
+      if (await _isImportedVerified(target)) {
+        report(const AssetPullProgress(
+            phase: 'done', detail: '本地导入资产校验通过（跳过下载）'));
+        return target;
+      }
 
       report(const AssetPullProgress(phase: 'manifest'));
       final manifest = await _fetchManifest(base);
@@ -422,6 +441,291 @@ class OnDeviceAssetManager {
       }
     } catch (_) {}
     return null;
+  }
+
+  // ---- 本地导入通道（2026-10-30 拍板：模型改导入制，废弃在线 OTA 依赖）----
+
+  /// 在盘导入资产校验：meta 版本带导入前缀 + meta 记录的每个文件在场且
+  /// 尺寸全对。sha256 不重算（导入源完整性由用户侧保证，同 [_verifyInstalled]
+  /// 的廉价口径）。
+  Future<bool> _isImportedVerified(Directory target) async {
+    try {
+      final metaFile = File('${target.path}/.asset-meta.json');
+      if (!await metaFile.exists()) return false;
+      final meta = jsonDecode(await metaFile.readAsString()) as Map<String, dynamic>;
+      final version = meta['version'] as String? ?? '';
+      if (!version.startsWith(_importedVersionPrefix)) return false;
+      final sizes = (meta['sizes'] as Map<String, dynamic>?) ?? const {};
+      if (sizes.isEmpty) return false;
+      for (final entry in sizes.entries) {
+        final file = File('${target.path}/${entry.key}');
+        if (!await file.exists()) return false;
+        if (await file.length() != (entry.value as num).toInt()) return false;
+      }
+      return true;
+    } catch (e) {
+      debugPrint('[DEGRADE] imported-asset verify: $e');
+      return false;
+    }
+  }
+
+  /// 本地导入：用户经系统文件选择器（SAF，file_picker 复制语义）多选模型
+  /// 目录下的文件后，把选中文件拷入应用私有 models/ 目标目录并写 meta。
+  ///
+  /// 纪律（同下载通道）：≥5GB 磁盘门禁 → `.staging-import-*` 暂存 → 逐文件
+  /// 字节数核对（SAF 缓存路径 → 拷贝中断不静默）→ `_atomicSwap` 原子替换
+  /// （防 `:engine` 装载中热替换 SIGBUS）。选中的点前缀隐藏文件一律忽略
+  /// （防覆盖 `.asset-meta.json`）；文件名冲突（跨目录重名）整批拒绝。
+  /// 驱动指纹照记——§4.8 漂移自愈对导入资产同样生效（脏删后需重新导入）。
+  Future<Directory?> importFromPickedFiles(
+    List<String> pickedPaths, {
+    OnDeviceModelOption? model,
+    void Function(AssetPullProgress progress)? onProgress,
+  }) async {
+    void report(AssetPullProgress p) {
+      try {
+        onProgress?.call(p);
+      } catch (_) {}
+    }
+
+    try {
+      if (pickedPaths.isEmpty) return null;
+      final support =
+          await (supportDirResolver ?? getApplicationSupportDirectory)();
+      final modelsRoot = Directory('${support.path}/models');
+      final target = Directory('${modelsRoot.path}/${_dirOf(model)}');
+
+      // 展开为 (源路径, 落盘文件名)，同名校验 + 体积累计。
+      final entries = <(String, String)>[];
+      final names = <String>{};
+      var totalBytes = 0;
+      for (final path in pickedPaths) {
+        final name = path.split('/').last;
+        if (name.isEmpty || name.startsWith('.')) continue;
+        if (!names.add(name)) {
+          debugPrint('[DEGRADE] import: duplicate file name $name');
+          return null;
+        }
+        final len = await File(path).length();
+        entries.add((path, name));
+        totalBytes += len;
+      }
+      if (entries.isEmpty) return null;
+      if (!await _diskGate(totalBytes)) return null;
+      // 档位一致性校验（2026-10-30 真机实证）：所选档位 ↔ 导入内容必须同档
+      // ——「1.7B 档装 4B 分片」把装载内存峰值翻倍（3.17GB 权重 + ION 瞬态
+      // 击穿整机 min watermark → `:engine` 被 LMK 连杀 5 次 → 端侧永远装不上）。
+      // 目录名自拟不可信 → 靠体积对账钉死（偏差超容差即拒绝）。
+      final expected = model?.expectedTotalBytes;
+      if (expected != null) {
+        final drift = (totalBytes - expected).abs() / expected;
+        if (drift > _assetSizeTolerance) {
+          debugPrint('[DEGRADE] import size mismatch: dir=${_dirOf(model)} '
+              'expected≈${expected ~/ 1048576}MB got=${totalBytes ~/ 1048576}MB '
+              '(drift=${(drift * 100).round()}%) → refused');
+          report(AssetPullProgress(
+              phase: 'file',
+              fileName: entries.first.$2,
+              totalBytes: totalBytes,
+              detail: '导入内容与所选档位不符（预期 ≈${expected ~/ 1048576}MB，'
+                  '实测 ${totalBytes ~/ 1048576}MB）'));
+          return null;
+        }
+      }
+
+      report(AssetPullProgress(
+          phase: 'file', fileName: entries.first.$2, totalBytes: totalBytes));
+      final staging = Directory(
+          '${modelsRoot.path}/.staging-import-${(now ?? DateTime.now)().millisecondsSinceEpoch}');
+      await staging.create(recursive: true);
+      try {
+        var doneBytes = 0;
+        for (final (src, name) in entries) {
+          final dst = File('${staging.path}/$name');
+          await File(src).copy(dst.path); // dart:io File.copy = 流式，不整载内存
+          if (await dst.length() != await File(src).length()) {
+            debugPrint('[DEGRADE] import $name: copied size mismatch');
+            return await _cleanupStaging(staging);
+          }
+          doneBytes += await dst.length();
+          report(AssetPullProgress(
+              phase: 'file',
+              fileName: name,
+              receivedBytes: doneBytes,
+              totalBytes: totalBytes));
+        }
+        await _writeImportMeta(staging, entries, totalBytes);
+        await _atomicSwap(staging, target, modelsRoot);
+      } catch (_) {
+        await _rmdirQuiet(staging);
+        rethrow;
+      }
+      debugPrint('[on-device] assets imported '
+          '(${entries.length} files, ${totalBytes ~/ 1048576}MB) → ${target.path}');
+      // 逐文件尺寸对账（S2-5 闪退换向）：4B@W4A16 全 bundle 预期 ~2.3GB，
+      // 目录名自拟不可信——合计 ~4.5GB+ 即导入误标大模型，装载期 dmabuf 对账用。
+      for (final (src, name) in entries) {
+        debugPrint('[on-device] import size: $name='
+            '${await File(src).length()}B');
+      }
+      report(AssetPullProgress(
+          phase: 'done',
+          receivedBytes: totalBytes,
+          totalBytes: totalBytes,
+          detail: 'local-import'));
+      return target;
+    } catch (e) {
+      debugPrint('[DEGRADE] asset import: $e');
+      return null;
+    }
+  }
+
+  /// 压缩包导入（2026-10-30 增补）：单选 zip/tar/tar.gz 模型包 → archive 包
+  /// 流式解压进 `.staging-archive-*`（不整载内存）→ 压平到 staging 根
+  /// （嵌套目录按 basename 提升；点前缀文件删除、重名整批拒绝）→
+  /// 档位体积对账（同 [importFromPickedFiles] 容差）→ 写 local-import
+  /// meta → `_atomicSwap` 原子替换。解压解码错误抛 ArchiveException →
+  /// 外层 catch 收口 null。
+  Future<Directory?> importFromArchive(
+    String archivePath, {
+    OnDeviceModelOption? model,
+    void Function(AssetPullProgress progress)? onProgress,
+  }) async {
+    void report(AssetPullProgress p) {
+      try {
+        onProgress?.call(p);
+      } catch (_) {}
+    }
+
+    Directory? staging;
+    try {
+      if (_archiveExtension(archivePath) == null) {
+        debugPrint("[DEGRADE] archive import: unsupported archive $archivePath");
+        return null;
+      }
+      final support =
+          await (supportDirResolver ?? getApplicationSupportDirectory)();
+      final modelsRoot = Directory('${support.path}/models');
+      final target = Directory('${modelsRoot.path}/${_dirOf(model)}');
+      // 解压膨胀留量：压缩包体积 ×3 作为磁盘门禁输入（模型权重压缩比有限，
+      // ×3 覆盖文本类 tokenizer 包；真不足时 extractFileToDisk 亦会抛盘满）。
+      if (!await _diskGate(await File(archivePath).length() * 3)) return null;
+
+      report(const AssetPullProgress(phase: "manifest", detail: "解压中…"));
+      staging = Directory(
+          '${modelsRoot.path}/.staging-archive-${(now ?? DateTime.now)().millisecondsSinceEpoch}');
+      await staging.create(recursive: true);
+      await extractFileToDisk(archivePath, staging.path, callback: (entry) {
+        if (!entry.isFile) return;
+        report(AssetPullProgress(
+            phase: "file", fileName: entry.name, detail: "解压中…"));
+      });
+
+      // 压平：嵌套目录文件按 basename 提升到 staging 根（:engine 装载要平铺）。
+      final entries = <(String, String)>[];
+      final names = <String>{};
+      final pending = <Directory>[staging];
+      while (pending.isNotEmpty) {
+        final dir = pending.removeLast();
+        await for (final entity in dir.list()) {
+          if (entity is Directory) {
+            pending.add(entity);
+            continue;
+          }
+          if (entity is! File) continue;
+          final name = entity.uri.pathSegments.last;
+          if (name.startsWith(".")) {
+            await entity.delete(); // 压缩包内点前缀文件一律不入库
+            continue;
+          }
+          if (entity.parent.path == staging.path) {
+            if (!names.add(name)) {
+              debugPrint("[DEGRADE] archive import: duplicate $name");
+              return await _cleanupStaging(staging);
+            }
+            entries.add((entity.path, name));
+            continue;
+          }
+          final dst = File("${staging.path}/$name");
+          if (await dst.exists()) {
+            debugPrint("[DEGRADE] archive import: duplicate $name");
+            return await _cleanupStaging(staging);
+          }
+          await entity.rename(dst.path);
+          names.add(name);
+          entries.add((dst.path, name));
+        }
+      }
+      if (entries.isEmpty) {
+        debugPrint("[DEGRADE] archive import: empty archive");
+        return await _cleanupStaging(staging);
+      }
+      var totalBytes = 0;
+      for (final (src, _) in entries) {
+        totalBytes += await File(src).length();
+      }
+      // 档位体积对账（同 importFromPickedFiles：包名/目录名自拟不可信）。
+      final expected = model?.expectedTotalBytes;
+      if (expected != null) {
+        final drift = (totalBytes - expected).abs() / expected;
+        if (drift > _assetSizeTolerance) {
+          debugPrint("[DEGRADE] archive import size mismatch: "
+              "dir=${_dirOf(model)} expected≈${expected ~/ 1048576}MB "
+              "got=${totalBytes ~/ 1048576}MB");
+          report(AssetPullProgress(
+              phase: "file",
+              fileName: entries.first.$2,
+              totalBytes: totalBytes,
+              detail: "导入内容与所选档位不符"));
+          return await _cleanupStaging(staging);
+        }
+      }
+
+      await _writeImportMeta(staging, entries, totalBytes);
+      await _atomicSwap(staging, target, modelsRoot);
+      staging = null; // 已原子转正，finally 不再清
+      debugPrint("[on-device] assets imported from archive "
+          "(${entries.length} files, ${totalBytes ~/ 1048576}MB) "
+          "-> ${target.path}");
+      report(AssetPullProgress(
+          phase: "done",
+          receivedBytes: totalBytes,
+          totalBytes: totalBytes,
+          detail: "local-import"));
+      return target;
+    } catch (e) {
+      debugPrint("[DEGRADE] asset archive import: $e");
+      return null;
+    } finally {
+      if (staging != null) await _rmdirQuiet(staging);
+    }
+  }
+
+  /// 压缩包扩展名识别（仅收 zip/tar/tar.gz/tgz；其余 null）。
+  static String? _archiveExtension(String path) {
+    final lower = path.toLowerCase();
+    for (final ext in [".tar.gz", ".tgz", ".tar", ".zip"]) {
+      if (lower.endsWith(ext)) return ext;
+    }
+    return null;
+  }
+
+  Future<void> _writeImportMeta(
+      Directory dir, List<(String, String)> entries, int totalBytes) async {
+    final fingerprint = await _currentFingerprint();
+    final sizes = <String, int>{};
+    for (final (_, name) in entries) {
+      sizes[name] = await File('${dir.path}/$name').length();
+    }
+    final meta = {
+      'version': '$_importedVersionPrefix-${(now ?? DateTime.now)().millisecondsSinceEpoch}',
+      'installedAt': (now ?? DateTime.now)().toIso8601String(),
+      'driverFingerprint': fingerprint,
+      'totalBytes': totalBytes,
+      'sizes': sizes,
+    };
+    await SequentialFileWriter(File('${dir.path}/.asset-meta.json'))
+        .write(jsonEncode(meta));
   }
 
   Future<Directory?> _cleanupStaging(Directory staging) async {

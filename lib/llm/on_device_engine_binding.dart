@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:ffi';
 import 'dart:isolate';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'on_device_engine.dart';
@@ -34,10 +35,18 @@ class OnDeviceEngineBinding {
   /// 已 abort 在途 + 清空在途——按 EngineDiedException 切云（不计熔断）。
   void Function()? onIpcDeadlock;
 
-  /// 数据面微批接收（S3-6，§6.4）：native worker 经 Dart_PostCObject_DL 投
-  /// Uint8List（Dart_CObject_kTypedData 复制语义），载荷 = UTF-8 字节值
-  ///（identity 字节级编码，与 Kotlin 写侧契约对齐）。仅在 worker 运行期到达。
+  /// 数据面微批接收（S3-6，§6.4 TLV 化）：native worker 经 Dart_PostCObject_DL
+  /// 投 kArray `[Int32 type, Uint8List payload]`（复制语义）。载荷语义：
+  /// TOKEN_CHUNK（0x0001）→ [onDataBatch]（UTF-8 字节，identity 编码）；
+  /// EOS（0x000F，payload 恒空）→ [onDataBatch] 收空批（流生命周期唯一事实
+  /// 源）；IMAGE_META/PROGRESS 为协议留位（多模态 epic 启用），native 侧
+  /// 已按未知类型 skip，此处不会到达；**null = EOF 信号**（对端关闭）。
   void Function(Uint8List batch)? onDataBatch;
+
+  /// 数据面 EOF 信号（S3-7 修订）：native worker 读到 `read()==0`（对端关闭
+  /// = :engine 数据面死亡）后投 Dart `null`（Dart_CObject_kNull）——接收方
+  /// 即刻以 EngineDiedException 收口活跃流，不经看门狗兜底。
+  void Function()? onDataEof;
 
   /// 生成收尾回调（finishReason 0=stop / 1=cancelled）。
   void Function(String requestId, int finishReason)? onGenerateFinished;
@@ -52,6 +61,19 @@ class OnDeviceEngineBinding {
   /// S3-1 热切云沿（:engine thermal listener 权威，NPU 稿 §5.2/§5.3）：
   /// true = 热状态 ≥ SEVERE 全量切云；false = 回落 MODERATE 及以下端侧恢复。
   void Function(bool active)? onThermalCutover;
+
+  /// `:engine` **自发**状态变更上行（P0-3）：TTL 驱逐 / onTrimMemory 驱逐 /
+  /// 内存护栏驱逐 / 主动 release 后由主进程桥投递（对应 AIDL
+  /// `IOnDeviceEngineListener.onEngineEvicted`）。
+  ///
+  /// 此前双端状态机（Dart `loadState` × Kotlin `EngineLifecycle`/
+  /// `session.ready`）只有 Dart→Kotlin 单向通道，:engine 自发驱逐后主进程
+  /// 仍持 ready 说谎态：`enable()` 判 ready 而 no-op 不重装 → 下一次端侧
+  /// 请求必撞 `genie session not ready` / `data plane not initialized`，
+  /// 且错误文案呈现 `assetMissing`（立法语义=模型未下载）→ 补救方向被误导。
+  /// 消费方据此复位 loadState，令下一次 enable 走「快速暖机」再入
+  /// （资产在盘不重下载，NPU 稿 §4.1 COLD-EVICTED 立法意图）。
+  void Function(String reason)? onEngineEvicted;
 
   OnDeviceEngineBinding() {
     // handler 注册不在此处：纯 Dart 测试环境（无 WidgetsFlutterBinding）构造
@@ -82,6 +104,9 @@ class OnDeviceEngineBinding {
           );
         case 'onEngineReady':
           readyGate.noteReady((call.arguments as int?) ?? 5);
+        case 'onEngineEvicted':
+          // :engine 自发驱逐：消费方复位 loadState（见 [onEngineEvicted] 注释）。
+          onEngineEvicted?.call(call.arguments as String? ?? 'unknown');
       }
       return null;
     });
@@ -95,6 +120,16 @@ class OnDeviceEngineBinding {
     Duration timeout = const Duration(seconds: 10),
   }) =>
       readyGate.waitReady(timeout: timeout);
+
+  /// 前台态判定（场景 A/B/C 切云语义拆分用）：桥面 Activity started 计数
+  /// >0 即前台。探测失败按**后台**保守处理（场景 B 不切云、暂存等前台）。
+  Future<bool> isForeground() async {
+    try {
+      return await channel.invokeMethod<bool>('isForeground') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
 
   /// 绑定 `:engine` 独立进程（幂等：已绑定时为 no-op）。
   ///
@@ -125,23 +160,27 @@ class OnDeviceEngineBinding {
   ReceivePort? _dataPort;
   StreamSubscription<dynamic>? _dataSubscription;
 
+  /// 数据面帧/字节计数（诊断面）：「第二轮没有输出」时用于区分
+  /// **字节没到 Dart**（计数不动）与**字节到了但解码丢了**（计数在涨）。
+  int _dataFrames = 0;
+  int _dataBytes = 0;
+
   /// 启动数据面消费 worker：经 MethodChannel 将 NativePort +
-  /// `NativeApi.initializeApiDLData` 指针 + RingBuffer 容量传主进程桥面——
-  /// Kotlin 侧经 JNI 驱动 libgdw（epoll 等待 pipe 唤醒 + 只读映射 Ashmem
-  /// RingBuffer + `Dart_PostCObject_DL` 微批投递 [onDataBatch]）。
+  /// `NativeApi.initializeApiDLData` 指针传主进程桥面——Kotlin 侧经 JNI 驱动
+  /// libgdw（epoll 等待数据面 socket 读端可读 + 长度前缀成帧重组
+  /// `[4B 大端 len][payload]` + `Dart_PostCObject_DL` 逐帧投递 [onDataBatch]）。
   ///
   /// 幂等：本侧 ReceivePort 单实例复用；桥面已运行时 no-op。失败抛
   /// PlatformException 由调用方决策（generate 路径快速失败切云——数据面
   /// 缺失即无产出，禁静默降级为空流）。
   ///
-  /// [capacity] 须与 `TokenRingBuffer.DEFAULT_CAPACITY`（1024）一致：native
-  /// 侧寻址掩码与 :engine 写侧共用同一容量，错配 = 载荷错乱。
-  Future<void> startDataWorker({int capacity = 1024}) async {
+  /// 载荷语义（§6.1 v3.1）：非空 Uint8List = 生成文本块（identity 字节级）；
+  /// **空 Uint8List = EOS 流终结帧**（本代生成收尾凭据，尾批必先于 EOS 到达）。
+  Future<void> startDataWorker() async {
     _ensureDataPort();
     await channel.invokeMethod<void>('startDataWorker', {
       'port': _dataPort!.sendPort.nativePort,
       'api': NativeApi.initializeApiDLData.address,
-      'capacity': capacity,
     });
   }
 
@@ -165,7 +204,36 @@ class OnDeviceEngineBinding {
     final port = ReceivePort();
     _dataPort = port;
     _dataSubscription = port.listen((message) {
-      if (message is Uint8List) onDataBatch?.call(message);
+      if (message == null) {
+        debugPrint('[on_device] data plane EOF signal (frames=$_dataFrames '
+            'bytes=$_dataBytes)');
+        onDataEof?.call(); // native worker EOF 信号（Dart_CObject_kNull）
+        return;
+      }
+      // TLV 帧（kArray [Int32 type, Uint8List payload]，§6.1 v3.1）。
+      if (message is List && message.length >= 2) {
+        final type = message[0] as int?;
+        final payload = message[1] as Uint8List?;
+        if (type == 0x0001 || type == 0x000F) {
+          // 数据面帧计数（诊断面，2026-10-30 真机实证「第二轮没有输出」）：
+          // 首帧/EOS 各留一条——「字节没到 Dart」与「字节到了但解码丢了」在
+          // 这两个计数上一眼可分（帧数不动 = 数据面没产字节）。
+          if (type == 0x0001) {
+            _dataFrames++;
+            _dataBytes += payload?.length ?? 0;
+            if (_dataFrames == 1) {
+              debugPrint('[on_device] first data frame arrived '
+                  '(bytes=${payload?.length ?? 0})');
+            }
+          } else {
+            debugPrint('[on_device] EOS frame arrived '
+                '(frames=$_dataFrames bytes=$_dataBytes)');
+          }
+          onDataBatch?.call(payload ?? Uint8List(0));
+        }
+        // 其余类型（IMAGE_META/PROGRESS/未来新增）：native 侧已 skip，此处
+        // 防御性忽略（协议留位，多模态 epic 启用时在同位替换分发分支）。
+      }
     });
   }
 }

@@ -20,9 +20,11 @@ import io.flutter.plugin.common.MethodChannel
 /// 端侧引擎绑定桥（on-device epic S1-2）：主进程侧对 `:engine` 的唯一绑定 owner。
 ///
 /// 绑定旗标按 on-device-npu-deployment.md §6.2 硬约束：
-/// `Context.BIND_AUTO_CREATE | Context.BIND_IMPORTANT`——使 `:engine` 的 oom_adj
-/// 与主应用同生命周期梯队，避免无前台依附时被 LMK 优先强杀；由单例 ServiceConnection
-/// 常驻持有，避免反复 rebind 抖动。
+/// `Context.BIND_AUTO_CREATE | Context.BIND_IMPORTANT | Context.BIND_ABOVE_CLIENT`
+/// ——`:engine` 的 oom_adj 提到前台客户端之上（2026-10-30 实证补强：4B 装载
+/// 瞬态 ~5.4GB 把系统推到 LMK 低水位时，FGS 档位的 :engine 仍是击杀前排，
+/// 官方 demo 前台进程却能熬过同款瞬态——差异就在击杀优先级，BIND_ABOVE_CLIENT
+/// 对齐该保护级别）；由单例 ServiceConnection 常驻持有，避免反复 rebind 抖动。
 ///
 /// S1-2：onServiceConnected 拿到的 Binder 经 AIDL Stub 声明为
 /// `IOnDeviceEngineService` 跨进程代理，并立即 `initEngine`（携带 listener 承载
@@ -35,15 +37,10 @@ object EngineServiceBridge {
     private var connection: ServiceConnection? = null
     private var engine: IOnDeviceEngineService? = null
 
-    // S3-6 数据面消费 worker（NPU 稿 §6.4）状态（主进程单实例）：
-    // handle = native worker 句柄（GdwNative.start 返回，0 = 未运行）；
-    // buffer = SharedMemory.mapReadOnly() 直接 ByteBuffer——native 侧映射
-    // 生命周期锚（stop 时 SharedMemory.unmap 释放，防 :engine 重建数据面
-    // 后旧映射悬挂）。
+    // S3-6 数据面消费 worker（NPU 稿 §6.4 v3.1 UDS 化）状态（主进程单实例）：
+    // handle = native worker 句柄（GdwNative.start 返回，0 = 未运行）。
     @Volatile
     private var dataPlaneWorkerHandle = 0L
-    @Volatile
-    private var dataPlaneBuffer: java.nio.ByteBuffer? = null
 
     /// 停止消费 worker 并释放映射（幂等）：disconnect / unbind / 显式 stop
     /// 三路共用。:engine 侧数据面重建（loadModel）后由 Dart 重新 start。
@@ -67,8 +64,6 @@ object EngineServiceBridge {
                 Log.w(TAG, "[DEGRADE] gdw stop: $e")
             }
         }
-        dataPlaneBuffer?.let { runCatching { android.os.SharedMemory.unmap(it) } }
-        dataPlaneBuffer = null
     }
 
     /// S3-2 前台态判定（§6.2 v2.7「必须前台预挂」的主进程闸）：started Activity
@@ -208,6 +203,60 @@ object EngineServiceBridge {
                         result.success(null)
                     }
                 }
+                // §4.1 主动回收 → COLD-EVICTED（AIDL releaseEngine）：
+                // :engine 侧 abort 在途生成后经 lifecycle.onRelease 单源驱动释放
+                //（作废旧 TTL 定时器 + 与 TTL/trim/护栏驱逐同一条 onEvict 路径）。
+                // **桥面必须接线**——Dart 侧 release() 经 MethodChannel 调本方法，
+                // 漏接即恒落 notImplemented()（MissingPluginException 穿透无人
+                // 监听的 unawaited future → root zone 未捕获异常；2026-10-30 审计
+                // P0-1 实证：每次退后台一个）。
+                // 释放后 checkStatus 回落 assetMissing，重新可用须 loadModel
+                //（资产在盘，二次暖机秒级不重下载）。
+                "releaseEngine" -> {
+                    val svc = engine
+                    if (svc == null) {
+                        result.success(null) // 未绑定：无权重可释放
+                    } else {
+                        try {
+                            svc.releaseEngine()
+                            result.success(null)
+                        } catch (e: Exception) {
+                            if (e is android.os.DeadObjectException) {
+                                runCatching { unbind(activity) }
+                            }
+                            result.error(
+                                "engine_binder_error",
+                                "${e.javaClass.simpleName}: ${e.message}",
+                                null,
+                            )
+                        }
+                    }
+                }
+                // §2.4 KV 前缀回滚（keepTokens=0 等价旧 resetContext）。
+                // 与 releaseEngine 同一漏接缺口；:engine 侧为 no-op（Genie 无部分
+                // 回滚 API），但通道必须通，否则 Dart 侧抛 MissingPluginException
+                // （truncateContext 只 catch PlatformException，会穿透上抛）。
+                "truncateContext" -> {
+                    val svc = engine
+                    val keep = (call.arguments as? Number)?.toInt() ?: 0
+                    if (svc == null) {
+                        result.success(null) // 未绑定：无会话可回滚
+                    } else {
+                        try {
+                            svc.truncateContext(keep)
+                            result.success(null)
+                        } catch (e: Exception) {
+                            if (e is android.os.DeadObjectException) {
+                                runCatching { unbind(activity) }
+                            }
+                            result.error(
+                                "engine_binder_error",
+                                "${e.javaClass.simpleName}: ${e.message}",
+                                null,
+                            )
+                        }
+                    }
+                }
                 // S2-2 OTA 资产分发（NPU 稿 §4.6/§4.8）：磁盘门禁余量与
                 // 驱动指纹（三要素之 Build.FINGERPRINT；Qnn_Version_t/Skel
                 // 版本待 SDK 头文件接入后并入同指纹串）。
@@ -247,45 +296,56 @@ object EngineServiceBridge {
                         result.success(null)
                     }
                 }
-                // S3-6 数据面消费 worker 启动（NPU 稿 §6.4）：Dart 传
-                // NativePort + initializeApiDLData 指针 + RingBuffer 容量；
-                // 本侧经 AIDL 取 SharedMemory/唤醒 fd（detachFd 移交所有权
-                // 给 native），JNI 驱动 libgdw 消费线程。
+                // S3-6 数据面消费 worker 启动（NPU 稿 §6.4 v3.1 UDS 化）：Dart 传
+                // NativePort + initializeApiDLData 指针；本侧经 AIDL 取数据面
+                // socket 读端（detachFd 移交所有权给 native），JNI 驱动 libgdw
+                // 消费线程。
                 "startDataWorker" -> {
                     val svc = engine
                     val args = call.arguments as? Map<*, *>
                     if (svc == null || args == null) {
                         result.error("not_bound", ":engine not connected", null)
-                    } else if (dataPlaneWorkerHandle != 0L) {
+                    } else if (dataPlaneWorkerHandle != 0L &&
+                        GdwNative.isAlive(dataPlaneWorkerHandle)
+                    ) {
                         result.success(null) // 已在运行（幂等）
                     } else {
+                        // **幂等短路必须判活**：消费线程可能已退出（pipe 写端消失
+                        // → EPOLLHUP / epoll 错误），句柄仍在但线程已死——旧短路
+                        // 把「数据面死」当「数据面活」，后续生成必撞 ring 满 →
+                        // 误判消费端失速（ipc deadlock）→ 反复切云且数据面永不
+                        // 重建。先收旧（停线程 + 释放映射）再重建。
+                        if (dataPlaneWorkerHandle != 0L) {
+                            Log.w(
+                                TAG,
+                                "[DEGRADE] data worker thread dead (handle=" +
+                                    "$dataPlaneWorkerHandle) → rebuild data plane consumer",
+                            )
+                            stopDataPlane()
+                        }
                         try {
                             val port = (args["port"] as? Number)?.toLong() ?: 0L
                             val api = (args["api"] as? Number)?.toLong() ?: 0L
-                            val capacity =
-                                (args["capacity"] as? Number)?.toInt() ?: 1024
                             GdwNative.initApi(api)
-                            val shm = svc.getSharedMemory()
-                            val wake = svc.getEventFd()
-                            // 必须读写映射：SPSC 消费端要写 read_idx（header+4）——
-                            // mapReadOnly 下 native 首次推进 read_idx 即 SEGV_ACCERR
-                            // （S2-5 真机实证，fault addr 恒为基址+4）。
-                            val buf = shm.mapReadWrite()
-                            val handle =
-                                GdwNative.start(port, buf, wake.detachFd(), capacity)
+                            val sock = svc.getDataSocketFd()
+                            val handle = GdwNative.start(port, sock.detachFd())
                             // start 成功返回 Worker* 指针（Android 64 位 tagged
-                            // heap 指针高位 0xB4…，转有符号 jlong 为负）；失败才
-                            // 返回 -1~-6。必须判非零，判 >0 会把成功误判为失败。
+                            // heap 指针高位 0xB4…，转有符号 jlong **恒为负**）；
+                            // 失败**恒返回 0**。故判定只能是 `!= 0L`——
+                            // 判 >0 会把成功误判失败，把负值当错误码则会把失败
+                            // 误判成功（→ 后续 stop 解引用负码 = 主进程 SEGV）。
                             if (handle != 0L) {
                                 dataPlaneWorkerHandle = handle
-                                dataPlaneBuffer = buf
                                 result.success(null)
                             } else {
-                                // 失败路径 wakeFd 所有权已由 native 回收。
-                                // message 附诊断线索（线程数/空闲内存）便于确认真因。
+                                // 失败路径 sockFd 所有权已由 native 回收。
+                                // message 附诊断线索：分类码 + errno（区分瞬时抖动
+                                // EAGAIN 与持久资源不足 ENOMEM / 线程数触顶）+
+                                // JVM 线程数/空闲内存（dataPlaneDiag）。
                                 result.error(
                                     "worker_start_failed",
-                                    "handle=$handle ${dataPlaneDiag()}",
+                                    "code=${GdwNative.lastError()} " +
+                                        "errno=${GdwNative.lastErrno()} ${dataPlaneDiag()}",
                                     null,
                                 )
                             }
@@ -298,6 +358,39 @@ object EngineServiceBridge {
                 "stopDataWorker" -> {
                     stopDataPlane()
                     result.success(null)
+                }
+                // 装载收尾：归还模型分片页缓存（posix_fadvise + DONTNEED，经
+                // libgdw native 通道——:engine 不加载 libgdw；页缓存按 inode
+                // 记账，主进程丢弃等价有效）。**仅削装载后的稳态恢复，削不平
+                // 装载瞬态尖峰**（边界见 native 侧注释）。
+                "dropShardCache" -> {
+                    val dir = call.arguments as? String
+                    if (dir.isNullOrEmpty()) {
+                        result.error("bad_args", "dir required", null)
+                    } else {
+                        try {
+                            val shards = java.io.File(dir).listFiles { f ->
+                                f.isFile && f.length() > 64L * 1024 * 1024
+                            }
+                            var dropped = 0
+                            var failed = 0
+                            shards?.forEach { f ->
+                                val rc = GdwNative.dropFileCache(f.absolutePath)
+                                if (rc == 0) dropped++ else failed++
+                            }
+                            Log.i(TAG, "dropShardCache: dropped=$dropped failed=$failed dir=$dir")
+                            result.success(mapOf("dropped" to dropped, "failed" to failed))
+                        } catch (e: Exception) {
+                            result.error("drop_cache_failed", e.message, null)
+                        }
+                    }
+                }
+                // 前台态判定（S3-2 tracker 同一口径）：场景 A/B/C 切云语义拆分
+                // 需要「本轮触发是否来自前台」——后台冷装载（场景 B）不切云、
+                // 打 PendingForegroundLoad 暂存等前台；前台冷装载（场景 C）
+                // 显式失败或按需降级云端。
+                "isForeground" -> {
+                    result.success(foregroundActivities > 0)
                 }
                 else -> result.notImplemented()
         }
@@ -319,8 +412,20 @@ object EngineServiceBridge {
 
                         override fun onIpcDeadlock() {
                             // S3-6 IPC 死锁切云沿（§6.3）：:engine 已 abort 在途
-                            // 并清空 RingBuffer；Dart 侧按 EngineDiedException
+                            // 并关闭数据面（EOF 通知对端）；Dart 侧按 EngineDiedException
                             // 切云（不计熔断，仅冷却窗口）。
+                            //
+                            // **死锁现场诊断（S2-5 真机实证）**：消费端活性 + 排空
+                            // 计数 + 投递字节——三值定位「消费端没排空（线程死/映射
+                            // 错/唤醒断）」vs「排空但投不出去（端口关）」vs「排空
+                            // 正常但写者看不到进度（游标地址语义错配）」。
+                            val h = dataPlaneWorkerHandle
+                            Log.w(
+                                TAG,
+                                "[DIAG] ipc deadlock: workerAlive=${h != 0L && GdwNative.isAlive(h)} " +
+                                    "handle=$h drainCount=${GdwNative.lastDrainCount()} " +
+                                    "postedBytes=${GdwNative.lastPostedBytes()}",
+                            )
                             invokeOnMain("onIpcDeadlock", null)
                         }
 
@@ -335,6 +440,17 @@ object EngineServiceBridge {
                         // thermal listener 为权威，§5.3 公共 API）。
                         override fun onThermalCutover(active: Boolean) {
                             invokeOnMain("onThermalCutover", active)
+                        }
+
+                        // P0-3：:engine **自发**驱逐（TTL / trim / 护栏 /
+                        // 主动 release）上行。数据面随会话一同析构（pipe 写端
+                        // 关闭 → native worker 收 EPOLLHUP 终态退出），故此处主动
+                        // 停消费端并清句柄——否则 `dataPlaneWorkerHandle != 0`
+                        // 的幂等短路会拦掉下一次 startDataWorker，数据面死而
+                        // 无人重建（审计 P0-3 的第二半）。
+                        override fun onEngineEvicted(reason: String?) {
+                            stopDataPlane()
+                            invokeOnMain("onEngineEvicted", reason ?: "unknown")
                         }
                     })
                     Log.i(TAG, "initEngine -> EngineStatus ordinal=$status")
@@ -364,6 +480,12 @@ object EngineServiceBridge {
                 invokeOnMain("onProcessDied", null)
             }
         }
+        // 提权旗标（S2-5 对账实证 2026-10-30）：BIND_IMPORTANT 让 :engine 重要性
+        // 不低于客户端（跟随主进程 adj 0，装载风暴中同为最后击杀档）。
+        // **禁加 BIND_ABOVE_CLIENT**——真机实证它把客户端打上 hasAboveClient
+        // 标记，ColorOS 将前台主进程 adj 由 curRaw=0 压成 VISIBLE(100)，装载
+        // 风暴中主进程先被 LMK 击杀（=用户感知闪退），:engine 随失联跌回
+        // cached(905) 双双被杀；demo（无任何绑定）同场景 adj=0 存活。
         val ok = context.bindService(
             Intent(context, EngineService::class.java),
             conn,

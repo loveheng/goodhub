@@ -100,15 +100,36 @@ class TokenByteTableBuilder {
 class StreamingDetokenizer {
   StreamingDetokenizer({
     required this.table,
-    required void Function(String delta) onText,
+    required this.onText,
     this.onUnknownToken,
+    this.onDecodeError,
   }) {
-    _decoder = utf8.decoder.startChunkedConversion(_ChunkedTextSink(onText));
+    _rebuildDecoder();
   }
 
   final TokenByteTable table;
   final void Function(int id)? onUnknownToken;
-  late final ByteConversionSink _decoder;
+
+  /// 解码失败回调（坏字节导致 UTF-8 解码失败）。**上报粒度由调用方收敛**
+  /// （禁逐字节洪泛——见 [addTokens] 的自愈说明）。
+  final void Function(Object error, int id)? onDecodeError;
+
+  /// 累计解码失败次数（诊断：坏字节规模）。
+  int decodeErrors = 0;
+
+  /// 文本产出回调（解码成功时按 chunk 增量投递）。
+  final void Function(String delta) onText;
+
+  late ByteConversionSink _decoder;
+
+  /// 重建 chunked 解码器（丢弃残留状态）。
+  ///
+  /// 坏字节会把解码器推进「持续失败」态——一次 FormatException 之后，每个
+  /// 后续字节都再抛一次（真机 S2-5 实证：78189 条异常洪泛 → 主进程 136% CPU
+  /// → ANR 冻结）。重建即丢弃残留半截序列，后续字节重新按干净状态解码。
+  void _rebuildDecoder() {
+    _decoder = utf8.decoder.startChunkedConversion(_ChunkedTextSink(onText));
+  }
 
   /// 喂入单个 token id（载荷 = 原始 uint32 id，§6.1）。
   void addToken(int id) {
@@ -122,7 +143,22 @@ class StreamingDetokenizer {
   }
 
   /// 批量喂入（40ms 微批排空场景，§6.1）。
-  void addTokens(Iterable<int> ids) => ids.forEach(addToken);
+  ///
+  /// **解码自愈（2026-10-30）**：单字节解码失败即**重建解码器**并上报一次，
+  /// 随后继续处理后续字节——流不中断、单次失败不放大为异常洪泛。
+  /// 失败原因（坏字节 / 游标竞态导致的字节流错位）由数据面侧治本，本处只做
+  /// 「不让一次坏字节废掉整条流」的兜底。
+  void addTokens(Iterable<int> ids) {
+    for (final id in ids) {
+      try {
+        addToken(id);
+      } on FormatException catch (e) {
+        decodeErrors++;
+        _rebuildDecoder();
+        onDecodeError?.call(e, id);
+      }
+    }
+  }
 
   /// 收口：冲刷解码器内部残留序列（正常流以 EOS 收尾后应无残留）。
   void finish() => _decoder.close();

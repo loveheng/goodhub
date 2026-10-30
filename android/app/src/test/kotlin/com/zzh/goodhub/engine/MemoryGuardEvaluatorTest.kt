@@ -13,14 +13,18 @@ class MemoryGuardEvaluatorTest {
 
     @Test
     fun `足迹增量未达预算返回 null`() {
-        // 基线 6GB，当前 4608MB → 持有 1536MB < 2.5GB 预算
+        // 基线 6GB，当前 4608MB → 持有 1536MB < 预算（预算随 HELD_BUDGET_BYTES
+        // 校准漂移——本测从常量派生，禁再硬编码预算值）。
         assertNull(MemoryGuardEvaluator.evaluate(6144L * 1024 * 1024, 4608L * 1024 * 1024))
     }
 
     @Test
     fun `足迹增量达预算触发驱逐并给出理由`() {
-        // 基线 6GB，当前 3277MB → 持有 2867MB ≥ 2.5GB
-        val reason = MemoryGuardEvaluator.evaluate(6144L * 1024 * 1024, 3277L * 1024 * 1024)
+        // 基线 8GB，当前 1.5GB → 持有 6.5GB ≥ 预算（HELD_BUDGET_BYTES）
+        val reason = MemoryGuardEvaluator.evaluate(
+            baselineAvailMemBytes = 8 * gb,
+            currentAvailMemBytes = gb + gb / 2,
+        )
         assertTrue(reason != null && reason.contains("availMem-delta"))
     }
 

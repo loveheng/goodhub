@@ -123,6 +123,30 @@ void main() {
       detok.finish();
       expect(deltas, ['a'], reason: 'utf8 解码器不产生空 delta');
     });
+
+    test('坏字节自愈：解码失败不放大为异常洪泛，后续字节正常产出', () {
+      final b = TokenByteTableBuilder();
+      for (var i = 0; i < 256; i++) {
+        b.add(i, [i]);
+      }
+      final out = StringBuffer();
+      final errors = <Object>[];
+      final detok = StreamingDetokenizer(
+        table: b.build(),
+        onText: out.write,
+        onDecodeError: (e, id) => errors.add(e),
+      );
+      // 0x80 = UTF-8 延续字节，单独出现即非法序列（真机 S2-5 实证
+      // 「Unexpected extension byte (at offset 0)」）。
+      detok.addTokens([0x80, 0x80, 0x80]);
+      expect(detok.decodeErrors, 3);
+      expect(errors.length, 3, reason: '坏字节逐个上报（禁静默吞）');
+      // 自愈后正常文本仍能产出——一次坏字节不废掉整条流（真机曾 78189 条
+      // 异常洪泛 → 136% CPU → ANR）。
+      detok.addTokens([0x4f, 0x4b]); // 'OK'
+      detok.finish();
+      expect(out.toString(), 'OK');
+    });
   });
 }
 

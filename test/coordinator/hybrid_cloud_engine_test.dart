@@ -33,10 +33,17 @@ class FakeCloudEngine implements CloudLlmEngine {
 }
 
 /// 端侧 fake。
-class FakeDeviceEngine implements OnDeviceLlmEngine {
+class FakeDeviceEngine implements OnDeviceLlmEngine, OnDeviceFailureReasonAware {
   String? next;
   final prompts = <String>[];
   final formats = <LlmResponseFormat?>[];
+
+  /// 失败真因（可注入）：端侧失败时上层据此把真因带进错误文案（禁笼统
+  /// 「空产出」）。
+  String? failureReason;
+
+  @override
+  String? get lastFailureReason => failureReason;
 
   /// cancelActive 调用计数（断言 §10 ①步联动）。
   int cancelCalls = 0;
@@ -740,6 +747,46 @@ void main() {
     test('RAM 总量 6GB 硬件准入不受 ignoreAvailRam 影响（需 force 绕过）', () {
       final weak = DeviceProbe(totalRamBytes: 4 << 30, availRamBytes: bigAvail);
       expect(DeviceTierGate.check(weak, ignoreAvailRam: true).pass, isFalse);
+    });
+  });
+
+  group('端侧多轮输入面与零产出归因（2026-10-30 真机「第二轮没有输出」）', () {
+    test('第二轮（带历史）→ 端侧 prompt 带角色标注、当前提问单独成段', () async {
+      controller.reportTransportTimeout(); // 降级态 → 走端侧
+      device.next = '端侧产出';
+      await engine
+          .send(
+            const CloudChatRequest(
+              messages: [
+                SystemMessage('sys'),
+                UserMessage('u1'),
+                AssistantMessage(content: 'a1'),
+                UserMessage('u2'),
+              ],
+            ),
+          )
+          .toList();
+      final prompt = device.prompts.single;
+      expect(prompt, contains('[用户] u1'));
+      expect(prompt, contains('[助手] a1'));
+      expect(prompt, contains('[当前问题]'));
+      expect(prompt.trimRight().endsWith('u2'), isTrue);
+    });
+
+    test('端侧零产出 → 显式上抛并带真因（禁笼统「空产出」）', () async {
+      controller.reportTransportTimeout();
+      device.next = null; // 端侧零产出
+      device.failureReason = '会话重置失败（reset status=1）';
+      await expectLater(
+        engine.send(noTools).toList(),
+        throwsA(
+          isA<InferenceException>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('端侧生成失败'), contains('会话重置失败')),
+          ),
+        ),
+      );
     });
   });
 }

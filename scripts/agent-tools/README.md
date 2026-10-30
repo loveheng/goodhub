@@ -17,7 +17,7 @@
   - 已有散放脚本按 agent-toolbox「散乱脚本治理」收编：评估 → 合规化 → check 入池 → 原址清理
 
 ## 工具一览
-  arch-guard.sh      分层架构硬约束（UI 禁 dart:io/平台分支/MethodChannel），规则见 docs/project/coding-standards.md §1/§2
+  arch-guard.sh      分层架构硬约束 + 跨进程契约面接线：R1~R3（UI 禁 dart:io/平台分支/MethodChannel）、R4~R8（依赖方向）、R9（执行面链构造）、R11（AIDL 声明 / Dart invokeMethod 字面量 ↔ 主进程桥 case 表双向比对），规则见 docs/project/coding-standards.md §1/§2
   build-apk.sh       Android 编译：analyze + 构建（默认 debug）+ 产物校验，--release/--abi/--fat/--install
   bump-version.sh    pubspec 版本号更新与设备防降级守卫（--guard 供 build-apk 构建前调用）
   commit-msg-gate.sh Conventional Commits 提交信息校验（commit-msg 钩子）

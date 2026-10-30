@@ -80,6 +80,20 @@ abstract class OnDeviceLlmEngine {
   Future<bool> isWarmed();
 }
 
+/// 端侧失败原因可观测面（[OnDeviceLlmEngine] 的**可选**扩展，单独成接口）。
+///
+/// 独立成接口而非塞进 [OnDeviceLlmEngine]：后者被多处 `implements`（实现类不
+/// 继承默认实现），加成员即逼全部实现类补齐——独立接口让「想知道失败真因」
+/// 的调用方按 `is` 探测，其余实现零改动。
+///
+/// 端侧生成失败时上层据此把**真因**带进用户可见文案（禁一律显示「空产出」
+/// ——真机实证：端侧零产出若只报「空产出」，用户与排查者都无从区分「模型没
+/// 说话」与「会话重置失败 / 热降级 / 通道拒绝」）。
+abstract interface class OnDeviceFailureReasonAware {
+  /// 最近一次生成失败的原因；null = 无失败或无细节。
+  String? get lastFailureReason;
+}
+
 /// MethodChannel 桥实现：Android 原生 handler 提供同名协议
 /// （`goodhub/llm`：`isAvailable` / `unavailableReason` / `generate` / `cancel` /
 /// `warmup` / `release` / `isWarmed` / `socModel`）。

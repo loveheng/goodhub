@@ -21,5 +21,22 @@ oneway interface IOnDeviceEngineListener {
     // abort 在途生成）；active=false = 热状态回落 MODERATE 及以下（端侧恢复）。
     // 初态对齐：initEngine 时立即回报当前态（覆盖绑定晚于升温的时序）。
     void onThermalCutover(boolean active);
+
+    // `:engine` 侧**自发**状态变更（与请求无关的驱逐/释放）统一上行：
+    //   - TTL 空闲驱逐（scheduleTtl → onTtlElapsed）
+    //   - onTrimMemory 驱逐（RUNNING_CRITICAL / BACKGROUND 及以上）
+    //   - 内存预算护栏驱逐（checkMemoryGuard → onGuardBreached）
+    //   - 主动 release（AIDL releaseEngine → lifecycle.onRelease）
+    // reason 取值见 EngineLifecycle.evict 的调用点
+    // （"ttl-elapsed(...)"/"trim-memory(level=...)"/"memory-guard(...)"/"release"）。
+    //
+    // **存在理由（P0-3）**：双端状态机此前只有 Dart→Kotlin 单向通道，
+    // :engine 自发驱逐后主进程 `loadState` 仍为 ready（说谎）→ `enable()` 判
+    // ready 而 no-op 不重装 → 下一次端侧请求必撞 `genie session not
+    // ready` / `data plane not initialized`，且错误文案呈现 `assetMissing`
+    // （立法语义=模型未下载）→ 补救方向被误导为「重新下载模型」。
+    // 主进程据此复位 loadState + 清数据面 handle，令下一次 enable 走
+    // 「快速暖机」再入（资产在盘不重下载）。
+    void onEngineEvicted(String reason);
 }
 

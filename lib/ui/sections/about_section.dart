@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 
 import '../../app/service_directory.dart' show appVersion;
 import '../gateway_loop_debug_page.dart';
+import '../log_viewer_page.dart';
 import '../tokens/console_tokens.dart';
 import '../update_page.dart';
 
@@ -64,6 +65,19 @@ class _AboutSectionState extends State<AboutSection>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            ListTile(
+              key: const Key('debug-log-viewer'),
+              leading: const Icon(Icons.receipt_long_outlined),
+              title: const Text('查看日志'),
+              onTap: () {
+                Navigator.pop(ctx);
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const LogViewerPage(),
+                  ),
+                );
+              },
+            ),
             ListTile(
               leading: const Icon(Icons.admin_panel_settings_outlined),
               title: const Text('网关/熔断联调'),

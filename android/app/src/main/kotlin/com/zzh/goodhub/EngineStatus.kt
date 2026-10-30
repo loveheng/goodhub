@@ -10,4 +10,5 @@ enum class EngineStatus {
     insufficientMemory, // 当前可用 RAM 低于门禁
     circuitBroken,      // 处于熔断保护期
     unsupportedDevice,  // 硬件 / 芯片架构不匹配（D1 中低端）
+    thermalCutoff,      // 热降级切云期（≥SEVERE；环境降级可自愈，温度回落即恢复）
 }

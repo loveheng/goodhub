@@ -75,6 +75,10 @@ class ConversationStore {
 
   static const _suffix = '.json';
 
+  /// 同目录非快照账本文件（conversation_archive 额度记录），列表时跳过——
+  /// 其无 id 字段，当快照解析必抛 Null 强转（2026-10-30 真机 DEGRADE 洪泛源）。
+  static const _ledgerFiles = {'sampling_quota.json'};
+
   /// 生产装配入口：应用支持目录下的 `conversations` 子目录（UI 层禁 dart:io，
   /// Directory 构造收在本层——与 MemoryStore.underSupportDir 同口径）。
   factory ConversationStore.underSupportDir(String supportPath) =>
@@ -130,6 +134,7 @@ class ConversationStore {
     final metas = <ConversationMeta>[];
     await for (final entity in dir.list()) {
       if (entity is! File || !entity.path.endsWith(_suffix)) continue;
+      if (_ledgerFiles.contains(entity.uri.pathSegments.last)) continue;
       try {
         final data =
             jsonDecode(await entity.readAsString()) as Map<String, Object?>;

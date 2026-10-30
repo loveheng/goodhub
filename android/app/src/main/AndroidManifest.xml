@@ -71,9 +71,12 @@
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
         <!-- 端侧 NPU 引擎独立进程（on-device-npu-deployment §6.2 / on-device-capability §2）：
-             常驻 1.8~2.4GB 模型，OOM/驱动 Panic 仅令主进程收 EngineDiedException 切云，
-             不拖垮 Flutter 主进程；isolatedProcess 必须为 false（需访问 NPU 驱动/HAL）；
-             foregroundServiceType=dataSync（长生成，禁 shortService；FGS 预挂时序归 S3-2）。 -->
+             S2-5 闪退对账（2026-10-30）：装载瞬态 ~6GB ION dmabuf 击穿整机 min watermark
+             触发 LMK 风暴；官方 demo 同强度装载在 adj 0 前台进程存活。保持 :engine 隔离，
+             靠绑定旗标提权（BIND_IMPORTANT|BIND_ABOVE_CLIENT）把前台免死金牌传导给
+             :engine（对账实证：仅 BIND_ABOVE_CLIENT 时 :engine 死亡 adj 仍 905）；
+             isolatedProcess 必须为 false（需访问 NPU 驱动/HAL）；
+             foregroundServiceType=dataSync（装载窗口 FGS 双保险，S3-2 时序）。 -->
         <service
             android:name=".EngineService"
             android:exported="false"

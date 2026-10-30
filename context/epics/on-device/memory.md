@@ -71,4 +71,5 @@ last-merge: none
 
 ## 断点
 
-- [断点] 下一步：重装 APK（FGS 绑定即挂 + 装载错误分类：中断码可重试 / 未知码如实带码 + 3.5GB 装载门禁）复测端侧生成全链——预期 idle/装载/生成全程受 FGS 保护不被杀、正常出字；装载失败若再现，文案应为「端侧加载失败：引擎进程中断（系统回收或崩溃），请重试」或「端侧加载失败：端侧引擎通道错误（<code>）」，仍见 unsupportedDevice 即分类未认领（`adb logcat | grep -E "engine_binder_error|not_bound|DeadObject"` 取码补白名单）；成功后销 lessons 回归钉七枚（gdw-handle-sign/gdw-enable-accepted/gdw-load-notbound/gdw-wake-nonblock/gdw-shm-rw/gdw-hup-spin/gdw-ring-desync）+ 撤全部诊断打点 + 收口本轮长排查
+- [断点] 下一步：真机复测「同一对话第二次提问」（2026-10-30 用户报障）——同对话连问两轮，按新增打点三值对账定位：第二轮 `:engine` 侧 `genie query done: bytes=0` → 模型侧零产出（会话 reset 失败 / im_end 早停 / 流错误）；`bytes>0` 但 Dart 无「first data frame」→ 数据面投递侧；Dart 有帧但 UI 无输出 → 解码/聚合侧。复测后据证回填本条。
+- [断点] 下一步：真机侧载验证 UDS 数据面端到端（TLV 协议定型版）+ 热降级复测（装载期升温 ≥SEVERE：应切云完成本轮，不报「模型装载失败（circuitBroken）」；复测前先 dumpsys thermalservice 确认档位）

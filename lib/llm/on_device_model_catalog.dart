@@ -19,6 +19,7 @@ class OnDeviceModelOption {
     required this.displayName,
     required this.base,
     required this.dirName,
+    this.expectedTotalBytes,
   });
 
   final String id;
@@ -29,6 +30,13 @@ class OnDeviceModelOption {
 
   /// 应用内部 `supportDir/models/` 落盘目录名。
   final String dirName;
+
+  /// 该档位的**预期资产总体积**（字节）：导入通道据此核对「所选档位 ↔ 导入
+  /// 内容」同档——真机实证「1.7B 档装 4B 分片」把装载内存峰值翻倍（3.17GB
+  /// 权重 + ION 瞬态击穿整机 min watermark → `:engine` 被 LMK 连杀 5 次，
+  /// 端侧永远装不上）。目录名自拟不可信，**靠体积对账钉死**；null = 未登记
+  /// 真值 → 不校验。
+  final int? expectedTotalBytes;
 }
 
 const List<OnDeviceModelOption> kOnDeviceModelCatalog = [
@@ -38,12 +46,18 @@ const List<OnDeviceModelOption> kOnDeviceModelCatalog = [
     base:
         'http://127.0.0.1:8090/qwen3_1_7b-geniex_qairt-w4a16-qualcomm_snapdragon_8_elite_for_galaxy',
     dirName: 'qwen3_1_7b-geniex_qairt-w4a16',
+    // 1.7B@W4A16：权重 ~0.95GB + tokenizer/配置 ~40MB → ~1.0GiB
+    expectedTotalBytes: 1153433600,
   ),
   OnDeviceModelOption(
     id: 'qwen3-4b',
     displayName: 'Qwen3-4B（NPU）',
     base: 'http://127.0.0.1:8090/ota4b',
-    dirName: 'qwen3-4b-w4a16',
+    // 目录名与真机实际落盘一致（连字符名 'qwen3-4b-w4a16' 与实盘目录
+    // 'qwen3_4b-genie-w4a16' 不符 → 该档位资产根本找不到）。
+    dirName: 'qwen3_4b-genie-w4a16',
+    // 4B@W4A16 真机实测：4 分片合计 3.17GB + tokenizer/配置 ≈ 3.19GB
+    expectedTotalBytes: 3190000000,
   ),
 ];
 

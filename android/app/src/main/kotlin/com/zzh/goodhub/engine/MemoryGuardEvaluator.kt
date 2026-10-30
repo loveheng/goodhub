@@ -24,9 +24,12 @@ package com.zzh.goodhub.engine
 object MemoryGuardEvaluator {
 
     /**
-     * 增量预算：§4.1 LMK 防护栏原 2.5GB 线语义平移（引擎真实足迹上限）。
+     * 增量预算：§4.1 LMK 防护栏线语义平移（引擎真实足迹上限）。
+     * 校准沿革：2.5GB（1.7B 期）→ 4512MB（4B 实测 3741MB + 20%）→
+     * **6GB（用户拍板 2026-10-30）**——按「护栏是兜底不是限制」口径放宽，
+     * 只拦引擎异常吃内存；整机饥饿的真实防线 = 绝对地板（1GB）。
      */
-    const val HELD_BUDGET_BYTES: Long = 2560L * 1024 * 1024
+    const val HELD_BUDGET_BYTES: Long = 6144L * 1024 * 1024
 
     /**
      * availMem 绝对地板：跌破即驱逐。取 1GB——低于此值系统已进入低内存

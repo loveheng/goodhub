@@ -18,6 +18,8 @@ import '../core/errors/inference_error.dart';
 import '../llm/cloud/cloud_llm.dart';
 import '../llm/llm.dart';
 import '../llm/on_device_engine.dart';
+import '../llm/on_device_pending_load.dart';
+import '../llm/on_device_single_shot_prompt.dart';
 import 'degradation_controller.dart';
 
 class HybridCloudEngine implements CloudLlmEngine {
@@ -30,6 +32,7 @@ class HybridCloudEngine implements CloudLlmEngine {
     this.deviceToolPolicy,
     this.preferOnDevice = false,
     this.forceOnDevice = false,
+    this.isForegroundProbe,
   }) : _enableCapable = onDevice is OnDeviceEnableCapable
             ? onDevice as OnDeviceEnableCapable
             : null;
@@ -46,6 +49,12 @@ class HybridCloudEngine implements CloudLlmEngine {
 
   /// 端侧引擎（null = 引擎未挂载/平台不支持）。
   final OnDeviceLlmEngine? onDevice;
+
+  /// 前台态探针（注入；null = 视为后台保守处理）：场景 A/B/C 切云语义拆分——
+  /// 场景 B（未加载 + 后台触发）**不切云**，打 PendingForegroundLoad 暂存等
+  /// 前台；场景 C（未加载 + 前台发起）加载态 + 超时保护 → 显式失败或按需
+  /// 降级云端。探测异常按**后台**处理（宁暂存，不误切云外发数据）。
+  final Future<bool> Function()? isForegroundProbe;
 
   /// 物理断网探测（注入；null = 不探测视作在线）。判据「断网即切」的探测位，
   /// T3 接 Connectivity 实测。
@@ -89,6 +98,19 @@ class HybridCloudEngine implements CloudLlmEngine {
     } catch (e) {
       // DEGRADE: 探测失败视作在线——方向=朝向更丰富路径，其失败可见（P0-2）。
       debugPrint('[DEGRADE] hybrid-offline-probe: $e');
+      return false;
+    }
+  }
+
+  /// 前台态判定（场景 A/B/C 用）：探针缺省或异常 → 视为后台（保守：宁暂存
+  /// 等前台，不误切云外发数据）。
+  Future<bool> _isForeground() async {
+    final probe = isForegroundProbe;
+    if (probe == null) return false;
+    try {
+      return await probe();
+    } catch (e) {
+      debugPrint('[DEGRADE] hybrid-foreground-probe: $e');
       return false;
     }
   }
@@ -156,10 +178,42 @@ class HybridCloudEngine implements CloudLlmEngine {
       // 失败显式报错、不走云端（q-1：显式失败不切云）。
       final cap = _enableCapable;
       if (cap != null && cap.loadState.value != OnDeviceLoadState.ready) {
+        // 场景 A/B/C 切云语义拆分（2026-10-30 用户裁决）：
+        //  A 已加载但运行期夭折 → EngineDiedException 静默无缝切云（见
+        //    [_deviceSend] 的引擎死亡分支，本分支不涉及）；
+        //  B 未加载冷启动 + **后台**触发 → **不切云、不报错**，打
+        //    PendingForegroundLoad 标记（TTL 30min）暂存退出，等下次前台；
+        //  C 未加载冷启动 + **前台**用户发起 → 加载态 + 90s 超时保护 →
+        //    终态失败显式报错；可自愈类（进程被杀/热降级）按需降级云端。
+        final foreground = await _isForeground();
+        if (!foreground) {
+          await OnDevicePendingLoad.mark();
+          debugPrint('[HybridEngine] 场景B：后台冷装载 → 暂存等前台（不切云）');
+          throw const InferenceException(
+              '端侧模型将在你回到前台时自动加载（后台加载已暂存）');
+        }
         try {
           await cap.enable();
         } on OnDeviceLoadException catch (e) {
-          throw InferenceException('端侧加载失败：${e.reason}');
+          // 终态失败（资产缺失 / 设备不支持 / 内存不足）→ q-1 显式报错**不**
+          // 切云；可自愈类（`retryable` = 进程/通道中断、热降级 `degraded`）
+          // → 切云完成本轮（产出优先 + §5.2 Thermal→Cloud）。
+          //
+          // 中断类也切云的依据（真机实证 2026-10-30）：`:engine` 被 LMK 连杀
+          // 时，等待端侧自愈 = 用户干等 2 分钟以上（退避 3.5/8/12/30/60s 累计），
+          // 本轮必须由云端兜底，否则「2 分钟没有首 token」。
+          final recoverable = e.degraded || e.retryable;
+          if (!recoverable) {
+            throw InferenceException('端侧加载失败：${e.reason}');
+          }
+          final c = cloud;
+          if (c == null) {
+            throw InferenceException('端侧加载失败：${e.reason}（可稍后重试）');
+          }
+          debugPrint('[HybridEngine] 场景C：端侧暂不可用（${e.reason}）→ 降级云端完成本轮');
+          yield* _cloudSend(c, request,
+              allowDeviceFallback: false, onActivity: onActivity);
+          return;
         }
       }
       yield* _deviceSend(
@@ -350,28 +404,33 @@ class HybridCloudEngine implements CloudLlmEngine {
     Future<void>(() async {
       debugPrint('[HybridEngine] 端侧路径（$reason）：${device.name}');
       try {
-        final systemParts = <String>[];
-        final userParts = <String>[];
-        for (final m in request.messages) {
-          switch (m) {
-            case SystemMessage(:final content):
-              systemParts.add(content);
-            case UserMessage(:final content):
-              userParts.add(content);
-            case AssistantMessage(:final content):
-              if (content != null) userParts.add(content);
-            case ToolResultMessage(:final content):
-              userParts.add(content);
-          }
-        }
+        // 端侧单发 prompt 构造（§2 端侧单发提取语义）：多轮历史**带角色标注**、
+        // 当前提问单独成段、正文清洗 ChatML 控制 token（历史正文里的
+        // `<|im_end|>` 会提前闭合 ChatML 模板 → 零产出）。首轮（无历史）与
+        // 旧形态逐字节一致——已实证正常路径不回归。
+        final built = buildOnDeviceSingleShotPrompt(request.messages);
+        debugPrint('[HybridEngine] 端侧单发 prompt：历史轮=${built.historyTurns} '
+            'promptChars=${built.prompt.length} '
+            'systemChars=${built.system?.length ?? 0}');
         final text = await device.generate(
-          userParts.join('\n\n'),
-          system: systemParts.isEmpty ? null : systemParts.join('\n\n'),
+          built.prompt,
+          system: built.system,
           maxTokens: request.maxTokens ?? 512,
         );
         if (text == null || text.isEmpty) {
-          final why = await device.unavailableReasonAsync();
-          throw InferenceException('端侧生成失败（$reason）：${why ?? '空产出'}');
+          // 零产出归因（2026-10-30 真机实证「同一对话第二次提问没有输出」）：
+          // 端侧**运行时**失败 ≠ 装载失败——q-1 的「显式失败不切云」只约束
+          // **装载**失败（用户据此知道「模型没装好」）；此处引擎活着却零产出，
+          // 属运行时失败 → **显式上抛并带真因**（既有语义钉「端侧兜底失败 →
+          // 上抛（禁静默吞）」不变），但**禁再报笼统「空产出」**：真因（会话
+          // 重置失败 / 热降级 / 通道拒绝 / 模型未说话）必须透出，否则用户与
+          // 排查者都无从定位「第二轮为什么没有输出」。
+          final reason = await device.unavailableReasonAsync();
+          final aware = device is OnDeviceFailureReasonAware
+              ? (device as OnDeviceFailureReasonAware).lastFailureReason
+              : null;
+          final why = aware ?? reason ?? '空产出（模型未产出任何内容）';
+          throw InferenceException('端侧生成失败（$reason）：$why');
         }
         ctrl.add(CloudTextDelta(text));
         ctrl.add(const CloudDone(finishReason: CloudFinishReason.stop));
@@ -387,7 +446,12 @@ class HybridCloudEngine implements CloudLlmEngine {
           } else {
             debugPrint('[HybridEngine] :engine 死亡 → 无缝切云（$reason）');
             try {
-              await for (final ev in c.send(request)) {
+              // 切云沿复用 [_cloudSend]（**非裸流**）：继承其自适应看门狗
+              // （首 token 死连接判死 + 流内字节活体自适应预算）与空产出
+              // 显式报错——裸 `c.send(request)` 无任何兜底，云端一挂即
+              // 本轮永挂（真机「第二轮没有任何响应」的另一半成因）。
+              await for (final ev
+                  in _cloudSend(c, request, allowDeviceFallback: false)) {
                 ctrl.add(ev);
               }
             } catch (cloudError) {

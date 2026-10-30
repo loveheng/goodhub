@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-23
+updated: 2026-10-30
 ---
 
 # GoodHub 工程规范（Engineering Specification / Architecture SSOT）
@@ -121,6 +121,21 @@ flowchart TD
 - **UI 层零 `dart:io`**：`lib/ui/` 下绝对禁止 `import 'dart:io'`。**处置原则 = 修而非加白名单**（白名单纪律只减不增）。
 - **UI 层禁平台分支与通道直连**：`Platform.isX` 分支（arch-guard R2）、`MethodChannel(` 直连（arch-guard R3）一律禁止——平台差异收敛到接口实现/工厂，平台通道在 `lib/app/` 装配期注入。
 - **接口驱动**：所有系统特权能力（剪贴板、通知、端侧推理引擎、前台服务桥、安全存储）必须定义纯 Dart 抽象类（`abstract interface class`），平台实现经装配容器依赖注入。注入位范式（新增内核/窗口照此，勿另造）：`clientFactory`（`server_probe` / `mcp_runtime`）、`storeOverride` / `endpointStoreOverride` / `probeOverride`（settings 各段 / `chat_page`）。
+- **跨进程契约面须全链路接线（R11）**：跨进程契约（如端侧 AIDL）的方法集在
+  「① 契约声明 → ② 远端实现 → ③ 主进程桥转发」三处各自维护副本，另有
+  ④ Dart 侧 `invokeMethod('<name>')` 字面量调用点。**桥面 ③ 是两侧的交汇点**，
+  漏接时 Dart 侧 `invokeMethod` 恒落 `result.notImplemented()` →
+  `MissingPluginException`；该异常若落在 `unawaited()` 的 future 上无人监听，
+  会退化成 root zone 未捕获异常（静默、无崩溃、无 stack 上报——最具欺骗性的
+  失败形态）。
+  - 机械门禁 = `scripts/agent-tools/arch-guard.sh` R11：**双向比对**（AIDL 声明
+    与 Dart 调用点两侧都须与桥面 case 表对齐），缺任一侧即红灯。
+  - 豁免 `BRIDGE_AIDL_EXEMPT` **只减不增**，仅限「bind 握手内调用」与
+    「取句柄后移交 native」两类不属 Dart 发起的转发面，登记须写理由。
+  - **单向通道同理属债**：远端自发状态变更（驱逐 / 死亡 / 就绪回退）若不经
+    listener 上行，本地状态机即停在说谎态（端侧实证 = TTL 驱逐后 `loadState`
+    仍 ready，请求必败且文案误导为 `assetMissing`）。
+
 - **机械验收**：`flutter analyze` 0 issue + `arch-guard.sh` R1~R3 + `dependency_rules_test`（§1.0 护栏表）。
 
 ### 1.4 跨域直连白名单纪律（只减不增）
@@ -325,6 +340,7 @@ class ActionCardFailed extends ActionCardState { final String error; /* ... */ }
 | 同上（镜像） | `scripts/agent-tools/arch-guard.sh` 秒级版（R4~R8） | pre-commit 钩子 |
 | 平台隔离（UI 禁 dart:io / Platform.isX / MethodChannel） | `arch-guard.sh` R1~R3 | pre-commit 钩子 |
 | 执行面链构造（禁手工把执行面实例塞进另一层的 `inner`） | `arch-guard.sh` R9（秒级版）+ `test/architecture/executor_chain_rules_test.dart`（flutter test 版，含金丝雀） | pre-commit 钩子 / `flutter test` |
+| 跨进程契约面接线完整性（§1.3 末条） | `arch-guard.sh` R11——AIDL 方法集 / Dart `invokeMethod` 字面量 **双向**比对桥面 case 表，豁免清单 `BRIDGE_AIDL_EXEMPT`（只减不增） | pre-commit 钩子 |
 | 释放完整性（注入 fake 计数断言） | `test/mcp/release_hygiene_test.dart` 等（§7/§8.1） | `flutter test` |
 | 契约面漂移（退役词条 / 单源常量 / 超标登记核对） | `test/architecture/drift_rules_test.dart`（flutter test 版，读 `scripts/agent-tools/drift-registry.txt`） | `flutter test` |
 | 同上（引擎，跨项目共用） | 全局 `toolbox run drift-guard`（shell 版，读同一 registry） | pre-commit 钩子 |

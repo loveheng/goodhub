@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-28
+updated: 2026-10-30
 ---
 
 # on-device-capability · 端侧能力公共服务设计
@@ -45,8 +45,9 @@ updated: 2026-10-28
     busy,               // 执行中，支持抢占 / 策略 B 驳回
     assetMissing,       // 驱动就绪但模型未下载
     insufficientMemory, // 当前可用 RAM 低于门禁
-    circuitBroken,      // 处于熔断保护期
+    circuitBroken,      // 处于熔断保护期（引擎故障，需熔断器/人工介入）
     unsupportedDevice,  // 硬件 / 芯片架构不匹配（D1 中低端）
+    thermalCutoff,      // 6 热降级切云期（≥SEVERE；环境降级可自愈，温度回落即恢复）
   }
 
   abstract interface class OnDeviceEngine {
@@ -82,7 +83,7 @@ updated: 2026-10-28
   }
   ```
 
-  - **结构化状态与调度纪律（v2.6）**：`checkStatus()` 区分 `assetMissing` / `insufficientMemory` / `circuitBroken` / `unsupportedDevice` / `busy` / `ready`——但**仅前四类可作短时缓存或持久化锁定**；**`busy` 与 `ready` 严禁任何 TTL 缓存，必须随查随废**。调度铁律：**业务分流决策绝不依赖 `checkStatus()` 的 `busy`**——`busy` 仅供 UI 状态展示、健康检查与打点监控。多调用方严禁"先 check 后调用"防御式写法（`if (checkStatus()!=busy){generate();}` 存在 TOCTOU：A 过检未占槽时 B 插队，A 仍撞 `busy`）。正确路径：`HybridCloudEngine` 直接无脑调 `generate()`，由 `:engine` 内部 Mutex 原子抢占——抢占成功返流；槽被占且不可抢占（后台遇前台执行）立即抛 `ServiceBusyException`，调用方捕获即切云（见 §6.6）。`isAvailable()` 仅作 `== ready` 语法糖。
+  - **结构化状态与调度纪律（v2.6）**：`checkStatus()` 区分 `assetMissing` / `insufficientMemory` / `circuitBroken` / `unsupportedDevice` / `thermalCutoff` / `busy` / `ready`——但**仅前四类可作短时缓存或持久化锁定**；**`busy` 与 `ready` 严禁任何 TTL 缓存，必须随查随废**。**`thermalCutoff`（序数 6，2026-10-30 追加）= 热降级切云期（thermal ≥ SEVERE）**：环境性可自愈（温度回落即恢复），**禁缓存、禁计入熔断**，§5.2 Thermal→Cloud 切云——**严禁与 `circuitBroken` 熔断序数复用**（复用会把「设备过热」报成「熔断保护中」，并在装载路径把环境降级判成终态失败；真机实证「端侧加载失败：模型装载失败（circuitBroken）」）。调度铁律：**业务分流决策绝不依赖 `checkStatus()` 的 `busy`**——`busy` 仅供 UI 状态展示、健康检查与打点监控。多调用方严禁"先 check 后调用"防御式写法（`if (checkStatus()!=busy){generate();}` 存在 TOCTOU：A 过检未占槽时 B 插队，A 仍撞 `busy`）。正确路径：`HybridCloudEngine` 直接无脑调 `generate()`，由 `:engine` 内部 Mutex 原子抢占——抢占成功返流；槽被占且不可抢占（后台遇前台执行）立即抛 `ServiceBusyException`，调用方捕获即切云（见 §6.6）。`isAvailable()` 仅作 `== ready` 语法糖。
   - **流生命周期自动绑定（v2.5）**：实现层须用 `StreamController(onCancel: () => cancel(requestId))`——无论页面退出还是 `StreamSubscription.cancel()`，均自动透传至 Native 取消，杜绝孤儿任务空跑发烫。
   - **在途 Token 清理（v2.5）**：`cancel` 触发后 Native 直接清空 RingBuffer 未消费在途 Token，下发单条 `finishReason: "cancelled"` 的 `EngineChunk` 后闭合流，避免序号不一致。
   - **KV-Cache 复用 = Prefix Cache 唯一主路线（v2.6 确认）**：多轮对话/固定上下文复用经 `truncateContext(keepTokens: n)` 回滚末轮 KV；**高频固定上下文（System Prompt / Agent 指令 / Tool 模板）截断对齐到固定分块（256/512 tokens），首次暖机跑完前缀将其 KV 保留在 NPU ION Buffer `[0, Prefix_Length)` 槽位，后续会话经 DMA 维持前缀 KV 指针不动、推理指针从 `Prefix_Length` 起写，免去重复 Prefill 算力**（详见 NPU 稿 §2.4）。**增量 Prefill 标记"未来探索项（需 SDK 动态图/Reshape 能力成熟）"，不作为本期验收标准**——NPU 静态图依赖编译期确定张量形状与 HTP 块对齐，动态长短增量 Prefill 易打乱 VTCM/SRAM Stationary 数据流、致编译失败或静默回退。
@@ -91,8 +92,8 @@ updated: 2026-10-28
 - **生命周期状态（v2.3，详见 NPU 稿 §4.1）**：引擎暴露 `ACTIVE → WARM-STANDBY(3~5min TTL) → COLD-EVICTED` 三态；`isAvailable()` 在熔断（§5 R7）或冷卸载未暖机时返回对应状态，调用方据其决定本地执行或云端降级。
 - **后端工厂**：`OnDeviceEngineFactory.resolve()` —— 先 `CapabilityProbe` 探测（`SoC 识别 → QNN/NeuroPilot 原生驱动与动态库可加载性 → NPU Delegate 初始化测试 → 系统可用 RAM 门禁`），再按芯片启发式（`Build.SOC_MANUFACTURER`：`qualcomm`→QNN；`mediatek`→NeuroPilot）选后端；**任一 NPU 后端不可用直接收口 `HybridCloudEngine` 纯云端，不回落 CPU 跑大模型**。
 - **复用既有**：`engineFor` 装配入口、`HybridCloudEngine` 云↔端路由、`OnDeviceResultSummarizer` 既有的「单一提取/分类 + 约束解码（Grammars/Regex）」职责（architecture §78 端侧职责硬约束不变）。
-- **IPC 通信架构（详见 NPU 部署稿 §6；S3-6 落地收编 2026-10-29）**：**控制面 Binder/AIDL**（init/generate/cancel/release/EngineDied 低频）+ **数据面 Ashmem RingBuffer + 唤醒管道**（token 流式高频，微批压至 8~10/s）——数据面消费已收编主进程 native worker（libgdw：epoll 等待唤醒 fd + 只读映射 RingBuffer + `Dart_PostCObject_DL` 微批直投 Dart，S1-5 的 Binder onTokens 过渡通道同轮退役）；`:engine` 绑定须 `BIND_AUTO_CREATE | BIND_IMPORTANT` + `onTrimMemory` 驱动状态机；`cancel/release` 经 atomic `stop_requested` 下沉中断 NPU，避免后台空跑；FGS 保活须在 Activity 前台时预挂（Android 12+ 后台启动限制，见 NPU 稿 §6.2）。
-- **控制面 AIDL 契约（开工即落码，v2.7 拉齐；S1-2/S1-3 施工细化）**：`IOnDeviceEngineService.aidl` 方法集 = `int initEngine(in Bundle config, IOnDeviceEngineListener listener)`（细化：listener 入参承载 `onEngineDied()` 由 `:engine` 侧主动通知，v2.7 未指定传输面）/ `SharedMemory getSharedMemory()`（细化：`getFdDup()/getFd()` 均 @hide 不可依赖，SharedMemory 为 AIDL 友好 parcelable，fd 经 Binder 传递语义不变）/ `ParcelFileDescriptor getEventFd()`（唤醒 fd；JVM 侧以 pipe 承载可读 fd 语义——S3-6 定稿沿用 pipe，消费端 epoll 对 eventfd/pipe 等价）（数据面句柄一次性建立映射，§6.）/ `void startGenerate(String requestId, String promptJson, in Bundle generationParams)` / `void cancelGenerate(String requestId)` / `void truncateContext(int keepTokens)` / `void releaseEngine()` / `int checkStatus()`（映射 `EngineStatus` 枚举序数）。约束：`generationParams` 须承载 `GenerationConfig` 字段，**停用词以 intArray/intArrayList 传预编码 id 序列**（§6.7，禁字符串级匹配）。
+- **IPC 通信架构（详见 NPU 部署稿 §6；S3-7 UDS 化收编 2026-10-30，TLV 协议定型）**：**控制面 Binder/AIDL**（init/generate/cancel/release/EngineDied 低频）+ **数据面 UDS socketpair 流式管道**（token 流式高频，TLV 成帧 `[2B 魔数 0x5A 0xA5][2B 帧类型][4B 大端 len][payload]`：TOKEN_CHUNK/EOS 在用，IMAGE_META/PROGRESS 留位多模态；魔数失步 fail-fast + 未知类型 skip 前向兼容；唤醒/背压/崩溃隔离由内核 socket 语义承载，写端 3s 有界超时判 IPC_DEADLOCK）——数据面消费 = 主进程 native worker（libgdw：epoll 等 socket 读端可读 + 帧重组 + `Dart_PostCObject_DL` 直投 Dart，EOF=数据面死亡判活自愈重建；S1-5 的 Binder onTokens 过渡通道已退役）；`:engine` 绑定须 `BIND_AUTO_CREATE | BIND_IMPORTANT` + `onTrimMemory` 驱动状态机；`cancel/release` 经 atomic `stop_requested` 下沉中断 NPU，避免后台空跑；FGS 保活须在 Activity 前台时预挂（Android 12+ 后台启动限制，见 NPU 稿 §6.2）。
+- **控制面 AIDL 契约（开工即落码，v2.7 拉齐；S1-2/S1-3 施工细化）**：`IOnDeviceEngineService.aidl` 方法集 = `int initEngine(in Bundle config, IOnDeviceEngineListener listener)`（细化：listener 入参承载 `onEngineDied()` 由 `:engine` 侧主动通知，v2.7 未指定传输面）/ `ParcelFileDescriptor getDataSocketFd()`（S3-7 UDS 化：数据面 socketpair 读端，:engine 持写端，fd 经 Binder detachFd 移交；成帧协议与 EOS 语义见 NPU 稿 §6.1 v3.1）/ `void startGenerate(String requestId, String promptJson, in Bundle generationParams)` / `void cancelGenerate(String requestId)` / `void truncateContext(int keepTokens)` / `void releaseEngine()` / `int checkStatus()`（映射 `EngineStatus` 枚举序数）。约束：`generationParams` 须承载 `GenerationConfig` 字段，**停用词以 intArray/intArrayList 传预编码 id 序列**（§6.7，禁字符串级匹配）。
 - **公共服务注册**：作为 App 级内核纳入注册中心（类比 `ServiceDirectory`），UI 零直连；对外暴露面走既有 `host` 虚拟服务纪律（`host-tools-gateway-export.md`），**零隐私只读默认**，推理/写能力须单独立项。
 
 ## 3. 芯片分发与模型分发

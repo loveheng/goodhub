@@ -1,82 +1,117 @@
 package com.zzh.goodhub.engine
 
 import android.os.ParcelFileDescriptor
-import android.os.SharedMemory
 import android.system.ErrnoException
+import android.system.Os
+import android.system.OsConstants
 import android.util.Log
-import java.io.FileOutputStream
 import java.io.IOException
 import java.nio.ByteBuffer
+import android.system.StructTimeval
 
-/// 端侧引擎数据面装配（on-device-npu-deployment.md §6.1）：
-/// Ashmem（android.os.SharedMemory）承载 [TokenRingBuffer] + 唤醒 fd。
+/// 端侧引擎数据面装配（on-device-npu-deployment.md §6.1 v3.1，UDS 化）：
+/// AF_UNIX SOCK_STREAM socketpair（`ParcelFileDescriptor.createSocketPair`）
+/// 承载 token 字节流，**共享内存 RingBuffer / VarHandle 游标 / pipe 唤醒
+/// 已整体退役**（S3-7：唤醒、背压、崩溃隔离均由内核 socket 语义承载——
+/// 可读事件唤醒、SO_RCVBUF 满即写端阻塞/暂不可写形成天然流控、对端关闭
+/// 即 EOF 可判活自愈；无共享游标即无游标错位类 Bug）。
 ///
-/// 唤醒通道按「可读 fd」契约：**eventfd 需 syscall，JVM/Kotlin 侧以
-/// pipe（ParcelFileDescriptor.createPipe）等价承载**——消费端（S3-6 native
-/// worker 的 epoll/Looper）只依赖「可读 fd 唤醒」语义，pipe/eventfd 兼容；
-/// 若坚持 eventfd 可在 S3-6 native 层替换（fd 类型对 AIDL 契约不透明）。
-///
-/// fd 传递：SharedMemory 为 AIDL 友好 parcelable（getFdDup/getFd 均 @hide，
-/// 2026-10-28 官方源码核实，应用不可依赖），故控制面契约经 getSharedMemory()
-/// 直传 parcelable，fd 经 Binder 语义不变。
-class EngineDataPlane(
-    val capacity: Int = TokenRingBuffer.DEFAULT_CAPACITY,
-) : AutoCloseable {
+/// fd 传递：写端留在 :engine（[SocketTokenWriter]），读端经 AIDL
+/// `getDataSocketFd()` 以 ParcelFileDescriptor 传主进程（Binder dup 语义，
+/// detachFd 后由主进程 native worker（libgdw）持有读循环）。
+class EngineDataPlane : AutoCloseable {
     companion object {
         private const val TAG = "EngineDataPlane"
-        private const val SHM_NAME = "goodhub_engine_tokens"
+
+        /// 背压缓冲池（每端 SNDBUF/RCVBUF 各 512KB，S3-7 修订）。
+        const val SOCKET_BUFFER_BYTES = 512 * 1024
     }
 
-    val sharedMemory: SharedMemory = SharedMemory.create(SHM_NAME, TokenRingBuffer.requiredBytes(capacity))
+    private val sockets: Array<ParcelFileDescriptor> =
+        ParcelFileDescriptor.createSocketPair().also { pair ->
+            // 背压缓冲池显式调大至 512KB（内核默认几十~两百 KB）：吸收主进程
+            // GC 暂停 / Flutter 转场渲染的数百毫秒级瞬时卡顿，写超时仅在消费
+            // 端真实长失速时触发（防误杀，S3-7 修订）。两端各设，内核对
+            // SO_SNDBUF/SO_RCVBUF 值有翻倍/下限策略，512KB 为请求值。
+            for (p in pair) tuneBuffer(p)
+        }
 
-    /// 唤醒通道：:engine 持写端，主进程经 AIDL getEventFd() 拿读端。
-    private val wakePipe: Array<ParcelFileDescriptor> = ParcelFileDescriptor.createPipe()
-    private val wakeWrite = FileOutputStream(wakePipe[1].fileDescriptor)
-
-    /// :engine 侧写者视图（读写映射）。
-    private val writerBuffer: AutoCloseableByteBuffer = AutoCloseableByteBuffer(sharedMemory.mapReadWrite())
-
-    val ring: TokenRingBuffer = TokenRingBuffer.create(writerBuffer.buffer, capacity)
-
-    init {
-        // 诊断打点（S2-5 ipc deadlock 排查）：唤醒链路 fd 溯源——写端 fd 与
-        // 经 AIDL dup 出去的读端 fd 是否成对，写计数是否推进。
-        Log.i(
-            TAG,
-            "wakePipe rfd=${wakePipe[0].fd} wfd=${wakePipe[1].fd} cap=$capacity",
-        )
-        var wakeWrites = 0
-        ring.onWakeup = {
-            try {
-                // §6.1：写完仅一次轻量唤醒写（1 字节），不占 Binder 线程。
-                wakeWrite.write(1)
-                if (++wakeWrites <= 3 || wakeWrites % 200 == 0) {
-                    Log.i(TAG, "wake write #$wakeWrites -> wfd=${wakePipe[1].fd}")
-                }
-            } catch (e: IOException) {
-                Log.w(TAG, "[DEGRADE] wake pipe write failed: $e")
-            }
+    private fun tuneBuffer(p: ParcelFileDescriptor) {
+        try {
+            Os.setsockoptInt(
+                p.fileDescriptor, OsConstants.SOL_SOCKET,
+                OsConstants.SO_SNDBUF, SOCKET_BUFFER_BYTES,
+            )
+            Os.setsockoptInt(
+                p.fileDescriptor, OsConstants.SOL_SOCKET,
+                OsConstants.SO_RCVBUF, SOCKET_BUFFER_BYTES,
+            )
+        } catch (e: ErrnoException) {
+            // 非数据面降级：默认缓冲仍可用（只是瞬时卡顿吸收能力下降），
+            // 留痕不阻断（§4.2）。
+            Log.w(TAG, "[DEGRADE] socket buffer tune failed: ${e.errno}")
         }
     }
 
-    /// 主进程侧取共享内存 parcelable（每次返回同一实例；Binder 层负责跨进程 dup）。
-    fun sharedMemoryForIpc(): SharedMemory = sharedMemory
+    /// :engine 侧写者视图（非阻塞 UDS + Os.poll 可写等待）。
+    val writer: SocketTokenWriter = SocketTokenWriter(OsFrameTransport(sockets[0]))
 
-    /// 主进程侧取唤醒读端 fd（每次 dup，调用方/框架负责关闭）。
-    fun eventReadFd(): ParcelFileDescriptor = ParcelFileDescriptor.dup(wakePipe[0].fileDescriptor)
+    /// 主进程侧取数据面读端 fd（每次 dup，调用方/Binder 层负责传递语义）。
+    fun dataSocketFd(): ParcelFileDescriptor =
+        ParcelFileDescriptor.dup(sockets[1].fileDescriptor)
 
     override fun close() {
-        runCatching { wakeWrite.close() }
-        runCatching { wakePipe[0].close() }
-        runCatching { writerBuffer.close() }
-        runCatching { sharedMemory.close() }
+        runCatching { writer.close() }
+        runCatching { sockets[0].close() }
+        runCatching { sockets[1].close() }
     }
 }
 
-/// SharedMemory.mapReadWrite 返回的 DirectByteBuffer 无显式 unmap 入口外的
-/// 包装（SharedMemory.unmap 需要保留原 ByteBuffer 引用）。
-internal class AutoCloseableByteBuffer(val buffer: ByteBuffer) : AutoCloseable {
+/// FrameTransport 的 Android 实装：阻塞写 + `SO_SNDTIMEO` 超时切片 +
+/// `Os.poll(POLLOUT)` 可写等待。不设 O_NONBLOCK（`Os` 无公开 fcntl 设旗面）：
+/// 阻塞写的超时语义由 SO_SNDTIMEO 承载——写阻塞不超过切片时长（100ms），
+/// 零进展即返回 EAGAIN（映射为 0 = would block），总超时判定仍归
+/// SocketTokenWriter 的 500ms deadline（有界背压语义不变）。
+private class OsFrameTransport(private val pfd: ParcelFileDescriptor) : FrameTransport {
+    private val fd = pfd.fileDescriptor
+
+    init {
+        try {
+            Os.setsockoptTimeval(
+                fd,
+                OsConstants.SOL_SOCKET,
+                OsConstants.SO_SNDTIMEO,
+                StructTimeval.fromMillis(SocketTokenWriter.POLL_SLICE_MS.toLong()),
+            )
+        } catch (e: ErrnoException) {
+            throw IOException("SO_SNDTIMEO failed: ${e.errno}", e)
+        }
+        Log.i(
+            "EngineDataPlane",
+            "uds data plane writer ready wfd=${pfd.fd}",
+        )
+    }
+
+    override fun write(src: ByteBuffer): Int = try {
+        val n = Os.write(fd, src)
+        if (n > 0) n else 0
+    } catch (e: ErrnoException) {
+        // EAGAIN = SO_SNDTIMEO 切片内零进展（暂不可写）；EINTR = 信号打断（重试）。
+        if (e.errno == OsConstants.EAGAIN || e.errno == OsConstants.EINTR) 0
+        else throw IOException("uds write failed: ${e.errno}", e)
+    }
+
+    override fun awaitWritable(timeoutMs: Int): Boolean = try {
+        val p = android.system.StructPollfd().apply {
+            this.fd = this@OsFrameTransport.fd
+            events = OsConstants.POLLOUT.toShort()
+        }
+        Os.poll(arrayOf(p), timeoutMs) > 0
+    } catch (e: ErrnoException) {
+        if (e.errno == OsConstants.EINTR) true else throw IOException("poll failed: ${e.errno}", e)
+    }
+
     override fun close() {
-        SharedMemory.unmap(buffer)
+        runCatching { pfd.close() }
     }
 }

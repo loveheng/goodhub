@@ -1,7 +1,8 @@
 /// 端侧引擎公共契约（立法源 = docs/design/on-device-capability.md §2 v2.7）。
 ///
 /// 本件承载跨进程契约的 Dart 侧镜像：`EngineStatus` 枚举序数与 AIDL
-/// `checkStatus()`/`initEngine()` 返回的 int 一一对应（0..5），禁调序。
+/// `checkStatus()`/`initEngine()` 返回的 int 一一对应（0..6），禁调序
+///（仅允许在末尾追加新状态，见 [EngineStatus.thermalCutoff]）。
 /// `OnDeviceEngine` 抽象接口与 `GenerationConfig` 随 S1-5 生成管线落地。
 ///
 /// 调度纪律（§2 v2.6）：`busy` 与 `ready` 严禁任何 TTL 缓存，必须随查随废；
@@ -18,8 +19,9 @@ enum EngineStatus {
   busy,               // 1 执行中，支持抢占 / 策略 B 驳回
   assetMissing,       // 2 驱动就绪但模型未下载
   insufficientMemory, // 3 当前可用 RAM 低于门禁
-  circuitBroken,      // 4 处于熔断保护期
+  circuitBroken,      // 4 处于熔断保护期（引擎故障，需熔断器/人工介入）
   unsupportedDevice,  // 5 硬件 / 芯片架构不匹配（D1 中低端）
+  thermalCutoff,      // 6 热降级切云期（≥SEVERE；环境降级可自愈，温度回落即恢复）
 }
 
 /// 由 AIDL 序数还原枚举；越界值视为 unsupportedDevice（防跨端漂移崩溃）。
@@ -27,6 +29,18 @@ EngineStatus engineStatusFromOrdinal(int ordinal) =>
     ordinal >= 0 && ordinal < EngineStatus.values.length
         ? EngineStatus.values[ordinal]
         : EngineStatus.unsupportedDevice;
+
+/// 端侧状态的**面向用户**原因文案（禁把内部枚举名直接抛给用户——真机曾见
+/// 「模型装载失败（circuitBroken）」，用户看不懂也无从行动；枚举名只进日志）。
+String engineStatusFailureReason(EngineStatus status) => switch (status) {
+      EngineStatus.ready => '引擎已就绪',
+      EngineStatus.busy => '引擎执行中',
+      EngineStatus.assetMissing => '模型未就绪（资产缺失或装载未完成）',
+      EngineStatus.insufficientMemory => '可用内存不足（请清理后台应用后重试）',
+      EngineStatus.circuitBroken => '端侧引擎处于熔断保护期（请稍后重试）',
+      EngineStatus.unsupportedDevice => '当前设备不支持本地推理',
+      EngineStatus.thermalCutoff => '设备过热，端侧已暂停（温度回落后可重试）',
+    };
 
 /// 生成收尾原因（AIDL onGenerateFinished 的 finishReason int 映射）。
 enum EngineFinishReason {
@@ -92,7 +106,11 @@ enum OnDeviceLoadState {
 /// 语义 = 端侧不可用且**不静默切云**（由上层决定报错还是降级），与请求中途
 /// 引擎死亡（[EngineDiedException]→无缝切云）正交。
 class OnDeviceLoadException implements Exception {
-  const OnDeviceLoadException(this.reason, {this.retryable = false});
+  const OnDeviceLoadException(
+    this.reason, {
+    this.retryable = false,
+    this.degraded = false,
+  });
 
   final String reason;
 
@@ -101,6 +119,12 @@ class OnDeviceLoadException implements Exception {
   /// 资产缺失 / 内存不足）一律 false——可自愈中断与终态失败必须分口径，
   /// 混同会把「进程被杀」报成「硬件不支持」（lesson gdw-load-notbound）。
   final bool retryable;
+
+  /// true = **环境降级**（当前仅热降级：设备过热，`:engine` 已切云）——物理
+  /// 降温即恢复，**不是引擎故障**。上层按 §5.2 Thermal→Cloud 切云完成本轮
+  /// （产出优先），不按终态失败判死、不计入熔断口径；与 [retryable]（进程 /
+  /// 通道中断，可退避重试）正交。
+  final bool degraded;
 
   @override
   String toString() => 'OnDeviceLoadException: $reason';

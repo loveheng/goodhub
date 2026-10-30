@@ -6,22 +6,20 @@ import android.os.SharedMemory;
 import com.zzh.goodhub.IOnDeviceEngineListener;
 
 // 端侧引擎控制面 AIDL 契约（立法源 = docs/design/on-device-capability.md §2 v2.7）。
-// 控制面低频（次/分钟级），数据面 token 流走 Ashmem RingBuffer + 唤醒 fd
-//（on-device-npu-deployment.md §6.1，句柄经本接口一次性建立映射）。
+// 控制面低频（次/分钟级），数据面 token 流走 UDS socketpair
+//（on-device-npu-deployment.md §6.1 v3.1，读端 fd 经本接口一次性移交）。
 interface IOnDeviceEngineService {
     // 初始化引擎，返回 EngineStatus 枚举序数（0=ready .. 5=unsupportedDevice）。
     // 契约细化（S1-2）：v2.7 §2 要求 EngineDied 由 :engine 侧主动通知但未指定
     // 传输面，此处以 listener 入参承载（AIDL 标准做法）。
     int initEngine(in Bundle config, IOnDeviceEngineListener listener);
 
-    // 数据面句柄（S1-3 落地）：契约细化（S1-3，2026-10-28 官方源码核实）——
-    // SharedMemory.getFdDup()/getFd() 均 @hide 应用不可依赖，而 SharedMemory
-    // 本身是 AIDL 友好 parcelable，故 v2.7 §2 的 getSharedMemoryFd():PFD 细化为
-    // getSharedMemory():SharedMemory（fd 经 Binder 传递语义不变）；唤醒 fd 保持
-    // ParcelFileDescriptor（pipe 承载可读 fd 唤醒语义，eventfd 可在 S3-6 native
-    // worker 替换）。句柄一次性建立映射后不再走 Binder 传数据。
-    SharedMemory getSharedMemory();
-    ParcelFileDescriptor getEventFd();
+    // 数据面句柄（S3-7 UDS 化）：契约细化——数据面 = AF_UNIX SOCK_STREAM
+    // socketpair，:engine 持写端（SocketTokenWriter 长度前缀成帧），读端经
+    // Binder 以 ParcelFileDescriptor 传主进程（detachFd 移交所有权后由
+    // native worker（libgdw）持有读循环）。成帧协议 = [4B 大端 len][payload]，
+    // len==0 = EOS 流终结帧；对端关闭（EOF）= 数据面死亡，读端自愈重建。
+    ParcelFileDescriptor getDataSocketFd();
 
     // 模型装载（S2 正式接线）：:engine 后台线程创建 Genie 持久会话（幂等——
     // 已就绪/创建中重复调用不重建）。modelDir = 模型资产目录（genie_config.json

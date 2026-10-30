@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'app/task_consume_bootstrap.dart';
+import 'core/app_log.dart';
 import 'coordinator/ref_store.dart';
 import 'task/task_consume_ledger.dart';
 import 'llm/on_device_engine.dart';
@@ -36,6 +37,8 @@ void main() async {
   // 三态主题（暗/亮/暖）持久化于 SharedPreferences，启动期读取后注入单例，
   // 再 runApp——避免首帧用错主题闪一下。
   WidgetsFlutterBinding.ensureInitialized();
+  // 日志捕获 sink（调试页数据源）：先装再跑，启动期 debugPrint 即入缓冲。
+  AppLog.install();
   final initial = await readAppTheme();
   AppThemeController.instance = AppThemeController(initial);
   runApp(const GoodHubApp());
@@ -78,10 +81,21 @@ class _GoodHubAppState extends State<GoodHubApp> with WidgetsBindingObserver {
       case AppLifecycleState.paused:
       case AppLifecycleState.hidden:
       case AppLifecycleState.detached:
-        // 释放真正在用的端侧引擎（AIDL `:engine` 进程权重内存）；旧
-        // `goodhub/llm` 桥（ChannelLlmEngine）仅承载设备探针，不再走生成
-        // 路径，对其 warmup/release 是挂错通道的死调用（2026-10-29 清理）。
-        unawaited(sharedOnDeviceEngine.release());
+        // **退后台不再主动释放端侧权重**（路线 B 裁决 2026-10-30）。
+        //
+        // 旧行为 = 无条件 `release()`（释放 `:engine` 权重内存），与「端侧必须
+        // 服务后台任务」这一核心用例**直接冲突**：后台任务跑到一半被退后台
+        // 钩子 abort + 释放权重，下次请求还得重装（~2.7s 暖机 + ~3.2GB 峰值），
+        // 且退后台瞬间击杀在途属高频必现路径。
+        //
+        // 新口径 = 权重回收**完全交给 `:engine` 侧**：TTL（空闲 5min 驱逐）+
+        // 内存预算护栏（逼近 LMK 即使 TTL 内也提前驱逐）；`:engine` 常驻期间
+        // 由 FGS 提权保护（**绑定即挂**，见 `EngineService.initEngine`），
+        // 使其免于 OEM 冻结 / mem-pressure 回收。
+        //
+        // 显式停用（用户 disable / 切模型）仍走 [AidlOnDeviceEngine.release]
+        // 强制释放。
+        break;
       case AppLifecycleState.inactive:
         break; // 系统弹层等瞬态，不折腾引擎
     }

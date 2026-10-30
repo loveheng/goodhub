@@ -11,7 +11,16 @@
 # alias: ag
 #
 # 规则口径见 docs/project/coding-standards.md §1.2/§1.3（禁平台污染 / 接口驱动）；
+# R11 见 §1.3 末尾（端侧 AIDL 契约 ↔ 主进程桥 MethodChannel case 表一致性）。
 # 白名单内的条目是**历史例外**，只许减少不许增加（迁移一个删一行）。
+
+# R11 豁免：不经 MethodChannel 转发的 AIDL 方法（登记理由，禁无理由加项）
+#   initEngine       —— bind 握手内调用（EngineServiceBridge.onServiceConnected）
+#   getDataSocketFd  —— startDataWorker 内取数据面 socket 读端后移交 native
+#                       （S3-7 UDS 化后的一次性 fd 移交，非 Dart 发起）
+# 备注：旧共享内存面（getSharedMemory / getEventFd）随 UDS 化整体退役，
+#       对应方法已不在 AIDL 契约内 → 豁免项同步移除（豁免表只减不增）。
+BRIDGE_AIDL_EXEMPT="initEngine getDataSocketFd"
 
 set -uo pipefail
 
@@ -143,6 +152,64 @@ scan_all() {
     "import '[^']*mcp/tool_router\.dart" "lib/mcp/tool_router.dart"
   # R9 执行面链构造（手工把实例塞进 inner 可致内层整层丢弃）
   scan_chain_inner
+  # R11 跨进程契约面双向比对（漏接 = 静默 MissingPluginException）
+  scan_bridge_contract
+  return 0
+}
+
+# R11 跨进程契约面**双向**比对（端侧 AIDL 声明 / Dart 调用点 ↔ 主进程桥
+# MethodChannel case 表）（coding-standards §1.3 末条；实证 2026-10-30
+# 机制审计 P0-1）：
+#
+# 契约面有四份各自维护的副本 —— ① AIDL 方法集（`IOnDeviceEngineService.aidl`）
+# ② `:engine` 实现（`EngineService.kt`）③ 主进程桥 case 表
+# （`EngineServiceBridge.kt`）④ Dart 侧 `invokeMethod('<name>')` 字面量。
+# 桥面 ③ 是两侧的交汇点，漏接时 Dart 侧 `invokeMethod` 恒落
+# `result.notImplemented()` → `MissingPluginException`；该异常若落在
+# `unawaited()` 的 future 上无人监听，会退化成 root zone 未捕获异常
+# （静默、无崩溃、无 stack 上报——最具欺骗性的失败形态）。
+#
+# 双向判据（任一侧单边新增都属契约面漂移）：
+#   A. AIDL 声明的每个方法名都须在桥面 case 表出现（契约未贯通 → 红灯）；
+#   B. Dart 侧 `invokeMethod` 的每个字面量名都须在桥面 case 表出现
+#      （桥面漏接 / 拼写漂移 → 红灯）。
+# 豁免登记进 [BRIDGE_AIDL_EXEMPT]（只减不增，须写理由）：仅限「bind 握手内
+# 调用」与「取句柄后移交 native」两类不属 Dart 发起的转发面。
+scan_bridge_contract() {
+  local aidl bridge
+  aidl=$(find "$ROOT/android" -path '*/aidl/*' -name 'IOnDeviceEngineService.aidl' 2>/dev/null | head -1)
+  bridge=$(find "$ROOT/android" -name 'EngineServiceBridge.kt' 2>/dev/null | head -1)
+  # 任一侧缺失即放行：本规则只比对双边都在的契约面（防非 Android 仓库误报）
+  [ -n "$aidl" ] && [ -n "$bridge" ] || return 0
+
+  local fromAidl fromDart m
+  # ① AIDL 方法集：抓「<返回类型> <方法名>(」形态，取最后一个标识符为方法名
+  fromAidl=$(grep -oE '(oneway[[:space:]]+)?[A-Za-z_][A-Za-z0-9_.<>]*[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(' "$aidl" 2>/dev/null \
+    | sed -E 's/^[[:space:]]*//; s/[[:space:]]*\($//; s/.*[[:space:]]+//')
+  # ④ Dart 侧调用点：只认 on_device 通道的文件 —— 引用
+  #    `OnDeviceEngineBinding.channel` 者 ∪ 声明
+  #    `MethodChannel('goodhub/on_device_engine')` 者（后者即 binding 定义文件
+  #    自身，其调用写作 `channel.invokeMethod` 无类名前缀）。
+  #    **禁直接扫整个 lib/llm/**：该目录下还有旧 `goodhub/llm` 通道，其
+  #    generate/release 等名字与本桥面无关，混扫即大面积误报。
+  #    按通道归属筛文件而非硬编码文件名：随文件改名/新增自动跟随，防规则腐化。
+  local callers
+  callers=$(grep -rl --include='*.dart' \
+      -e 'OnDeviceEngineBinding.channel' \
+      -e "MethodChannel('goodhub/on_device_engine')" \
+      "$ROOT/lib" 2>/dev/null)
+  fromDart=""
+  if [ -n "$callers" ]; then
+    fromDart=$(grep -rhoE "invokeMethod[A-Za-z0-9<>]*\([^']*'[A-Za-z_][A-Za-z0-9_]*'" $callers 2>/dev/null \
+      | grep -oE "'[A-Za-z_][A-Za-z0-9_]*'" | tr -d "'")
+  fi
+
+  for m in $(printf '%s\n' $fromAidl $fromDart | sort -u); do
+    case " $BRIDGE_AIDL_EXEMPT " in *" $m "*) continue ;; esac
+    grep -qE "\"$m\"[[:space:]]*->" "$bridge" && continue
+    HITS="${HITS}FAIL ${bridge#$ROOT/}:0 [R11-bridge-contract] 跨进程契约方法 \`$m\` 未在主进程桥 case 表接线（AIDL 声明或 Dart 调用已存在）→ Dart 侧恒 MissingPluginException；确属内部调用须登记 BRIDGE_AIDL_EXEMPT 并写理由\n"
+    COUNT=$((COUNT + 1))
+  done
   return 0
 }
 
@@ -233,9 +300,56 @@ EOF
 import '../core/chat_message_data.dart';
 EOF
 
+  # R11 坏样本：AIDL 声明了 releaseEngine，桥面 case 表漏接
+  mkdir -p "$bad/android/app/src/main/aidl/com/zzh/goodhub" \
+           "$bad/android/app/src/main/kotlin/com/zzh/goodhub"
+  cat >"$bad/android/app/src/main/aidl/com/zzh/goodhub/IOnDeviceEngineService.aidl" <<'EOF'
+interface IOnDeviceEngineService {
+    void releaseEngine();
+    int checkStatus();
+}
+EOF
+  cat >"$bad/android/app/src/main/kotlin/com/zzh/goodhub/EngineServiceBridge.kt" <<'EOF'
+    private fun handleMethodCall(call: MethodCall, result: MethodChannel.Result) {
+        when (call.method) {
+                "checkStatus" -> { result.success(0) }
+                else -> result.notImplemented()
+        }
+    }
+EOF
+
+  # R11 反向坏样本：Dart 侧已调用 dropEngineCache，桥面漏接
+  # （该名不在 AIDL 方法集里，只有反向扫描能抓到）
+  mkdir -p "$bad/lib/llm"
+  cat >"$bad/lib/llm/on_device_engine_binding.dart" <<'EOF'
+class OnDeviceEngineBinding {
+  static const MethodChannel channel = MethodChannel('goodhub/on_device_engine');
+  Future<void> clear() => channel.invokeMethod<void>('dropEngineCache');
+}
+EOF
+
+  # R11 干净样本：AIDL 全部方法 + Dart 全部调用点均已在桥面接线
+  mkdir -p "$clean/android/app/src/main/aidl/com/zzh/goodhub" \
+           "$clean/android/app/src/main/kotlin/com/zzh/goodhub" \
+           "$clean/lib/llm"
+  cp "$bad/android/app/src/main/aidl/com/zzh/goodhub/IOnDeviceEngineService.aidl" \
+     "$clean/android/app/src/main/aidl/com/zzh/goodhub/IOnDeviceEngineService.aidl"
+  cp "$bad/lib/llm/on_device_engine_binding.dart" \
+     "$clean/lib/llm/on_device_engine_binding.dart"
+  cat >"$clean/android/app/src/main/kotlin/com/zzh/goodhub/EngineServiceBridge.kt" <<'EOF'
+    private fun handleMethodCall(call: MethodCall, result: MethodChannel.Result) {
+        when (call.method) {
+                "releaseEngine" -> { result.success(null) }
+                "dropEngineCache" -> { result.success(null) }
+                "checkStatus" -> { result.success(0) }
+                else -> result.notImplemented()
+        }
+    }
+EOF
+
   ROOT="$bad"; scan_all
-  if [ "$COUNT" -lt 10 ]; then
-    echo "SELF-TEST FAIL: 坏样本只抓到 $COUNT 处（期望 >=10：R1-R9 各至少 1）" >&2
+  if [ "$COUNT" -lt 12 ]; then
+    echo "SELF-TEST FAIL: 坏样本只抓到 $COUNT 处（期望 >=12：R1-R9 各至少 1 + R11 双向漏接线各 1）" >&2
     printf '%b' "$HITS" >&2
     return 2
   fi

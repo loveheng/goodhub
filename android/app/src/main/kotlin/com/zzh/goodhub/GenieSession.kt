@@ -9,6 +9,7 @@ import com.geniex.sdk.bean.GenerationConfig
 import com.geniex.sdk.bean.LlmCreateInput
 import com.geniex.sdk.bean.LlmStreamResult
 import com.geniex.sdk.bean.ModelConfig
+import com.geniex.sdk.bean.SamplerConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import java.io.File
@@ -37,6 +38,11 @@ class GenieSession(private val context: Context) {
         private const val TAG = "GenieSession"
 
         private const val SDK_INIT_TIMEOUT_S = 15L
+
+        /// abort() 有界等待 stopStream 返回的上限（毫秒）：中断信号尽快送达，
+        /// 但 SDK 卡死不得占死调用线程（调用方含 Binder 线程池 → 卡死即全部
+        /// AIDL 分派停摆 = 全局无响应，P2-13）。
+        private const val ABORT_WAIT_MS = 300L
     }
 
     @Volatile private var wrapper: LlmWrapper? = null
@@ -134,6 +140,10 @@ class GenieSession(private val context: Context) {
             }
             Log.i(TAG, "diag modelDir exists=${dir.exists()} " +
                 "canRead=${dir.canRead()} list=${dir.list()?.joinToString(",")}")
+            // 资产真实性对账（S2-5 闪退换向）：目录名自拟不可信，逐文件尺寸进日志
+            // ——4B@W4A16 全 bundle 预期 ~2.3GB，若合计 ~4.5GB+ 即导入误标大模型。
+            Log.i(TAG, "diag sizes=" + (dir.listFiles()?.sortedBy { it.name }
+                ?.joinToString(",") { "${it.name}=${it.length()}" }))
             // qairt 路径约束（官方 GenieX Chat 实证）：n_ctx/n_gpu_layers 编译
             // 期固定，非零值被拒绝——显式置 0；thinking 关闭（单发提取语义）。
             val config = ModelConfig(nCtx = 0, nGpuLayers = 0, enable_thinking = false)
@@ -167,7 +177,22 @@ class GenieSession(private val context: Context) {
             Log.e(TAG, "[DEGRADE] session load failed: $e")
         } finally {
             creating = false
+            // 装载收尾：分片已读完并解析完成 → 页缓存可归还（posix_fadvise
+            // DONTNEED）。执行面在**主进程** native 通道（libgdw 仅主进程加载；
+            // 页缓存按 inode 记账，主进程丢弃等价有效）——:engine 侧仅交接留痕。
+            // 边界：仅削「装载后的稳态恢复」，削不平装载瞬态尖峰。
+            Log.i(TAG, "shards parsed: page-cache reclaim handed to host ($modelDir)")
         }
+    }
+
+
+    /**
+     * 标记装载失败原因（供外部中止路径使用，如装载期热降级 abort）——
+     * [loadError] 会被 startGenerate 的「会话未就绪」异常带给主进程，
+     * 从而以**明确原因**上抛（而非静默 assetMissing）。
+     */
+    fun markLoadError(reason: String) {
+        loadError = reason
     }
 
     /**
@@ -177,29 +202,97 @@ class GenieSession(private val context: Context) {
      * 每请求 [LlmWrapper.reset] 单发隔离（KV 清空，与旧 dialogReset 语义
      * 对齐）；流式回调在插件线程，Token 回调返回 false 即停（abort 路径）。
      */
-    fun query(prompt: String, maxTokens: Int, sink: GenieChunkSink): Int {
+    fun query(
+        prompt: String,
+        maxTokens: Int,
+        sink: GenieChunkSink,
+        temperature: Float = 0.7f,
+        topP: Float = 0.8f,
+    ): Int {
         val w = wrapper ?: throw IllegalStateException("genie session not created")
         abortRequested = false
         lastStreamError = null
         lastGeneratedTokens = -1
-        val resetStatus = runBlocking { w.reset() }
+        Log.i(TAG, "query start: promptChars=${prompt.length} maxTokens=$maxTokens")
+        // 单发隔离的会话重置（每请求清 KV）：重置失败后**带病生成 = 零产出且
+        // 无归因**（真机实证「同一对话第二次提问没有输出」的候选面之一——
+        // 首轮会话刚建好时 reset 正常，第二次 reset 失败即整轮空转）——故
+        // 重试一次；仍失败则**显式失败**（负状态码 → 主进程切云），禁静默
+        // 生成空结果冒充「模型没话说」。
+        var resetStatus = runBlocking { w.reset() }
         if (resetStatus != 0) {
-            Log.w(TAG, "[DEGRADE] reset before query: status=$resetStatus")
+            Log.w(TAG, "[DEGRADE] reset before query: status=$resetStatus — retry once")
+            resetStatus = runBlocking { w.reset() }
+            if (resetStatus != 0) {
+                Log.e(TAG, "[DEGRADE] reset failed twice: status=$resetStatus — abort query")
+                return -2
+            }
         }
+        // ChatML 模板包装（2026-10-30 真机实证修复）：裸文本喂 chat 调优模型
+        // 会退化成整句复读环（同一句循环至 maxTokens 硬停 = 「没输出完」）。
+        // 上游（hybrid _deviceSend）已把 system+user 压平为单 prompt，此处整体
+        // 作为 user 轮投递。
+        // 模板级清洗（双保险）：正文里的 ChatML 控制 token 会破坏模板边界
+        // （`<|im_end|>` 提前闭合 user 轮 → 模型直接收尾 → **零产出**；历史
+        // 轮正文即高危来源）。Dart 侧已清洗一遍（宿主构造的正文），此处覆盖
+        // 一切旁路来源。
+        // UNCERTAIN: 模型家族假设 = Qwen/ChatML（目录当前仅 Qwen 资产）；若引入
+        // 非 ChatML 模板家族，须按 tokenizer 配套模板分派。
+        val safePrompt = sanitizeChatMLControlTokens(prompt)
+        val chatPrompt = "<|im_start|>user\n$safePrompt<|im_end|>\n<|im_start|>assistant\n"
         var status = 0
+        val queryStart = System.currentTimeMillis()
+        var firstTokenAt = 0L
+        val sanitizer = StreamTextSanitizer()
         val flow = w.generateStreamFlow(
-            prompt,
-            GenerationConfig(maxTokens = maxTokens),
+            chatPrompt,
+            // 采样接线：此前只有 maxTokens（temperature/topP 随 AIDL 送达却被
+            // 丢弃），SDK 默认采样无复读惩罚 → 复读环无自愈手段。
+            // stopWords 勿传（2026-10-30 真机实证）：qairt 插件拒收 --stop /
+            // --stop-file 参数（geniex ErrorCode -100016 直接拒绝整个
+            // generate → 零 token = Dart 侧「空产出」）。EOS 停止为管线内置，
+            // 不依赖 stop 序列；im_end 残留由下方 sink 截断兜底。
+            GenerationConfig(
+                maxTokens = maxTokens,
+                samplerConfig = SamplerConfig(
+                    temperature = temperature,
+                    topP = topP,
+                    repetitionPenalty = 1.05f,
+                ),
+            ),
         )
         runBlocking {
             flow.collect { result ->
                 when (result) {
                     is LlmStreamResult.Token -> {
                         if (abortRequested) return@collect
-                        sink.onChunk(result.text)
+                        // stopWords 已随 qairt 兼容性移除（见 GenerationConfig
+                        // 注），EOS 停止由管线内置；im_end 若仍漏进文本则截断。
+                        val text = result.text
+                        if (firstTokenAt == 0L) {
+                            firstTokenAt = System.currentTimeMillis()
+                            Log.i(TAG, "first token after ${firstTokenAt - queryStart}ms")
+                        }
+                        val cut = text.indexOf("<|im_end|>")
+                        if (cut >= 0) {
+                            val head = sanitizer.feed(text.substring(0, cut))
+                            if (head.isNotEmpty()) sink.onChunk(head)
+                            // 零内容早停 = 模型在首个 token 就闭合模板（本轮零产出
+                            // 的直接证据；与「复读到 maxTokens」是两种不同病灶）。
+                            Log.i(TAG, "im_end observed in stream -> stop (headChars=${head.length})")
+                            abortRequested = true
+                        } else {
+                            // 乱码还原 + think 剥离（StreamTextSanitizer doc）
+                            val clean = sanitizer.feed(text)
+                            if (clean.isNotEmpty()) sink.onChunk(clean)
+                        }
                     }
                     is LlmStreamResult.Completed -> {
                         val p = result.profile
+                        if (!abortRequested) {
+                            val rest = sanitizer.flush()
+                            if (rest.isNotEmpty()) sink.onChunk(rest)
+                        }
                         lastGeneratedTokens = p.generatedTokens.toInt()
                         Log.i(TAG, "bench: ttft=${p.ttftMs.toInt()}ms " +
                             "decodeSpan=${p.decodeTimeMs.toInt()}ms " +
@@ -229,14 +322,30 @@ class GenieSession(private val context: Context) {
 
     /// cancel 信号（§6.3）：置位 + 流回调停（Token 返回 false），query 以
     /// cancelled 收尾；清空在途由插件侧停止承载。
-    fun abort() {
+    /**
+     * 中断在途生成（§6.3）。
+     *
+     * **非阻塞 + 有界**：stopStream 走 `runBlocking` 会在调用线程同步等待 SDK
+     * 返回——调用方含 Binder 线程池（cancelGenerate）与抢占路径（startGenerate
+     * 同线程）→ SDK 一旦卡住即 Binder 线程池停摆（全部 AIDL 分派阻塞 = 全局
+     * 「无响应」，P2-13 登记面）。故：中断信号在后台线程发出，调用方**有界**
+     * 等待（≤[waitMs]）——既保证信号尽快送达（抢占让槽的前提），又不占死
+     * 调用线程。
+     */
+    fun abort(waitMs: Long = ABORT_WAIT_MS) {
         abortRequested = true
         val w = wrapper ?: return
-        try {
-            runBlocking { w.stopStream() }
-        } catch (e: Throwable) {
-            Log.w(TAG, "[DEGRADE] stopStream: $e")
-        }
+        val done = java.util.concurrent.CountDownLatch(1)
+        Thread({
+            try {
+                runBlocking { w.stopStream() }
+            } catch (e: Throwable) {
+                Log.w(TAG, "[DEGRADE] stopStream: $e")
+            } finally {
+                done.countDown()
+            }
+        }, "engine-abort").start()
+        runCatching { done.await(waitMs, TimeUnit.MILLISECONDS) }
     }
 
     fun close() {
@@ -249,10 +358,164 @@ class GenieSession(private val context: Context) {
             Log.w(TAG, "[DEGRADE] destroy: $e")
         }
     }
+
+    /// ChatML 控制 token（Qwen 系）——出现在正文里会破坏模板边界
+    /// （`<|im_end|>` 提前闭合 user 轮 → 模型直接收尾 → **零产出**）。
+    private val chatMlControlToken =
+        Regex("<\\|(?:im_start|im_end|im_sep|endoftext)\\|>")
+
+    /// 清洗 ChatML 控制 token（模板级兜底；见 [query] 注释）。
+    private fun sanitizeChatMLControlTokens(text: String): String =
+        chatMlControlToken.replace(text, "")
 }
 
 /// 生成块下沉（geniex-android 流回调 → EngineService bench/投递层）。
 /// 载荷已由插件侧 detokenize 为文本块（UTF-8 完整边界由运行时保证）。
 fun interface GenieChunkSink {
     fun onChunk(text: String)
+}
+
+/**
+ * 流式投递前的文本修复管线（2026-10-30 真机实证两缺陷）：
+ *
+ * 1. **跨 token 多字节 UTF-8 拆裂还原**：geniex-android SDK 流式增量
+ *    detokenize 把跨 token 边界的 UTF-8 序列按单字节（ISO-8859-1 语义）
+ *    解码 →「中」(E4 B8 AD) 变 "ä¸­" 型乱码（SDK 回调面只有
+ *    `Token(String)`，无字节/token-id 出口，上游不可修，native full_text
+ *    同样带乱码可证病在 SDK 内部）。还原：连续 latin1 区（U+0080..U+00FF）
+ *    字符视为疑似被拆裂字节（charCode 即原字节值），成段重组按 UTF-8
+ *    严格解码，成功且含非 ASCII 即替换；段尾可能是未收全的跨块序列 →
+ *    留待下一块再判（flush 时原样放行）。
+ * 2. **think 块剥离**：Qwen3 思考模式输出 `ilden...` 原文直达 UI；
+ *    SDK 无 think 开关，此处跨块状态机剥除（未闭合则整段按思考吞掉）。
+ */
+internal class StreamTextSanitizer {
+    private enum class ThinkMode { OUTSIDE, INSIDE }
+    private var thinkMode = ThinkMode.OUTSIDE
+    private var pending = StringBuilder()
+
+    /** 喂入一块原始 token 文本，返回可投递部分（可能为空）。 */
+    fun feed(text: String): String {
+        if (text.isEmpty()) return ""
+        val s = pending.toString() + text
+        pending = StringBuilder()
+        val repaired = StringBuilder()
+        var i = 0
+        val n = s.length
+        while (i < n) {
+            val c = s[i]
+            if (c.code in 0x80..0xFF) {
+                var j = i
+                while (j < n && s[j].code in 0x80..0xFF) j++
+                val run = s.substring(i, j)
+                val decoded = tryDecodeUtf8(run)
+                when {
+                    decoded != null -> {
+                        repaired.append(decoded)
+                        i = j
+                    }
+                    j == n -> {
+                        // 尾段可能是未收全的跨块多字节序列 → 留待下一块
+                        pending.append(run)
+                        i = j
+                    }
+                    else -> {
+                        repaired.append(run) // 中段解不出 → 原样放行
+                        i = j
+                    }
+                }
+            } else {
+                repaired.append(c)
+                i++
+            }
+        }
+        return stripThink(repaired.toString())
+    }
+
+    /** 流收尾：未决 latin1 尾段原样放行（think 未闭合则吞掉）。 */
+    fun flush(): String {
+        val rest = pending.toString()
+        pending = StringBuilder()
+        if (thinkMode == ThinkMode.INSIDE) return ""
+        return stripThink(rest)
+    }
+
+    /** latin1 段重组按 UTF-8 严格解码；解出须含非 ASCII（防误吞真 latin1）。 */
+    private fun tryDecodeUtf8(s: String): String? {
+        if (s.isEmpty()) return null
+        val bytes = ByteArray(s.length) { s[it].code.toByte() }
+        return try {
+            val dec = Charsets.UTF_8.newDecoder()
+                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+            val r = dec.decode(java.nio.ByteBuffer.wrap(bytes)).toString()
+            if (r.any { it.code > 0x7F }) r else null
+        } catch (e: java.nio.charset.CharacterCodingException) {
+            null
+        }
+    }
+
+    /**
+     * think 块跨块剥离状态机（标签可能被拆在两块边界）。两态：
+     * OUTSIDE 剔除 open（转 INSIDE）**与游离 close**（2026-10-30 真机实证：
+     * enable_thinking=false 下模型偶发直出无配对的闭合标签，须同步剔除）；
+     * INSIDE 吞到 close 为止（未闭合整段按思考吞掉）。
+     */
+    private fun stripThink(text: String): String {
+        if (text.isEmpty()) return text
+        val out = StringBuilder()
+        var i = 0
+        while (i < text.length) {
+            if (thinkMode == ThinkMode.INSIDE) {
+                val c = text.indexOf(THINK_CLOSE, i)
+                if (c >= 0) {
+                    thinkMode = ThinkMode.OUTSIDE
+                    i = c + THINK_CLOSE.length
+                } else {
+                    val hold = partialTagTail(text.substring(i), THINK_CLOSE)
+                    pending.insert(0, text.substring(text.length - hold))
+                    i = text.length // 思考内容整段吞掉
+                }
+            } else {
+                val o = text.indexOf(THINK_OPEN, i)
+                val c = text.indexOf(THINK_CLOSE, i)
+                when {
+                    o >= 0 && (c < 0 || o < c) -> {
+                        out.append(text, i, o)
+                        thinkMode = ThinkMode.INSIDE
+                        i = o + THINK_OPEN.length
+                    }
+                    c >= 0 -> {
+                        out.append(text, i, c) // 游离闭合标签：剔除不投递
+                        i = c + THINK_CLOSE.length
+                    }
+                    else -> {
+                        val hold = maxOf(
+                            partialTagTail(text.substring(i), THINK_OPEN),
+                            partialTagTail(text.substring(i), THINK_CLOSE),
+                        )
+                        out.append(text, i, text.length - hold)
+                        pending.insert(0, text.substring(text.length - hold))
+                        i = text.length
+                    }
+                }
+            }
+        }
+        return out.toString()
+    }
+
+    /** s 的最长后缀同时是 tag 的真前缀（防标签跨块拆裂漏识别）。 */
+    private fun partialTagTail(s: String, tag: String): Int {
+        val max = minOf(tag.length - 1, s.length)
+        for (l in max downTo 1) {
+            if (s.regionMatches(s.length - l, tag, 0, l)) return l
+        }
+        return 0
+    }
+
+    private companion object {
+        // "<think>" / "</think>" 以转义写死（裸标签过通道会被转写损坏）。
+        const val THINK_OPEN = "\u003c\u0074\u0068\u0069\u006e\u006b\u003e"
+        const val THINK_CLOSE = "\u003c\u002f\u0074\u0068\u0069\u006e\u006b\u003e"
+    }
 }

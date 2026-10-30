@@ -27,6 +27,7 @@ updated: 2026-10-28
   - [design/self-update.md](design/self-update.md) — 打包推 R2 + 应用内自动更新设计（goodshare 同款移植：发布脚本 + lib/update/ 三件 + 更新页）
   - [design/on-device-capability.md](design/on-device-capability.md) — 端侧能力公共服务设计（芯片平台分发/双后端工厂/分期 P1 接入 App 内会话 + 云端搭配、P2 待定，draft）
   - [design/on-device-npu-deployment.md](design/on-device-npu-deployment.md) — 端侧 NPU 最大化部署系统方案（计算单元协同/量化适配/内存带宽/热调度/端到端评估，draft）
+  - [design/on-device-lifecycle-single-source.md](design/on-device-lifecycle-single-source.md) — 端侧引擎生命周期状态单源化（:engine 权威状态机/入口幂等自愈/接缝混沌钉子，Expand-Contract 三步，draft）
   - [design/stream-perf.md](design/stream-perf.md) — 流式输出性能优化（P0 流控缓冲 + P1 前缀块缓存；业界四维分层防御在 goodhub 的裁剪落地）
   - [design/window-kernel-split.md](design/window-kernel-split.md) — 从「胖窗口」到「内核 + 多投影」：四内核（Directory/Runtime/Session/Memory）与窗口投影的职责矩阵、三条所有权铁律、分期（未立项 draft）
   - [design/host-gateway-accessibility-memory.md](design/host-gateway-accessibility-memory.md) — Host 网关架构 · 访问性模型 · 记忆 In-band 捎带提取（Provider×Tier 解耦 / 聚合反向代理 / `<workspace_update>`），chatmessage epic 的设计 SSOT

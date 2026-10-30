@@ -1,14 +1,15 @@
 /// 设置页 · 端侧模型段（on-device 正式功能，S2-5 起替代 dart-define 资产
-/// 指向 PATCH）：模型目录展示、下载/重下（OTA 通道 + sha256 校验 + 原子
-/// 替换）、选择持久化、删除。
+/// 指向 PATCH）：模型目录展示、本地导入（2026-10-30 拍板：模型改导入制，
+/// 废弃在线 OTA——模型体积过大无在线存储）、选择持久化、删除。
 ///
-/// 职责边界：本段只管「资产面」（下载/删除/选择）；引擎装载/会话创建仍由
-/// 启动引导与 hybrid 装配承载（下载完成后受理 loadModel 的就绪轮询照旧）。
-/// 下载进度经 [OnDeviceAssetManager.ensureAssets] 的 onProgress 回调驱动。
+/// 职责边界：本段只管「资产面」（导入/删除/选择）；引擎装载/会话创建仍由
+/// 启动引导与 hybrid 装配承载（导入完成后受理 loadModel 的就绪轮询照旧）。
+/// 导入进度经 [OnDeviceAssetManager.importFromPickedFiles] 的 onProgress 驱动。
 library;
 
 import 'dart:async';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../components/panel_error_row.dart';
@@ -243,39 +244,55 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
     );
   }
 
-  Future<void> _download(OnDeviceModelOption option) async {
+  /// 本地导入（2026-10-30 拍板：模型改导入制）：系统文件选择器多选模型
+  /// 目录下全部文件 → 拷入应用私有目录 + 原子替换。导入完成即选中。
+  Future<void> _import(OnDeviceModelOption option) async {
     if (_busy) return;
+    final picked = await FilePicker.pickFiles(type: FileType.any);
+    if (picked.isEmpty) return; // 用户取消
     setState(() {
       _busy = true;
       _downloadingId = option.id;
       _error = null;
-      _progressText = '准备下载…';
+      _progressText = '准备导入…';
     });
     try {
-      final dir = await _assets.ensureAssets(
-        model: option,
-        onProgress: (p) {
-          if (!mounted) return;
-          setState(() {
-            switch (p.phase) {
-              case 'manifest':
-                _progressText = '读取分发清单…';
-              case 'file':
-                final pct = p.totalBytes > 0
-                    ? (p.receivedBytes * 100 ~/ p.totalBytes)
-                    : 0;
-                _progressText =
-                    '下载中 $pct%（${p.receivedBytes ~/ 1048576}/${p.totalBytes ~/ 1048576}MB）';
-              case 'done':
-                _progressText = p.detail ?? '完成';
-            }
-          });
-        },
-      );
+      final paths =
+          picked.where((f) => f.path != null).map((f) => f.path!).toList();
+      // 单选压缩包（zip/tar/tar.gz）→ 解压导入通道；否则按散文件多选导入。
+      final lowerSingle =
+          paths.length == 1 ? paths.single.toLowerCase() : null;
+      final isArchive = lowerSingle != null &&
+          (lowerSingle.endsWith('.zip') ||
+              lowerSingle.endsWith('.tar') ||
+              lowerSingle.endsWith('.tar.gz') ||
+              lowerSingle.endsWith('.tgz'));
+      void onProgress(AssetPullProgress p) {
+        if (!mounted) return;
+        setState(() {
+          switch (p.phase) {
+            case 'file':
+              final pct = p.totalBytes > 0
+                  ? (p.receivedBytes * 100 ~/ p.totalBytes)
+                  : 0;
+              _progressText =
+                  '导入中 $pct%（${p.receivedBytes ~/ 1048576}/${p.totalBytes ~/ 1048576}MB）';
+            case 'done':
+              _progressText = '导入完成';
+            default:
+              _progressText = p.detail ?? '处理中…';
+          }
+        });
+      }
+      final dir = isArchive
+          ? await _assets.importFromArchive(paths.single,
+              model: option, onProgress: onProgress)
+          : await _assets.importFromPickedFiles(paths,
+              model: option, onProgress: onProgress);
       if (dir == null) {
         if (mounted) {
           setState(() {
-            _error = '下载或校验失败（磁盘门禁/网络/sha256），见日志';
+            _error = '导入失败（磁盘门禁/文件读取/重名冲突），见日志';
             _progressText = '';
           });
         }
@@ -288,9 +305,9 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
         _selectedId = option.id;
         _progressText = '';
       });
-      widget.onFlash?.call('${option.displayName} 已就绪，首次使用端侧时自动加载');
+      widget.onFlash?.call('${option.displayName} 已导入，首次使用端侧时自动加载');
     } catch (e) {
-      if (mounted) setState(() => _error = '下载失败：$e');
+      if (mounted) setState(() => _error = '导入失败：$e');
     } finally {
       if (mounted) {
         setState(() {
@@ -439,8 +456,8 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
                       color: selected ? t.l1Ok : t.l1Info)),
               Text(
                 installed
-                    ? (selected ? '已下载 · 当前使用' : '已下载')
-                    : (downloading ? '下载中…' : '未下载'),
+                    ? (selected ? '已导入 · 当前使用' : '已导入')
+                    : (downloading ? '导入中…' : '未导入'),
                 style: TextStyle(
                     fontSize: Fsz.note,
                     color: selected ? t.l1Ok : t.terminalMuted),
@@ -450,9 +467,9 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
         ),
         if (!installed)
           TextButton(
-            key: ValueKey('on-device-model-download-${option.id}'),
-            onPressed: _busy ? null : () => unawaited(_download(option)),
-            child: const Text('下载'),
+            key: ValueKey('on-device-model-import-${option.id}'),
+            onPressed: _busy ? null : () => unawaited(_import(option)),
+            child: const Text('导入'),
           )
         else ...[
           if (!selected)

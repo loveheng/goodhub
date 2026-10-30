@@ -18,6 +18,7 @@ import '../llm/cloud/cloud_llm.dart';
 import '../llm/device_tier.dart';
 import '../llm/llm.dart';
 import '../llm/on_device_engine.dart';
+import '../llm/on_device_engine_adapter.dart';
 import '../llm/on_device_engine_aidl.dart';
 import '../llm/on_device_gate_override.dart';
 import 'discovery_executor.dart';
@@ -112,6 +113,10 @@ Future<HybridCloudEngine> assembleDefaultHybridEngine({
     deviceToolPolicy: deviceToolFaceAllow,
     // 用户启用覆盖：偏好优先端侧 / 紧急强行启用（bypass 全部门禁）。
     preferOnDevice: gateOverride.preferOnDevice,
+    // 场景 A/B/C 切云语义拆分：前台态探针（场景 B 后台冷装载 → 不切云、打
+    // PendingForegroundLoad 暂存等前台；场景 C 前台冷装载 → 加载态 + 超时保护
+    // → 终态显式失败 / 可自愈类按需降级云端）。探针异常按后台保守处理。
+    isForegroundProbe: () => sharedOnDeviceEngine.isForeground(),
     forceOnDevice: gateOverride.forceOnDevice,
     // §16 设备分级门禁（初值实时探针）：RAM/电量/省电/温控不达标时端侧关闸
     //（探针走 goodhub/llm 设备信息通道，非引擎面——保留旧桥仅用探针）。
