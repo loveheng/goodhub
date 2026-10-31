@@ -11,7 +11,7 @@ library;
 
 import '../core/tokens.dart';
 import '../llm/cloud/cloud_llm.dart';
-import '../llm/llm.dart';
+import '../llm/on_device_capability.dart';
 
 /// token 字符级粗估口径已下沉 core/tokens.dart（M4-T1：记忆沙盒需同口径且
 /// 层级更低，沙盒 ④ 不得逆向依赖编排 ②）——原位 re-export 保持既有 import
@@ -119,31 +119,40 @@ class SummarizeException implements Exception {
 
 /// 端侧小模型摘要器（architecture §12：摘要是端侧「单一提取任务」职责内的活）。
 ///
-/// 引擎 [OnDeviceLlmEngine.generate] 的翻译式降级（失败返 null 不抛）在此
-/// 收敛为 [SummarizeException]——调用方（agent_loop）按 E1 统一兜底，
-/// 本类不做降级决策。不预检 isAvailable：预检与生成间存在竞态，null 翻译
-/// 已覆盖不可用路径。
+/// 消费 `OnDeviceCapabilityService` 能力原语（2026-10-31 F1 改线：原能力供给
+/// 收口单发门面，任务语义=本类 instruction，端侧不就绪/失败均抛
+/// [SummarizeException]）——调用方（agent_loop）按 E1 统一兜底，
+/// 本类不做降级决策。不预检引擎可用性：failFast 异常翻译已覆盖不可用路径。
 class OnDeviceResultSummarizer {
-  OnDeviceResultSummarizer(this._engine);
+  OnDeviceResultSummarizer(this._primitive);
 
-  final OnDeviceLlmEngine _engine;
+  final OnDeviceCapabilityService _primitive;
 
   /// 摘要输出上限（端侧产出体量界；T7 调参）。
   static const int summaryMaxTokens = 256;
+
+  static const _config = OnDevicePrimitiveConfig(maxTokens: summaryMaxTokens);
 
   static const _system = '你是工具结果摘要器。把给定工具结果压缩为要点，'
       '保留关键数值、状态、结论与错误信息，不添加解释、前言或代码块包裹。';
 
   Future<String> call(String original) async {
-    final out = await _engine.generate(
-      original,
-      system: _system,
-      maxTokens: summaryMaxTokens,
-    );
-    final t = out?.trim();
-    if (t == null || t.isEmpty) {
-      throw SummarizeException('端侧摘要产出为空（引擎：${_engine.name}）');
+    try {
+      final out = await _primitive.complete(
+        instruction: _system,
+        input: original,
+        config: _config,
+        traceId: 'result_summarize',
+      );
+      final t = out.trim();
+      if (t.isEmpty) {
+        throw SummarizeException('端侧摘要产出为空');
+      }
+      return t;
+    } on SummarizeException {
+      rethrow;
+    } catch (e) {
+      throw SummarizeException('端侧摘要失败: $e');
     }
-    return t;
   }
 }

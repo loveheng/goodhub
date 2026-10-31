@@ -11,6 +11,8 @@ updated: 2026-10-31
 >
 > **v2.1 修订（2026-10-31 外部评审后）**：补 I6（在途生成不被投影作废误伤）/ I7（装载单飞）；epoch 定为 `(instanceId, seq)` 复合键、去磁盘持久化（§2.2）；新增在途驱逐边界（§2.8，含**否决 `DRAINING` 新态**的理由）、通道异常强制作废与冻结超时（§2.9）、装载单飞（§2.10）；§7 五项裁决给出结论并修正两处（UUID 取代时间戳、活体判据优先于时长分档）；新增 §8 边界（控制面 AIDL 载荷上限 / 镜像单实例 / 换模型冷重载成本）。
 >
+> **v2.2 修订（2026-10-31 真机「端侧过段时间就不可用且 App 无感知」复盘）**：补三处恢复与感知缺口——① **恢复语义去歧义**：`:engine` 拒绝同进程重载（loadedOnce 单进程单装载纪律）改发专用 `reloading` 信号（序数 8，末尾追加），不再借用 `assetMissing` 终态序数——此前「空闲回收后重载」被报成「请重新导入模型」且按终态判死不再重试，端侧静默永久失效；重启窗口内 `not_bound`/连接超时不计入快死棘轮（防起跑水位误抬 5GB 反堵重载）。② **桥面兜底重绑**：`bind()` 幂等判据由「发起过绑定」改「活引擎在位」——断连后即时重发 bindService（连接对象缓存复用），不依赖 AMS 自动重启（其退避可达 ~11min）。③ **运行时感知**：装载任务起跑即置 `loading`（补上 §2.6 指出的「当前缺失此态」）；AppBar 常驻端侧状态芯片 + 驱逐/失败转场瞬态提示。
+>
 > 相关立法源：`docs/design/on-device-capability.md`（端侧能力公共服务，含 `EngineStatus` 契约）、`docs/design/on-device-npu-deployment.md` §4.1（三态生命周期）、§6.2（LMK 防杀与绑定）、§6.5（熔断口径）、§6.6（单执行槽与原子抢占）。本文只定义**状态一致性机制**，不重复上述内容。
 
 ## 1. 问题定性：分布式状态机，无单一真相
@@ -207,6 +209,7 @@ sequenceDiagram
 > `EngineStatus.loading`（序数 7）追加销账 P2-14、`assetMissing` 回归终态语义、probe 切票据面。
 > 待办：混沌矩阵（`kill × rebind × evict × reload × 资产替换`）真机回归（§6 验收 1）。
 > 回归钉：全量 flutter test 1455 项全绿（含枚举双端对齐钉）。
+> **2026-10-31 追加（v2.2）**：`EngineStatus.reloading`（序数 8）+ 桥面兜底重绑 + UI 感知面（`loading` 态实写 + AppBar 端侧状态芯片 + 驱逐/失败转场提示）落地；回归钉 = `test/llm/on_device_engine_status_test.dart` ↔ Kotlin `EngineStatusOrdinalTest`（双端序数锚定，任一侧漂移即红）。
 
 | 步 | 内容 | 契约动作 | 回滚面 |
 |---|---|---|---|
@@ -226,7 +229,7 @@ sequenceDiagram
 
 ## 6. 验收
 
-1. **混沌矩阵**（`kill × rebind × evict × reload × 资产替换` 组合，真机 adb 驱动）全组合通过，投影与权威状态**零漂移**（对账日志为证）；
+1. **混沌矩阵**（`kill × rebind × evict × reload × 资产替换` 组合，真机 adb 驱动，驱动器 = `scripts/agent-tools/on-device-chaos-matrix.sh`）全组合通过，投影与权威状态**零漂移**（对账日志为证）；**F2/F4 追加用例（2026-10-31）**：`asset-swap`（删除→重导入→立刻提问 → `SESSION_MODEL_MISMATCH` 分码 → 作废镜像重装，S2 机制化验证）与 `load-stall`（装载停滞 90s → `:engine` LOAD_STALLED 自裁 → reloading 冷重载链路接管，主进程零 SIGKILL 权、墓碑排除法不受污染）；
 2. 11 起事故中的状态机类（含 2026-10-31 会话未就绪）在矩阵中均有复现用例，且新架构下不复发；
 3. **纯 Dart 回归钉**（票据源可注入后）：票据命中不重装 / `modelId` 变更必重装 / 事件到即作废而非猜测 / epoch 不匹配走 `SESSION_EPOCH_MISMATCH` / 装载中派生态为 `loading` / 终态失败文案不复「资产缺失」/ 通道异常必作废且 generate 路径走切云（§2.9）/ 投影作废不中断在途流（I6）/ 同 `modelId` 并发装载只提交一次（I7）；
 4. `checkStatus` 移除后全量测试与真机回归全绿。

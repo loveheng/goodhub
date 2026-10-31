@@ -43,6 +43,16 @@ class EngineService : Service() {
         // 对应注入 API——日志与调优归 SDK 默认 + 资产 htp config
         // （perf_profile=sustained_high_performance 已实证固化），投递链
         // 成本已经 DRAIN 对照实证为零（devlog 2026-10-29）。
+
+        init {
+            // G2-2：墓碑崩溃栈捕获库（SIGSEGV/SIGABRT/SIGBUS 落盘）——加载
+            // 失败不阻断服务（[DEGRADE] 留痕，死因可见性退回 flag-only）。
+            runCatching { System.loadLibrary("engine_tombstone") }
+                .onFailure { Log.w(TAG, "[DEGRADE] engine_tombstone load failed: $it") }
+        }
+
+        // 由 engine_tombstone.cpp 实现（G2-2）：注册崩溃信号处理器。
+        private external fun nativeInitTombstone(dir: String)
     }
 
     private var listener: IOnDeviceEngineListener? = null
@@ -117,6 +127,65 @@ class EngineService : Service() {
             null
         }
         return dataPlane != null
+    }
+
+    /// F4 装载停滞看门狗（裁决 5「活体判据优先，时长作上界」）：阶段打点后
+    /// [kLoadPhaseHardTimeoutMs] 内装载仍未完成（creating 且非 ready）= 停滞
+    /// ——由 **:engine 自己**裁决：自签 `LOAD_STALLED` 真因（经 loadError 带
+    /// 给主进程）后走单例纪律同款干净退出（冷启动新进程承载复载）。主进程
+    /// **不新增跨进程 SIGKILL 权**——否则墓碑排除法把有意重启误判为 LMK
+    /// 快死，fastKillStreak 抬水位反堵重载（2026-10-31 ADR 立法）。
+    /// 上界取 90s 与既有请求侧口径对齐（冷重载数十秒实证，10~15s 会误杀慢盘）。
+    private fun startLoadStallWatchdog() {
+        val startedAt = android.os.SystemClock.elapsedRealtime()
+        Thread({
+            while (session.creating && !session.ready) {
+                val elapsed = android.os.SystemClock.elapsedRealtime() - startedAt
+                if (elapsed > kLoadPhaseHardTimeoutMs) {
+                    Log.w(TAG, "[DEGRADE] load stall watchdog: no progress in " +
+                        "${elapsed / 1000}s -> LOAD_STALLED, clean exit for cold reload")
+                    session.loadError = "LOAD_STALLED: no phase progress in ${elapsed / 1000}ms"
+                    runCatching { session.abort() }
+                    runCatching {
+                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                            android.os.Process.killProcess(android.os.Process.myPid())
+                        }, 300)
+                    }
+                    return@Thread
+                }
+                Thread.sleep(1000)
+            }
+        }, "engine-load-stall-watchdog").start()
+    }
+
+    private val kLoadPhaseHardTimeoutMs: Long = 90_000L
+
+    private fun notifyLoadPhase(phase: Int) {
+        Log.i(TAG, "load phase -> $phase")
+        runCatching { listener?.onLoadPhaseChanged(phase) }
+    }
+
+    /// G2-1 墓碑标记（死因可见性 ADR 2026-10-31）：`<pid>.flag` 生命周期状态
+    /// 文件——FLAG_LOADING（loadModel 受理）/ FLAG_READY（doLoad 成功），
+    /// 正常退出（onDestroy）清理。SIGKILL 不可捕获 → 死因对 App 不可见，
+    /// 排除法裁定靠本文件：主进程 DeathRecipient 时「有 Crash Stack =
+    /// HARD_CRASH；无 Stack + FLAG_LOADING + 整机内存低 = LMK_SIGKILL；
+    /// FLAG_READY 无 Stack = 运行期外部终止」。目录与 Crash Stack 同置
+    /// files/tombstone（同 App UID，主进程可读）。
+    private fun tombstoneDir(): java.io.File =
+        java.io.File(filesDir, "tombstone").apply { mkdirs() }
+
+    private fun writeTombstoneFlag(state: String) {
+        runCatching {
+            java.io.File(tombstoneDir(), "${android.os.Process.myPid()}.flag")
+                .writeText(state)
+        }.onFailure { Log.w(TAG, "[DEGRADE] tombstone flag write failed: $it") }
+    }
+
+    private fun clearTombstoneFlag() {
+        runCatching {
+            java.io.File(tombstoneDir(), "${android.os.Process.myPid()}.flag").delete()
+        }
     }
 
     /// B-1 装载窗口内存监控：4B 装载峰值 HWM ~3.2GB，跌破 abort 线 = 整机内存
@@ -249,9 +318,13 @@ class EngineService : Service() {
             }
             if (session.ready) return EngineStatus.ready.ordinal
             // 装载单例纪律执行点：本进程已装载过（loadedOnce）且会话非 ready
-            // （驱逐/释放后）——拒绝本进程重建，回受理态后干净退出，AMS 冷启动
-            // 新进程承载复载（Dart 侧撞 not_bound 中断类 → 后台任务重试，链路
-            // 已有）。杜绝同进程二次装载的 ION/DSP PD 叠加（真机三次实证必死）。
+            // （驱逐/释放后）——拒绝本进程重建，回**重启装载**信号后干净退出，
+            // AMS 冷启动新进程承载复载（Dart 侧按可重试中断处理：短退避重绑，
+            // 接住冷启动后的新进程）。杜绝同进程二次装载的 ION/DSP PD 叠加
+            // （真机三次实证必死）。
+            // Fix1：返回值由 assetMissing 改 reloading——assetMissing 是终态
+            // 「真·未导入」，复用它把「回收后重载」报成「请重新导入模型」
+            // （补救方向误导），且主进程按终态判死不再重试 → 端侧静默永久失效。
             if (loadedOnce) {
                 Log.w(TAG, "[DEGRADE] loadModel: in-process reload refused " +
                     "(singleton-per-process) -> clean exit for cold reload")
@@ -260,10 +333,11 @@ class EngineService : Service() {
                         android.os.Process.killProcess(android.os.Process.myPid())
                     }, 300)
                 }
-                return EngineStatus.assetMissing.ordinal
+                return EngineStatus.reloading.ordinal
             }
             if (session.beginLoad()) {
                 loadedOnce = true
+                writeTombstoneFlag("FLAG_LOADING") // G2-1：死因排除法锚点
                 // M2 §2.5 I3：资产身份由 Dart 资产面单点计算（目录名@meta版本
                 // 摘要），票据回显承载 I3 对账；空值退化目录名。
                 loadedModelId = modelId?.takeIf { it.isNotEmpty() }
@@ -286,7 +360,15 @@ class EngineService : Service() {
                 // 已于 initEngine 绑定即挂（路线 B 收口）；旧口径「装载窗口挂、
                 // 收尾撤」恰是「idle 态裸奔被 OEM 冻结」的成因之一。
                 Thread({
+                    // F4 活体打点（裁决 5）：阶段推进 = 活体信号，主进程可观测
+                    // 装载是否推进（GenieX 黑盒内部不可细分，见 listener 契约）。
+                    notifyLoadPhase(IOnDeviceEngineListener.LOAD_PHASE_PARSING)
+                    notifyLoadPhase(IOnDeviceEngineListener.LOAD_PHASE_ALLOCATING)
+                    startLoadStallWatchdog()
                     session.doLoad(modelDir)
+                    // G2-1：装载终态落墓碑——成功 FLAG_READY；失败保持
+                    // FLAG_LOADING（装载中死亡 = LMK 候选，排除法消费）。
+                    if (session.ready) writeTombstoneFlag("FLAG_READY")
                 }, "engine-model-load").start()
                 startLoadMemMonitor()
             }
@@ -300,7 +382,7 @@ class EngineService : Service() {
                 ?: throw UnsupportedOperationException("data plane not initialized")
 
         override fun startGenerate(requestId: String?, promptJson: String?, generationParams: Bundle?,
-                                   expectInstanceId: String?, expectSeq: Long) {
+                                   expectInstanceId: String?, expectSeq: Long, expectModelId: String?) {
             if (requestId == null) throw IllegalArgumentException("requestId required")
             // M3 原子自证（on-device-lifecycle-single-source.md §2.3 I4）：判定与
             // 受理在同一入口完成，主进程不再「先查后发」。epoch 是入口闸门非
@@ -313,6 +395,14 @@ class EngineService : Service() {
                     "SESSION_EPOCH_MISMATCH: current=$instanceId#${lifecycle.currentGeneration} " +
                         "status=${currentStatus()} modelId=$loadedModelId " +
                         "(expected=$expectInstanceId#$expectSeq)")
+            }
+            // F2（2026-10-31 ADR）：资产身份（I3）同入口原子比对——票据 modelId
+            // ≠ 装载 modelId = 资产变更（删除/重导入/换模型）→ 专属分码驱动
+            // 主进程作废镜像重装，不再靠 epoch 偶发错位兜底（§2.5 兑现的另一半）。
+            if (!expectModelId.isNullOrEmpty() &&
+                loadedModelId.isNotEmpty() && expectModelId != loadedModelId) {
+                throw UnsupportedOperationException(
+                    "SESSION_MODEL_MISMATCH: loaded=$loadedModelId (expected=$expectModelId)")
             }
             if (!session.ready) {
                 if (session.creating) {
@@ -360,6 +450,29 @@ class EngineService : Service() {
             val temperature = gp.temperature.toFloat()
             val topP = gp.topP.toFloat()
             lifecycle.onGenerateStart() // S2-4：WARM_STANDBY → ACTIVE（TTL 定时器随代次作废）
+            // F3 大载荷通道（评审修复 2026-10-31）：promptFilePath 在场 = 超内联
+            // 上限的 promptJson 经临时文件承载——**读取前移到本同步段**（受理
+            // 返回前已读+删，消除「受理成功但生成线程读取前进程被杀」的残留
+            // 竞态；~180KB 读耗毫秒级，且此时槽位已授予不放大占用）。评审 #5：
+            // 读与删独立 try——读成功即用，删除失败仅 DEGRADE 留痕（由 Dart
+            // 侧 finally 兜底删），不再连带丢弃已读 prompt 误拒本轮。
+            val effectivePrompt = gp.promptFilePath?.takeIf { it.isNotEmpty() }?.let { path ->
+                val text: String? = try {
+                    java.io.File(path).readText()
+                } catch (e: Exception) {
+                    Log.w(TAG, "[DEGRADE] prompt file channel read failed: $e")
+                    null
+                }
+                if (text != null) {
+                    try {
+                        java.io.File(path).delete()
+                        Log.i(TAG, "prompt via file channel: ${text.length} chars")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "[DEGRADE] prompt file delete failed (read ok): $e")
+                    }
+                }
+                text
+            } ?: promptJson.orEmpty()
             val cb = listener
             Thread({
                 // S3-6 数据面（§6.1 v3.1 UDS 化）：token 流 = SocketTokenWriter
@@ -435,10 +548,12 @@ class EngineService : Service() {
                     }
                 }
                 try {
+                    // F3 大载荷通道：effectivePrompt 已在受理同步段解析（评审
+                    // 修复——读取前移，本线程不再触碰临时文件）。
                     // 同步生成：Genie 经回调流式投块（native → JNI → 本 sink），
                     // 本线程阻塞至完成/abort。返回 0=SUCCESS / 1=WARNING_ABORTED
                     //（cancel 生效）/ 负值=ERROR_*。
-                    val status = session.query(promptJson.orEmpty(), maxTokens, sink, temperature, topP)
+                    val status = session.query(effectivePrompt, maxTokens, sink, temperature, topP)
                     val cancelled = session.abortRequested || status == 1 || sink.ipcDeadlock
                     // 收尾打点（诊断面）：本轮写侧累计字节 + chunk 数 + 状态码
                     // ——「第二轮零产出」三值对账：bytes=0 即模型侧零产出（会话
@@ -566,12 +681,8 @@ class EngineService : Service() {
 
         override fun promoteForeground() = promoteFgs("正在本地生成")
 
-        override fun diagPanic() {
-            // S2-5 熔断验证（PATCH：诊断接口）：模拟驱动 Panic——走真实
-            // onEngineDied 信号链，主进程侧计入熔断计数（§6.5）。
-            Log.w(TAG, "[DIAG] diagPanic: simulating driver panic via onEngineDied")
-            notifyEngineDied()
-        }
+        // S2-5 熔断验证 diagPanic PATCH 已退役（F5 清账 2026-10-31）：
+        // 熔断链由 kEngineInterruptCodes 消费路径 + 真机回归钉承载。
     }
 
     /// §6.2/§4.1：onTrimMemory 驱动三态状态机——RUNNING_CRITICAL /
@@ -610,17 +721,23 @@ class EngineService : Service() {
                 ),
             )
         }.onFailure { Log.w(TAG, "[DEGRADE] notification channel: $it") }
+        // G2-2：注册 SIGSEGV/SIGABRT/SIGBUS 崩溃栈落盘（目录与 G2-1 flag 同置，
+        // 主进程 DeathRecipient 排除法据此区分 HARD_CRASH vs LMK_SIGKILL）。
+        runCatching { nativeInitTombstone(tombstoneDir().absolutePath) }
+            .onFailure { Log.w(TAG, "[DEGRADE] tombstone init failed: $it") }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        // G2-1：正常退出清 flag——防 PID 复用后旧 flag 污染下一次死因裁定。
+        clearTombstoneFlag()
     }
 
     override fun onBind(intent: Intent?): IBinder = stub
 
     override fun onLowMemory() {
         super.onLowMemory()
-        Log.w(TAG, "[DEGRADE] engine process low memory: state machine not yet wired")
+        Log.w(TAG, "[DEGRADE] engine process low memory (pre-eviction warning)")
     }
 
     /// :engine 侧主动上报致命事件（§2 EngineDied 回调；oneway 广播不阻塞）。

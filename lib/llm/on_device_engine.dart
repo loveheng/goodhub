@@ -23,13 +23,24 @@ enum EngineStatus {
   unsupportedDevice,  // 5 硬件 / 芯片架构不匹配（D1 中低端）
   thermalCutoff,      // 6 热降级切云期（≥SEVERE；环境降级可自愈，温度回落即恢复）
   loading,            // 7 M4 追加（受理态，P2-14 销账）：模型装载中
+  // 8 追加（Fix1 恢复语义去歧义）：`:engine` 拒绝同进程重载（单进程单装载
+  // 纪律——geniex destroy 是否完整释放 ION/DSP PD 不可实证，同进程复载必死）
+  // → 进程将自杀重启装载。**可重试中断，非终态**——与 assetMissing（真·未
+  // 导入）严格分开：此前复用 assetMissing 把「空闲回收后重载」报成「请重新
+  // 导入模型」（补救方向完全误导），且重载链路实际已断（端侧静默永久失效）。
+  reloading,
+  // 9 追加（F2，2026-10-31 ADR）：未知序数收容态——跨端漂移/未知状态非终态，
+  // 折算为「未知需对账」驱动票据原子刷新（I2 未知≠终态），严禁再投毒进
+  // unsupportedDevice 终态（此前越界兜底违背 I2，属旧语义残留）。
+  unknownNeedReconcile,
 }
 
-/// 由 AIDL 序数还原枚举；越界值视为 unsupportedDevice（防跨端漂移崩溃）。
+/// 由 AIDL 序数还原枚举；越界值收容为 unknownNeedReconcile（未知≠终态，
+/// 驱动票据对账，防跨端漂移既崩溃也不谎报终态）。
 EngineStatus engineStatusFromOrdinal(int ordinal) =>
     ordinal >= 0 && ordinal < EngineStatus.values.length
         ? EngineStatus.values[ordinal]
-        : EngineStatus.unsupportedDevice;
+        : EngineStatus.unknownNeedReconcile;
 
 /// 端侧状态的**面向用户**原因文案（禁把内部枚举名直接抛给用户——真机曾见
 /// 「模型装载失败（circuitBroken）」，用户看不懂也无从行动；枚举名只进日志）。
@@ -42,6 +53,8 @@ String engineStatusFailureReason(EngineStatus status) => switch (status) {
       EngineStatus.unsupportedDevice => '当前设备不支持本地推理',
       EngineStatus.thermalCutoff => '设备过热，端侧已暂停（温度回落后可重试）',
       EngineStatus.loading => '端侧模型装载中（请稍候）',
+      EngineStatus.reloading => '端侧引擎重启装载中（请稍候）',
+      EngineStatus.unknownNeedReconcile => '端侧状态未知（正在对账，请稍候）',
     };
 
 /// 生成收尾原因（AIDL onGenerateFinished 的 finishReason int 映射）。
@@ -112,6 +125,7 @@ class OnDeviceLoadException implements Exception {
     this.reason, {
     this.retryable = false,
     this.degraded = false,
+    this.expectRestart = false,
   });
 
   final String reason;
@@ -127,6 +141,13 @@ class OnDeviceLoadException implements Exception {
   /// （产出优先），不按终态失败判死、不计入熔断口径；与 [retryable]（进程 /
   /// 通道中断，可退避重试）正交。
   final bool degraded;
+
+  /// true = 本次中断源于「`:engine` 拒绝同进程重载 → 进程将自杀重启装载」
+  /// （单进程单装载纪律）。该中断是**预期**的：紧随其后的 `not_bound` /
+  /// 连接超时属冷启动窗口常态，**禁计入 fastKillStreak**——否则「有意自杀」
+  /// 被误判为 LMK 快死，起跑水位抬到 5GB，反把端侧重载彻底堵死（4B 机型
+  /// 常态 availMem 达不到 5GB → 端侧永久不可用）。
+  final bool expectRestart;
 
   @override
   String toString() => 'OnDeviceLoadException: $reason';

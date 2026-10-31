@@ -28,7 +28,8 @@ import 'package:path_provider/path_provider.dart';
 import '../core/errors/mcp_error.dart';
 import '../llm/cloud/cloud_llm.dart';
 import '../llm/cloud/sampling_engine.dart';
-import '../llm/llm.dart';
+import '../llm/on_device_capability.dart';
+import '../llm/on_device_engine_aidl.dart' show sharedOnDeviceEngine;
 import '../mcp/mcp_client.dart';
 import '../mcp/sampling.dart';
 import '../mcp/server_capabilities.dart';
@@ -390,7 +391,8 @@ class DebugRunOrchestrator {
         executor: executor,
         blockDelegate: cfg.block,
         summarizer: cfg.summarizeResults
-            ? OnDeviceResultSummarizer(ChannelLlmEngine()).call
+            ? OnDeviceResultSummarizer(
+                AidlOnDeviceCapabilityService(sharedOnDeviceEngine)).call
             : null,
         // M3-T3 put 端：摘要化成功路径原文落池、宿主注升级 $ref 句柄——
         // 与 HydratingExecutor 读端同一池（Session 粒度，finally 即焚 §9）。

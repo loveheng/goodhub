@@ -3,6 +3,16 @@ package com.zzh.goodhub;
 // 端侧引擎事件回调（on-device-capability.md §2：EngineDied 回调经 onEngineDied()
 // 由 :engine 侧主动通知）。oneway：:engine 侧单向广播，不阻塞推理线程。
 oneway interface IOnDeviceEngineListener {
+    // F4 装载阶段活体常量（2026-10-31 ADR：裁决 5「活体判据优先，时长作上界」）。
+    // PARSING = 受理后资产/配置面就绪（doLoad 启动前）；ALLOCATING = SDK create
+    // 在飞（GenieX 黑盒内部不可细分——不动 Genie 管线内部是既定非目标）。
+    const int LOAD_PHASE_PARSING = 0;
+    const int LOAD_PHASE_ALLOCATING = 1;
+
+    // 装载阶段活体打点（F4）：主进程可据此把「装载等待」从固定 90s 死等升级为
+    // 「有进展即不判死」的活体语义；阶段推进 = 活体信号。诊断面，不参与路由。
+    void onLoadPhaseChanged(int phase);
+
     // :engine 侧主动上报进程内致命事件（NPU 驱动 Panic / 算子越界 abort 等）；
     // 外部处决（OEM SIGKILL / LMK）不会触发本回调——由主进程侧
     // ServiceConnection.onServiceDisconnected 捕获，两路最终同归切云路径。

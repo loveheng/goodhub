@@ -67,8 +67,10 @@ last-merge: none
 ## 已锁定 vs 未落地（速判）
 
 - **已锁定机制**：超大 Tool Result 硬截断（D-I）、Loop Storm 环路防护（`hop_count≤2`）、N7 正则四类 + 无人值守 fail-closed、**NPU 兜底（2026-10-31）：`GenieSession.doLoad` 以 QAIRT+NPU 为主路，仅 QAIRT build 失败（NPU 驱动/HTP 不可用）回落 `llama_cpp+CPU` 完成本会话（同 GGUF 资产 + tokenizer，AAR 已捆绑两插件）；热/OOM 不触发兜底仍收口云端（遵「禁 CPU 分流」）；Dart 路由层/AIDL 不变（运行时无关），D1a 设备分档不变，仅推翻 D1「无 CPU 兜底」条款且限定高端 NPU 设备（`decisions.md` ADR）**。
+- **已锁定机制（续·2026-11-01 拍板）**：**端侧回退链物理重构 = NPU(QAIRT) → GPU(llama_cpp+GPU) → 云端 [DEGRADE]**，CPU 彻底出局（含代码路径物理删除，待 GPU Spike 全绿后执行）；**推翻 v3.2「NPU build 失败回落 CPU」条款**（`decisions.md` ADR 对应条据此修订）。破窗效应依据：留 CPU 分支会在偶发超时/内存受压时启发式滑落 CPU，复现发热与前台假死；云端安全网（HybridCloudEngine 第一等公民）足以兜底，且可借 [DEGRADE] 打点倒逼 GPU 档闭环。
+- **已锁定机制（续·2026-11-01 拍板）**：**准入探针与坏后端记忆合并为单一 `DispatchProfile`** —— 按 `modelId # Build.FINGERPRINT` 为键的 `{backend: {verdict: HEALTHY|EXCLUDED, reason, ttftMs, memBytes, probedAt}}`，两个写入方（导入后准入探针 + 运行时崩溃/零产出）共享、一个消费方（Dart 路由查表分流，不再拉 `:engine` 踩已知坑）；画像存 `.admission.json`（与 `.asset-meta.json` 同目录），复用 `asset_manager` 的 `recoverIfDriverChanged` 驱动指纹失效 → 脏删重探。设计稿 = `docs/design/on-device-admission-probe.md`。
 - **仍为空缺 / draft / 未排期**：端侧模型管理链（已归档未复活）、iOS 端侧引擎适配、端侧模型 OOM 独立进程化（G6）、端侧摘要器 `$ref` 注水实证、端侧 PII 模型层、移动端生命周期钩子、阶梯截断端侧摘要归档（draft）。
 
 ## 断点
 
-- [断点] 下一步：真机侧载复测（多轮 ChatML 第二轮作答 + **每轮回答独立成气泡**——2026-10-31 气泡边界已从「双保险手工断流」改为**设计内建**：Run 归属令牌 `ChatRunId`（controller 发号）+ 块级条目入轨即关段（结构派生，页面层零纪律））+ 收尾/快照刷盘；复测须额外视觉核对：工具卡/记忆胶囊/错误卡入轨后正文自动另起气泡）+ 恢复混沌矩阵回归（kill×rebind×evict×reload×资产替换）
+- [断点] GPU 档真机 Spike（进行中，2026-11-01 拍板）：在 `:engine` 独立进程把 `llama_cpp+GPU`（Vulkan/OpenCL）装载 + 1-token 探针跑通，产出首份真机体检数据。有界验证 4 指标：① Shader 编译稳定 + 产物落 `filesDir` 私有目录、二次装载命中缓存（数十秒→1~2s）；② 真实 RSS/VmHWM 峰值 + 显存释放彻底性（对照 MemGate 水位，勿冲 LMK）；③ 1-token 微基准（`"hi"`, max_tokens=1）合法首字节反解（TTFT 以测到为准，300~800ms 仅假设非门槛）；④ **异常确定性（否决性门槛）**：显存超限/驱动报错须抛结构化异常码，不得不可捕获 SIGSEGV 打挂 `:engine`。基线用真实在售 1.5B Q8 GGUF（非外来陌生权重）。通过后：撕 UNCERTAIN + 探针逻辑合流 `on_device_admission_probe.dart`/`probeBackend` + **物理删除 CPU 代码路径**（NPU→GPU→云硬编码）。Spike 未过期间 CPU 分支置 inert（保留代码、路由不走），回退链临时 = NPU→云。后续：混沌矩阵回归补 GGUF GPU 装载用例 + F1 冒烟。

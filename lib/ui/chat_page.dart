@@ -183,6 +183,12 @@ class _ChatPageState extends State<ChatPage>
     // 端侧显式加载指示：首次命中端侧路径时引擎进入 loading，轨道显式呈现
     // 「端侧模型加载中…」，加载完成/失败自动撤下（失败另有请求级错误卡）。
     sharedOnDeviceEngine.loadState.addListener(_onOnDeviceLoadStateChanged);
+    // 端侧状态芯片初始快照（Fix3）：打开页面时引擎可能已就绪/装载中——
+    // 监听器只在「变化」时触发，初始态必须显式取样否则芯片首帧缺失。
+    final onDeviceNow = sharedOnDeviceEngine.loadState.value;
+    _lastOnDeviceState = onDeviceNow;
+    _onDeviceActivated = onDeviceNow == OnDeviceLoadState.ready ||
+        onDeviceNow == OnDeviceLoadState.loading;
     unawaited(_loadConfig());
     unawaited(_initConversations());
     unawaited(_loadEndpoints());
@@ -199,8 +205,19 @@ class _ChatPageState extends State<ChatPage>
     super.dispose();
   }
 
-  /// 端侧显式加载状态变化 → 轨道呈现「加载中」指示（loading 显示，ready/failed
-  /// 撤下；failed 由请求级错误卡显式说明，不重复提示）。
+  /// 端侧状态芯片可见判据（Fix3）：会话内激活过（loading/ready）才展示——
+  /// 默认 unloaded（未启用端侧）不占 AppBar，芯片出现即「端侧与你有关」。
+  bool _onDeviceActivated = false;
+
+  /// 上一帧端侧状态（转场检测：ready→unloaded = 驱逐/释放，需补提示）。
+  OnDeviceLoadState _lastOnDeviceState = OnDeviceLoadState.unloaded;
+
+  /// 端侧显式加载状态变化 → 双通道感知（Fix3 治「端侧运行无感知」）：
+  /// ① 瞬态 pill（过程类，一闪即过）——装载中 / 回收释放 / 失败去向；
+  /// ② AppBar 常驻状态芯片（[build] 内 ListenableBuilder 挂 loadState，自管
+  /// 重建、无需 setState）。此前全仓**无人写 loading 态**（指示器是死代码）、
+  /// 驱逐静默复位 unloaded（零提示）→ 用户对端侧「何时在跑 / 何时已失效 /
+  /// 下次提问为何变慢」全程无感知。
   static const String _kOnDeviceLoadingNote = '⏳ 端侧模型加载中…';
 
   /// 端侧加载瞬态 pill 是否已展示（过程类不收纳，用本地标记管理显隐）。
@@ -208,14 +225,31 @@ class _ChatPageState extends State<ChatPage>
 
   void _onOnDeviceLoadStateChanged() {
     if (!mounted) return;
-    final loading = sharedOnDeviceEngine.loadState.value == OnDeviceLoadState.loading;
+    final state = sharedOnDeviceEngine.loadState.value;
+    final prev = _lastOnDeviceState;
+    _lastOnDeviceState = state;
+    if (state == OnDeviceLoadState.loading || state == OnDeviceLoadState.ready) {
+      _onDeviceActivated = true;
+    }
     // 过程类瞬态提示（2026-10-31 后续治理）：加载中显瞬态 pill，就绪/failed 撤下；
     // failed 由请求级错误卡显式说明，不重复提示。
+    final loading = state == OnDeviceLoadState.loading;
     if (loading && !_loadingNoticeActive) {
       _loadingNoticeActive = true;
       _showTransientNotice(_kOnDeviceLoadingNote, false);
     } else if (!loading && _loadingNoticeActive) {
       _loadingNoticeActive = false;
+    }
+    // 关键转场补感知（此前完全静默）：
+    // ready → unloaded = 空闲驱逐/释放（TTL 3~5min 是常态）——不提示会让用户
+    // 以为端侧「悄悄没了」；loading → failed = 装载终态失败（错误卡之外补
+    // 一句去向，避免「端侧消失了且不知为何」）。
+    if (prev == OnDeviceLoadState.ready &&
+        state == OnDeviceLoadState.unloaded) {
+      _showTransientNotice('端侧模型已释放（空闲回收）——下次提问自动重载', false);
+    } else if (prev == OnDeviceLoadState.loading &&
+        state == OnDeviceLoadState.failed) {
+      _showTransientNotice('端侧暂不可用，本轮请求已按需转云端（详情见错误卡）', true);
     }
   }
 
@@ -1305,6 +1339,18 @@ class _ChatPageState extends State<ChatPage>
           // 图标（与流内「⚡ 已记录」胶囊同符号）；点击弹 BottomSheet 汇总面板
           // （_showRoundRecordSheet，纯展示不变）。
           actions: [
+            // 端侧运行态芯片（Fix3 治「端侧运行无感知」）：常驻展示引擎当前
+            // 状态（就绪 / 重载中 / 已释放 / 不可用），会话内激活过才出现。
+            // ListenableBuilder 挂 loadState 自管重建（不改 setState 心跳）。
+            ListenableBuilder(
+              listenable: sharedOnDeviceEngine.loadState,
+              builder: (context, _) {
+                if (!_onDeviceActivated) return const SizedBox.shrink();
+                return _OnDeviceStateChip(
+                  state: sharedOnDeviceEngine.loadState.value,
+                );
+              },
+            ),
             // A7（page-beautify P3）：命名与抽屉「记忆库」（全局）区分——
             // 原「会话记忆」vs「记忆看板」两套「记忆」用户必混。
             // P2-11（2026-10-22）：由「有胶囊才出现」改**常驻且恒可点**——
@@ -1441,6 +1487,54 @@ class _ChatPageState extends State<ChatPage>
           Navigator.of(this.context).pop();
         },
         child: child!,
+      ),
+    );
+  }
+}
+
+/// AppBar 端侧运行态芯片（Fix3 治「端侧运行无感知」）：状态圆点 + 文案 +
+/// tooltip 三通道（§6 双通道原则的颜色之外另有文本）——ready Emerald /
+/// loading 强调色 / failed 警示色 / unloaded 灰阶。
+///
+/// 感知落点：空闲回收（TTL 3~5min）、重载、失效全程可见——用户不再对
+/// 「端侧何时在跑 / 何时已失效 / 下次提问为何变慢」一无所知。
+class _OnDeviceStateChip extends StatelessWidget {
+  const _OnDeviceStateChip({required this.state});
+
+  final OnDeviceLoadState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = consoleTokens(context);
+    final (label, color) = switch (state) {
+      OnDeviceLoadState.ready => ('端侧就绪', t.l1Ok),
+      OnDeviceLoadState.loading => ('端侧重载中…', t.l2Accent),
+      OnDeviceLoadState.failed => ('端侧不可用', t.danger),
+      OnDeviceLoadState.unloaded => ('端侧已释放', t.terminalMuted),
+    };
+    final tooltip = switch (state) {
+      OnDeviceLoadState.ready => '端侧模型已加载，命中端侧路径时本地推理',
+      OnDeviceLoadState.loading => '端侧模型装载/重载中，完成后自动恢复本地推理',
+      OnDeviceLoadState.failed => '端侧装载失败，请求转云端（可在设置页重试）',
+      OnDeviceLoadState.unloaded => '端侧权重已释放（空闲回收）——下次提问自动重载',
+    };
+    return Tooltip(
+      message: tooltip,
+      child: Padding(
+        padding: const EdgeInsets.only(right: 4),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 6,
+              height: 6,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+            ),
+            const SizedBox(width: 4),
+            Text(label,
+                style: TextStyle(fontSize: Fsz.telemetrySm, color: color)),
+          ],
+        ),
       ),
     );
   }

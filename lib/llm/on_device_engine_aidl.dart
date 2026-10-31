@@ -1,11 +1,16 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 
+import '../core/storage/sequential_file_writer.dart';
 import 'llm.dart';
 import 'on_device_asset_manager.dart';
+import 'on_device_chat_prompt.dart' show kPromptInlineBinderLimitChars;
 import 'on_device_circuit_breaker.dart';
+import 'on_device_death_cause.dart';
 import 'on_device_detokenizer.dart';
 import 'on_device_engine.dart';
 import 'on_device_engine_binding.dart';
@@ -116,6 +121,20 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
   /// 60~90s）：超时 = 请求侧报错退出、**装载后台继续**（B-2 语义不变）。
   static const Duration _loadWaitPerRequest = Duration(seconds: 90);
 
+  /// 「引擎重启装载」预期态标志（Fix1 恢复语义去歧义）：`:engine` 拒绝同
+  /// 进程重载（单进程单装载纪律）→ 进程将自杀交 AMS 冷启动新进程装载。
+  /// 该过程伴随 `not_bound` / 连接超时，属**预期**中断——禁计入
+  /// fastKillStreak（否则「有意自杀」被误判为 LMK 快死，起跑水位抬到 5GB
+  /// 反把端侧重载彻底堵死：4B 机型常态 availMem 达不到 5GB → 端侧永久
+  /// 不可用）。越过重启阶段（拿到非 reloading 的装载应答）即清零——其后
+  /// 失败是真故障，快死棘轮恢复计数。
+  bool _expectRestart = false;
+
+  /// G2-3 排除法裁定缓存：进程死亡时读墓碑（flag + 崩溃栈）产出死因，
+  /// 装载退避的快死棘轮据此分类（替代 livedMs<30000 概率推断）；消费后清。
+  EngineDeathCause? _lastDeathCause;
+  DateTime? _lastDeathCauseAt;
+
   /// 显式加载端侧引擎（懒加载兜底：首次命中端侧路径由 [HybridCloudEngine]
   /// 触发）。装载跑在后台任务 [_runBackgroundLoad] 里（B-2：中断类失败分钟级
   /// 退避持续重试，**不随请求判死**）；本请求仅有界等待，超时抛**可重试**的
@@ -172,9 +191,19 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
   /// 5GB——等系统真实恢复（用户清后台/大应用退出）才再发起装载。
   Future<bool> _runBackgroundLoad(OnDeviceModelOption? model, int gen) async {
     _loadTaskError = null;
+    // 装载进行中即对用户可见（Fix3a）：此前**全仓无人写 loading 态**——
+    // UI 的「⏳ 端侧模型加载中…」指示器是死代码（永不触发），用户对
+    // 「端侧正在装载 / 回收后重载」全程无感知（端侧失效不可见）。
+    if (gen == _loadGen) _loadState.value = OnDeviceLoadState.loading;
     const backoffs = [3500, 8000, 12000, 30000, 60000]; // 封顶后恒 120s
     var attempt = 0;
     var fastKillStreak = 0;
+    // 评审修复 #3（2026-10-31）：重启态退避递增封顶——恒速 600/1500ms 轮询
+    // 在「冷启动后再撞 reloading」（资产损坏/驱动异常）下会形成无限快速
+    // 重试环（持续拉起 2GB 装载进程，电量/CPU 代价无界）。阶梯 = 杀等待
+    // 与冷启动密询共用递增表，装载就绪即复位。声明在函数顶（try/catch
+    // 双侧可见）。
+    var restartAttempt = 0;
     while (true) {
       if (gen != _loadGen) return false; // 代次作废（disable/新任务接管）
       final attemptStartedAt = DateTime.now();
@@ -241,6 +270,19 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
       // 模型装载：loadModel「受理即返回 assetMissing」（AIDL 契约——受理
         // 态轮询见 [_loadAndWaitReady]）。
         final loaded = await _loadAndWaitReady(target.path, modelId: modelId);
+        if (loaded == EngineStatus.reloading) {
+          // `:engine` 拒绝同进程重载（单进程单装载纪律：geniex destroy 是否完整
+          // 释放 ION/DSP PD 不可实证，同进程复载必死）→ 进程将自杀交 AMS 冷
+          // 启动新进程装载。**这是可重试中断，不是终态「模型未导入」**——
+          // 此前复用 assetMissing 终态序数，把「空闲回收后重载」报成「请重新
+          // 导入模型」（补救方向完全误导），且该轮直接判死不再重试 → 端侧
+          // 事实上永久失效。
+          throw const OnDeviceLoadException(
+            '端侧引擎重启装载中（请稍候）',
+            retryable: true,
+            expectRestart: true,
+          );
+        }
         if (loaded != EngineStatus.ready && loaded != EngineStatus.busy) {
           // 终态失败文案白话化（禁把内部枚举名抛给用户——真机曾见
           // 「模型装载失败（circuitBroken）」，用户看不懂也无从行动）。
@@ -258,6 +300,10 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
           debugPrint('[DEGRADE] drop shard page cache: $e');
         }
         _loadState.value = OnDeviceLoadState.ready;
+        // 重启装载完成 → 预期态清零（其后失败是真故障，快死棘轮恢复计数）。
+        _expectRestart = false;
+        fastKillStreak = 0;
+        restartAttempt = 0; // 评审修复 #3：就绪即复位递增退避
         // M1 影子对账（Expand：只留痕，不参与判定）。
         unawaited(_binding.reconcileTicket(OnDeviceLoadState.ready, 'post-load'));
         return true;
@@ -267,12 +313,43 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
           _loadState.value = OnDeviceLoadState.failed;
           return false; // 终态失败 / 代次作废：任务收口，下次 enable 重新决策
         }
-        // 中断类（进程被杀/未绑定/连接超时）：分钟级封顶退避后台持续重试
+        // 中断类（进程被杀/未绑定/连接超时/引擎重启装载）：后台持续重试
         //（B-2 核心：不随请求判死——23s 内三轮退避赢不过持续 mem-pressure）。
         final livedMs =
             DateTime.now().difference(attemptStartedAt).inMilliseconds;
-        fastKillStreak = livedMs < 30000 ? fastKillStreak + 1 : 0;
-        final delayMs = attempt < backoffs.length ? backoffs[attempt] : 120000;
+        // 快死棘轮：仅**非预期**中断计入——「引擎重启装载」窗口内的
+        // not_bound / 连接超时属冷启动常态（有意自杀），计入会把起跑水位抬到
+        // 5GB，反把端侧重载彻底堵死（4B 机型常态 availMem 达不到 5GB）。
+        // G2-3（墓碑 ADR）：死因优先走排除法裁定——进程死亡事件在场的
+        // 中断按墓碑分类（lmkSigkill 计入棘轮；hardCrash/runtimeTerminated/
+        // unknownColdStart 不计）；无死亡事件的中断（连接抖动等）保留
+        // livedMs<30000 启发式作兜底（墓碑面缺失时的保守近似）。
+        if (!e.expectRestart && !_expectRestart) {
+          final cause = _lastDeathCause;
+          DateTime? causeAt = _lastDeathCauseAt;
+          _lastDeathCause = null;
+          _lastDeathCauseAt = null;
+          final isFastKill = cause != null && causeAt != null
+              ? cause == EngineDeathCause.lmkSigkill &&
+                  causeAt.isAfter(attemptStartedAt)
+              : livedMs < 30000;
+          fastKillStreak = isFastKill ? fastKillStreak + 1 : 0;
+        }
+        _expectRestart = _expectRestart || e.expectRestart;
+        // 退避分档：重启装载走**短退避递增阶梯**（评审修复 #3——恒速 1.5s
+        // 会把「冷启动后再撞 reloading」变成无限快速重试环；首两拍保留
+        // 原密询节奏，其后 3s→6s→12s→30s 封顶），其余走分钟级封顶退避
+        //（对抗持续 mem-pressure 的快死风暴）。
+        int delayMs;
+        if (e.expectRestart || _expectRestart) {
+          const ladder = [600, 1500, 3000, 6000, 12000, 30000];
+          delayMs = ladder[
+              restartAttempt.clamp(0, ladder.length - 1)];
+          restartAttempt++;
+        } else {
+          delayMs =
+              (attempt < backoffs.length ? backoffs[attempt] : 120000);
+        }
         attempt++;
         await Future<void>.delayed(Duration(milliseconds: delayMs));
         //（起跑闸已统一覆盖重试水位，此处只做退避节流。）
@@ -292,6 +369,9 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
   /// loading 继续轮询，assetMissing 回归终态如实上抛）。
   Future<EngineStatus> _loadAndWaitReady(String modelDir, {String? modelId}) async {
     final loaded = await loadModel(modelDir, modelId: modelId);
+    // 越过「引擎重启装载」阶段（拿到非 reloading 的应答）→ 预期态清零：
+    // 其后的失败是真故障（快死棘轮恢复计数）。
+    if (loaded != EngineStatus.reloading) _expectRestart = false;
     if (loaded != EngineStatus.loading) return loaded;
     return pollLoadReady(probe: () async {
       try {
@@ -376,7 +456,9 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
         'modelDir': modelDir,
         'modelId': ?modelId,
       });
-      return engineStatusFromOrdinal(ordinal ?? 5);
+      // C5 修正：ordinal 缺失 = 通道异常非「硬件不支持」，禁 ?? 5 静默折算
+      // unsupportedDevice 终态（按未知序数收容，走票据对账）。
+      return engineStatusFromOrdinal(ordinal ?? EngineStatus.unknownNeedReconcile.index);
     } on PlatformException catch (e) {
       assert(() {
         // ignore: avoid_print
@@ -439,6 +521,21 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
         await ctrl.close();
         return;
       }
+      // F3 大载荷通道（2026-10-31 ADR）：超内联上限的 promptJson 落临时文件，
+      // Bundle 只携 promptFilePath 短元数据（§8 载荷上限立法——禁把长上下文
+      // 变成不可预测的 TransactionTooLargeException）。:engine 读后即删；
+      // 本侧在受理调用收口（成功/失败）后兜底清理。
+      String? promptFilePath;
+      Future<void> cleanupPromptFile() async {
+        final p = promptFilePath;
+        if (p == null) return;
+        promptFilePath = null;
+        try {
+          await File(p).delete();
+        } on FileSystemException {
+          // 已被 :engine 读取删除 = 正常路径，无需留痕。
+        }
+      }
       try {
         await _binding.bind(); // 幂等：已绑定 no-op
         // bind 竞态收口（超时 3s 快速失败切云；否则 not_bound 被误判驳回）。
@@ -482,15 +579,32 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
         // epoch 随请求下发——`:engine` 单入口内原子比对，拒绝走 SESSION_* 分码
         //（作废镜像 → 装载 → 重试一次），不再「先查后发」两步裸奔。
         var ticket = await _binding.fetchSessionTicket();
-        const maxAcceptAttempts = 2; // 初试 + 分码收敛重试各一次（禁无限循环）
-        for (var attempt = 1; attempt <= maxAcceptAttempts; attempt++) {
+        // F3 大载荷通道：超内联上限时在此落临时文件（声明与兜底清理在外层
+        // 作用域——受理失败路径同样要删）。
+        if (prompt.length > kPromptInlineBinderLimitChars) {
+          final tmp = await getTemporaryDirectory();
+          final f = File(
+              '${tmp.path}/on_device_prompt_${DateTime.now().microsecondsSinceEpoch}.json');
+          // R10 原子写纪律：业务域禁裸 writeAs*——临时文件同样走
+          // SequentialFileWriter（tmp+rename，崩溃无半文件）。
+          await SequentialFileWriter(f).write(prompt);
+          promptFilePath = f.path;
+        }
+        // 兜底清理：:engine 已在受理同步段读取并删除（评审修复——读取前移），
+        // 此处 finally 覆盖全路径（成功 = 已删 no-op；拒绝/超时 = 文件未被读，
+        // 本侧补删），不再依赖单个 catch 分支挂点。
+        try {
+          const maxAcceptAttempts = 2; // 初试 + 分码收敛重试各一次（禁无限循环）
+          for (var attempt = 1; attempt <= maxAcceptAttempts; attempt++) {
           try {
             // §2.9 有界超时：进程冻结（假死）下同步 AIDL 调用可能长时间不返回
             // 且无 DeadObject——受理调用 10s 上界（正常 <1s），超时按可自愈中断
             // 切云（禁把异步体挂死、请求侧零响应）。
             await _channel.invokeMethod<void>('startGenerate', {
               'requestId': requestId,
-              'promptJson': prompt,
+              // 文件通道在场时内联载荷置空（禁双载）。
+              'promptJson': promptFilePath == null ? prompt : '',
+              'promptFilePath': promptFilePath,
               'maxTokens': config.maxTokens,
               'temperature': config.temperature,
               'topP': config.topP,
@@ -499,10 +613,14 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
               //（禁本地猜测放行——I2）。
               'expectInstanceId': ticket?.instanceId ?? '',
               'expectSeq': ticket?.seq ?? -1,
+              // F2（2026-10-31 ADR）：资产身份随 epoch 复合键同发，:engine 同入口
+              // 原子比对（I4）——失配 SESSION_MODEL_MISMATCH 走装载后重试一次。
+              'expectModelId': ticket?.modelId ?? '',
             }).timeout(const Duration(seconds: 10));
             break; // 受理成功
           } on PlatformException catch (e) {
             final retryable = e.code == 'session_epoch_mismatch' ||
+                e.code == 'session_model_mismatch' ||
                 e.code == 'session_loading';
             if (!retryable || attempt == maxAcceptAttempts) rethrow;
             // 分码收敛（设计 §2.2 拒绝处置表）：作废镜像（置未知，非猜测）
@@ -520,6 +638,9 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
             }
             ticket = await _binding.fetchSessionTicket();
           }
+          }
+        } finally {
+          unawaited(cleanupPromptFile());
         }
         // 无进展看门狗（受理即武装）：长期无字节 = 数据面失联 → 切云（禁挂死）。
         _armWatchdog(requestId);
@@ -535,6 +656,7 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
           ctrl.addError(
               const EngineDiedException('service busy (strategy B) → cloud fallback'));
         } else if (e.code == 'session_epoch_mismatch' ||
+            e.code == 'session_model_mismatch' ||
             e.code == 'session_loading') {
           // M3 收口（设计 §2.2）：重试一次后仍撞分码 = 权威持续说「不可受理」
           // ——作废镜像（置未知，非猜测复位），按可自愈中断切云完成本轮；
@@ -562,20 +684,9 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
     return ctrl.stream;
   }
 
-  /// S2-5 熔断全链验证诊断面（PATCH：验证收口后退役）：经 AIDL 触发
-  /// `:engine` 模拟驱动 Panic（oneway）——真实信号链 onEngineDied →
-  /// [breaker].report(countable:true)，不要求真机炸真实驱动。
-  Future<void> diagPanic() async {
-    try {
-      await _channel.invokeMethod<void>('diagPanic');
-    } on PlatformException catch (e) {
-      assert(() {
-        // ignore: avoid_print
-        print('[DEGRADE] on_device diagPanic: ${e.code}');
-        return true;
-      }());
-    }
-  }
+  /// S2-5 熔断全链验证诊断面已退役（F5 清账 2026-10-31）：diagPanic PATCH
+  /// 四处（AIDL/Service/Bridge/Dart）单 commit 摘除——熔断链已由
+  /// kEngineInterruptCodes 消费路径与真机回归钉承载，不再保留模拟炸驱动口。
 
   /// 熔断器状态观测（诊断用）：isBroken / inCooldown 快照。
   Future<String> diagBreakerState() async =>
@@ -638,7 +749,7 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
   /// 同刻至多一个活跃生成（§6.6），喂给全部活跃流（幂等防御同旧口径）。
   void handleDataBatch(Uint8List batch) => _onDataBatch(batch);
 
-  final int _batchDiagCount = 0;
+  int _batchDiagCount = 0;
   int _recvBytes = 0;
   bool _recvDiagDone = false;
 
@@ -657,6 +768,7 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
     // 槽下恒应为 1，>1 即 stale 流残留（cancel 未清 _active / onFinished 丢失），
     // stale 解码器先抛异常会中断 forEach 饿死活流。
     if (_batchDiagCount < 6 && _active.length != 1) {
+      _batchDiagCount++; // C2 修正：原 `final int = 0` 恒真，每批必打（洪泛隐患）
       // ignore: avoid_print
       print('[diag] batch #$_batchDiagCount actives=${_active.keys.toList()} '
           'len=${batch.length} head=${batch.take(16).map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}');
@@ -772,10 +884,32 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
   void _onProcessDied() {
     // 外部处决（SIGKILL/LMK）→ 不计入熔断，仅维护 500ms 冷却窗口（§6.5 v2.6）。
     unawaited(breaker.report(countable: false));
+    // G2-3 排除法裁定（墓碑 ADR）：读墓碑证据产出死因——快死棘轮从此按
+    // 分类消费（替代 livedMs<30000 概率推断）。裁定异步落缓存；墓碑面
+    // 不可用 = unknownColdStart（非快死侧，保守）。availMem 探测仅留痕
+    // 不参与判定（死亡后水位回升竞态，见 classifier 注释）。
+    unawaited(() async {
+      final support = await getApplicationSupportDirectory();
+      final evidence =
+          await readTombstoneEvidence('${support.path}/tombstone');
+      final cause = classifyEngineDeath(evidence);
+      _lastDeathCause = cause;
+      _lastDeathCauseAt = DateTime.now();
+      final probe = await ChannelLlmEngine().deviceProbe();
+      debugPrint('[on-device] death cause=$cause '
+          'flag=${evidence.flagState} stack=${evidence.hasCrashStack} '
+          'availMem=${probe?.availRamBytes}');
+    }());
     // M2 投影作废（设计 §2.4 I2，替代原「事件复位」PATCH）：通道中断 = 票据
     // 不可信 → 镜像置未知（新进程 instanceId 必变，对账天然不命中）。
     _binding.sessionMirror.invalidate();
-    _loadState.value = OnDeviceLoadState.unloaded;
+    // 装载任务在途时**不**复位 loadState：`:engine` 自杀重启是「引擎重启
+    // 装载」的正常环节（Fix1），复位会把「装载中」指示打断成「未启用」——
+    // 用户侧呈现为「端侧莫名消失又出现」。装载任务自身收口时再置
+    // ready / failed。
+    if (_loadTask == null) {
+      _loadState.value = OnDeviceLoadState.unloaded;
+    }
     _failAllActive(const EngineDiedException('process killed externally'));
   }
 

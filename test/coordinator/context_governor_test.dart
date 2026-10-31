@@ -1,50 +1,29 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/coordinator/context_governor.dart';
 import 'package:goodhub/llm/cloud/cloud_llm.dart';
-import 'package:goodhub/llm/llm.dart';
+import 'package:goodhub/llm/on_device_capability.dart';
 
-class _FakeOnDeviceEngine implements OnDeviceLlmEngine {
-  _FakeOnDeviceEngine(this.output);
+class _FakeCapability implements OnDeviceCapabilityService {
+  _FakeCapability(this.output);
 
   final String? output;
-  String? lastPrompt;
-  String? lastSystem;
+  String? lastInstruction;
+  String? lastInput;
 
   @override
-  Future<String?> unavailableReasonAsync() async => unavailableReason;
-
-  @override
-  String get name => 'fake';
-
-  @override
-  Future<bool> get isAvailable async => true;
-
-  @override
-  String? get unavailableReason => null;
-
-  @override
-  Future<String?> generate(
-    String prompt, {
-    String? system,
-    int maxTokens = 512,
-    LlmResponseFormat? responseFormat,
+  Future<String> complete({
+    required String instruction,
+    required String input,
+    OnDevicePrimitiveConfig config = const OnDevicePrimitiveConfig(),
+    PrimitiveFallbackPolicy fallback = PrimitiveFallbackPolicy.failFast,
+    String? traceId,
   }) async {
-    lastPrompt = prompt;
-    lastSystem = system;
-    return output;
+    lastInstruction = instruction;
+    lastInput = input;
+    final out = output;
+    if (out == null) throw const OnDevicePrimitiveException('fake unavailable');
+    return out;
   }
-
-  @override
-  Future<bool> cancelActive() async => false;
-
-  @override
-  Future<bool> warmup() async => false;
-
-  @override
-  Future<void> release() async {}
-
-  @override
-  Future<bool> isWarmed() async => false;
 }
 
 AssistantMessage _assistantOf(String id) => AssistantMessage(
@@ -110,21 +89,22 @@ void main() {
     expect(trimMessagesToWindow(msgs, -1).length, msgs.length);
   });
 
-  test('端侧摘要器：产出裁空白透传，prompt/system 组装正确', () async {
-    final engine = _FakeOnDeviceEngine(' 要点摘要 ');
-    final s = OnDeviceResultSummarizer(engine);
+  test('端侧摘要器：产出裁空白透传，instruction/input 组装正确', () async {
+    final cap = _FakeCapability(' 要点摘要 ');
+    final s = OnDeviceResultSummarizer(cap);
     expect(await s.call('原始结果'), '要点摘要');
-    expect(engine.lastPrompt, '原始结果');
-    expect(engine.lastSystem, contains('摘要'));
+    expect(cap.lastInput, '原始结果');
+    expect(cap.lastInstruction, contains('摘要'));
+    expect(cap.lastInstruction, contains('工具结果摘要器'));
   });
 
-  test('端侧摘要器：空产出 / 不可用翻译为 SummarizeException（禁静默放行）', () async {
+  test('端侧摘要器：原语失败 / 空产出翻译为 SummarizeException（禁静默放行）', () async {
     await expectLater(
-      OnDeviceResultSummarizer(_FakeOnDeviceEngine(null)).call('原文'),
+      OnDeviceResultSummarizer(_FakeCapability(null)).call('原文'),
       throwsA(isA<SummarizeException>()),
     );
     await expectLater(
-      OnDeviceResultSummarizer(_FakeOnDeviceEngine('  ')).call('原文'),
+      OnDeviceResultSummarizer(_FakeCapability('  ')).call('原文'),
       throwsA(isA<SummarizeException>()),
     );
   });

@@ -13,7 +13,12 @@ target_include_directories(gdw_dl_api PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_library(gdw SHARED engine_data_worker.cpp)
 
+# G2-2 墓碑·崩溃栈捕获（:engine 进程侧）：与 libgdw 职责分离——libgdw =
+# 主进程数据面消费；本库 = :engine 进程 SIGSEGV/SIGABRT/SIGBUS 落盘。
+add_library(engine_tombstone SHARED engine_tombstone.cpp)
+
 target_compile_options(gdw PRIVATE -Wall -Wextra)
+target_compile_options(engine_tombstone PRIVATE -Wall -Wextra)
 target_include_directories(gdw PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # Dart DL API 头文件闭包（vendor 自 flutter dart-sdk/include，含
 # dart_api.h/dart_native_api.h/dart_version.h——升级 Flutter 时同步刷新）。
@@ -21,3 +26,4 @@ target_include_directories(gdw PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/dart_api/..)
 
 find_library(log-lib log)
 target_link_libraries(gdw PRIVATE gdw_dl_api ${log-lib})
+target_link_libraries(engine_tombstone PRIVATE ${log-lib})

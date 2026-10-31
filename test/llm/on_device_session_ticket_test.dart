@@ -57,9 +57,9 @@ void main() {
           isNull);
     });
 
-    test('序数越界 → unsupportedDevice（防跨端漂移崩溃）', () {
+    test('序数越界 → unknownNeedReconcile（I2 未知≠终态，禁投毒 unsupportedDevice）', () {
       final t = SessionTicket.tryParse(ticketMap(status: 99));
-      expect(t?.status, EngineStatus.unsupportedDevice);
+      expect(t?.status, EngineStatus.unknownNeedReconcile);
     });
   });
 

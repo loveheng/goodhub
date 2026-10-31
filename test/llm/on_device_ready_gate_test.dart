@@ -40,10 +40,10 @@ void main() {
       expect(await gate.waitReady(), EngineStatus.assetMissing);
     });
 
-    test('越界序数折算 unsupportedDevice（防跨端漂移崩溃）', () async {
+    test('越界序数收容 unknownNeedReconcile（I2 未知≠终态，禁投毒 unsupportedDevice）', () async {
       final gate = EngineReadyGate();
       gate.noteReady(99);
-      expect(await gate.waitReady(), EngineStatus.unsupportedDevice);
+      expect(await gate.waitReady(), EngineStatus.unknownNeedReconcile);
     });
   });
 

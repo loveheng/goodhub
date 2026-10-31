@@ -35,7 +35,20 @@ String sanitizeChatMLControlTokens(String text) =>
 ///
 /// 端侧小模型上下文窗口小：长历史既拖慢首 token，又抬升复读概率；且预算
 /// 裁剪让「最近轮次」天然优先（保留与当前提问最相关的上下文）。
+///
+/// **F3 解耦立法（2026-10-31 ADR）**：本预算是 **2B 模型 KV-Cache 推理窗口
+/// 约束**，不是 Binder 迁就——通道升级（大载荷临时文件通道见
+/// [kPromptInlineBinderLimitChars]）不解锁模型窗口，阶梯截断照常生效。
 const int kOnDeviceHistoryCharBudget = 1200;
+
+/// promptJson 走 Binder 事务参数的字符内联上限（F3 传输约束）。
+///
+/// 超限 → Dart 侧落临时文件、`promptFilePath` 随 Bundle 传短元数据，:engine
+/// 读后即删（两侧都不留持久化痕迹）。上限取 60000 字符（最坏 UTF-8 CJK
+/// 3B/字符 ≈ 180KB，对 Binder 事务共享缓冲区 ~1MB 保持 >5x 余量）；与
+/// [kOnDeviceHistoryCharBudget] 正交——本值只解除**传输**天花板，不放松
+/// **推理**窗口。
+const int kPromptInlineBinderLimitChars = 60000;
 
 /// 构造端侧对话消息序列（JSON 数组字符串，跨 AIDL 契约 = promptJson）。
 ///

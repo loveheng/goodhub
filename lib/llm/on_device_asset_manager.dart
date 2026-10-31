@@ -98,7 +98,11 @@ class OnDeviceAssetManager {
       if (version.isEmpty) return dirName;
       final digest = version.length > 12 ? version.substring(0, 12) : version;
       return '$dirName@$digest';
-    } catch (_) {
+    } catch (e) {
+      // C6 修正：资产身份是 I3 对账的锚点，降级必留痕（禁静默）——降级值
+      // 仍可用（目录名回退），但任何下游身份对账异常都需能归因到这里。
+      // ignore: avoid_print
+      print('[DEGRADE] modelIdOf fallback to dirName: $e');
       return dirName;
     }
   }

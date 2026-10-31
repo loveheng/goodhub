@@ -12,7 +12,6 @@ import 'app/task_consume_bootstrap.dart';
 import 'core/app_log.dart';
 import 'coordinator/ref_store.dart';
 import 'task/task_consume_ledger.dart';
-import 'llm/on_device_engine.dart';
 import 'llm/on_device_bench.dart';
 import 'llm/on_device_engine_aidl.dart';
 import 'llm/on_device_asset_manager.dart';
@@ -21,11 +20,6 @@ import 'sandbox/memory_store.dart';
 import 'ui/chat_page.dart';
 import 'ui/navigator_key.dart';
 import 'ui/tokens/app_theme.dart';
-
-/// S2-5 熔断全链诊断触发（测量期构建专用，PATCH 验证收口后退役）：
-///   flutter run/build --dart-define=ON_DEVICE_BREAKER_DIAG=true
-const bool kOnDeviceBreakerDiag =
-    bool.fromEnvironment('ON_DEVICE_BREAKER_DIAG', defaultValue: false);
 
 /// S2-5 一次性熔断复位触发（测量期构建专用，PATCH 验证收口后退役）：
 ///   --dart-define=ON_DEVICE_BREAKER_RESET=true
@@ -136,35 +130,6 @@ class _GoodHubAppState extends State<GoodHubApp> with WidgetsBindingObserver {
         // 就绪后跑测量（enable 已保证 ready，无需额外就绪轮询）。
         await engine.enable();
         await OnDeviceBench.run();
-      }
-      if (kOnDeviceBreakerDiag) {
-        // S2-5 熔断全链诊断：先确保装载，再跑 diagPanic 序列。
-        await engine.enable();
-        // 序列：① diagPanic×2 → L1 触发 → generate 闸门快速失败；
-        // ② 再 diagPanic×2 → 当天第 2 次 L1 → L2 持久化 24h 锁。
-        debugPrint('[on-device-breaker-diag] start state=${await engine.diagBreakerState()}');
-        await engine.diagPanic();
-        await Future<void>.delayed(const Duration(milliseconds: 300));
-        await engine.diagPanic();
-        await Future<void>.delayed(const Duration(milliseconds: 300));
-        debugPrint('[on-device-breaker-diag] after L1 pair state=${await engine.diagBreakerState()}');
-        try {
-          await for (final _ in sharedOnDeviceEngine.generate(
-            requestId: 'diag-gate-${DateTime.now().microsecondsSinceEpoch}',
-            prompt: '熔断闸门探测',
-            config: const GenerationConfig(maxTokens: 4),
-          )) {
-            debugPrint('[on-device-breaker-diag] gate: UNEXPECTED token (breaker NOT gating!)');
-          }
-          debugPrint('[on-device-breaker-diag] gate: stream closed without error (UNEXPECTED)');
-        } catch (e) {
-          debugPrint('[on-device-breaker-diag] gate: fast-fail OK -> $e');
-        }
-        await engine.diagPanic();
-        await Future<void>.delayed(const Duration(milliseconds: 300));
-        await engine.diagPanic();
-        await Future<void>.delayed(const Duration(milliseconds: 300));
-        debugPrint('[on-device-breaker-diag] after 2nd L1 pair state=${await engine.diagBreakerState()}');
       }
     } catch (e) {
       debugPrint('[DEGRADE] on-device bootstrap: $e');

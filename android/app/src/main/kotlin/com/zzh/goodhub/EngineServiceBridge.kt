@@ -197,6 +197,7 @@ object EngineServiceBridge {
                                 params,
                                 args["expectInstanceId"] as? String,
                                 (args["expectSeq"] as? Number)?.toLong() ?: -1L,
+                                args["expectModelId"] as? String,
                             )
                             result.success(null)
                         } catch (e: Exception) {
@@ -211,6 +212,10 @@ object EngineServiceBridge {
                             when {
                                 msg.startsWith("SESSION_EPOCH_MISMATCH") ->
                                     result.error("session_epoch_mismatch", msg, null)
+                                msg.startsWith("SESSION_MODEL_MISMATCH") ->
+                                    // F2（2026-10-31 ADR）：资产身份失配分码——主进程
+                                    // 作废镜像走重装（S2 机制化收口，禁再靠 epoch 兜底）。
+                                    result.error("session_model_mismatch", msg, null)
                                 msg.startsWith("SESSION_LOADING") ->
                                     result.error("session_loading", msg, null)
                                 msg.startsWith(ServiceBusyException.MESSAGE_PREFIX) ->
@@ -291,17 +296,7 @@ object EngineServiceBridge {
                     result.success(stat.availableBytes)
                 }
                 "deviceFingerprint" -> result.success(Build.FINGERPRINT)
-                // S2-5 熔断验证（PATCH：诊断接口）：经 AIDL 触发 :engine 侧
-                // 模拟驱动 Panic（oneway，不等待远端回执）。
-                "diagPanic" -> {
-                    val svc = engine
-                    if (svc == null) {
-                        result.error("not_bound", ":engine not connected", null)
-                    } else {
-                        svc.diagPanic()
-                        result.success(null)
-                    }
-                }
+                // S2-5 熔断验证 diagPanic PATCH 已退役（F5 清账 2026-10-31）。
                 // S3-2 FGS 前台预挂（§6.2 v2.7）：前台态闸在此判定——前台才
                 // 转发 :engine startForeground(dataSync)；已退后台则跳过留痕
                 //（严禁后台补救，此处跳过 = 放弃本轮 OEM 冻结防御，不阻断生成）。
@@ -423,14 +418,61 @@ object EngineServiceBridge {
     }
 
     fun bind(context: Context) {
-        if (connection != null) return
-        val conn = object : ServiceConnection {
+        // Fix2 兜底重绑：幂等判据 = **活引擎**（engine != null），非「是否发起
+        // 过绑定」——旧判据（connection != null）在 :engine 进程被外部处决 /
+        // 自杀重启（Fix1 重载纪律）后恒为真 → bind() 永久 no-op → 引擎再也
+        // 接不回来（恢复链路只剩 AMS 自动重启一条腿，其退避可达 ~11min），
+        // 端侧静默永久失效、请求静默切云。断连后本方法即时重新发起
+        // bindService；连接对象缓存复用（重绑复用同一 ServiceConnection，
+        // Android 按 (Context, connection) 复用 ServiceDispatcher，不产生
+        // 第二套回调）。
+        if (engine != null) return
+        if (connection != null) {
+            reissueBind(context)
+            return
+        }
+        connection = newServiceConnection()
+        reissueBind(context)
+    }
+
+    /// 重绑执行体（Fix2）：对缓存连接重新发起 bindService。
+    private fun reissueBind(context: Context) {
+        val conn = connection ?: return
+        // 提权旗标（S2-5 对账实证 2026-10-30）：BIND_IMPORTANT 让 :engine 重要性
+        // 不低于客户端（跟随主进程 adj 0，装载风暴中同为最后击杀档）。
+        // **禁加 BIND_ABOVE_CLIENT**——真机实证它把客户端打上 hasAboveClient
+        // 标记，ColorOS 将前台主进程 adj 由 curRaw=0 压成 VISIBLE(100)，装载
+        // 风暴中主进程先被 LMK 击杀（=用户感知闪退），:engine 随失联跌回
+        // cached(905) 双双被杀；demo（无任何绑定）同场景 adj=0 存活。
+        val ok = try {
+            context.bindService(
+                Intent(context, EngineService::class.java),
+                conn,
+                Context.BIND_AUTO_CREATE or Context.BIND_IMPORTANT,
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "[DEGRADE] bindService :engine threw: $e")
+            false
+        }
+        if (!ok) {
+            Log.e(TAG, "[DEGRADE] bindService :engine failed")
+        }
+    }
+
+    /// 连接对象工厂（Fix2）：ServiceConnection 创建一次缓存复用——重绑不重建
+    /// 回调面（多次 onServiceConnected 幂等：重设 engine 代理 + 重跑 initEngine）。
+    private fun newServiceConnection(): ServiceConnection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName, binder: IBinder) {
                 val svc = IOnDeviceEngineService.Stub.asInterface(binder)
                 engine = svc
                 Log.d(TAG, "engine service connected (AIDL proxy)")
                 try {
                     val status = svc.initEngine(Bundle(), object : IOnDeviceEngineListener.Stub() {
+                        override fun onLoadPhaseChanged(phase: Int) {
+                            // F4 装载阶段活体打点：诊断面上行（阶段推进 = 活体信号）。
+                            invokeOnMain("onLoadPhaseChanged", mapOf("phase" to phase))
+                        }
+
                         override fun onEngineDied() {
                             Log.w(TAG, "[DEGRADE] engine reported onEngineDied: cloud fallback wiring pending S1-5")
                             invokeOnMain("onEngineDied", null)
@@ -506,25 +548,12 @@ object EngineServiceBridge {
                 stopDataPlane()
                 Log.w(TAG, "[DEGRADE] engine process died: cloud fallback wiring pending S1-5")
                 invokeOnMain("onProcessDied", null)
+                // Fix2：**不在此清 connection**——连接对象须保留供 bind() 重绑
+                // 复用（断连 ≠ 客户端解绑，ServiceDispatcher 仍在）；重绑判据
+                // 已由 engine != null 承担。清了它会让下一次 bind() 走全新连接
+                // （多一套回调，且 unbind 收口对不上）。
             }
         }
-        // 提权旗标（S2-5 对账实证 2026-10-30）：BIND_IMPORTANT 让 :engine 重要性
-        // 不低于客户端（跟随主进程 adj 0，装载风暴中同为最后击杀档）。
-        // **禁加 BIND_ABOVE_CLIENT**——真机实证它把客户端打上 hasAboveClient
-        // 标记，ColorOS 将前台主进程 adj 由 curRaw=0 压成 VISIBLE(100)，装载
-        // 风暴中主进程先被 LMK 击杀（=用户感知闪退），:engine 随失联跌回
-        // cached(905) 双双被杀；demo（无任何绑定）同场景 adj=0 存活。
-        val ok = context.bindService(
-            Intent(context, EngineService::class.java),
-            conn,
-            Context.BIND_AUTO_CREATE or Context.BIND_IMPORTANT,
-        )
-        if (ok) {
-            connection = conn
-        } else {
-            Log.e(TAG, "[DEGRADE] bindService :engine failed")
-        }
-    }
 
     fun unbind(context: Context) {
         // S3-6：解绑前先停数据面消费 worker（fd/映射属 :engine 数据面）。

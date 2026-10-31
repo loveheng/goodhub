@@ -115,6 +115,10 @@ class OnDeviceEngineBinding {
   /// EngineDied（进程死亡），归因不丢、切云决策可分。
   void Function(String requestId)? onEvictionInterrupted;
 
+  /// F4 装载阶段活体打点（AIDL onLoadPhaseChanged）：阶段推进 = 活体信号
+  /// （0=PARSING / 1=ALLOCATING，常量见 listener 契约）。诊断面，不参与路由。
+  void Function(int phase)? onLoadPhaseChanged;
+
   OnDeviceEngineBinding() {
     // handler 注册不在此处：纯 Dart 测试环境（无 WidgetsFlutterBinding）构造
     // 即触发 setMethodCallHandler 断言。延迟到首次 [bind]（见 _ensureHandler）
@@ -134,6 +138,12 @@ class OnDeviceEngineBinding {
           onProcessDied?.call();
         case 'onIpcDeadlock':
           onIpcDeadlock?.call();
+        case 'onLoadPhaseChanged':
+          final phase = (call.arguments as Map<Object?, Object?>?)?['phase'];
+          if (phase is int) {
+            debugPrint('[on-device] load phase -> $phase');
+            onLoadPhaseChanged?.call(phase);
+          }
         case 'onGenerateFinished':
           final args = call.arguments as Map;
           onGenerateFinished?.call(

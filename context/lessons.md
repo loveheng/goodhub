@@ -84,6 +84,8 @@ last-merge: 2026-10-24
 
 ## 待归并（inbox）
 
+- [ui-stream-boundary] 第二轮回答黏进第一轮气泡（UI 完全无气泡而引擎产出正常入历史） ➔ ChatStatusController._activeTextEntry 跨 Run 共享且收尾不断开（设计修正：先做手工 breakTextStream 双保险=同一知识写两遍，被用户否） ➔ 最终设计=Run 令牌所有权：beginRun 发新令牌、归属判定内建于 appendStreamText/_onStreamFlush、跨 Run 追加在状态机层面不可能，调用方零纪律；排查教训：引擎日志正常时尽早向用户取证 UI 具体表现（无气泡 vs 空内容 vs 答非所问），三方证据分叉点即定位点；回归钉：test/ui 气泡边界 8 例 (Ref: on-device) (Ref: on-device)
+
 - [ui-stream-boundary] 现象: 第二轮回答『完全没有气泡』而引擎侧每轮产出正常且入历史 ➔ 根因: ChatStatusController._activeTextEntry 跨 Run 共享、Run 收尾不断开，第二轮回答 append 进上一轮气泡（用户视角=新消息零回应） ➔ 处置: **不变量进状态机，不放散落调用点**——Run 归属令牌（controller 发号）+ 块级条目入轨即关段（边界按轨道结构派生），页面层零纪律；「收尾/起步各补一处 breakTextStream」式双保险被否决（纪律外移=纪律缺失：异常/中止/重试/迟到帧等路径必漏；动作不可断言；断流会把迟到帧冲成孤立气泡致顺序倒挂）；排查教训: 引擎日志正常时尽早向用户取证 UI 具体表现（无气泡 vs 空内容 vs 答非所问），三方证据（引擎产出/历史入库/UI 表现）分叉点即定位点 ➔ 回归: test/ui/chat_status_controller_stream_test.dart（跨 Run 另起气泡 + 残余保序 + 块级条目关段 + 收尾/快照刷盘） (Ref: on-device)
 
 - [sdk-template] 多轮复读环（复述首轮回答）手写 ChatML 复刻模板两刀未根治 ➔ 官方文档明示 geniex native 管线把 prompt 当已模板化文本，raw/近似模板=退化输出；官方姿势=applyChatTemplate(ChatMessage[],tools,enableThinking,addGenerationPrompt).formattedText 喂 generateStreamFlow ➔ 模板渲染归还 SDK（资产内嵌 tokenizer 模板单源），手写模板降级 fallback；回归钉：ChatMLComposerTest parseMessages 2 例 (Ref: on-device) (Ref: on-device)

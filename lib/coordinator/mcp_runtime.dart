@@ -38,6 +38,9 @@ import 'skill_registry.dart';
 import 'tool_breaker.dart' show BlockDelegate;
 import 'tool_router.dart';
 import '../core/errors/mcp_error.dart';
+import 'context_governor.dart' show OnDeviceResultSummarizer;
+import '../llm/on_device_capability.dart';
+import '../llm/on_device_engine_aidl.dart' show sharedOnDeviceEngine;
 import '../core/notice_category.dart';
 import '../llm/cloud/cloud_llm.dart'
     show CloudChatMessage, CloudLlmEngine, CloudToolSchema;
@@ -765,6 +768,12 @@ class McpRuntime {
       executor: executor,
       blockDelegate: delegates.blockDelegate,
       refStore: refStore,
+      // F1 生产链摘要器接线（2026-10-31）：>1000T 工具结果回填前走端侧原语
+      // 摘要；端侧未就绪/失败 failFast → SummarizeException → agent_loop E1
+      // 兜底（保留原文 + [DEGRADE]），原语不触发 2GB 装载（懒加载边界）。
+      summarizer: OnDeviceResultSummarizer(
+          AidlOnDeviceCapabilityService(sharedOnDeviceEngine))
+          .call,
       refServerId: router.serverIds.isNotEmpty
           ? router.serverIds.first
           : 'goodshare',

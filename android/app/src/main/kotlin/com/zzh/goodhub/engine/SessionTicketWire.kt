@@ -61,6 +61,10 @@ data class GenerationParams(
     val stopTokenIds: IntArray,
     /** 前台态由主进程判定注入（S3-3 抢占语义 §6.6）。 */
     val foreground: Boolean,
+    /** F3 大载荷通道（2026-10-31 ADR）：超内联上限的 promptJson 落临时文件，
+     * 此处携路径（Binder 只传短元数据——§8 载荷上限立法）。:engine 读取后
+     * 即删，双方都不留存。null/空 = 内联 promptJson 口径。 */
+    val promptFilePath: String? = null,
 ) {
     fun toBundle(): Bundle = Bundle().apply {
         putInt(KEY_MAX_TOKENS, maxTokens)
@@ -68,6 +72,7 @@ data class GenerationParams(
         putDouble(KEY_TOP_P, topP)
         putIntArray(KEY_STOP_TOKEN_IDS, stopTokenIds)
         putBoolean(KEY_FOREGROUND, foreground)
+        if (!promptFilePath.isNullOrEmpty()) putString(KEY_PROMPT_FILE_PATH, promptFilePath)
     }
 
     override fun equals(other: Any?): Boolean = other is GenerationParams &&
@@ -85,6 +90,7 @@ data class GenerationParams(
         const val KEY_TOP_P = "topP"
         const val KEY_STOP_TOKEN_IDS = "stopTokenIds"
         const val KEY_FOREGROUND = "foreground"
+        const val KEY_PROMPT_FILE_PATH = "promptFilePath"
 
         const val DEFAULT_MAX_TOKENS = 512
         const val DEFAULT_TEMPERATURE = 0.7
@@ -107,6 +113,7 @@ data class GenerationParams(
             stopTokenIds = (args["stopTokenIds"] as? List<*>)
                 ?.map { (it as Number).toInt() }?.toIntArray() ?: IntArray(0),
             foreground = foreground,
+            promptFilePath = args["promptFilePath"] as? String,
         )
     }
 }
