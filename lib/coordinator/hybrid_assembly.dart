@@ -13,6 +13,7 @@ library;
 
 import 'package:flutter/foundation.dart';
 
+import '../core/notice_category.dart';
 import '../llm/cloud/byok_store.dart';
 import '../llm/cloud/cloud_llm.dart';
 import '../llm/device_tier.dart';
@@ -61,7 +62,7 @@ Future<HybridCloudEngine> assembleDefaultHybridEngine({
   DegradationController? controller,
   PiiFenceDelegate? piiFenceDelegate,
   Future<String> Function(String)? maskOverride,
-  void Function(String message, {bool danger})? onNote,
+  void Function(String message, {bool danger, TrackNoticeCategory category})? onNote,
   ByokStore? byokStoreOverride,
 }) async {
   final ctrl = controller ?? DegradationController();
@@ -92,10 +93,11 @@ Future<HybridCloudEngine> assembleDefaultHybridEngine({
     // DEGRADE: BYOK 配置读取失败不阻断任务循环——云端缺位走端侧/可观测报错。
     debugPrint('[DEGRADE] byok-assembly: $e');
     // P2-1：失败不再只留痕——经 note 通道告知用户「本次为什么只有端侧」。
-    onNote?.call('⚠ 云端模型配置读取失败，本次任务仅走端侧路径：$e', danger: true);
+    onNote?.call('⚠ 云端模型配置读取失败，本次任务仅走端侧路径：$e', danger: true, category: TrackNoticeCategory.fact);
   }
-  // §16 用户授权覆盖层（设置页）：读取用户对门禁三维度与偏好/强行的覆盖，
-  // 注入门禁裁决与路由——门禁从「硬关闸」变为「可配置 + 用户授权覆盖」。
+  // §16 用户覆盖层（设置页）：读取偏好优先端侧。路由门禁层已降级 advisory
+  //（2026-10-31 裁决，见 HybridCloudEngine），「紧急强行启用」与 ignore*
+  // 放宽开关随拦截语义一并退役。
   final gateOverride = await OnDeviceGateOverride.read();
 
   return HybridCloudEngine(
@@ -111,33 +113,28 @@ Future<HybridCloudEngine> assembleDefaultHybridEngine({
     // 单发不产工具调用，元工具静默缺席 = 离线降级的可接受语义）；出现任何
     // MCP 服务端工具仍走云端编排（§2 硬约束本意不变）。
     deviceToolPolicy: deviceToolFaceAllow,
-    // 用户启用覆盖：偏好优先端侧 / 紧急强行启用（bypass 全部门禁）。
+    // 用户启用覆盖：偏好优先端侧。
     preferOnDevice: gateOverride.preferOnDevice,
     // 场景 A/B/C 切云语义拆分：前台态探针（场景 B 后台冷装载 → 不切云、打
     // PendingForegroundLoad 暂存等前台；场景 C 前台冷装载 → 加载态 + 超时保护
     // → 终态显式失败 / 可自愈类按需降级云端）。探针异常按后台保守处理。
     isForegroundProbe: () => sharedOnDeviceEngine.isForeground(),
-    forceOnDevice: gateOverride.forceOnDevice,
-    // §16 设备分级门禁（初值实时探针）：RAM/电量/省电/温控不达标时端侧关闸
-    //（探针走 goodhub/llm 设备信息通道，非引擎面——保留旧桥仅用探针）。
+    // §16 设备分级门禁（advisory，2026-10-31 裁决）：RAM/电量/省电/温控判定
+    // 结果只留痕提示，不拦截路由（探针走 goodhub/llm 设备信息通道）。
     // S2 正式接线：Genie 常驻会话就绪（权重已驻留 ~1.9GB）时豁免可用 RAM
-    // 门槛——冷加载门槛对驻留态失义（自锁：常驻自己压低 availMem）；极端
-    // OOM 由 :engine 进程隔离 + EngineDiedException 切云兜底。
-    // 用户覆盖位：各 ignore 开关跳过对应物理门槛（仅用户显式开启时放宽）；
-    // RAM 总量 6GB 硬件准入不受 ignore 影响（真弱设备 1.5B 也跑不动），
-    // 绕过它需 forceOnDevice（紧急强行）。
+    // 门槛——冷加载门槛对驻留态失义（自锁：常驻自己压低 availMem）。
     deviceTierGate: () async {
       final probe = await ChannelLlmEngine().deviceProbe();
       if (probe == null) {
         return (pass: true, reason: '探针不可用放行（非 Android/未实现）');
       }
-      final status = await sharedOnDeviceEngine.checkStatus();
+      // M4：票据面权威状态（checkStatus 轮询面已退役）；未知（null）按
+      // 非驻留处理（保守口径：冷加载门槛生效）。
+      final status = await sharedOnDeviceEngine.authoritativeStatus();
       return DeviceTierGate.check(
         probe,
-        sessionResident: status == EngineStatus.ready || status == EngineStatus.busy,
-        ignoreAvailRam: gateOverride.ignoreAvailRam,
-        ignoreBattery: gateOverride.ignoreBattery,
-        ignoreThermal: gateOverride.ignoreThermal,
+        sessionResident:
+            status == EngineStatus.ready || status == EngineStatus.busy,
       );
     },
   );

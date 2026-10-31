@@ -24,6 +24,11 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(OnDeviceEngineBinding.channel, (call) async {
       calls.add(call.method);
+      // M2/M3 闸门：checkSession 回就绪票据，gate 直接放行到 startGenerate
+      //（否则交装载链路，测试环境无模型终态失败，到不了时序断言面）。
+      if (call.method == 'checkSession') {
+        return {'instanceId': 'inst-test', 'seq': 1, 'status': 0};
+      }
       return null;
     });
   });

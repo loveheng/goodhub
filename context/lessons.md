@@ -84,6 +84,26 @@ last-merge: 2026-10-24
 
 ## 待归并（inbox）
 
+- [ui-stream-boundary] 现象: 第二轮回答『完全没有气泡』而引擎侧每轮产出正常且入历史 ➔ 根因: ChatStatusController._activeTextEntry 跨 Run 共享、Run 收尾不断开，第二轮回答 append 进上一轮气泡（用户视角=新消息零回应） ➔ 处置: **不变量进状态机，不放散落调用点**——Run 归属令牌（controller 发号）+ 块级条目入轨即关段（边界按轨道结构派生），页面层零纪律；「收尾/起步各补一处 breakTextStream」式双保险被否决（纪律外移=纪律缺失：异常/中止/重试/迟到帧等路径必漏；动作不可断言；断流会把迟到帧冲成孤立气泡致顺序倒挂）；排查教训: 引擎日志正常时尽早向用户取证 UI 具体表现（无气泡 vs 空内容 vs 答非所问），三方证据（引擎产出/历史入库/UI 表现）分叉点即定位点 ➔ 回归: test/ui/chat_status_controller_stream_test.dart（跨 Run 另起气泡 + 残余保序 + 块级条目关段 + 收尾/快照刷盘） (Ref: on-device)
+
+- [sdk-template] 多轮复读环（复述首轮回答）手写 ChatML 复刻模板两刀未根治 ➔ 官方文档明示 geniex native 管线把 prompt 当已模板化文本，raw/近似模板=退化输出；官方姿势=applyChatTemplate(ChatMessage[],tools,enableThinking,addGenerationPrompt).formattedText 喂 generateStreamFlow ➔ 模板渲染归还 SDK（资产内嵌 tokenizer 模板单源），手写模板降级 fallback；回归钉：ChatMLComposerTest parseMessages 2 例 (Ref: on-device) (Ref: on-device)
+
+- [chatml-multiturn] 带历史的第二轮端侧生成复述首轮回答（复读环） ➔ 单发压平把 assistant 回答塞进 user 轮（外加人造文字标注），违背 Qwen ChatML 多轮训练分布，4B 模型 OOD 输入行为退化=复述上下文；指令强化治不了分布错位 ➔ 消息序列原生多轮化（角色由 :engine ChatML 模板承载，标注语法退役，末段 assistant 开放尾防 EOS 空产出）；回归钉：test/llm/on_device_chat_prompt_test.dart + android ChatMLComposerTest (Ref: on-device) (Ref: on-device)
+
+- [thermal-removal] 温控链反复误判（SoC 限频档≠壳温、复核源失败回退 SEVERE 使消抖失效），连修两轮仍误杀 ➔ 保护性闸门在信号源不可信时不如不设，OEM 自身限频降频已是更可靠的热保护 ➔ 温控全链摘除（枚举序数保留防漂移）；回归钉：grep thermalGate/EngineThermal 全仓不得再现 (Ref: on-device) (Ref: on-device)
+
+- [gate-advisory] 门禁拦截与真实体验偏差大（RAM 自锁/SoC 热档≠壳温/探测异常保守关闸），紧急强行启用成常态化兜底 ➔ 路由门禁属重复防御，真保护=运行时护栏链（:engine 隔离+EngineDied 切云+熔断+内存护栏+MemGate+温控连续确认沿） ➔ 门禁层降级 advisory 只留痕，强行启用删除；回归钉：hybrid_cloud_engine_test『门禁不达标→advisory 留痕不拦截』3 项 + EngineThermalTest 连续确认 2 项 (Ref: on-device)
+
+- [thermal-gate] 设备不热却报『设备过热，温度回落后可重试』切云误判 ➔ OEM 热档位以 SoC 限频档为准非壳温（单帧尖峰即翻闸）+ Dart 镜像 oneway 单向驱动无自愈（恢复沿丢失即永久关闸） ➔ 进入沿消抖复核真实热态 + 权威票据回写镜像 + 空产出先查权威热态再分类；回归钉：EngineThermalTest 消抖 4 项 + on_device_data_plane_test 热闸 EOS 切云沿 (Ref: on-device)
+
+- [thermal-seam] 第二轮对话报『端侧生成失败…空产出』+ EngineDiedException: thermal cutoff active ➔ :engine 热闸 abort 在途生成走 §6.3 干净收尾（EOS 关流），主进程把零产出当「模型没说话」，§5.2 切云承诺只接在流 error 沿 ➔ _onEos 收口时 thermalGate.cutoffActive 即转 EngineDiedException 切云沿；回归钉：test/llm/on_device_data_plane_test.dart「热闸活跃时 EOS 收口 → EngineDiedException 切云」 (Ref: on-device)
+
+- [android-aidl] PlatformException(engine_binder_error, IllegalArgumentException: Unsupported value: 'Bundle[...]') 于 hybrid-device-gate 探测与 session-mirror 对账 ➔ AIDL 返回的 android.os.Bundle 非 Flutter MethodChannel 标准编解码类型，result.success(Bundle) 必炸 ➔ EngineServiceBridge checkSession 分支 Bundle→Map 逐键转换后回传（与 SessionTicket.fromMap 对称）；回归钉：grep 'result.success(svc.checkSession())' 不得再出现 (Ref: on-device)
+
+- [model-registry] 现象: 端侧生成报资产缺失 + DEGRADE imported-asset verify: meta 缺失 (/…/files/models/)（目录名空） ➔ 根因: Dart 的 Directory.uri 对目录路径恒补尾部斜杠，uri.pathSegments.last 恒为空串——目录实体取名必须用 entity.path 尾段（File 的 uri 无此补齐不受影响） ➔ 处置: ModelRegistry.scan 改 entity.path.split('/').last + 空段防御（on_device_model_catalog.dart） ➔ 回归: test/llm/on_device_model_registry_test.dart 断言 dirName 非空；机械规则=目录实体禁用 uri.pathSegments.last (Ref: directory-uri-trailing-slash) (Ref: on-device)
+
+- [asset-manager] 现象: OnDeviceLoadException 资产缺失 + DEGRADE asset manifest fetch: No host specified in URI /manifest.json ➔ 根因: 导入制模型 base 约定为空串(fromInstalled/toOption)而非 null，ensureAssets 只守卫 base==null，空串拼 URI 生成无 host 请求空跑必败 ➔ 处置: 守卫改 base==null||base.isEmpty（on_device_asset_manager.dart）➔ 回归: ensureAssets 空 base 不触发 http 的单测钉；机械规则=哨兵值语义双判 (Ref: on-device-empty-base-guard) (Ref: on-device)
+
 - [geniex-qairt] ErrorCode[-100016] Parameter not supported + 流式中文夹杂 ä¸­ 型乱码 qairt 插件拒收 --stop/--stop-file(GenerationConfig.stopWords 禁传,EOS 停止管线内置);SDK 增量 detokenize 跨 token 拆裂多字节 UTF-8(只有 Token(String) 无字节出口,上游不可修) GenieSession 去 stopWords + StreamTextSanitizer 投递前 latin1 段重组还原 + think 块跨块剥除;复现锚=logcat GenieXSdk tag (Ref: on-device)
 
 - [端侧/资源与档位] 现象: 端侧请求 2 分钟无首 token，报端侧加载失败（circuitBroken）| 根因: 跨进程状态枚举复用（热降级=可自愈 vs 熔断=引擎故障）+ 导入通道缺档位校验（选 1.7B 装 4B 分片，峰值翻倍）+ 承载 2GB 装载峰值的 service 进程 importance=100 被 LMK 优先杀（Dart 退避 3.5/8/12/30/60s≈2 分钟一轮）| 处置: 状态枚举末尾追加独立序数 thermalCutoff；导入按档位预期体积对账拒绝错配；可自愈类失败切云完成本轮；4B 档 dirName 对齐实盘目录 | 回归: test/llm/on_device_thermal_load_test.dart + test/llm/on_device_asset_import_test.dart (Ref: on-device) (Ref: on-device)

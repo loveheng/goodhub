@@ -4,6 +4,7 @@
 library;
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:goodhub/core/notice_category.dart';
 import 'package:goodhub/core/security/flutter_secure_key_value.dart';
 import 'package:goodhub/coordinator/discovery_executor.dart';
 import 'package:goodhub/coordinator/hybrid_assembly.dart';
@@ -36,7 +37,7 @@ void main() {
     final notes = <String>[];
     final engine = await assembleDefaultHybridEngine(
       byokStoreOverride: _ThrowingByok(),
-      onNote: (m, {danger = false}) => notes.add(m),
+      onNote: (m, {danger = false, category = TrackNoticeCategory.fact}) => notes.add(m),
     );
     expect(notes, hasLength(1));
     expect(notes.single, contains('云端模型配置读取失败'));
@@ -47,7 +48,7 @@ void main() {
     final notes = <String>[];
     final engine = await assembleDefaultHybridEngine(
       byokStoreOverride: _EmptyByok(),
-      onNote: (m, {danger = false}) => notes.add(m),
+      onNote: (m, {danger = false, category = TrackNoticeCategory.fact}) => notes.add(m),
     );
     expect(notes, isEmpty, reason: '没配 key = 正常态，不是故障');
     expect(engine.cloud, isNull);

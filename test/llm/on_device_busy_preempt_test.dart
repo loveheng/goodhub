@@ -53,6 +53,11 @@ void main() {
         bound.complete();
         return null;
       }
+      // M2/M3 闸门：checkSession 须回就绪票据，否则 gate 交装载链路（测试环境
+      // 无模型 → enable 终态失败），startGenerate 的拒绝语义到不了。
+      if (call.method == 'checkSession') {
+        return {'instanceId': 'inst-test', 'seq': 1, 'status': 0};
+      }
       if (call.method == 'startGenerate') {
         throw PlatformException(code: errorCode, message: 'mock rejection');
       }

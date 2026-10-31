@@ -115,9 +115,10 @@ void main() {
     final engine = AidlOnDeviceEngine();
     await reachStartGenerate(engine);
 
-    // :engine 侧 TTL / 护栏 / trim 驱逐上行（桥面投递）。
-    final captured = await captureLogs(() => dispatch(
-        const MethodCall('onEngineEvicted', 'ttl-elapsed(300000ms)')));
+    // :engine 侧 TTL / 护栏 / trim 驱逐上行（桥面投递；M2 §2.8 新参形状）。
+    final captured = await captureLogs(() => dispatch(const MethodCall(
+        'onEngineEvicted',
+        {'reason': 'ttl-elapsed(300000ms)', 'evictingRequestId': null})));
 
     // 复位后下一次 enable 不会因「ready 说谎」而 no-op 跳过重装。
     expect(engine.loadState.value, OnDeviceLoadState.unloaded);

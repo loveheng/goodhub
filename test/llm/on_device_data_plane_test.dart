@@ -31,6 +31,10 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(OnDeviceEngineBinding.channel, (call) async {
       calls.add(call);
+      // M2/M3 闸门：checkSession 回就绪票据，gate 直接放行到 startGenerate。
+      if (call.method == 'checkSession') {
+        return {'instanceId': 'inst-test', 'seq': 1, 'status': 0};
+      }
       return null;
     });
   });
@@ -149,6 +153,10 @@ void main() {
     // 线程失败等），其余照常受理。
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(OnDeviceEngineBinding.channel, (call) async {
+      // M2/M3 闸门：checkSession 回就绪票据（gate 放行到 startDataWorker 面）。
+      if (call.method == 'checkSession') {
+        return {'instanceId': 'inst-test', 'seq': 1, 'status': 0};
+      }
       if (call.method == 'startDataWorker') {
         throw PlatformException(code: 'worker_start_failed', message: 'handle=-6');
       }

@@ -1,20 +1,17 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/llm/on_device_asset_manager.dart';
 import 'package:goodhub/llm/on_device_model_catalog.dart';
 
-/// 导入通道「档位 ↔ 内容」一致性回归钉（2026-10-30 真机实证）。
-///
-/// 真机 `ls` 实测：`models/qwen3_1_7b-geniex_qairt-w4a16/`（**1.7B 档**目录）
-/// 里装的是 `qwen3_4b_w4a16_part_*.bin`（4B 分片，合计 **3.17GB**）——导入
-/// 通道只核对文件尺寸/重名，不核对「所选档位 ↔ 内容体积」是否同档。
-///
-/// 后果（真机连锁）：装载内存峰值翻倍（4B 权重 + ION 瞬态 ≈5.4GB）→ 击穿整机
-/// min watermark → `:engine` 被 LMK 连杀 5 次 → Dart 退避重试（3.5/8/12/30/60s
-/// ≈2 分钟一轮）→ 用户「2 分钟没有首 token」。故导入必须**拒绝档位错配**。
+/// 导入通道回归钉（2026-10-31 纯导入制：固定 qwen 双档位退役，档位体积对账
+/// 随 `expectedTotalBytes` 一并退役——「1.7B 档装 4B 分片」的档位错配不可能
+/// 再发生（无固定档位目录），防 LMK 职责由**绝对体积上限**（12GB，拷贝前
+/// 拦截）+ 装载期内存护栏承接。本组钉：体积上限硬拒 + 结构校验（GGUF 魔数）
+/// + meta 的 runtime/displayName 登记。
 void main() {
-  /// 造稀疏文件（只设长度不写盘，测试不真占 3GB）。
+  /// 造稀疏文件（只设长度不写盘，测试不真占 13GB）。
   Future<File> sparseFile(Directory dir, String name, int bytes) async {
     final f = File('${dir.path}/$name');
     final raf = await f.open(mode: FileMode.write);
@@ -39,43 +36,50 @@ void main() {
     if (await tmp.exists()) await tmp.delete(recursive: true);
   });
 
-  test('3.19GB（4B 真实体积）导入 1.7B 档 → 拒绝（防峰值翻倍）', () async {
-    final big = await sparseFile(tmp, 'qwen3_4b_w4a16_part_1_of_4.bin',
-        3190000000);
-    final target = await mgr.importFromPickedFiles(
-      [big.path],
-      model: kOnDeviceModelCatalog.first, // 1.7B 档
-    );
-    expect(target, isNull);
-  });
+  const target = ImportTarget(dirName: 'my-model', displayName: 'My Model');
 
-  test('1.05GB（1.7B 档真实体积）导入 1.7B 档 → 接受', () async {
-    final ok = await sparseFile(tmp, 'qwen3_1_7b_w4a16_part_1_of_2.bin',
-        1050000000);
-    final target = await mgr.importFromPickedFiles(
-      [ok.path],
-      model: kOnDeviceModelCatalog.first,
-    );
-    expect(target, isNotNull);
-  });
-
-  test('3.19GB 导入 4B 档 → 接受（同档）', () async {
-    final big = await sparseFile(tmp, 'qwen3_4b_w4a16_part_1_of_4.bin',
-        3190000000);
-    final target = await mgr.importFromPickedFiles(
-      [big.path],
-      model: kOnDeviceModelCatalog.last, // 4B 档
-    );
-    expect(target, isNotNull);
-  });
-
-  test('模型目录登记了档位预期体积真值（导入校验的前提）', () {
-    for (final o in kOnDeviceModelCatalog) {
-      expect(o.expectedTotalBytes, isNotNull,
-          reason: '${o.id} 未登记预期体积 → 导入校验失效');
-      expect(o.expectedTotalBytes, greaterThan(500 * 1024 * 1024));
+  test('超绝对体积上限（>12GB）→ 拒绝（拷贝前拦截，无 staging 残留）', () async {
+    final big = await sparseFile(tmp, 'huge.gguf', 13 * 1024 * 1024 * 1024);
+    final dir = await mgr.importFromPickedFiles([big.path], target: target);
+    expect(dir, isNull);
+    final models = Directory('${tmp.path}/models');
+    if (await models.exists()) {
+      expect(
+        await models.list().any((e) => e.path.contains('.staging-import')),
+        isFalse,
+      );
     }
-    // 4B 档落盘目录名必须与真机实际目录一致（连字符名会让资产找不到）。
-    expect(kOnDeviceModelCatalog.last.dirName, 'qwen3_4b-genie-w4a16');
+  });
+
+  test('正常体积散文件 → 收（meta 登记 displayName，未知布局 runtime=auto）', () async {
+    final ok = await sparseFile(tmp, 'weights.bin', 1024 * 1024);
+    final dir = await mgr.importFromPickedFiles([ok.path], target: target);
+    expect(dir, isNotNull);
+    expect(dir!.path, contains('my-model'));
+    final meta =
+        jsonDecode(await File('${dir.path}/.asset-meta.json').readAsString())
+            as Map<String, dynamic>;
+    expect(meta['version'], startsWith('local-import'));
+    expect(meta['displayName'], 'My Model');
+    expect(meta['runtime'], OnDeviceRuntime.auto);
+  });
+
+  test('坏 GGUF（头魔数非 GGUF）→ 拒（结构校验硬闸）', () async {
+    final bad = File('${tmp.path}/fake.gguf');
+    await bad.writeAsBytes(List.filled(64, 0xAB));
+    final dir = await mgr.importFromPickedFiles([bad.path], target: target);
+    expect(dir, isNull);
+  });
+
+  test('合法 GGUF 头 → 收（runtime 检测为 llama_cpp）', () async {
+    final gguf = File('${tmp.path}/model.gguf');
+    await gguf.writeAsBytes(
+        [0x47, 0x47, 0x55, 0x46, ...List.filled(60, 0)]); // "GGUF" + padding
+    final dir = await mgr.importFromPickedFiles([gguf.path], target: target);
+    expect(dir, isNotNull);
+    final meta =
+        jsonDecode(await File('${dir!.path}/.asset-meta.json').readAsString())
+            as Map<String, dynamic>;
+    expect(meta['runtime'], OnDeviceRuntime.llamaCpp);
   });
 }

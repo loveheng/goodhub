@@ -12,6 +12,7 @@ library;
 import 'dart:io';
 
 import '../core/errors/mcp_error.dart';
+import '../core/notice_category.dart';
 import '../mcp/mcp_client.dart';
 import '../mcp/server_capabilities.dart';
 import 'cow_sync.dart';
@@ -28,7 +29,7 @@ Future<void> syncCowSkillsIntoRegistry({
   /// null = 退回 [documentsDirResolver] 就地构造（兼容旧调用方）。
   Future<CowOverridesStore> Function()? storeProvider,
   CowMajorJumpDelegate? majorJumpDelegate,
-  void Function(String message, {bool danger})? note,
+  void Function(String message, {bool danger, TrackNoticeCategory category})? note,
 }) async {
   for (final entry in clients.entries) {
     final caps = serverCaps[entry.key];
@@ -45,11 +46,11 @@ Future<void> syncCowSkillsIntoRegistry({
         try {
           skills.register(CowSyncService.toSkill(i, entry.key));
         } on ArgumentError catch (e) {
-          note?.call('⚠ CoW Skill 注册跳过: $e', danger: true);
+          note?.call('⚠ CoW Skill 注册跳过: $e', danger: true, category: TrackNoticeCategory.fact);
         }
       }
     } on McpException catch (e) {
-      note?.call('CoW 同步失败（Polyfill 降级为无模板注入）: $e', danger: false);
+      note?.call('CoW 同步失败（Polyfill 降级为无模板注入）: $e', danger: false, category: TrackNoticeCategory.error);
     }
   }
 }

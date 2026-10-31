@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:crypto/crypto.dart';
 import 'package:goodhub/llm/on_device_asset_manager.dart';
+import 'package:goodhub/llm/on_device_model_catalog.dart';
 
 /// S2-2 OTA 资产分发单测：本地 HttpServer 扮演分发源，覆盖 manifest 分发、
 /// sha256/尺寸校验、≥5GB 磁盘门禁、staging 原子替换、驱动指纹漂移脏删重拉
@@ -75,11 +76,21 @@ void main() {
         supportDirResolver: () async => supportDir,
       );
 
+  /// 显式装载目标（2026-10-31 纯导入制无默认模型：ensureAssets 不再接受
+  /// 无参调用偷偷拉 1.7B，测试必须给目标）。base 用 setUp 里的 mock 源。
+  /// （main 函数体内不能声明 getter → 局部函数，每次取最新 [base]。）
+  OnDeviceModelOption testModel() => OnDeviceModelOption(
+        id: 'test-1b',
+        displayName: 'Test（测试）',
+        base: base,
+        dirName: 'qwen3_1_7b-geniex_qairt-w4a16',
+      );
+
   Directory modelDir() =>
       Directory('${supportDir.path}/models/qwen3_1_7b-geniex_qairt-w4a16');
 
   test('全量下载：落盘 + meta 版本/尺寸/sha256/指纹齐备 + 幂等跳过', () async {
-    final dir = await mgr(freeBytes: 10 << 30).ensureAssets();
+    final dir = await mgr(freeBytes: 10 << 30).ensureAssets(model: testModel());
     if (dir == null) fail('ensureAssets should succeed');
     expect(await File('${dir.path}/model.bin').readAsBytes(), fileA);
     expect(await File('${dir.path}/tokenizer.json').readAsBytes(), fileB);
@@ -94,33 +105,33 @@ void main() {
 
     // 幂等：二轮不再下载（关掉源，仍能返回已装目录）。
     await server.close(force: true);
-    final again = await mgr(freeBytes: 10 << 30).ensureAssets();
+    final again = await mgr(freeBytes: 10 << 30).ensureAssets(model: testModel());
     expect(again, isNotNull);
     expect(await File('${again!.path}/model.bin').exists(), isTrue);
   });
 
   test('Content-Length 截断拒收：不落盘不转正（staging 残留被清）', () async {
     serveTruncatedA = true;
-    final dir = await mgr(freeBytes: 10 << 30).ensureAssets();
+    final dir = await mgr(freeBytes: 10 << 30).ensureAssets(model: testModel());
     expect(dir, isNull);
     expect(await modelDir().exists(), isFalse);
   });
 
   test('sha256 不符拒收（Content-Length 合法但内容损坏）', () async {
     corruptShaA = true;
-    final dir = await mgr(freeBytes: 10 << 30).ensureAssets();
+    final dir = await mgr(freeBytes: 10 << 30).ensureAssets(model: testModel());
     expect(dir, isNull);
     expect(await modelDir().exists(), isFalse);
   });
 
   test('磁盘门禁：余量 < 5GB 直接中止，不建目录不发请求', () async {
-    final dir = await mgr(freeBytes: 4 << 30).ensureAssets();
+    final dir = await mgr(freeBytes: 4 << 30).ensureAssets(model: testModel());
     expect(dir, isNull);
     expect(await Directory('${supportDir.path}/models').exists(), isFalse);
   });
 
   test('热更新原子替换：旧版本在位时新版本整包换装，无残留 staging/trash', () async {
-    final dir = await mgr(freeBytes: 10 << 30).ensureAssets();
+    final dir = await mgr(freeBytes: 10 << 30).ensureAssets(model: testModel());
     expect(dir, isNotNull);
 
     // 模拟 :engine 持旧句柄：打开旧文件不放（rename 后旧 inode 仍可读）。
@@ -151,7 +162,7 @@ void main() {
       await req.response.close();
     });
 
-    final dir2 = await mgr(freeBytes: 10 << 30).ensureAssets();
+    final dir2 = await mgr(freeBytes: 10 << 30).ensureAssets(model: testModel());
     expect(dir2, isNotNull);
     expect(await File('${dir2!.path}/tokenizer.json').readAsBytes(), fileB2);
     // 旧句柄（旧 inode）不受替换影响——SIGBUS 防护的语义面。
@@ -168,17 +179,17 @@ void main() {
   });
 
   test('驱动指纹漂移：recoverIfDriverChanged 脏删，下轮 ensureAssets 整包重拉', () async {
-    final dir = await mgr(freeBytes: 10 << 30).ensureAssets();
+    final dir = await mgr(freeBytes: 10 << 30).ensureAssets(model: testModel());
     expect(dir, isNotNull);
 
     // 系统 OTA：ROM 指纹变化。
     fingerprint = 'rom-fp-v2-after-ota';
-    final changed = await mgr(freeBytes: 10 << 30).recoverIfDriverChanged();
+    final changed = await mgr(freeBytes: 10 << 30).recoverIfDriverChanged(model: testModel());
     expect(changed, isTrue);
     expect(await modelDir().exists(), isFalse);
 
     // 重拉成功（源仍是 v1，指纹记录为新值）。
-    final refetched = await mgr(freeBytes: 10 << 30).ensureAssets();
+    final refetched = await mgr(freeBytes: 10 << 30).ensureAssets(model: testModel());
     expect(refetched, isNotNull);
     final meta =
         jsonDecode(await File('${refetched!.path}/.asset-meta.json').readAsString())
@@ -187,17 +198,17 @@ void main() {
   });
 
   test('markDirty：静默删除已装资产（§4.8 自愈入口，不计熔断——本件不触熔断器）', () async {
-    final dir = await mgr(freeBytes: 10 << 30).ensureAssets();
+    final dir = await mgr(freeBytes: 10 << 30).ensureAssets(model: testModel());
     expect(dir, isNotNull);
-    await mgr(freeBytes: 10 << 30).markDirty();
+    await mgr(freeBytes: 10 << 30).markDirty(model: testModel());
     expect(await modelDir().exists(), isFalse);
   });
 
   test('manifest 不可达：已装资产兜底放行（不误判重下 1.8GB）', () async {
-    final dir = await mgr(freeBytes: 10 << 30).ensureAssets();
+    final dir = await mgr(freeBytes: 10 << 30).ensureAssets(model: testModel());
     expect(dir, isNotNull);
     await server.close(force: true);
-    final fallback = await mgr(freeBytes: 10 << 30).ensureAssets();
+    final fallback = await mgr(freeBytes: 10 << 30).ensureAssets(model: testModel());
     expect(fallback, isNotNull);
     expect(await File('${fallback!.path}/model.bin').exists(), isTrue);
   });

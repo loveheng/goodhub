@@ -17,11 +17,12 @@ import 'on_device_model_catalog.dart';
 enum EngineStatus {
   ready,              // 0 就绪可用
   busy,               // 1 执行中，支持抢占 / 策略 B 驳回
-  assetMissing,       // 2 驱动就绪但模型未下载
+  assetMissing,       // 2 资产缺失（M4 起回归终态语义：真·未导入/校验不过）
   insufficientMemory, // 3 当前可用 RAM 低于门禁
   circuitBroken,      // 4 处于熔断保护期（引擎故障，需熔断器/人工介入）
   unsupportedDevice,  // 5 硬件 / 芯片架构不匹配（D1 中低端）
   thermalCutoff,      // 6 热降级切云期（≥SEVERE；环境降级可自愈，温度回落即恢复）
+  loading,            // 7 M4 追加（受理态，P2-14 销账）：模型装载中
 }
 
 /// 由 AIDL 序数还原枚举；越界值视为 unsupportedDevice（防跨端漂移崩溃）。
@@ -35,11 +36,12 @@ EngineStatus engineStatusFromOrdinal(int ordinal) =>
 String engineStatusFailureReason(EngineStatus status) => switch (status) {
       EngineStatus.ready => '引擎已就绪',
       EngineStatus.busy => '引擎执行中',
-      EngineStatus.assetMissing => '模型未就绪（资产缺失或装载未完成）',
+      EngineStatus.assetMissing => '端侧模型未导入（请在设置导入模型后重试）',
       EngineStatus.insufficientMemory => '可用内存不足（请清理后台应用后重试）',
       EngineStatus.circuitBroken => '端侧引擎处于熔断保护期（请稍后重试）',
       EngineStatus.unsupportedDevice => '当前设备不支持本地推理',
       EngineStatus.thermalCutoff => '设备过热，端侧已暂停（温度回落后可重试）',
+      EngineStatus.loading => '端侧模型装载中（请稍候）',
     };
 
 /// 生成收尾原因（AIDL onGenerateFinished 的 finishReason int 映射）。
@@ -146,11 +148,14 @@ abstract interface class OnDeviceEnableCapable {
 
 /// 端侧引擎抽象接口（总纲 §2 完整粒度）。
 abstract interface class OnDeviceEngine {
-  /// 结构化状态查询；`busy/ready` 禁 TTL 缓存（v2.6 调度纪律）。
-  Future<EngineStatus> checkStatus();
+  /// 权威状态查询（M4 Contract：走**票据面** checkSession——`checkStatus`
+  /// 轮询面已退役，状态唯一来源 = `:engine` 票据）。票据不可得（未连接 /
+  /// 通道超时）返回 **null = 未知态**（I2 禁猜测，调用方按不可用/未知分流）。
+  Future<EngineStatus?> authoritativeStatus();
 
-  /// `== ready` 语法糖（总纲 §2）。
-  Future<bool> isAvailable() async => (await checkStatus()) == EngineStatus.ready;
+  /// `== ready` 语法糖（总纲 §2）。状态未知（null）按不可用处理。
+  Future<bool> isAvailable() async =>
+      (await authoritativeStatus()) == EngineStatus.ready;
 
   Future<void> warmup();
 

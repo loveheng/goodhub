@@ -11,8 +11,8 @@ import 'on_device_engine.dart';
 import 'on_device_engine_binding.dart';
 import 'on_device_load_poll.dart';
 import 'on_device_mem_gate.dart';
+import 'on_device_session_gate.dart';
 import 'on_device_model_catalog.dart';
-import 'on_device_thermal_gate.dart';
 
 /// `OnDeviceEngine` 的 AIDL 适配件（on-device epic S1-5，S2 正式接线；
 /// S3-6 数据面收编）。
@@ -35,7 +35,6 @@ import 'on_device_thermal_gate.dart';
 /// 「generate() 发起且判定可能耗时时即附着」；实测 ~60ms/token 下 256 token
 /// ≈15s+，越过 OEM 冻结观察窗量级——拍板兜底值，与 EngineService.kt 同锚）。
 const int kFgsPromoteMinTokens = 256;
-
 
 /// 装载 / 状态探测期「`:engine` 进程或 binder 已中断」的通道错误码白名单。
 ///
@@ -77,7 +76,7 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
     _binding.onEngineDied = _onDied;
     _binding.onProcessDied = _onProcessDied;
     _binding.onEngineEvicted = _onEngineEvicted;
-    _binding.onThermalCutover = (active) => thermalGate.setCutoff(active: active);
+    _binding.onEvictionInterrupted = _onEvictionInterrupted;
   }
 
   /// 端侧流**无进展看门狗**时长（注入位供单测压缩）：端侧数据面此前**无任何
@@ -104,32 +103,42 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
 
   /// B-2 长时后台装载任务：运行中非 null；收口（ready/failed）经 whenComplete
   /// 置回 null，后续 enable 重新决策。disable 驱逐沿经代次号作废旧任务。
+  /// 在途装载任务（单飞；§2.10 I7）与其去重键 = 目标 modelId（身份锚点
+  /// dirName）。同键并发 enable 合并等待；键变更 → 代次作废重提交。
   Future<bool>? _loadTask;
+  String? _loadTaskModelId;
   int _loadGen = 0;
 
   /// 后台装载任务的失败原因（终态失败时供 enable 原样上抛）。
   String? _loadTaskError;
 
-  /// 请求侧对装载任务的单次有界等待上限（**场景 C 前台冷启动保护**，
-  /// 2026-10-30 用户裁决 60~90s）：超时 = 请求侧报错退出、**装载后台继续**
-  /// （B-2 语义不变），前端按「超时·可重试」处置。旧值 5 分钟（同日早前拍板）
-  /// 在前台场景观感上等于「干等 2 分钟无响应」——以场景 C 裁决覆盖。
+  /// 请求侧对装载任务的单次有界等待上限（场景 C 前台冷启动保护，用户裁决
+  /// 60~90s）：超时 = 请求侧报错退出、**装载后台继续**（B-2 语义不变）。
   static const Duration _loadWaitPerRequest = Duration(seconds: 90);
 
   /// 显式加载端侧引擎（懒加载兜底：首次命中端侧路径由 [HybridCloudEngine]
-  /// 触发）。装载全程跑在后台任务 [_runBackgroundLoad] 里（B-2：中断类失败
-  /// 分钟级退避持续重试，**不随请求判死**）；本请求仅做有界等待——60s 内
-  /// 命中 ready 即成功；超时抛**可重试**的「装载进行中」（q-1：显式报错
-  /// 不切云，后台继续装载，下次请求命中已就绪引擎）。终态失败如实上抛。
+  /// 触发）。装载跑在后台任务 [_runBackgroundLoad] 里（B-2：中断类失败分钟级
+  /// 退避持续重试，**不随请求判死**）；本请求仅有界等待，超时抛**可重试**的
+  /// 「装载进行中」（q-1：显式报错不切云）。终态失败如实上抛。
   Future<EngineStatus> enable({OnDeviceModelOption? model}) async {
     if (_loadState.value == OnDeviceLoadState.ready) return EngineStatus.ready;
-    if (_loadTask == null) {
-      final gen = ++_loadGen;
-      _loadTask = _runBackgroundLoad(model ?? await OnDeviceModelSelection.read(), gen)
-          .whenComplete(() {
-        if (_loadGen == gen) _loadTask = null;
-      });
+    final target = model ?? await OnDeviceModelSelection.read();
+    if (_loadTask != null) {
+      // M2 §2.10 I7 装载单飞：去重键 = 目标 modelId（身份锚点 dirName）——
+      // 同目标的并发预热/请求/验证装载合并等待同一在途任务；目标变更则
+      // 代次作废旧任务重新提交（换模型不复用旧装载）。
+      if (_loadTaskModelId != null && _loadTaskModelId == target?.dirName) {
+        return _awaitLoadTask();
+      }
     }
+    final gen = ++_loadGen; // 作废任何旧任务（含目标变更场景）
+    _loadTaskModelId = target?.dirName;
+    _loadTask = _runBackgroundLoad(target, gen).whenComplete(() {
+      if (_loadGen == gen) {
+        _loadTask = null;
+        _loadTaskModelId = null;
+      }
+    });
     return _awaitLoadTask();
   }
 
@@ -143,15 +152,11 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
       throw OnDeviceLoadException(_loadTaskError ?? '端侧加载失败');
     } on TimeoutException {
       // B-2 核心：请求侧超时 ≠ 装载失败——后台仍在分钟级退避重试。
-      // 热降级期（设备过热）额外标 degraded：上层据此切云完成本轮
-      // （§5.2 Thermal→Cloud），而非把「过热」当装载故障报给用户。
-      final overheated = thermalGate.cutoffActive;
+      // 温控摘除（2026-10-31 用户裁决）：过热分叉随切云沿一并退役。
       throw OnDeviceLoadException(
-          overheated
-              ? '设备过热，端侧已暂停（温度回落后可重试）'
-              : '端侧模型装载进行中（后台继续装载；内存紧张可清理后台应用），请稍后重试',
+          '端侧模型装载进行中（后台继续装载；内存紧张可清理后台应用），请稍后重试',
           retryable: true,
-          degraded: overheated);
+          degraded: false);
     }
   }
 
@@ -182,11 +187,16 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
           throw const OnDeviceLoadException('端侧引擎未就绪（:engine 连接超时）',
               retryable: true);
         }
+      final resolvedModel = model ?? await OnDeviceModelSelection.read();
       final target = await OnDeviceAssetManager.instance
-          .ensureAssets(model: model ?? await OnDeviceModelSelection.read());
+          .ensureAssets(model: resolvedModel);
       if (target == null) {
         throw const OnDeviceLoadException('端侧模型资产缺失或下载失败');
       }
+      // M2 §2.5 I3：资产身份由资产面单点计算，随装载入参下发——:engine 票据
+      // 回显此值，主进程对账「票据 modelId ≠ 目标」即知资产变更需重装。
+      final modelId =
+          await OnDeviceAssetManager.instance.modelIdOf(resolvedModel);
       // 装载起跑闸（用户方案 2026-10-30，覆盖首试+重试统一水位）：availMem
       // 不足以容纳一次装载（普通 4.5GB；快死 ≥2 次抬 5GB 防尖峰棘轮）就不
       // 发起，等系统真实恢复（用户清后台）——不硬拒绝，请求侧有界等待呈现
@@ -230,7 +240,7 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
       if (gen != _loadGen) return false;
       // 模型装载：loadModel「受理即返回 assetMissing」（AIDL 契约——受理
         // 态轮询见 [_loadAndWaitReady]）。
-        final loaded = await _loadAndWaitReady(target.path);
+        final loaded = await _loadAndWaitReady(target.path, modelId: modelId);
         if (loaded != EngineStatus.ready && loaded != EngineStatus.busy) {
           // 终态失败文案白话化（禁把内部枚举名抛给用户——真机曾见
           // 「模型装载失败（circuitBroken）」，用户看不懂也无从行动）。
@@ -248,6 +258,8 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
           debugPrint('[DEGRADE] drop shard page cache: $e');
         }
         _loadState.value = OnDeviceLoadState.ready;
+        // M1 影子对账（Expand：只留痕，不参与判定）。
+        unawaited(_binding.reconcileTicket(OnDeviceLoadState.ready, 'post-load'));
         return true;
       } on OnDeviceLoadException catch (e) {
         if (!e.retryable || gen != _loadGen) {
@@ -275,16 +287,17 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
 
   /// 单轮装载受理 + 就绪轮询（原 enable 内联逻辑收编，[modelDir] 参数化）。
   /// 轮询状态机委托 [pollLoadReady]（纯逻辑件，可单测）：热降级（设备过热）
-  /// **不判死**——继续等热回落；轮询期进程被杀经直查通道分辨中断码（可重试），
-  /// 严禁走 checkStatus 的「异常折算 unsupportedDevice」口径（会把中断误报
-  /// 成不支持）。
-  Future<EngineStatus> _loadAndWaitReady(String modelDir) async {
-    final loaded = await loadModel(modelDir);
-    if (loaded != EngineStatus.assetMissing) return loaded;
+  /// **不判死**——继续等热回落。M4：probe 走**票据面**（checkSession），
+  /// checkStatus 轮询面已退役；票据取不到 = 未知态按装载中继续轮（M4 受理态
+  /// loading 继续轮询，assetMissing 回归终态如实上抛）。
+  Future<EngineStatus> _loadAndWaitReady(String modelDir, {String? modelId}) async {
+    final loaded = await loadModel(modelDir, modelId: modelId);
+    if (loaded != EngineStatus.loading) return loaded;
     return pollLoadReady(probe: () async {
       try {
-        final ordinal = await _channel.invokeMethod<int>('checkStatus');
-        return engineStatusFromOrdinal(ordinal ?? 5);
+        final ticket = await _binding.fetchSessionTicket();
+        // 票据缺失（超时/通道抖动）= 未知 → 按装载中继续轮（禁猜测终态）。
+        return ticket?.status ?? EngineStatus.loading;
       } on PlatformException catch (e) {
         // 未知码 = 终态，如实带上 code 上抛（禁伪装成 unsupportedDevice）。
         throw _loadFailureOf(e.code);
@@ -312,11 +325,6 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
   /// 重启风暴两级熔断 + 500ms 冷却窗口（on-device S1-6，NPU 稿 §6.5）。
   final EngineCircuitBreaker breaker;
 
-  /// 热切云闸门（on-device S3-1，NPU 稿 §5.2/§5.3）：热状态 ≥ SEVERE 时
-  /// generate 快速失败切云；环境降级语义——不计熔断、无冷却窗口、热回落
-  /// 自然恢复（状态权威在 :engine，AIDL onThermalCutover 驱动）。
-  final EngineThermalGate thermalGate = EngineThermalGate();
-
   /// 过渡期 identity 字节表：:engine 写侧将文本块转 UTF-8 字节值入环
   ///（id = 字节值 0..255，identity 字节级编码）——本表即其重组映射，跨微批
   /// 的流式 UTF-8 无损重组由 [StreamingDetokenizer] 保证（§6.4）。正式
@@ -327,33 +335,12 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
   final _active = <String, _ActiveGenerate>{};
 
   @override
-  Future<EngineStatus> checkStatus() async {
-    try {
-      final ordinal = await _channel.invokeMethod<int>('checkStatus');
-      return engineStatusFromOrdinal(ordinal ?? 5);
-    } on MissingPluginException catch (e) {
-      // 通道 handler 未挂载（进程早于 Activity 注册桥等时序）= 本轮端侧不可用，
-      // 与 PlatformException 同口径收口——严禁穿透：门禁闭包 fail-closed 会把
-      // 可用设备误关成「无可用推理引擎」。
-      assert(() {
-        // ignore: avoid_print
-        print('[DEGRADE] on_device checkStatus: ${e.message}');
-        return true;
-      }());
-      return EngineStatus.unsupportedDevice;
-    } on PlatformException catch (e) {
-      // 未绑定/远端异常 = 本轮端侧不可用（非熔断口径，DEGRADE 语义）。
-      assert(() {
-        // ignore: avoid_print
-        print('[DEGRADE] on_device checkStatus: ${e.code}');
-        return true;
-      }());
-      return EngineStatus.unsupportedDevice;
-    }
-  }
+  Future<EngineStatus?> authoritativeStatus() =>
+      _binding.fetchSessionTicket().then((t) => t?.status);
 
   @override
-  Future<bool> isAvailable() async => (await checkStatus()) == EngineStatus.ready;
+  Future<bool> isAvailable() async =>
+      (await authoritativeStatus()) == EngineStatus.ready;
 
   /// 前台态判定（场景 A/B/C 切云语义拆分）：透传桥面 Activity started 计数；
   /// 探测失败按**后台**保守处理（场景 B 不切云、暂存等前台）。
@@ -383,9 +370,12 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
   /// 语义（AMS 会自动重启 :engine 并重连）；其余远端异常 = 终态失败，
   /// **错误码如实入文案**——禁沿用 checkStatus 的 DEGRADE 口径返回
   /// unsupportedDevice（会把通道异常读成「硬件不支持」）。
-  Future<EngineStatus> loadModel(String modelDir) async {
+  Future<EngineStatus> loadModel(String modelDir, {String? modelId}) async {
     try {
-      final ordinal = await _channel.invokeMethod<int>('loadModel', modelDir);
+      final ordinal = await _channel.invokeMethod<int>('loadModel', {
+        'modelDir': modelDir,
+        'modelId': ?modelId,
+      });
       return engineStatusFromOrdinal(ordinal ?? 5);
     } on PlatformException catch (e) {
       assert(() {
@@ -416,9 +406,14 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
     // 异常洪泛 → 主进程 136% CPU → ANR 冻结）。detok 侧单字节失败即重建解码器
     // 并继续；此处只做**一次性**留痕（禁逐字节打印 = 洪泛源）。
     late final StreamingDetokenizer detok;
+    // 每流字节/字符对账（2026-10-31 真机「第二轮无输出」）：bytesIn（解码器
+    // 实收字节）vs charsOut（deltaText 累计字符）vs decodeErrors，收口打点
+    // 三值一分——丢失点夹逼在「:engine 投递 / Dart 解码 / 上游归因」之一。
+    _ActiveGenerate? self;
     detok = StreamingDetokenizer(
       table: _identityTable,
       onText: (delta) {
+        self?.charsOut += delta.length;
         if (!ctrl.isClosed) ctrl.add(EngineChunk(deltaText: delta));
       },
       onDecodeError: (error, id) {
@@ -432,17 +427,12 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
     // EngineDiedException 快速失败——调用方（混合引擎）捕获即无缝切云，
     // 冷却窗口内绝不重初始化撞 FastRPC 僵尸通道。（检查在异步体内执行：
     // generate 保持同步签名返回流。）
-    _active[requestId] = _ActiveGenerate(requestId, ctrl, detok);
+    final entry = _ActiveGenerate(requestId, ctrl, detok);
+    self = entry;
+    _active[requestId] = entry;
     Future<void>(() async {
-      // S3-1 热闸（§5.2 Thermal→Cloud）：SEVERE 及以上快速失败切云（禁
-      // CPU 分流）。置于熔断检查之前——环境降级是最外层判据，与 :engine
-      // 侧 startGenerate 拒绝互为冗余（回调丢失的单点保险）。
-      if (thermalGate.cutoffActive) {
-        _active.remove(requestId);
-        ctrl.addError(const EngineDiedException('thermal cutoff active (SEVERE+)'));
-        await ctrl.close();
-        return;
-      }
+      // 温控摘除（2026-10-31 用户裁决）：热闸前置检查随切云沿一并退役，
+      // 极端发热交 OEM 自身限频保护。
       if (await breaker.isBroken || breaker.inCooldown) {
         _active.remove(requestId);
         ctrl.addError(const EngineDiedException('circuit breaker / cooldown active'));
@@ -451,21 +441,24 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
       }
       try {
         await _binding.bind(); // 幂等：已绑定 no-op
-        // S2 正式接线：startGenerate 前等就绪（bind 竞态正式收口——否则
-        // not_bound 被折算为快速失败误判驳回；超时 3s 快速失败切云）。
+        // bind 竞态收口（超时 3s 快速失败切云；否则 not_bound 被误判驳回）。
         final status =
             await _binding.waitReady(timeout: const Duration(seconds: 3));
-        if (status == null) {
+        // 会话闸门（M2 第一刀，设计 §2.3）：**票据未就绪 / 未连接即交装载链路**
+        // ——取代「loadState 说 ready 就跳过装载」与「bind 超时即判死」两条
+        // 推断口径（2026-10-31 两类真机事故的同源解药：拿不到票据 = 未知）。
+        final gate = await ensureSessionReadyForGenerate(
+            fetch: _binding.fetchSessionTicket,
+            load: enable,
+            connected: status != null);
+        if (gate != null) {
           _active.remove(requestId);
-          ctrl.addError(StateError('engine not ready (bind 3s 未连接)'));
+          ctrl.addError(gate);
           await ctrl.close();
           return;
         }
-        // S3-6 数据面消费 worker：显式 enable() 已收编「首次加载」的 worker 启动
-        // （加载中可见、失败抛 OnDeviceLoadException 显式报错、不静默切云）。此处
-        // 仅做幂等兜底（enable 已建则在位 no-op；:engine 死亡重建后由下次
-        // enable 重跑）。运行期数据面失联（worker 启动失败）属引擎死亡类事件——仍
-        // 转 EngineDiedException 由混合引擎无缝切云（S1-5），不计熔断（§6.3/§6.5）。
+        // S3-6 数据面 worker：enable() 已收编首次加载的启动，此处幂等兜底；
+        // 运行期失联转 EngineDiedException 切云（S1-5），不计熔断（§6.3/§6.5）。
         try {
           await _binding.startDataWorker();
         } on PlatformException catch (e) {
@@ -475,32 +468,62 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
           await ctrl.close();
           return;
         }
-        // S3-2 FGS 前台预挂（NPU 稿 §6.2 v2.7）：长生成发起时于前台预挂
-        // dataSync FGS（Android 12+ 后台 startForeground 必抛——主进程侧
-        // 前台态判定作闸，此处仅请求）。失败/后台跳过均不阻断生成（DEGRADE：
-        // 仅损失 OEM 冻结防御强度）。阈值口径见 EngineService.FGS_PROMOTE_MIN_MAX_TOKENS。
+        // S3-2 FGS 前台预挂（§6.2 v2.7）：长生成发起时预挂 dataSync FGS
+        // （Android 12+ 后台 startForeground 必抛，主进程侧作前台闸）。
+        // 失败/后台跳过不阻断生成（DEGRADE：仅损失 OEM 冻结防御强度）。
         if (config.maxTokens >= kFgsPromoteMinTokens) {
           try {
             await _channel.invokeMethod<void>('promoteForeground');
           } on PlatformException catch (e) {
-            assert(() {
-              // ignore: avoid_print
-              print('[DEGRADE] on_device promoteForeground: ${e.code}');
-              return true;
-            }());
+            debugPrint('[DEGRADE] on_device promoteForeground: ${e.code}');
           }
         }
-        await _channel.invokeMethod<void>('startGenerate', {
-          'requestId': requestId,
-          'promptJson': prompt,
-          'maxTokens': config.maxTokens,
-          'temperature': config.temperature,
-          'topP': config.topP,
-          'stopTokenIds': config.stopTokenIds.toList(),
-        });
-        // 无进展看门狗起跑（受理即武装）：受理后若长期无字节到达 → 数据面失联
-        // → 以 EngineDiedException 收口切云（禁静默挂死 = 本轮零响应）。
+        // M3 原子自证（设计 §2.3 I4）：闸门放行后取**最近见证票据**作 expect
+        // epoch 随请求下发——`:engine` 单入口内原子比对，拒绝走 SESSION_* 分码
+        //（作废镜像 → 装载 → 重试一次），不再「先查后发」两步裸奔。
+        var ticket = await _binding.fetchSessionTicket();
+        const maxAcceptAttempts = 2; // 初试 + 分码收敛重试各一次（禁无限循环）
+        for (var attempt = 1; attempt <= maxAcceptAttempts; attempt++) {
+          try {
+            // §2.9 有界超时：进程冻结（假死）下同步 AIDL 调用可能长时间不返回
+            // 且无 DeadObject——受理调用 10s 上界（正常 <1s），超时按可自愈中断
+            // 切云（禁把异步体挂死、请求侧零响应）。
+            await _channel.invokeMethod<void>('startGenerate', {
+              'requestId': requestId,
+              'promptJson': prompt,
+              'maxTokens': config.maxTokens,
+              'temperature': config.temperature,
+              'topP': config.topP,
+              'stopTokenIds': config.stopTokenIds.toList(),
+              // 票据缺失（通道异常等）= 未知态：发空 epoch 让 :engine 权威拒绝
+              //（禁本地猜测放行——I2）。
+              'expectInstanceId': ticket?.instanceId ?? '',
+              'expectSeq': ticket?.seq ?? -1,
+            }).timeout(const Duration(seconds: 10));
+            break; // 受理成功
+          } on PlatformException catch (e) {
+            final retryable = e.code == 'session_epoch_mismatch' ||
+                e.code == 'session_loading';
+            if (!retryable || attempt == maxAcceptAttempts) rethrow;
+            // 分码收敛（设计 §2.2 拒绝处置表）：作废镜像（置未知，非猜测）
+            // → 交装载链路（内含 bind/退避/单飞）→ 复取票据重试一次。
+            debugPrint('[on-device] startGenerate ${e.code} @attempt$attempt '
+                '→ invalidate mirror + reload + retry once');
+            _binding.sessionMirror.invalidate();
+            _loadState.value = OnDeviceLoadState.unloaded;
+            final st = await enable();
+            if (st != EngineStatus.ready && st != EngineStatus.busy) {
+              // 装载后仍非就绪：enable 的错误面已把真因带给下一轮请求；
+              // 本轮按可自愈中断收口切云（禁挂死）。
+              throw OnDeviceLoadException(
+                  '重试装载后仍非就绪（${st.name}）', retryable: true);
+            }
+            ticket = await _binding.fetchSessionTicket();
+          }
+        }
+        // 无进展看门狗（受理即武装）：长期无字节 = 数据面失联 → 切云（禁挂死）。
         _armWatchdog(requestId);
+        unawaited(_binding.reconcileTicket(_loadState.value, 'generate'));
       } on PlatformException catch (e) {
         _active.remove(requestId);
         if (e.code == 'service_busy') {
@@ -511,10 +534,28 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
           // breaker.report 调用，不进熔断口径。
           ctrl.addError(
               const EngineDiedException('service busy (strategy B) → cloud fallback'));
+        } else if (e.code == 'session_epoch_mismatch' ||
+            e.code == 'session_loading') {
+          // M3 收口（设计 §2.2）：重试一次后仍撞分码 = 权威持续说「不可受理」
+          // ——作废镜像（置未知，非猜测复位），按可自愈中断切云完成本轮；
+          // 真因已由 :engine 侧 loadError / 票据承载，禁再当用户可见的
+          // StateError 裸抛（2026-10-31 start_rejected 事故的退役点）。
+          _binding.sessionMirror.invalidate();
+          _loadState.value = OnDeviceLoadState.unloaded;
+          ctrl.addError(EngineDiedException(
+              'session rejected after retry (${e.code}) → cloud fallback'));
         } else {
-          // 快速失败上抛（数据面未建等），调用方按 §6.6 捕获切云。
+          // 其余拒绝（数据面未建等）：如实上抛由上层显式报错。
           ctrl.addError(StateError('startGenerate rejected: ${e.code} ${e.message}'));
         }
+        await ctrl.close();
+      } on TimeoutException catch (e) {
+        // §2.9：受理调用 10s 超时 = :engine 冻结/假死（无 DeadObject 同族）
+        // ——作废镜像 + 可自愈中断切云完成本轮（禁挂死、禁判死引擎硬件）。
+        _active.remove(requestId);
+        _binding.sessionMirror.invalidate();
+        _loadState.value = OnDeviceLoadState.unloaded;
+        ctrl.addError(EngineDiedException('control-plane timeout ($e) → cloud fallback'));
         await ctrl.close();
       }
     });
@@ -621,6 +662,7 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
           'len=${batch.length} head=${batch.take(16).map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}');
     }
     for (final active in _active.values) {
+      active.bytesIn += batch.length;
       try {
         // 解码自愈在 detok 内闭环（单字节失败即重建解码器并继续）——此处
         // catch 仅作防御：单流解码失败不得中断其余活跃流（stale 流残留时
@@ -682,6 +724,12 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
   void _closeWithFinish(_ActiveGenerate active, EngineFinishReason reason) {
     active.watchdog?.cancel();
     active.watchdog = null;
+    // 字节/字符收口对账（取证钉）：bytesIn/charsOut/decodeErrors 三值一分——
+    // charsOut 与 bytesIn 不成正常 UTF-8 比例 → 解码层丢字节；bytesIn 本身
+    // 偏小 → :engine 侧投递前已丢（sanitizer/im_end 截断）。
+    debugPrint('[on_device] stream close accounting requestId=${active.requestId} '
+        'bytesIn=${active.bytesIn} charsOut=${active.charsOut} '
+        'decodeErrors=${active.detok.decodeErrors}');
     if (!active.ctrl.isClosed) {
       active.ctrl.add(EngineChunk(
         deltaText: '',
@@ -724,6 +772,10 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
   void _onProcessDied() {
     // 外部处决（SIGKILL/LMK）→ 不计入熔断，仅维护 500ms 冷却窗口（§6.5 v2.6）。
     unawaited(breaker.report(countable: false));
+    // M2 投影作废（设计 §2.4 I2，替代原「事件复位」PATCH）：通道中断 = 票据
+    // 不可信 → 镜像置未知（新进程 instanceId 必变，对账天然不命中）。
+    _binding.sessionMirror.invalidate();
+    _loadState.value = OnDeviceLoadState.unloaded;
     _failAllActive(const EngineDiedException('process killed externally'));
   }
 
@@ -738,9 +790,26 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
   /// initialized`，且错误文案呈现 `assetMissing`（立法语义=模型未下载）
   /// ——把「空闲 5 分钟后模型被正常回收」报成「模型没下载」，补救方向完全误导。
   void _onEngineEvicted(String reason) {
+    // M2 投影作废（I2）：镜像已在 binding 事件入口 invalidate——此处仅复位
+    // loadState 消费面。
     _loadState.value = OnDeviceLoadState.unloaded;
     debugPrint('[DEGRADE] on_device evicted: $reason'
         '（端侧回到未启用态，下次请求快速暖机重装，资产在盘不重下载）');
+  }
+
+  /// §2.8 I6：驱逐**打断了在途生成**（:engine 侧 slot 主 requestId 上行）。
+  /// 该流以 SESSION_ABORTED_BY_EVICTION 语义收口——可重试/切云（区别于
+  /// 进程死亡的 EngineDied 判死），不再靠数据面 EOF 间接收口（丢归因）。
+  void _onEvictionInterrupted(String requestId) {
+    final active = _active.remove(requestId);
+    if (active == null) return; // 已被看门狗/EOF 收口
+    active.watchdog?.cancel();
+    debugPrint('[DEGRADE] on_device generation aborted by eviction: $requestId');
+    if (!active.ctrl.isClosed) {
+      active.ctrl.addError(const EngineDiedException(
+          'SESSION_ABORTED_BY_EVICTION: engine evicted during generation'));
+      active.ctrl.close();
+    }
   }
 
   void _failAllActive(EngineDiedException error) {
@@ -775,6 +844,11 @@ class _ActiveGenerate {
   final String requestId;
   final StreamController<EngineChunk> ctrl;
   final StreamingDetokenizer detok;
+
+  /// 每流对账计数（取证钉）：bytesIn = 本流解码器实收字节；charsOut =
+  /// deltaText 累计字符。收口打点三值一分定位丢字节环节。
+  int bytesIn = 0;
+  int charsOut = 0;
 
   /// 无进展看门狗（数据面失联兜底，见 [AidlOnDeviceEngine.kNoProgressTimeout]）。
   Timer? watchdog;

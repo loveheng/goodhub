@@ -51,6 +51,13 @@ class EngineLifecycle(
     private var generation = 0
 
     /**
+     * 代次对外只读面（M1 Expand）：会话票据 `seq` 取此值——主进程据此判别
+     * 「票据是否属于当前会话」（配合 `:engine` 进程实例标识使用）。
+     */
+    val currentGeneration: Int
+        get() = generation
+
+    /**
      * TTL 到点回调（由接线方定时器驱动）。返回 true = 本次确实执行了驱逐
      * （接线方可据此记日志/上报）；false = 代次失配或非待命态，静默作废。
      */

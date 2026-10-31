@@ -41,7 +41,10 @@ class AidlOnDeviceLlmEngineAdapter
 
   @override
   Future<String?> unavailableReasonAsync() async {
-    final s = await _inner.checkStatus();
+    // M4：票据面权威状态（checkStatus 轮询面已退役）。未知（null）如实报
+    // 「状态未知」，禁猜测成某个具体态。
+    final s = await _inner.authoritativeStatus();
+    if (s == null) return '端侧引擎状态未知（:engine 未连接或通道超时）';
     // 面向用户的白话原因（禁泄漏内部枚举名——否则用户读到
     // 「端侧引擎状态：thermalCutoff」这类不可读文案）。
     return s == EngineStatus.ready
@@ -73,7 +76,9 @@ class AidlOnDeviceLlmEngineAdapter
   }) async {
     final requestId = 'aidl-${DateTime.now().microsecondsSinceEpoch}';
     _currentRequestId = requestId;
-    final fullPrompt = system == null ? prompt : '$system\n\n$prompt';
+    // prompt = 消息序列 JSON（2026-10-31 设计修正），system 已在消息序列内
+    //（由 :engine 侧 ChatML 构造 system 轮）——旧 system 拼接退役。
+    final fullPrompt = prompt;
     try {
       final buf = StringBuffer();
       await for (final chunk in _inner.generate(
@@ -84,8 +89,16 @@ class AidlOnDeviceLlmEngineAdapter
         buf.write(chunk.deltaText);
       }
       final text = buf.toString();
+      // 内容取证（2026-10-31 真机「第二轮没有任何输出」：outChars=99 与
+      // bytes=550 不符、两轮 outChars 恰好相同——复读环 / sanitizer 剥剩
+      // 空白 / UI 链吞文本三选一，须看到实际内容才能定位）。
+      final preview = text.length <= 80
+          ? text
+          : '${text.substring(0, 60)}…(${text.length - 80} chars)…${text.substring(text.length - 20)}';
+      final blankOnly = text.trim().isEmpty;
       debugPrint('[on_device] gen done requestId=$requestId '
-          'promptChars=${fullPrompt.length} outChars=${text.length}');
+          'promptChars=${fullPrompt.length} outChars=${text.length} '
+          'blankOnly=$blankOnly preview=[$preview]');
       if (text.isEmpty) {
         _lastFailureReason = '空产出（端侧模型未产出任何内容）';
         return null;

@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 
 import 'on_device_engine.dart';
 import 'on_device_ready_gate.dart';
+import 'on_device_session_ticket.dart';
 
 /// 端侧引擎绑定面（on-device epic S1-1 骨架，S2 正式接线扩展）。
 ///
@@ -22,8 +23,46 @@ class OnDeviceEngineBinding {
   /// 与 EngineServiceBridge.kt（Kotlin）对齐的唯一通道名。
   static const MethodChannel channel = MethodChannel('goodhub/on_device_engine');
 
+  /// 会话票据镜像（M1 Expand：仅见证 / 作废，**不参与判定**——判定切换归 M2）。
+  final SessionMirror sessionMirror = SessionMirror();
+
   /// 就绪闸：onEngineReady / 死亡事件驱动（S2 正式接线）。
   final EngineReadyGate readyGate = EngineReadyGate();
+
+  /// 会话票据查询（M1 Expand；设计 §2.2）：一次取回权威状态 + 代次 + 资产身份。
+  /// 通道不可达抛 PlatformException 由调用方（影子对账）留痕，不静默造票据。
+  ///
+  /// §2.9 有界超时：进程冻结（假死，非杀死）下同步 AIDL 调用可能长时间不
+  /// 返回且**没有** DeadObject——3s 超时按 null（未知态）收口，交装载链路
+  /// 重新对账，禁把主进程挂死成 ANR。
+  Future<SessionTicket?> fetchSessionTicket() async {
+    try {
+      return SessionTicket.tryParse(
+          await channel.invokeMethod<Object?>('checkSession').timeout(
+              const Duration(seconds: 3)));
+    } on TimeoutException {
+      debugPrint('[DEGRADE] checkSession timeout (3s, frozen?) → unknown');
+      return null;
+    }
+  }
+
+  /// M1 影子对账：取票据 → 见证 → 与调用方本地态对账 → 漂移留痕。
+  ///
+  /// **不阻断、不改判定**（Expand 阶段铁律：只让漂移可见可统计，M2 才切换
+  /// 消费侧）。挂点 = 装载收尾与生成受理后（覆盖本次事故的两个观测面）。
+  Future<void> reconcileTicket(OnDeviceLoadState localState, String where) async {
+    try {
+      final ticket = await fetchSessionTicket();
+      sessionMirror.witness(ticket);
+      final drift = sessionMirrorDrift(ticket, localState);
+      if (drift != null) {
+        debugPrint('[DEGRADE] session-mirror drift @$where: $drift '
+            '(ticket=$ticket)');
+      }
+    } catch (e) {
+      debugPrint('[DEGRADE] session-mirror reconcile @$where: $e');
+    }
+  }
 
   /// token 微批投递已随 S3-6 收编 native 数据面：:engine 写 Ashmem
   /// RingBuffer + pipe 唤醒，主进程 native worker（libgdw）经
@@ -58,10 +97,6 @@ class OnDeviceEngineBinding {
   /// 熔断但维护冷却窗口 §6.5 v2.6）。
   void Function()? onProcessDied;
 
-  /// S3-1 热切云沿（:engine thermal listener 权威，NPU 稿 §5.2/§5.3）：
-  /// true = 热状态 ≥ SEVERE 全量切云；false = 回落 MODERATE 及以下端侧恢复。
-  void Function(bool active)? onThermalCutover;
-
   /// `:engine` **自发**状态变更上行（P0-3）：TTL 驱逐 / onTrimMemory 驱逐 /
   /// 内存护栏驱逐 / 主动 release 后由主进程桥投递（对应 AIDL
   /// `IOnDeviceEngineListener.onEngineEvicted`）。
@@ -74,6 +109,11 @@ class OnDeviceEngineBinding {
   /// 消费方据此复位 loadState，令下一次 enable 走「快速暖机」再入
   /// （资产在盘不重下载，NPU 稿 §4.1 COLD-EVICTED 立法意图）。
   void Function(String reason)? onEngineEvicted;
+
+  /// §2.8 I6：驱逐**打断了在途生成**（evictingRequestId 非空）——消费方对该
+  /// 流以 SESSION_ABORTED_BY_EVICTION 语义收口（可重试/切云），区别于
+  /// EngineDied（进程死亡），归因不丢、切云决策可分。
+  void Function(String requestId)? onEvictionInterrupted;
 
   OnDeviceEngineBinding() {
     // handler 注册不在此处：纯 Dart 测试环境（无 WidgetsFlutterBinding）构造
@@ -92,8 +132,6 @@ class OnDeviceEngineBinding {
         case 'onProcessDied':
           readyGate.noteGone();
           onProcessDied?.call();
-        case 'onThermalCutover':
-          onThermalCutover?.call(call.arguments as bool? ?? false);
         case 'onIpcDeadlock':
           onIpcDeadlock?.call();
         case 'onGenerateFinished':
@@ -106,7 +144,15 @@ class OnDeviceEngineBinding {
           readyGate.noteReady((call.arguments as int?) ?? 5);
         case 'onEngineEvicted':
           // :engine 自发驱逐：消费方复位 loadState（见 [onEngineEvicted] 注释）。
-          onEngineEvicted?.call(call.arguments as String? ?? 'unknown');
+          // M2 §2.8：args 携带 {reason, evictingRequestId}——requestId 非空 =
+          // 驱逐打断了在途生成，aidl 层对该流 SESSION_ABORTED_BY_EVICTION 收口。
+          final args = call.arguments;
+          final reason = args is Map ? args['reason'] as String? ?? 'unknown' : 'unknown';
+          final evicting = args is Map ? args['evictingRequestId'] as String? : null;
+          // 投影作废（I2：失效=未知，禁猜测复位）+ 既有 loadState 复位消费面。
+          sessionMirror.invalidate();
+          onEngineEvicted?.call(reason);
+          if (evicting != null) onEvictionInterrupted?.call(evicting);
       }
       return null;
     });

@@ -17,6 +17,7 @@
 library;
 
 import '../llm/cloud/cloud_llm.dart' show AssembledToolCall;
+import '../core/notice_category.dart';
 import '../mcp/connection_manager.dart';
 import '../resources/resource_store.dart';
 import '../sandbox/memory_store.dart';
@@ -84,7 +85,7 @@ LocalToolChain composeLocalToolChain({
   required GateDelegate? gateDelegate,
   required CrossSourceDelegate? consentDelegate,
   required void Function(ToolNotice)? onNotice,
-  required void Function(String message, {bool danger})? onNote,
+  required void Function(String message, {bool danger, TrackNoticeCategory category})? onNote,
   PlanRunState? planState,
   PlanProposalDelegate? planDelegate,
   void Function(String message)? onPlanEcho,
@@ -102,7 +103,8 @@ LocalToolChain composeLocalToolChain({
       router: router,
       inner: inner,
       serverSummaries: summaries,
-      onActivation: (id) => onNote?.call('✓ 已激活 $id 的工具', danger: false),
+      onActivation: (id) =>
+          onNote?.call('✓ 已激活 $id 的工具', danger: false, category: TrackNoticeCategory.fact),
     ),
     (inner) => SkillActivationExecutor(
       inner: inner,

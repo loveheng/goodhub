@@ -38,6 +38,7 @@ import 'skill_registry.dart';
 import 'tool_breaker.dart' show BlockDelegate;
 import 'tool_router.dart';
 import '../core/errors/mcp_error.dart';
+import '../core/notice_category.dart';
 import '../llm/cloud/cloud_llm.dart'
     show CloudChatMessage, CloudLlmEngine, CloudToolSchema;
 import '../mcp/connection_manager.dart';
@@ -190,7 +191,8 @@ class RuntimeDelegates {
   // —— 广播（void）——
 
   /// 轨迹/告警注记（对应 chat `_add(TrackNote)`；danger=true 红字）。
-  final void Function(String message, {bool danger})? onNote;
+  /// [category] 决定去向：事实类入账本单槽、错误类回对话流、过程类不收纳。
+  final void Function(String message, {bool danger, TrackNoticeCategory category})? onNote;
 
   /// 状态带工具进度（对应 `_setPill` + `loop.emitToolProgress` 桥接）。
   final void Function(String tool, num progress, num? total, String? message)?
@@ -537,7 +539,7 @@ class McpRuntime {
       try {
         assertServerIdMountable(ep.id, client);
       } on ReservedNamespaceException catch (e) {
-        note?.call('⚠ 端点 ${ep.id} 挂载被拒: ${e.message}', danger: true);
+        note?.call('⚠ 端点 ${ep.id} 挂载被拒: ${e.message}', danger: true, category: TrackNoticeCategory.error);
         client.close();
         continue;
       }
@@ -553,6 +555,7 @@ class McpRuntime {
           '✓ 已连接 ${ep.name}'
           '${caps.serverVersion != null ? ' v${caps.serverVersion}' : ''}',
           danger: false,
+          category: TrackNoticeCategory.fact,
         );
         final face = McpToolFace(
           client: client,
@@ -574,7 +577,7 @@ class McpRuntime {
             '${caps.serverName ?? ep.name} ${caps.isTier1 ? 'Tier 1' : 'Tier 2'}';
       } catch (e) {
         client.close();
-        note?.call('⚠ 端点 ${ep.name} 挂载失败: $e', danger: true);
+        note?.call('⚠ 端点 ${ep.name} 挂载失败: $e', danger: true, category: TrackNoticeCategory.error);
       }
     }
 
@@ -615,12 +618,13 @@ class McpRuntime {
         note?.call(
           '✓ 本地插件 ${info.serverTitle} ${caps.serverName ?? '?'} ｜ 自动挂载',
           danger: false,
+          category: TrackNoticeCategory.fact,
         );
       } catch (e) {
         // F3：失败路径补 client.close()——此前仅通告不关（negotiate/listTools/
         // 保留字断言抛错时 client 未登记进任何回收表），坏插件每轮装配泄一个。
         client.close();
-        note?.call('⚠ 本地插件 ${info.serverTitle} 挂载失败: $e', danger: true);
+        note?.call('⚠ 本地插件 ${info.serverTitle} 挂载失败: $e', danger: true, category: TrackNoticeCategory.error);
       }
     }
 
@@ -683,7 +687,8 @@ class McpRuntime {
       planState: caps.planFence ? planState : null,
       planDelegate: caps.planFence ? delegates.planDelegate : null,
       // R1 实参透明化：每步首笔写调用实参摘要回显轨道（灰阶注记）。
-      onPlanEcho: (message) => note?.call(message, danger: false),
+      onPlanEcho: (message) =>
+          note?.call(message, danger: false, category: TrackNoticeCategory.process),
     );
     final executor = chain.executor;
     final gateway = chain.gateway;
@@ -709,7 +714,7 @@ class McpRuntime {
           piiFenceDelegate: delegates.fenceDelegate, // D4 有人值守拦截卡（可空）
           onNote: note, // P2-1：BYOK 读取失败的用户可见通道
         );
-    note?.call('✓ 引擎就绪：${effectiveEngine.name}', danger: false);
+    note?.call('✓ 引擎就绪：${effectiveEngine.name}', danger: false, category: TrackNoticeCategory.fact);
 
     // —— S2：反向能力接线由 profile 声明驱动（**能力上限**，非主体裁剪）——
     // —— T6：每个 client 接管自身采样反向请求（serverKey = serverId；

@@ -66,10 +66,9 @@ last-merge: none
 
 ## 已锁定 vs 未落地（速判）
 
-- **已锁定机制**：超大 Tool Result 硬截断（D-I）、Loop Storm 环路防护（`hop_count≤2`）、N7 正则四类 + 无人值守 fail-closed。
+- **已锁定机制**：超大 Tool Result 硬截断（D-I）、Loop Storm 环路防护（`hop_count≤2`）、N7 正则四类 + 无人值守 fail-closed、**NPU 兜底（2026-10-31）：`GenieSession.doLoad` 以 QAIRT+NPU 为主路，仅 QAIRT build 失败（NPU 驱动/HTP 不可用）回落 `llama_cpp+CPU` 完成本会话（同 GGUF 资产 + tokenizer，AAR 已捆绑两插件）；热/OOM 不触发兜底仍收口云端（遵「禁 CPU 分流」）；Dart 路由层/AIDL 不变（运行时无关），D1a 设备分档不变，仅推翻 D1「无 CPU 兜底」条款且限定高端 NPU 设备（`decisions.md` ADR）**。
 - **仍为空缺 / draft / 未排期**：端侧模型管理链（已归档未复活）、iOS 端侧引擎适配、端侧模型 OOM 独立进程化（G6）、端侧摘要器 `$ref` 注水实证、端侧 PII 模型层、移动端生命周期钩子、阶梯截断端侧摘要归档（draft）。
 
 ## 断点
 
-- [断点] 下一步：真机复测「同一对话第二次提问」（2026-10-30 用户报障）——同对话连问两轮，按新增打点三值对账定位：第二轮 `:engine` 侧 `genie query done: bytes=0` → 模型侧零产出（会话 reset 失败 / im_end 早停 / 流错误）；`bytes>0` 但 Dart 无「first data frame」→ 数据面投递侧；Dart 有帧但 UI 无输出 → 解码/聚合侧。复测后据证回填本条。
-- [断点] 下一步：真机侧载验证 UDS 数据面端到端（TLV 协议定型版）+ 热降级复测（装载期升温 ≥SEVERE：应切云完成本轮，不报「模型装载失败（circuitBroken）」；复测前先 dumpsys thermalservice 确认档位）
+- [断点] 下一步：真机侧载复测（多轮 ChatML 第二轮作答 + **每轮回答独立成气泡**——2026-10-31 气泡边界已从「双保险手工断流」改为**设计内建**：Run 归属令牌 `ChatRunId`（controller 发号）+ 块级条目入轨即关段（结构派生，页面层零纪律））+ 收尾/快照刷盘；复测须额外视觉核对：工具卡/记忆胶囊/错误卡入轨后正文自动另起气泡）+ 恢复混沌矩阵回归（kill×rebind×evict×reload×资产替换）

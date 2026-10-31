@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-23
+updated: 2026-10-31
 ---
 
 # goodhub · 功能落点索引（数据）
@@ -15,6 +15,7 @@ updated: 2026-10-23
 |---|---|---|
 | MCP 客户端（连接/claim/touch/apply） | `lib/mcp/` | JSON-RPC over Streamable HTTP；契约 = goodshare 仓 `docs/design/ai-app-split.md` §3；tools/call 结果按 MCP content 信封解包 |
 | LLM 引擎（端侧 LiteRT-LM / 云端） | `lib/llm/` + `android/`（LlmBridge.kt） | M2 自 goodshare 随迁；proguard keep 教训查 `context/lessons.md` |
+| 端侧推理后端（:engine GenieX / NPU 兜底） | `android/app/src/main/kotlin/com/zzh/goodhub/GenieSession.kt`（+ `EngineService.kt`） | geniex-android AAR（`com.qualcomm.qti:geniex-android`）：`doLoad` 以 QAIRT+NPU 为主路，QAIRT build 失败回落 `llama_cpp+CPU`（仅高端 NPU 设备，热/OOM 不触发）；`activeRuntime` 可观测；SSOT = `on-device-capability.md` v3.2 |
 | 云端 BYOK 引擎（双协议/SSE 流式/BYOK 配置） | `lib/llm/cloud/` | 密钥走 `core/security/` SecureKeyValue；装配入口 `engineFor` |
 | 混合编排 Coordinator（降级状态机/云↔端路由/Agent Loop/MCP 工具面） | `lib/coordinator/` | `HybridCloudEngine` 路由 + `AgentLoop` 工具环（maxTurns=10）+ `McpToolFace`；默认装配 `assembleDefaultHybridEngine` |
 | 多插件任务编排（TaskPlan 计划卡 · 写面围栏 · 批量授权 · 台账聚合） | `lib/coordinator/task_plan.dart` + `plan_guard.dart` + `plan_proposal_tool.dart` + `permission_gateway.dart`（planGrant 源）+ `local_tool_chain.dart`（插链）+ `lib/ui/task_plan_card.dart` + `task_result_card.dart`（新，2026-10-24） | 设计 SSOT = `docs/design/task-orchestration.md`；链序铁律 `PlanProposalTool→PlanGuard→PermissionGateway`（经 `composeToolExecutorChain`）；Run 收口 = `McpAssembly.close` → `PlanRunState.endRun`（聚合卡经窗口回调）；step-id Schema 注入仅 App 内聊天工具面，网关投影不见此属性 |
@@ -32,7 +33,7 @@ updated: 2026-10-23
 | 网关/熔断联调页（L1/L2 网关 + 熔断排查卡验证 + 故障注入 + 脚本引擎 + 跨源/CoW 调试） | `lib/ui/gateway_loop_debug_page.dart`（窗口层：开关收集 + 四 UI 端口 + 事件流→轨道映射）+ `lib/coordinator/debug_run_orchestrator.dart`（挂载→协商→记忆面→网关→注水→引擎→sampling→故障注入→Skills/CoW→AgentLoop 全编排，纯编排零 UI；`_FaultInjector`/`_ScriptedEngine` 可单测件；clientFactory/目录解析器/五 UI 端口注入位） | **红线**：不并回 `McpRuntime.assemble`——生产多 Server 前缀路由+JIT 发现 vs 联调单 Server 裸名+静态 tools 语义不兼容；单测 `test/coordinator/debug_run_orchestrator_test.dart`（事件流契约/故障注入/释放卫生/异常路径） |
 | 应用内日志查看页（开发调试：AppLog 内存环形缓冲 + debugPrint sink 捕获） | `lib/core/app_log.dart`（`AppLog` 单例：2000 条 FIFO 环形缓冲 + `install()` 替换全局 `debugPrint` 捕获后委托原实现，kReleaseMode 不装；级别按正文 `[DEGRADE]` 推断）+ `lib/ui/log_viewer_page.dart`（过滤/复制/清空/跟随滚底）+ `lib/main.dart`（装配期 `AppLog.install()`） | 入口 = 设置页关于段长按 debug 菜单「查看日志」（kDebugMode 自闸）；内存态不落盘、重启即清（2026-10-30 拍板）；单测 `test/core/app_log_test.dart` + `test/ui/log_viewer_page_test.dart` |
 | 应用装配入口（引擎预热/记忆清扫/首页挂载） | `lib/main.dart` | 纯装配 |
-| 聊天主页（AgentLoop 正式宿主面） | `lib/ui/chat_page.dart`（视图交互与装配）+ `lib/ui/components/chat_composer.dart`（底部输入集群，传数据+回调零依赖私有态）+ `lib/ui/chat_status_controller.dart`（状态带 pill/运行态/已耗时 + 轨道列表 + 滚动锚定/键盘/会话切换生命周期；status/tracks 双 Listenable）+ `lib/ui/components/dual_track_stream.dart`（`TrackText`/`TrackCall` 自管局部渲染）+ `lib/ui/components/status_strip.dart`/`status_capsule.dart` | 交互 SSOT `docs/product/chat-interaction.md`；运行态·轨道·40ms 流控已下沉 controller/组件；**composer「+」= 本次会话统一挂载菜单**（服务绑定 + 附加资源 / 管理资源中心，2026-10-19 收口）；附件行按需展开（仅有待发项时 44dp，空态收 0），药丸默认 1 行不因新增能力占位；**红线**：离开运行中任务有 `PopScope` 确认拦截（abort 即停 + mounted 内落盘部分进度）；回归 `test/ui/chat_status_controller_test.dart` |
+| 聊天主页（AgentLoop 正式宿主面）+ **本轮记录**（2026-10-31） | `lib/ui/chat_page.dart`（视图交互与装配）+ `lib/ui/components/chat_composer.dart`（底部输入集群，传数据+回调零依赖私有态）+ `lib/ui/chat_status_controller.dart`（状态带 pill/运行态/已耗时 + 轨道列表 + 滚动锚定/键盘/会话切换生命周期；status/tracks 双 Listenable）+ `lib/ui/components/dual_track_stream.dart`（`TrackText`/`TrackCall` 自管局部渲染）+ `lib/ui/components/status_strip.dart`/`status_capsule.dart` | 交互 SSOT `docs/product/chat-interaction.md`；运行态·轨道·40ms 流控已下沉 controller/组件；**composer「+」= 本次会话统一挂载菜单**（服务绑定 + 附加资源 / 管理资源中心，2026-10-19 收口）；附件行按需展开（仅有待发项时 44dp，空态收 0），药丸默认 1 行不因新增能力占位；**红线**：离开运行中任务有 `PopScope` 确认拦截（abort 即停 + mounted 内落盘部分进度）；**本轮记录（2026-10-31 后续治理）**：系统通告按 `TrackNoticeCategory` 三分路由——**事实类**进 controller 单槽账本（`latestFactNotice`，同文案重复轮次覆盖式收敛、仅留最新一份）+ 累计次数 `noticeCount`，**错误类**回对话流内联（发生当场可见、防被良性事实覆盖吞掉），**过程类**不收纳仅瞬态 pill（`_add` 拦截转 SnackBar）；展示口 = AppBar Bolt 入口两节面板（`_showRoundRecordSheet`：系统通告单条 + 本轮记忆），生命周期随会话焚；回归 `test/ui/chat_status_controller_test.dart`（「本轮记录」组 + 「三分路由」组）+ `test/ui/chat_page_smoke_test.dart` ；**气泡边界（2026-10-31 设计修正）**：文本气泡归属 Run 令牌（`ChatRunId`，controller 逐 Run 发号）+ 块级条目入轨即关段——边界在状态机内派生，页面层零纪律（跨轮追加机制上不可能发生）；快照读走 `flushedTracks`（读即刷盘，尾帧必在）；回归 `test/ui/chat_status_controller_stream_test.dart` |
 | 双轨消息流组件（TrackEntry/渲染映射） | `lib/ui/components/dual_track_stream.dart` | 卡片复用 M2/M3 组件；阅读轨文本走 StreamingRichText；TrackEntry 编解码在 UI 层（静态） |
 | Markdown 子集解析器（跨仓共享包） | 外部包 `/home/zzh/app/rich_text/`（`rich_text.dart` 抽象 + `markdown_subset.dart` 实现） | goodhub 渲染器只依赖抽象（`List<RichBlock>`），parse 移调用点 |
 | 阅读轨只读渲染器（console tokens 对齐） | `lib/ui/rich_text_view.dart` | 媒体块降级不吞内容；todo 只读字形；MathBlock/InlineMath 降级等宽呈现 |
@@ -188,6 +189,8 @@ updated: 2026-10-23
 | `ui/components/dual_track_stream.dart` | 卡片渲染集中地；计划按卡片类型（确认卡/排查卡）拆子组件 |
 | `ui/gateway_loop_debug_page.dart` | 编排已下沉 orchestrator，剩余为 UI 开关面板；只减不增 |
 | `coordinator/mcp_runtime.dart` | 核心装配逻辑保持高内聚；只减不增（保留字断言 / CoW 注入 / 本机工具链已抽独立小件） |
+| `llm/on_device_asset_manager.dart` | OTA 下载 + 本地导入双通道；本地导入（结构校验/自由导入/体积上限/运行时检测）2026-10-31 多模型导入制新增撑大，计划抽「资产导入通道」独立件后只减不增 |
+| `llm/on_device_engine_aidl.dart` | 端侧 AIDL 适配件；M2/M3（2026-10-31）票据对账 + SESSION_* 分码收敛 + 驱逐打断收口新增撑大，计划抽「票据对账/受理重试」独立件后只减不增 |
 
 ### 契约面漂移登记（standards §8.2 · 机械门禁数据）
 

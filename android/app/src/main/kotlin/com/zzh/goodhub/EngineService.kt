@@ -54,6 +54,15 @@ class EngineService : Service() {
     /// Genie 正式会话（S2 正式接线）：持久 Dialog 生成后端。
     private val session = GenieSession(this)
 
+    /// 会话票据的**进程实例标识**（M1 Expand；设计 §2.2）：进程启动时生成的
+    /// UUID——进程重建必变，故无需磁盘持久化即可判别「票据来自另一进程实例」。
+    /// 不用 `elapsedRealtime`（重启归零可碰撞）也不用 pid（可复用）。
+    private val instanceId = java.util.UUID.randomUUID().toString()
+
+    /// 票据的资产身份（M1 Expand 简化 = 最近一次 `loadModel` 的目录名；
+    /// M2 接资产面指纹）。装载受理即回填，驱逐不空（票据 status 已表达失效）。
+    private var loadedModelId: String = ""
+
     /// S3-3 单执行槽（§6.6）：策略 B 驳回 + 前台抢占的原子判定面。
     private val slot = com.zzh.goodhub.engine.EngineSlot()
 
@@ -127,19 +136,9 @@ class EngineService : Service() {
                     runCatching { session.abort() }
                     break
                 }
-                // ⑦ 装载期升温自锁（2026-10-30 用户采纳）：4B 装载自身发热，
-                // 真机实测装载期 skin 达 50°C（SEVERE）——此时若继续叠加内存与
-                // 算力尖峰即在热临界点崩溃 / 被 OEM 杀。SEVERE 起主动 abort 装载
-                // 并留证（终止原因上抛主进程 → 前台显式失败，不静默重试）。
-                // UNCERTAIN（同上）：geniex create 阶段不可取消，abort 仅置标志，
-                // 真实中止依赖 SDK，权重驻留可能已经发生。
-                if (thermal.cutoffActive) {
-                    Log.w(TAG, "[DEGRADE] load thermal monitor: SEVERE+ " +
-                        "(status=${thermal.lastStatus}) - abort in-flight load")
-                    runCatching { session.abort() }
-                    runCatching { session.markLoadError("thermal_cutoff_aborted") }
-                    break
-                }
+                // 温控摘除（2026-10-31 用户裁决）：OEM 热档位（SoC 限频档）与
+                // 壳温体感严重不符，误判史多次实证——装载期热监控随之退役，
+                // 极端发热交 OEM 自身限频/降频保护。
                 Thread.sleep(1000)
             }
         }, "engine-load-mem-monitor").start()
@@ -164,26 +163,6 @@ class EngineService : Service() {
 
     /// TTL 定时器（主线程 Handler；代次失配由状态机作废，防旧计时器杀新会话）。
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-
-    /// S3-1 热调度状态机（§5.2/§5.3）：切云沿回调 = abort 在途生成（§6.3
-    /// token 粒度即时中断）+ 通知主进程闸门（AIDL onThermalCutover oneway）。
-    private val thermal = com.zzh.goodhub.engine.EngineThermal { active, status ->
-        if (active) {
-            Log.w(TAG, "[DEGRADE] thermal cutoff: SEVERE+ (status=$status) " +
-                "→ abort in-flight generation, switch to cloud")
-            session.abort()
-        } else {
-            Log.i(TAG, "thermal recovered: status=$status, on-device path resumed")
-        }
-        notifyThermalCutover(active)
-    }
-
-    /// PowerManager thermal listener（§5.3 公共 API，minSdk 34 ≥ API 29 无
-    /// 版本门槛；无 executor 版本回调在主线程）。onCreate 注册/onDestroy 注销。
-    private val thermalListener =
-        android.os.PowerManager.OnThermalStatusChangedListener { status ->
-            thermal.onThermalStatus(status)
-        }
 
     private fun scheduleTtl(generation: Int) {
         mainHandler.removeCallbacksAndMessages(null)
@@ -222,12 +201,23 @@ class EngineService : Service() {
         lifecycle.onGuardBreached(reason)
     }
 
+    /// 权威状态求值（S2 正式接线；M1 抽为单点供 `checkStatus` 与 `checkSession`
+    /// 共用——两处口径必须同源，否则票据与序数会各说一套）。
+    ///
+    /// 会话状态：生成在途 → busy（仅监控展示，禁 TTL 缓存，v2.6）；会话 ready →
+    /// ready；creating（装载中）→ **loading**（M4 受理态，P2-14 销账——受理态
+    /// 不再复用 assetMissing 的「资产缺失」措辞误导补救方向）；未装载且非创建中
+    /// → assetMissing（M4 起回归**终态**语义：真·未导入/校验不过）。设备可用性由
+    /// loadModel 管线创建结果承载（探针已随换线退役）。
+    private fun currentStatus(): EngineStatus {
+        if (slot.isBusy) return EngineStatus.busy
+        if (session.creating) return EngineStatus.loading
+        return if (session.ready) EngineStatus.ready else EngineStatus.assetMissing
+    }
+
     private val stub = object : IOnDeviceEngineService.Stub() {
         override fun initEngine(config: Bundle?, cb: IOnDeviceEngineListener?): Int {
             listener = cb
-            // S3-1 初态对齐：绑定可能晚于升温（热状态权威在 :engine），立即
-            // 回报当前切云态，主进程闸门不因时序漏开。
-            cb?.let { runCatching { it.onThermalCutover(thermal.cutoffActive) } }
             ensureDataPlane()
             // 后端可用性（S3 换线）：QnnProbe/jniLibs 探针随裸 Genie C API 链
             // 退役——geniex-android AAR 自带 QNN 运行时全家桶，真伪由 loadModel
@@ -246,7 +236,7 @@ class EngineService : Service() {
             return EngineStatus.assetMissing.ordinal
         }
 
-        override fun loadModel(modelDir: String?): Int {
+        override fun loadModel(modelDir: String?, modelId: String?): Int {
             // S2 正式接线：单飞闸 + 后台线程建 Genie 会话（~2.7s 暖机，不占
             // Binder 线程）。幂等：ready/creating 中重复调用不重建。
             if (modelDir.isNullOrEmpty()) return EngineStatus.unsupportedDevice.ordinal
@@ -274,6 +264,10 @@ class EngineService : Service() {
             }
             if (session.beginLoad()) {
                 loadedOnce = true
+                // M2 §2.5 I3：资产身份由 Dart 资产面单点计算（目录名@meta版本
+                // 摘要），票据回显承载 I3 对账；空值退化目录名。
+                loadedModelId = modelId?.takeIf { it.isNotEmpty() }
+                    ?: java.io.File(modelDir).name
                 // 护栏口径（用户拍板 2026-10-30）：护栏是兜底不是限制——装载时刻
                 // 不做前置拒绝（失败有后台重试自愈），此处仅留内存快照。同进程
                 // 二次装载 ION 泄漏对账（真机实证：驱逐后同 pid 重载 5s 内
@@ -296,24 +290,45 @@ class EngineService : Service() {
                 }, "engine-model-load").start()
                 startLoadMemMonitor()
             }
-            // 受理即返回 assetMissing（创建中；就绪后 checkStatus 转 ready）。
-            return EngineStatus.assetMissing.ordinal
+            // 受理即返回 loading（M4 受理态，P2-14 销账——不再复用 assetMissing
+            // 的「资产缺失」措辞；就绪后经票据面转 ready）。
+            return EngineStatus.loading.ordinal
         }
 
         override fun getDataSocketFd(): ParcelFileDescriptor =
             dataPlane?.dataSocketFd()
                 ?: throw UnsupportedOperationException("data plane not initialized")
 
-        override fun startGenerate(requestId: String?, promptJson: String?, generationParams: Bundle?) {
+        override fun startGenerate(requestId: String?, promptJson: String?, generationParams: Bundle?,
+                                   expectInstanceId: String?, expectSeq: Long) {
             if (requestId == null) throw IllegalArgumentException("requestId required")
-            // S3-1 热闸（§5.2 Thermal→Cloud）：SEVERE 及以上拒绝受理——与
-            // onThermalCutover 主动闸门互为冗余（回调丢失的单点保险），不构成
-            // TOCTOU 危害（宁多切云不误放行）。
-            if (thermal.cutoffActive) throw IllegalStateException("thermal cutoff active (SEVERE+)")
-            // S3-3 单执行槽 + 策略 B（§6.6）：原子判定（禁先 check 后调用，
-            // 防 TOCTOU）——后台忙即驳（切云，不排队）；前台忙则 abort 在途
-            //（§6.3 token 粒度中断）+ 有界等待让槽（绝不驳回用户；前台语义
-            // 由主进程 Bridge 依 Activity 前台态注入）。
+            // M3 原子自证（on-device-lifecycle-single-source.md §2.3 I4）：判定与
+            // 受理在同一入口完成，主进程不再「先查后发」。epoch 是入口闸门非
+            // 在途吊销令（I6）：受理后中途代次递增不影响本次生成。
+            // 不匹配 = 投影说谎/进程重建/装载目标变更 → 主进程作废镜像走装载。
+            // 匹配但装载中 = SESSION_LOADING（受理态，主进程有界等待后复核）。
+            if (expectInstanceId != instanceId ||
+                expectSeq != lifecycle.currentGeneration.toLong()) {
+                throw UnsupportedOperationException(
+                    "SESSION_EPOCH_MISMATCH: current=$instanceId#${lifecycle.currentGeneration} " +
+                        "status=${currentStatus()} modelId=$loadedModelId " +
+                        "(expected=$expectInstanceId#$expectSeq)")
+            }
+            if (!session.ready) {
+                if (session.creating) {
+                    throw UnsupportedOperationException(
+                        "SESSION_LOADING: model loading in progress " +
+                            "(modelId=$loadedModelId, loadError=${session.loadError})")
+                }
+                // 非 ready 且非装载中（驱逐/释放/进程半死）= 投影必然过期。
+                throw UnsupportedOperationException(
+                    "SESSION_EPOCH_MISMATCH: session not ready (loadModel first; " +
+                        "loadError=${session.loadError})")
+            }
+            // S3-3 单执行槽 + 策略 B（§6.6）：epoch 闸之后原子抢占判定——后台忙
+            // 即驳（切云，不排队）；前台忙则 abort 在途（§6.3 token 粒度中断）
+            // + 有界等待让槽（绝不驳回用户；前台语义由主进程 Bridge 依
+            // Activity 前台态注入）。
             val foreground = generationParams?.getBoolean("foreground", false) ?: false
             // 受理打点（诊断面，2026-10-30 真机实证「第二轮没有输出」）：
             // 「第二轮请求是否真的到达 :engine」是第一分叉点——未到达即主进程
@@ -332,21 +347,18 @@ class EngineService : Service() {
                             "(${com.zzh.goodhub.engine.EngineSlot.DEFAULT_PREEMPT_WAIT_MS}ms), " +
                             "routed to cloud (requestId=$requestId)")
             }
-            if (!session.ready) {
-                slot.release(requestId)
-                throw UnsupportedOperationException(
-                    "genie session not ready (loadModel first; loadError=${session.loadError})")
-            }
             val dp = dataPlane ?: run {
                 slot.release(requestId)
                 throw UnsupportedOperationException("data plane not initialized")
             }
-            val maxTokens = generationParams?.getInt("maxTokens", 512) ?: 512
+            // Bundle 缝收口：参数读取统一经 GenerationParams（键名/缺省值
+            // 单源，禁缝外重抄——原 topP 缺省 0.8 与桥写 0.9 漂移即此弊）。
+            val gp = com.zzh.goodhub.engine.GenerationParams.fromBundle(generationParams)
+            val maxTokens = gp.maxTokens
             // 采样参数接线（2026-10-30 复读环修复）：此前 Dart 侧随 AIDL 送达
             // 却被丢弃，端侧跑 SDK 默认采样。
-            val temperature =
-                generationParams?.getDouble("temperature", 0.7)?.toFloat() ?: 0.7f
-            val topP = generationParams?.getDouble("topP", 0.8)?.toFloat() ?: 0.8f
+            val temperature = gp.temperature.toFloat()
+            val topP = gp.topP.toFloat()
             lifecycle.onGenerateStart() // S2-4：WARM_STANDBY → ACTIVE（TTL 定时器随代次作废）
             val cb = listener
             Thread({
@@ -360,25 +372,20 @@ class EngineService : Service() {
                 //    消费端死锁（IPC_DEADLOCK §6.3）：abort 在途生成 + 关闭
                 //    数据面（EOF 通知对端）+ onIpcDeadlock 切云（不计熔断），
                 //    绝不空转占硬件。
-                // §1.2 吞吐打点：时间戳在 sink 入口采集（decode token 粒度，
-                // 40ms 微批只影响投递不影响计时）。统计变量放 sink 外层——
-                // 结束打点在 query 返回后读，sink 内经闭包回写。
-                val benchT0 = System.currentTimeMillis()
-                var benchFirst = 0L
-                var benchLast = 0L
-                var benchChunks = 0
+                // §1.2 吞吐打点（2026-10-31 替代）：TTFT/decodeSpan/
+                // generatedTokens 单源 = SDK ProfilingData（GenieSession.
+                // lastProfile，Completed 事件即达）；本 sink 只保留数据面专属
+                // 对账（benchBytes 入环字节 + chunks 计数）。
                 val sink = object : GenieChunkSink {
                     var pending: MutableList<Int> = ArrayList(64)
                     var lastFlush = System.currentTimeMillis()
                     var ipcDeadlock = false
                     var benchBytes = 0        // 写侧累计入环字节数（与 Dart 接收对账）
                     var benchBytesMark = 0
+                    var benchChunks = 0       // 写侧 chunk 计数（数据面对账）
 
                     override fun onChunk(text: String) {
                         if (text.isEmpty() || session.abortRequested || ipcDeadlock) return
-                        val t = System.currentTimeMillis()
-                        if (benchFirst == 0L) benchFirst = t
-                        benchLast = t
                         benchChunks++
                         val bytes = text.toByteArray(Charsets.UTF_8)
                         for (i in bytes.indices) pending.add(bytes[i].toInt() and 0xFF)
@@ -438,7 +445,7 @@ class EngineService : Service() {
                     // 重置失败 / 模板提前闭合 / 流错误），bytes>0 即数据面投递侧
                     // 问题（写侧已出字节但 Dart 未收）。
                     Log.i(TAG, "genie query done: requestId=$requestId status=$status " +
-                        "bytes=${sink.benchBytes} chunks=$benchChunks " +
+                        "bytes=${sink.benchBytes} chunks=${sink.benchChunks} " +
                         "cancelled=$cancelled")
                     if (!cancelled && sink.pending.isNotEmpty()) {
                         sink.flush()
@@ -467,17 +474,20 @@ class EngineService : Service() {
                     if (status < 0) {
                         Log.w(TAG, "[DEGRADE] genie query failed: status=$status")
                     }
-                    // TPOT 分母钉子：优先用 Genie 自报的真实生成 token 数
-                    //（GenieDialog_getValue / NUM_GENERATED），不可用则回退
-                    // chunks-1（旧近似，1 chunk = 1 token 未实证）。
-                    val gen = session.numGenerated()
-                    val span = if (benchChunks > 1) benchLast - benchFirst else 0L
-                    val denom = if (gen > 1) gen - 1 else (benchChunks - 1).coerceAtLeast(1)
-                    val tpot = if (span > 0) span.toDouble() / denom else 0.0
-                    Log.i(TAG, "bench: ttft=${benchFirst - benchT0}ms decodeSpan=${span}ms "
-                        + "chunks=$benchChunks numGenerated=$gen "
-                        + "tpot=${java.lang.String.format(java.util.Locale.US, "%.1f", tpot)}"
-                        + "ms/token")
+                    // 吞吐打点单源 = SDK ProfilingData（2026-10-31 替代宿主
+                    // 手写秒表；profile 不可用 = 异常/取消路径，如实留痕）。
+                    val p = session.lastProfile
+                    if (p != null) {
+                        Log.i(TAG, "bench: ttft=${p.ttftMs.toInt()}ms " +
+                            "decodeSpan=${p.decodeTimeMs.toInt()}ms " +
+                            "chunks=${sink.benchChunks} numGenerated=${p.generatedTokens} " +
+                            "tpot=${java.lang.String.format(java.util.Locale.US, "%.1f",
+                                if (p.generatedTokens > 1) p.decodeTimeMs / (p.generatedTokens - 1) else 0.0)}" +
+                            "ms/token speed=${p.decodingSpeed}tok/s stopReason=${p.stopReason}")
+                    } else {
+                        Log.i(TAG, "bench: profile unavailable (aborted/error?) " +
+                            "chunks=${sink.benchChunks} bytes=${sink.benchBytes}")
+                    }
                     cb?.onGenerateFinished(requestId, if (cancelled || status < 0) 1 else 0)
                 } catch (e: Exception) {
                     Log.w(TAG, "[DEGRADE] genie generate aborted: $e")
@@ -537,25 +547,23 @@ class EngineService : Service() {
             lifecycle.onRelease()
         }
 
-        override fun checkStatus(): Int {
-            // 会话状态（S2 正式接线）：生成在途 → busy（仅监控展示，禁 TTL
-            // 缓存，v2.6）；会话 ready → ready；creating/未装载 → assetMissing
-            // （过渡口径：无独立 creating 序数——三态状态机归 S2-4）。设备
-            // 可用性由 loadModel 管线创建结果承载（探针已随换线退役）。
-            // S3-1：热切云期 → thermalCutoff（**与 circuitBroken 语义解耦**：
-            // 熔断 = 引擎故障（需熔断器/人工介入）；热降级 = 环境性可自愈，
-            // 温度回落后经 onThermalCutover 解除沿自动恢复。混用会把「设备
-            // 过热」报成「熔断保护中」并在装载路径判死——真机实证
-            // 「端侧加载失败：模型装载失败（circuitBroken）」）。
-            if (thermal.cutoffActive) return EngineStatus.thermalCutoff.ordinal
-            if (slot.isBusy) return EngineStatus.busy.ordinal
-            return (if (session.ready) EngineStatus.ready else EngineStatus.assetMissing).ordinal
+        // M4 Contract：checkStatus 轮询面已退役——状态唯一来源 = checkSession
+        // 票据面（currentStatus() 仍供 checkSession 与 startGenerate epoch 闸共用）。
+
+        // M1 Expand：会话票据查询面（设计 §2.2）——一次返回权威状态 + 代次 +
+        // 资产身份。M4 起为主进程**唯一**状态查询面（checkStatus 已删）。
+        override fun checkSession(): Bundle {
+            val t = com.zzh.goodhub.engine.SessionTicket(
+                instanceId = instanceId,
+                seq = lifecycle.currentGeneration.toLong(),
+                status = currentStatus(),
+                modelId = loadedModelId,
+                runtime = session.activeRuntime,
+                issuedAtMs = System.currentTimeMillis(),
+            )
+            return com.zzh.goodhub.engine.SessionTicketWire.run { t.toBundle() }
         }
 
-        // S3-2：FGS 前台预挂执行面（§6.2 v2.7）——主进程已作前台态判定与
-        // 长生成阈值判定，此处无条件执行；时序违规竞态（判定后瞬间退后台）
-        // 经 catch 防御，绝不令 :engine 崩溃（DEGRADE = 无 FGS 保活，仅损失
-        // OEM 冻结防御强度，生成本身不受影响）。
         override fun promoteForeground() = promoteFgs("正在本地生成")
 
         override fun diagPanic() {
@@ -575,21 +583,15 @@ class EngineService : Service() {
         Log.d(TAG, "trimMemory level=$level evicted=$evicted")
     }
 
-    /// :engine 侧主动上报热切云沿（S3-1：AIDL oneway 广播不阻塞）。
-    private fun notifyThermalCutover(active: Boolean) {
-        try {
-            listener?.onThermalCutover(active)
-        } catch (e: RemoteException) {
-            Log.w(TAG, "listener dead while reporting thermal cutover: $e")
-        }
-    }
-
-    /// `:engine` 侧自发驱逐上行（P0-3；oneway 广播不阻塞）。
+    /// `:engine` 侧自发驱逐上行（P0-3；oneway 广播不阻塞）。§2.8 I6：驱逐
+    /// 打断在途生成时携带被中断的 requestId（slot 主）——主进程以
+    /// SESSION_ABORTED_BY_EVICTION 收口该流（可重试/切云），不误报 EngineDied。
     /// 进程刚被外部处决时 listener 可能已成尸体——RemoteException 静默吞，
     /// 该场景本就由主进程 onServiceDisconnected 接管。
     private fun notifyEngineEvicted(reason: String) {
+        val evictingRequestId = if (slot.isBusy) slot.owner else null
         try {
-            listener?.onEngineEvicted(reason)
+            listener?.onEngineEvicted(reason, evictingRequestId)
         } catch (e: RemoteException) {
             Log.w(TAG, "listener dead while reporting engine evicted: $e")
         }
@@ -597,14 +599,8 @@ class EngineService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        val pm = getSystemService(android.os.PowerManager::class.java)
-        if (pm != null) {
-            pm.addThermalStatusListener(thermalListener)
-            // 初始态对齐：进程启动时可能已处于升温态（getCurrentThermalStatus）。
-            thermal.onThermalStatus(pm.currentThermalStatus)
-        } else {
-            Log.w(TAG, "[DEGRADE] PowerManager unavailable: thermal scheduling disabled")
-        }
+        // 温控摘除（2026-10-31 用户裁决）：OEM 热档位与壳温体感严重不符，
+        // 误判史多次实证——不再监听/调度，极端发热交 OEM 自身限频保护。
         // S3-2：FGS 通知渠道（幂等；IMPORTANCE_LOW = 静默栏位通知，不打扰）。
         runCatching {
             val nm = getSystemService(android.app.NotificationManager::class.java)
@@ -617,8 +613,6 @@ class EngineService : Service() {
     }
 
     override fun onDestroy() {
-        val pm = getSystemService(android.os.PowerManager::class.java)
-        pm?.removeThermalStatusListener(thermalListener)
         super.onDestroy()
     }
 

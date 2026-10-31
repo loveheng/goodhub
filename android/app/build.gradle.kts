@@ -77,6 +77,10 @@ dependencies {
     // :engine 数据面 TokenRingBuffer JVM 单测（on-device S1-3）。
     testImplementation("junit:junit:4.13.2")
 
+    // Bundle 缝回归钉（2026-10-31 用户裁决）：android.os.Bundle 在纯 JUnit 不可
+    // 实例化，SessionTicketWire/GenerationParams 往返单测需 Robolectric 模拟。
+    testImplementation("org.robolectric:robolectric:4.14.1")
+
     // 端侧 LLM 运行时（M2 自 goodshare 随迁）：LiteRT-LM 纯 Kotlin 引擎（Maven Central，
     // 无 NDK/CMake），跑 .litertlm 模型包。坐标经 AndroLLM 实际工程核实（2026-09-29）：
     // artifact 为 litertlm-android，非 litert-lm（后者在 Maven Central 不存在，构建期即解析失败）。
@@ -87,7 +91,9 @@ dependencies {
     // 存在 2.5× 运行时代差（详见 on-device epic devlog），此为达标唯一路径。
     // AAR 自带 QNN 2.45 全家桶（jni/）——jniLibs 的同名 2.51 库已移除让位；
     // libQnnHtpPrepare.so（87MB，离线编译用）经 packaging excludes 排除。
-    implementation("com.qualcomm.qti:geniex-android:0.3.5")
+    // 0.3.5 → 0.10.0（2026-10-31 升级评估）：对齐官方当前版，复查三手写补丁
+    // （stopWords qairt 通道 / enableThinking / Token 乱码回调面）在新版的存废。
+    implementation("com.qualcomm.qti:geniex-android:0.10.0")
 
     // geniex-android 绑定 API 面为 Kotlin 协程（Flow/runBlocking）；AAR pom
     // 未带传递依赖，显式钉住（官方 App 同样显式引 kotlinx-serialization 族）。

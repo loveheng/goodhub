@@ -22,6 +22,7 @@ last-merge: 2026-10-22
   - **P0（省面积 + 降噪）**：① 删 `chat_page` 输入区外层重复布局（SafeArea/Center/ConstrainedBox/Padding 已由 `ChatComposer` 自持），回收横 24dp + 底 16dp；② 状态带展开条件甩掉 `hasEndpoints`（它是「配置过端点」而非「有启用端点」，曾让多数用户恒挂一行「空闲 · 公共」白占 30dp），收紧为 `running||hasContext`；③ 每轮必出通告降噪——卸载服务数 / 全局 Prompt 跳过项经 `ChatStatusController.claimSessionNotice` 会话级去重（键随内容变、随会话焚），「✓ 任务完成」仅本轮零正文才补行；④ `CallCard` 折叠摘要经 `StatusStrip.plainToolName` 剥 `<serverId>__` 前缀（与状态带同口径，**禁各自现写 indexOf**），失败/中止摘要取相位色补第二通道（成功仍灰阶）；⑤ 折叠标题去黑话「Run 概要」→「N 条系统通告（点开查看）」。
   - **P1（信息架构）**：⑥ 挂载弹层改标题「挂载」并三级分组（会话绑定 session / 本次发送附件 run / 资源中心 应用级），组名 + 期限说明肉眼可辨；⑦ 记忆只留一处可管理位（AppBar 本轮记忆）——归因 BottomSheet 只给计数 + 直达（历史恢复态保旧样）；⑧ 运行中**只锁会话绑定**（它改写会话 slot 会扰动在途装配），资源类入口不跟着置灰、`_pickResource` 去运行守卫；⑨ 空输入发送给一次性 SnackBar（桌面端 Enter 曾零反馈 = 死控件）；⑩ 「回到最新」浮钮两态：`missedSinceDetach > 0` 挂计数徽标 + tooltip 明说条数，纯翻页态保持低调。
   - **验证**：全仓 analyze 0 issue；`flutter test --timeout 180s` 985 绿（基线 972 + P0 7 + P1 6）；arch-guard / docs-lint OK。**未执行**：真机走查（输入法弹起后输入区实占高、多轮轨道密度、徽标深浅底对比）。
+  - **[2026-10-31 后续治理] 本轮记录去堆积（接上条「一条都不留」拍板）**：系统通告按 `TrackNoticeCategory` 三分路由——**事实类**（引擎就绪/插件挂载/工具激活/CoW 重名/服务卸载/未信任跳过/配额·快照损坏/云端配置失败）进 controller 单槽账本 `latestFactNotice`，同文案重复轮次覆盖式收敛、仅留最新一份（彻底消除堆积与去重比较成本）；**错误类**（记忆写入失败/连接中断/挂载失败/slot 权限/CoW 同步降级）回对话流内联（发生当场可见，不进账本，防被良性事实覆盖吞掉）；**过程类**（plan echo/资源变更/端侧加载中/任务完成）不收纳、仅瞬态 pill。详见 devlog 2026-10-31 + `docs/project/index.md`。
 
 ## 断点
 - [断点] 下一步：「MCP 服务打不开」已收窄到设备 B（本机三组合全绿，APK 无罪）；等设备 B USB 接入或面板截图后继续；安全存储显性化修复已交付待发布

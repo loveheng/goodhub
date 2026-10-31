@@ -13,6 +13,8 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.StatFs
 import android.util.Log
+import com.zzh.goodhub.engine.GenerationParams
+import com.zzh.goodhub.engine.SessionTicketWire
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -135,22 +137,41 @@ object EngineServiceBridge {
                     result.success(null)
                 }
                 // S1-5 起承载 generate/cancel/status；S2 正式接线起承载 loadModel。
-                "checkStatus" -> {
-                    val svc = engine
-                    if (svc == null) {
-                        result.error("not_bound", ":engine not connected", null)
-                    } else {
-                        result.success(svc.checkStatus())
-                    }
-                }
+                // M4 Contract：checkStatus 轮询面已退役（状态唯一来源 = checkSession
+                // 票据面），此处不再受理 checkStatus 调用（Dart 侧同步移除）。
                 // S2 正式接线：模型装载转发（:engine 后台线程建 Genie 会话，
                 // 幂等；立即返回 EngineStatus 序数，创建异步进行）。
                 "loadModel" -> {
                     val svc = engine
+                    val args = call.arguments
+                    if (svc == null) {
+                        result.error("not_bound", ":engine not connected", null)
+                    } else if (args is Map<*, *>) {
+                        // M2 §2.5：Dart 传 map{modelDir, modelId}（资产身份经
+                        // Dart 资产面单点计算，票据回显承载 I3 对账）。
+                        result.success(
+                            svc.loadModel(
+                                args["modelDir"] as? String,
+                                args["modelId"] as? String,
+                            )
+                        )
+                    } else {
+                        // 兼容旧字符串形态（纯目录名）。
+                        @Suppress("UNCHECKED_CAST")
+                        result.success(svc.loadModel(args as? String, null))
+                    }
+                }
+                // M1 Expand：会话票据查询（设计 §2.2）——与 checkStatus 并存，
+                // 主进程侧仅作影子对账（不参与判定）。
+                "checkSession" -> {
+                    val svc = engine
                     if (svc == null) {
                         result.error("not_bound", ":engine not connected", null)
                     } else {
-                        result.success(svc.loadModel(call.arguments as? String))
+                        // Bundle 缝唯一收口：经 SessionTicketWire 转 Map 回传
+                        // （Bundle 非 MethodChannel 标准编解码类型，直传必炸
+                        // engine_binder_error——2026-10-31 门禁/对账双失效事故）。
+                        result.success(SessionTicketWire.ticketChannelMap(svc.checkSession()))
                     }
                 }
                 // S1-5：生成控制转发（参数 → AIDL generationParams Bundle）。
@@ -161,35 +182,40 @@ object EngineServiceBridge {
                         result.error("not_bound", ":engine not connected", null)
                     } else {
                         try {
-                            val params = Bundle().apply {
-                                putInt("maxTokens", (args["maxTokens"] as? Number)?.toInt() ?: 512)
-                                putDouble("temperature", (args["temperature"] as? Number)?.toDouble() ?: 0.7)
-                                putDouble("topP", (args["topP"] as? Number)?.toDouble() ?: 0.9)
-                                putIntArray(
-                                    "stopTokenIds",
-                                    (args["stopTokenIds"] as? List<*>)?.map { (it as Number).toInt() }?.toIntArray()
-                                        ?: IntArray(0),
-                                )
-                                // S3-3 抢占语义（§6.6）：前台态由主进程判定注入
-                                //（Activity started 计数）——前台=可抢占让槽
-                                //（绝不驳回用户），后台=忙即 ServiceBusy 驳回切云。
-                                putBoolean("foreground", foregroundActivities > 0)
-                            }
+                            // S3-3 抢占语义（§6.6）：前台态由主进程判定注入
+                            //（Activity started 计数）——前台=可抢占让槽
+                            //（绝不驳回用户），后台=忙即 ServiceBusy 驳回切云。
+                            // Bundle 缝收口：Map→参数→Bundle 均经 GenerationParams
+                            //（缺省值/键名单源，禁缝外手工逐键）。
+                            val params = GenerationParams.fromArgs(
+                                args,
+                                foreground = foregroundActivities > 0,
+                            ).toBundle()
                             svc.startGenerate(
                                 args["requestId"] as? String,
                                 args["promptJson"] as? String,
                                 params,
+                                args["expectInstanceId"] as? String,
+                                (args["expectSeq"] as? Number)?.toLong() ?: -1L,
                             )
                             result.success(null)
                         } catch (e: Exception) {
                             // S3-3：service_busy（策略 B 驳回/抢占超时）单独分码，
                             // Dart 侧识别后快速失败切云；AIDL RuntimeException
-                            // 类型不保真，以 message 前缀机器判别。其余
-                            //（数据面未建等）维持 start_rejected 语义。
-                            if (e.message?.startsWith(ServiceBusyException.MESSAGE_PREFIX) == true) {
-                                result.error("service_busy", e.message, null)
-                            } else {
-                                result.error("start_rejected", e.message, null)
+                            // 类型不保真，以 message 前缀机器判别。M3（设计 §2.2）：
+                            // SESSION_EPOCH_MISMATCH / SESSION_LOADING 单独分码——
+                            // 主进程作废镜像走装载后重试，不再当 start_rejected
+                            // 用户报错（2026-10-31 会话未就绪事故的契约化收口）。
+                            // 其余（数据面未建等）维持 start_rejected 语义。
+                            val msg = e.message ?: ""
+                            when {
+                                msg.startsWith("SESSION_EPOCH_MISMATCH") ->
+                                    result.error("session_epoch_mismatch", msg, null)
+                                msg.startsWith("SESSION_LOADING") ->
+                                    result.error("session_loading", msg, null)
+                                msg.startsWith(ServiceBusyException.MESSAGE_PREFIX) ->
+                                    result.error("service_busy", msg, null)
+                                else -> result.error("start_rejected", msg, null)
                             }
                         }
                     }
@@ -436,11 +462,6 @@ object EngineServiceBridge {
                             )
                         }
 
-                        // S3-1 热调度：切云沿透传（:engine 侧 PowerManager
-                        // thermal listener 为权威，§5.3 公共 API）。
-                        override fun onThermalCutover(active: Boolean) {
-                            invokeOnMain("onThermalCutover", active)
-                        }
 
                         // P0-3：:engine **自发**驱逐（TTL / trim / 护栏 /
                         // 主动 release）上行。数据面随会话一同析构（pipe 写端
@@ -448,9 +469,16 @@ object EngineServiceBridge {
                         // 停消费端并清句柄——否则 `dataPlaneWorkerHandle != 0`
                         // 的幂等短路会拦掉下一次 startDataWorker，数据面死而
                         // 无人重建（审计 P0-3 的第二半）。
-                        override fun onEngineEvicted(reason: String?) {
+                        override fun onEngineEvicted(reason: String?, evictingRequestId: String?) {
                             stopDataPlane()
-                            invokeOnMain("onEngineEvicted", reason ?: "unknown")
+                            // M2 §2.8：reason + 在途打断信息（requestId 非空 =
+                            // 驱逐打断了在途生成）一并上行，Dart 侧对被中断流
+                            // SESSION_ABORTED_BY_EVICTION 收口，不再靠数据面
+                            // EOF 间接收口（丢归因）。
+                            invokeOnMain("onEngineEvicted", mapOf(
+                                "reason" to (reason ?: "unknown"),
+                                "evictingRequestId" to evictingRequestId,
+                            ))
                         }
                     })
                     Log.i(TAG, "initEngine -> EngineStatus ordinal=$status")

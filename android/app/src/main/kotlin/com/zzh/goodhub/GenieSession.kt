@@ -65,8 +65,19 @@ class GenieSession(private val context: Context) {
     /** 装载失败原因（诊断：loadModel 受理后未 ready 时读取）。 */
     @Volatile var loadError: String? = null
 
+    /// 当前生效运行时（PLUGIN_ID_*）：qairt=NPU 主路 / llama_cpp=CPU 兜底。
+    /// 供 :engine 日志可观测与后续 AIDL 回报（UI「端侧（CPU 兜底）」指示）；
+    /// [close] 时复位为 qairt 默认。
+    @Volatile var activeRuntime: String = GenieXSdk.PLUGIN_ID_QAIRT
+        private set
+
     /** 上轮 query 的真实生成 token 数（Completed profile；-1=不可用）。 */
     @Volatile private var lastGeneratedTokens: Int = -1
+
+    /** 上轮 query 的 SDK 性能画像（Completed profile；null=不可用）——TTFT/
+     *  decodeSpan/numGenerated 的官方单源（2026-10-31 替代宿主手写秒表）。 */
+    @Volatile var lastProfile: com.geniex.sdk.bean.ProfilingData? = null
+        private set
 
     /** query 期间收集到的运行时错误（负状态码归因）。 */
     @Volatile private var lastStreamError: Throwable? = null
@@ -133,42 +144,96 @@ class GenieSession(private val context: Context) {
             val dir = File(modelDir)
             val configPath = File(dir, "genie_config.json")
             val tokenizerPath = File(dir, "tokenizer.json")
-            if (!configPath.isFile || !tokenizerPath.isFile) {
-                loadError = "asset layout: genie_config.json/tokenizer.json missing in $modelDir"
+            // 运行时条件化资产门（2026-10-31 多模型导入制，decisions.md ADR④）：
+            // qairt bundle 需 genie_config+tokenizer；纯 GGUF（llama.cpp 运行时）
+            // 无此二件——旧门把 GGUF-only 资产挡在 llama_cpp 兜底之前，此处置条件。
+            val ggufFiles = (dir.listFiles()
+                ?.filter { it.isFile && it.name.lowercase().endsWith(".gguf") }
+                ?: emptyList()).sortedBy { it.name }
+            val hasGenie = configPath.isFile && tokenizerPath.isFile
+            if (!hasGenie && ggufFiles.isEmpty()) {
+                loadError = "asset layout: neither genie_config.json+tokenizer.json nor *.gguf in $modelDir"
                 Log.e(TAG, "[DEGRADE] $loadError")
                 return
             }
             Log.i(TAG, "diag modelDir exists=${dir.exists()} " +
-                "canRead=${dir.canRead()} list=${dir.list()?.joinToString(",")}")
+                "canRead=${dir.canRead()} hasGenie=$hasGenie gguf=${ggufFiles.map { it.name }} " +
+                "list=${dir.list()?.joinToString(",")}")
             // 资产真实性对账（S2-5 闪退换向）：目录名自拟不可信，逐文件尺寸进日志
             // ——4B@W4A16 全 bundle 预期 ~2.3GB，若合计 ~4.5GB+ 即导入误标大模型。
             Log.i(TAG, "diag sizes=" + (dir.listFiles()?.sortedBy { it.name }
                 ?.joinToString(",") { "${it.name}=${it.length()}" }))
             // qairt 路径约束（官方 GenieX Chat 实证）：n_ctx/n_gpu_layers 编译
-            // 期固定，非零值被拒绝——显式置 0；thinking 关闭（单发提取语义）。
-            val config = ModelConfig(nCtx = 0, nGpuLayers = 0, enable_thinking = false)
-            val input = LlmCreateInput(
-                model_name = dir.name,
-                model_path = configPath.absolutePath,
-                tokenizer_path = tokenizerPath.absolutePath,
-                config = config,
-                runtime_id = GenieXSdk.PLUGIN_ID_QAIRT,
-                compute_unit = ComputeUnitValue.NPU.value,
-            )
-            val result = runBlocking {
-                LlmWrapper.builder()
-                    .llmCreateInput(input)
-                    .dispatcher(Dispatchers.Default)
-                    .build()
+            // 期固定，非零值被拒绝——显式置 0。thinking 关闭移至 applyChatTemplate
+            // 的 enableThinking 参数（0.10 起模板层承载，ModelConfig 不再有该字段）。
+            val config = ModelConfig(nCtx = 0, nGpuLayers = 0)
+            val buildInput = { runtimeId: String, unit: ComputeUnitValue ->
+                LlmCreateInput(
+                    model_path = configPath.absolutePath,
+                    tokenizer_path = tokenizerPath.absolutePath,
+                    config = config,
+                    runtime_id = runtimeId,
+                    compute_unit = unit.value,
+                )
             }
+            // 纯 GGUF 资产的 llama_cpp 输入。
+            //   // UNCERTAIN: llama_cpp 的 model_path/tokenizer_path 契约未真机实证
+            //   （spike #1 待冻结）：此处假设 model_path 指向 .gguf 文件、tokenizer
+            //   在场则用独立 tokenizer.json、否则回指 .gguf（llama.cpp 读 GGUF 内嵌
+            //   词表）。spike 实证后按实修正。
+            val buildGguf = { unit: ComputeUnitValue ->
+                LlmCreateInput(
+                    model_path = ggufFiles.first().absolutePath,
+                    tokenizer_path = if (tokenizerPath.isFile) tokenizerPath.absolutePath
+                                    else ggufFiles.first().absolutePath,
+                    config = config,
+                    runtime_id = GenieXSdk.PLUGIN_ID_LLAMA_CPP,
+                    compute_unit = unit.value,
+                )
+            }
+            // 运行时选择（2026-10-31 NPU 兜底 + 多模型导入制，见 ADR）：
+            // - qairt bundle → QAIRT+NPU 主路；NPU build 失败（驱动/HTP 不可用）
+            //   → 回落 llama_cpp+CPU 完成本会话（同份资产，两插件 AAR 均捆绑）。
+            // - 纯 GGUF → 直走 llama_cpp+CPU（qairt dispatch 强制 genie_config/
+            //   metadata，此类资产走 qairt 必败，跳过必败尝试）。
+            // **热/OOM 不触发兜底**——热→既有「禁 CPU 分流」决策，OOM→CPU 权重
+            // 全驻 DRAM 反向，两者仍经既有决策收口云端。
+            var active: String
+            var result: Result<LlmWrapper>
+            if (hasGenie) {
+                active = GenieXSdk.PLUGIN_ID_QAIRT
+                result = buildSession(buildInput(GenieXSdk.PLUGIN_ID_QAIRT, ComputeUnitValue.NPU))
+                if (result.isFailure) {
+                    Log.w(TAG, "[DEGRADE] QAIRT(NPU) build failed → fallback llama_cpp(CPU): " +
+                        "${result.exceptionOrNull()?.message}")
+                    result = buildSession(buildInput(GenieXSdk.PLUGIN_ID_LLAMA_CPP, ComputeUnitValue.CPU))
+                    active = GenieXSdk.PLUGIN_ID_LLAMA_CPP
+                }
+            } else {
+                // 纯 GGUF → llama_cpp 插件，**NPU 主路 + CPU 兜底**（2026-10-31
+                // 用户拍板「使用 GenieX llama.cpp」；AI Hub 实证同款运行时在
+                // 8 Elite NPU 上 22.6 tok/s decode → GenieX llama.cpp 插件
+                // 可能接受 NPU）。NPU build 失败回落 CPU 完成本会话。
+                //   // UNCERTAIN: llama_cpp 插件 compute_unit=NPU 契约未真机实证
+                //   （spike 归因日志裁定）；model_path/tokenizer 同前述 UNCERTAIN。
+                Log.i(TAG, "pure GGUF asset → llama_cpp direct (no genie_config), NPU primary")
+                active = GenieXSdk.PLUGIN_ID_LLAMA_CPP
+                result = buildSession(buildGguf(ComputeUnitValue.NPU))
+                if (result.isFailure) {
+                    Log.w(TAG, "[DEGRADE] llama_cpp(NPU) build failed → fallback llama_cpp(CPU): " +
+                        "${result.exceptionOrNull()?.message}")
+                    result = buildSession(buildGguf(ComputeUnitValue.CPU))
+                }
+            }
+            activeRuntime = active
             result.fold(
                 onSuccess = { w ->
                     wrapper = w
                     ready = true
-                    Log.i(TAG, "session created (geniex-android pipeline ready)")
+                    Log.i(TAG, "session created (runtime=$active, geniex-android pipeline ready)")
                 },
                 onFailure = { e ->
-                    loadError = "geniex build failed: ${e.message}"
+                    loadError = "geniex build failed (runtime=$active): ${e.message}"
                     Log.e(TAG, "[DEGRADE] $loadError")
                 },
             )
@@ -185,6 +250,20 @@ class GenieSession(private val context: Context) {
         }
     }
 
+    /**
+     * 建一个 LlmWrapper 会话（**阻塞数秒**——调用方须置于后台线程；[beginLoad]
+     * 单飞闸由调用方负责）。统一返回 [Result]：SDK build() 的 Failure 与
+     * builder 链异常一并折成 Failure，供调用方做主/兜底判定。
+     */
+    private fun buildSession(input: LlmCreateInput): Result<LlmWrapper> = runCatching {
+        runBlocking {
+            LlmWrapper.builder()
+                .llmCreateInput(input)
+                .dispatcher(Dispatchers.Default)
+                .build()
+                .getOrThrow()
+        }
+    }
 
     /**
      * 标记装载失败原因（供外部中止路径使用，如装载期热降级 abort）——
@@ -213,6 +292,7 @@ class GenieSession(private val context: Context) {
         abortRequested = false
         lastStreamError = null
         lastGeneratedTokens = -1
+        lastProfile = null
         Log.i(TAG, "query start: promptChars=${prompt.length} maxTokens=$maxTokens")
         // 单发隔离的会话重置（每请求清 KV）：重置失败后**带病生成 = 零产出且
         // 无归因**（真机实证「同一对话第二次提问没有输出」的候选面之一——
@@ -228,31 +308,43 @@ class GenieSession(private val context: Context) {
                 return -2
             }
         }
-        // ChatML 模板包装（2026-10-30 真机实证修复）：裸文本喂 chat 调优模型
-        // 会退化成整句复读环（同一句循环至 maxTokens 硬停 = 「没输出完」）。
-        // 上游（hybrid _deviceSend）已把 system+user 压平为单 prompt，此处整体
-        // 作为 user 轮投递。
-        // 模板级清洗（双保险）：正文里的 ChatML 控制 token 会破坏模板边界
-        // （`<|im_end|>` 提前闭合 user 轮 → 模型直接收尾 → **零产出**；历史
-        // 轮正文即高危来源）。Dart 侧已清洗一遍（宿主构造的正文），此处覆盖
-        // 一切旁路来源。
-        // UNCERTAIN: 模型家族假设 = Qwen/ChatML（目录当前仅 Qwen 资产）；若引入
-        // 非 ChatML 模板家族，须按 tokenizer 配套模板分派。
-        val safePrompt = sanitizeChatMLControlTokens(prompt)
-        val chatPrompt = "<|im_start|>user\n$safePrompt<|im_end|>\n<|im_start|>assistant\n"
+        // ChatML 模板包装（2026-10-31 设计修正·第二刀，对齐官方 demo）：
+        // **SDK applyChatTemplate 优先**——消息序列 JSON 经 parseMessages 转
+        // ChatMessage[]，按模型资产内嵌 tokenizer 模板渲染（官方明示 native
+        // 管线把 prompt 当已模板化文本，raw/自绘近似模板喂入 = 退化输出，
+        // 复读环真根因）。失败逐级 fallback：ChatMLComposer 手写多轮 → 旧
+        // 单轮包装。enableThinking=false（Instruct 行为）+ addGenerationPrompt=true。
+        // UNCERTAIN: 资产家族假设 = Qwen/ChatML（目录当前仅 Qwen 资产）。
+        val chatPrompt = run {
+            val msgs = com.zzh.goodhub.engine.ChatMLComposer.parseMessages(prompt)
+            if (msgs != null) {
+                runCatching {
+                    runBlocking { w.applyChatTemplate(msgs, null, false, true) }
+                        .getOrThrow().formattedText
+                }.onFailure {
+                    Log.w(TAG, "[DEGRADE] applyChatTemplate failed → fallback: $it")
+                }.getOrNull()
+            } else null
+        } ?: com.zzh.goodhub.engine.ChatMLComposer.compose(prompt)
+            ?: run {
+                val safePrompt = sanitizeChatMLControlTokens(prompt)
+                "<|im_start|>user\n$safePrompt<|im_end|>\n<|im_start|>assistant\n"
+            }
         var status = 0
         val queryStart = System.currentTimeMillis()
         var firstTokenAt = 0L
         val sanitizer = StreamTextSanitizer()
         val flow = w.generateStreamFlow(
             chatPrompt,
+            // 0.10 起签名 = (prompt?, inputIds?, inputEmbd?, inputEmbdDim, config)
+            // ——config 走命名参数（inputIds/inputEmbd 默认 null 不用）。
             // 采样接线：此前只有 maxTokens（temperature/topP 随 AIDL 送达却被
             // 丢弃），SDK 默认采样无复读惩罚 → 复读环无自愈手段。
             // stopWords 勿传（2026-10-30 真机实证）：qairt 插件拒收 --stop /
             // --stop-file 参数（geniex ErrorCode -100016 直接拒绝整个
             // generate → 零 token = Dart 侧「空产出」）。EOS 停止为管线内置，
             // 不依赖 stop 序列；im_end 残留由下方 sink 截断兜底。
-            GenerationConfig(
+            config = GenerationConfig(
                 maxTokens = maxTokens,
                 samplerConfig = SamplerConfig(
                     temperature = temperature,
@@ -294,6 +386,7 @@ class GenieSession(private val context: Context) {
                             if (rest.isNotEmpty()) sink.onChunk(rest)
                         }
                         lastGeneratedTokens = p.generatedTokens.toInt()
+                        lastProfile = p
                         Log.i(TAG, "bench: ttft=${p.ttftMs.toInt()}ms " +
                             "decodeSpan=${p.decodeTimeMs.toInt()}ms " +
                             "chunks=${p.generatedTokens} numGenerated=${p.generatedTokens} " +
@@ -315,10 +408,9 @@ class GenieSession(private val context: Context) {
         return status
     }
 
-    /// 上次 query 的**真实生成 token 数**（Completed profiling；
-    /// geniex-android 管线原生提供，替代旧 GenieDialog_getValue 探针）。
-    /// 返回 -1 = 不可用。
-    fun numGenerated(): Int = lastGeneratedTokens
+    /// 上次 query 的 SDK 性能画像单源 = [lastProfile]（Completed profile：
+    /// ttft/decodeSpan/generatedTokens/decodingSpeed/stopReason）——宿主手写
+    /// 秒表与 numGenerated 查询面已退役（2026-10-31 替代）。
 
     /// cancel 信号（§6.3）：置位 + 流回调停（Token 返回 false），query 以
     /// cancelled 收尾；清空在途由插件侧停止承载。

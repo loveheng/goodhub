@@ -19,7 +19,7 @@ import '../llm/cloud/cloud_llm.dart';
 import '../llm/llm.dart';
 import '../llm/on_device_engine.dart';
 import '../llm/on_device_pending_load.dart';
-import '../llm/on_device_single_shot_prompt.dart';
+import '../llm/on_device_chat_prompt.dart';
 import 'degradation_controller.dart';
 
 class HybridCloudEngine implements CloudLlmEngine {
@@ -31,7 +31,6 @@ class HybridCloudEngine implements CloudLlmEngine {
     this.deviceTierGate,
     this.deviceToolPolicy,
     this.preferOnDevice = false,
-    this.forceOnDevice = false,
     this.isForegroundProbe,
   }) : _enableCapable = onDevice is OnDeviceEnableCapable
             ? onDevice as OnDeviceEnableCapable
@@ -78,12 +77,6 @@ class HybridCloudEngine implements CloudLlmEngine {
   /// 避免 1.5B 弱模型在未选时默认降质。
   final bool preferOnDevice;
 
-  /// 紧急强行启用（设置页持久化，危险，默认 false）：bypass 全部门禁（含 RAM
-  /// 总量 / 电量 / 温控），仅紧急 / 弱设备场景由用户显式开启。仍不绕过 §2 工具面
-  /// （带 MCP 服务端工具的请求仍走云端编排，否则功能崩）。强行失败（OOM /
-  /// EngineDied）由 `:engine` 进程隔离 + 切云兜底防主进程闪退（§6.5）。
-  final bool forceOnDevice;
-
   /// 断网探测（无探测位 = 视作在线）。
   ///
   /// 探测异常按**在线**处理的方向取舍（P2-1 评估后保留）：失败朝向「更丰富的
@@ -115,22 +108,29 @@ class HybridCloudEngine implements CloudLlmEngine {
     }
   }
 
-  /// 设备门禁查询（无门禁位 = 放行）。
+  /// 设备门禁查询（advisory；无门禁位 = 无提示）。
   ///
-  /// 探测异常按**关闸**处理的方向取舍（P2-1 收紧，原为放行）：门禁是设备
-  /// 分级兜底（RAM/电量/温控），探针异常时放行 = 在弱设备上跑端侧，风险是
-  /// OOM/过热——保守方向应为关闸（与配额篡改「宁可重置不信任被改数据」同
-  /// 哲学）。关闸后路由：有云端走云端，否则报「无可用推理引擎」可见错误。
-  Future<({bool pass, String reason})> _deviceGate() async {
+  /// **2026-10-31 用户裁决：门禁层降级 advisory**——判定结果只留痕提示，
+  /// 不参与路由拦截（真保护 = 运行时护栏链，见 send() 内注释）。探测异常
+  /// 重探一次仍失败按 unknown 如实留痕；「紧急强行启用」随拦截语义退役。
+  Future<({bool pass, String reason, bool unknown})> _deviceGate() async {
     final gate = deviceTierGate;
-    if (gate == null) return (pass: true, reason: '无门禁位');
-    try {
-      return await gate();
-    } catch (e) {
-      // DEGRADE: 门禁探测异常 → fail-closed 关闸（P2-1：原放行方向偏危险）。
-      debugPrint('[DEGRADE] hybrid-device-gate: $e');
-      return (pass: false, reason: '门禁探测异常，端侧关闸（保守）');
+    if (gate == null) return (pass: true, reason: '无门禁位', unknown: false);
+    Object? lastError;
+    for (var attempt = 1; attempt <= 2; attempt++) {
+      try {
+        final r = await gate();
+        return (pass: r.pass, reason: r.reason, unknown: false);
+      } catch (e) {
+        lastError = e;
+        debugPrint('[DEGRADE] hybrid-device-gate (attempt $attempt): $e');
+      }
     }
+    return (
+      pass: false,
+      reason: '门禁探测异常（重试后仍失败：$lastError），端侧状态未知',
+      unknown: true,
+    );
   }
 
   @override
@@ -145,33 +145,31 @@ class HybridCloudEngine implements CloudLlmEngine {
   }) async* {
     final offline = await _isOffline();
     final gate = await _deviceGate();
-    // 紧急强行启用：门禁视为通过（仍不绕过 §2 工具面）。危险操作，留痕警示。
-    final gatePass = forceOnDevice || gate.pass;
-    if (forceOnDevice && !gate.pass) {
-      // 强行启用绕过了本应关闸的门禁——显式留痕，供排查与可观测。
-      debugPrint('[HybridEngine] ⚠ 紧急强行启用端侧（门禁原未过：${gate.reason}）');
+    // 门禁改 advisory（2026-10-31 用户裁决）：RAM/电量/温控判定只留痕提示，
+    // 不拦路——真保护 = 运行时护栏链（:engine 隔离 + EngineDied 切云 + 熔断 +
+    // 内存护栏驱逐 + MemGate 起跑闸 + :engine 温控连续确认沿）。误判史多次
+    // 实证拦截成本高于收益，「紧急强行启用」随拦截语义一并退役。
+    if (!gate.pass) {
+      debugPrint('[HybridEngine] [advisory] 门禁不达标（不拦截）：${gate.reason}');
     }
     final toolFaceOk = request.tools.isEmpty ||
         (deviceToolPolicy?.call(request.tools) ?? false);
-    final canDevice = toolFaceOk && onDevice != null && gatePass;
+    final canDevice = toolFaceOk && onDevice != null;
     String? deviceSkipReason;
     if (!canDevice && onDevice != null) {
-      // 可观测性（S2 收口）：无云端兜底且端侧被挡时，把挡点随错误透出——
-      // 「端侧没被调用」此前只有 debugPrint 留痕，用户/排查者从提示无法定位。
+      // 可观测性（S2 收口）：无云端兜底且端侧被挡时，把挡点随错误透出。
+      // 门禁已 advisory 化，不再构成挡点——只剩工具面判据。
       final skips = <String>[
         if (!toolFaceOk) '工具面含云端编排工具（判据不放行）',
         if (onDevice == null) '端侧引擎未挂载',
-        if (!gatePass) '端侧门禁未过（${gate.reason}）',
       ];
       deviceSkipReason = skips.join('；');
       debugPrint('[HybridEngine] 端侧跳过：$deviceSkipReason');
     }
-    // 走端侧触发：① 自动（断网 / 云端降级冷却）② 用户偏好优先（云端健康也走）
-    // ③ 紧急强行（绕过门禁，即便云端健康）。三类都要求 canDevice（含 §2 工具面）。
+    // 走端侧触发：① 自动（断网 / 云端降级冷却）② 用户偏好优先（云端健康也走）。
     final wantDevice = offline ||
         !controller.shouldUseCloud ||
-        preferOnDevice ||
-        forceOnDevice;
+        preferOnDevice;
     if (canDevice && wantDevice) {
       // 懒加载兜底（用户定调）：首次命中端侧路径才显式加载——bind→就绪→资产→
       // loadModel→数据面 worker，加载过程对用户可见（loadState=loading）。加载
@@ -218,11 +216,9 @@ class HybridCloudEngine implements CloudLlmEngine {
       }
       yield* _deviceSend(
         request,
-        reason: forceOnDevice
-            ? '紧急强行启用'
-            : (offline
-                ? '物理断网'
-                : (preferOnDevice ? '用户偏好优先端侧' : '云端降级冷却期')),
+        reason: offline
+            ? '物理断网'
+            : (preferOnDevice ? '用户偏好优先端侧' : '云端降级冷却期'),
       );
       return;
     }
@@ -404,17 +400,13 @@ class HybridCloudEngine implements CloudLlmEngine {
     Future<void>(() async {
       debugPrint('[HybridEngine] 端侧路径（$reason）：${device.name}');
       try {
-        // 端侧单发 prompt 构造（§2 端侧单发提取语义）：多轮历史**带角色标注**、
-        // 当前提问单独成段、正文清洗 ChatML 控制 token（历史正文里的
-        // `<|im_end|>` 会提前闭合 ChatML 模板 → 零产出）。首轮（无历史）与
-        // 旧形态逐字节一致——已实证正常路径不回归。
-        final built = buildOnDeviceSingleShotPrompt(request.messages);
-        debugPrint('[HybridEngine] 端侧单发 prompt：历史轮=${built.historyTurns} '
-            'promptChars=${built.prompt.length} '
-            'systemChars=${built.system?.length ?? 0}');
+        // 端侧对话 prompt 构造（2026-10-31 设计修正）：消息序列 JSON（多轮
+        // ChatML 由 :engine 模板承载角色）——旧「单发压平 + 文字标注」把
+        // assistant 回答塞进 user 轮，违背训练分布 → 复读环（真机定谳）。
+        final promptJson = buildOnDeviceChatPromptJson(request.messages);
+        debugPrint('[HybridEngine] 端侧对话 prompt：promptJsonChars=${promptJson.length}');
         final text = await device.generate(
-          built.prompt,
-          system: built.system,
+          promptJson,
           maxTokens: request.maxTokens ?? 512,
         );
         if (text == null || text.isEmpty) {
@@ -425,11 +417,14 @@ class HybridCloudEngine implements CloudLlmEngine {
           // 上抛（禁静默吞）」不变），但**禁再报笼统「空产出」**：真因（会话
           // 重置失败 / 热降级 / 通道拒绝 / 模型未说话）必须透出，否则用户与
           // 排查者都无从定位「第二轮为什么没有输出」。
-          final reason = await device.unavailableReasonAsync();
+          final status = await device.unavailableReasonAsync();
           final aware = device is OnDeviceFailureReasonAware
               ? (device as OnDeviceFailureReasonAware).lastFailureReason
               : null;
-          final why = aware ?? reason ?? '空产出（模型未产出任何内容）';
+          // 引擎就绪时 status 为 null（无失败态）——禁把 null 拼进用户文案
+          //（真机实证「端侧生成失败（null）：空产出」不可读）。
+          final reason = status ?? '端侧引擎就绪';
+          final why = aware ?? status ?? '空产出（模型未产出任何内容）';
           throw InferenceException('端侧生成失败（$reason）：$why');
         }
         ctrl.add(CloudTextDelta(text));
@@ -442,7 +437,12 @@ class HybridCloudEngine implements CloudLlmEngine {
           // device.cancelActive）保持原直连链不变；无云可切时原样上抛。
           final c = cloud;
           if (c == null) {
-            ctrl.addError(e);
+            // 云端缺席：EngineDiedException 是内部切云信号，非用户文案——
+            // 裸抛会把 'EngineDiedException: ...' 直接上墙（2026-10-31 真机
+            // 热闸事故第二症状）。翻译成白话：端侧已中断 + 无兜底的出路提示。
+            debugPrint('[HybridEngine] :engine 中断（${e.reason}）但云端未配置 → 白话报错');
+            ctrl.addError(InferenceException(
+                '端侧已中断且未配置云端兜底（${engineInterruptReason(e)}）——可稍后重试，或配置云端模型后自动切换'));
           } else {
             debugPrint('[HybridEngine] :engine 死亡 → 无缝切云（$reason）');
             try {
@@ -468,4 +468,13 @@ class HybridCloudEngine implements CloudLlmEngine {
     });
     return ctrl.stream;
   }
+}
+
+/// 端侧中断真因白话化（错误卡文案，禁裸露内部异常串）：按 reason 关键字
+/// 归类。温控已摘除（2026-10-31 裁决），thermal 分支随之退役。
+String engineInterruptReason(EngineDiedException e) {
+  final r = e.reason.toLowerCase();
+  if (r.contains('busy')) return '引擎正忙（上一轮尚未让出算力）';
+  if (r.contains('session') || r.contains('loading')) return '端侧会话未就绪';
+  return '引擎中断';
 }

@@ -58,18 +58,16 @@ abstract final class DeviceTierGate {
   /// Android PowerManager 温控档位：SEVERE（≥3）即降频明显，抑制端侧。
   static const int _thermalSevere = 3;
 
-  /// §16 初值门禁裁决。pass=false 时 [reason] 给人类可读原因（留痕可观测）。
+  /// §16 门禁裁决（advisory，2026-10-31 起不拦截路由，判定只留痕提示）。
   ///
   /// [sessionResident]（S2 正式接线）：Genie 常驻会话豁免——权重已驻留
   /// （~1.9GB 已占用）时跳过**可用 RAM** 门槛。口径：本门槛守「能否承担冷
-  /// 加载」，驻留态边际检查失义（自锁：常驻自己把 availMem 压到阈值下）；
-  /// 极端 OOM 由 `:engine` 进程隔离 + EngineDiedException 切云兜底（§6.5）。
-  /// 总量准入 / 电量 / 温控**不豁免**（保护语义不变）。
+  /// 加载」，驻留态边际检查失义（自锁：常驻自己把 availMem 压到阈值下）。
   ///
-  /// 用户覆盖位（设置页 §16「用户授权覆盖」层）：[ignoreAvailRam] / [ignoreBattery]
-  /// / [ignoreThermal] 分别跳过对应物理门槛——仅在用户显式开启时放宽。RAM 总量
-  /// 6GB 硬件准入**不受 ignore 影响**（真弱设备 1.5B 也跑不动），绕过它需
-  /// [HybridCloudEngine.forceOnDevice]（紧急强行，bypass 全部含总量）。
+  /// 真保护 = 运行时护栏链（:engine 隔离 + EngineDied 切云 + 熔断 + 内存
+  /// 护栏驱逐 + MemGate 起跑闸 + :engine 温控连续确认沿）；本判定降级为
+  /// 可观测提示，`ignore*` 放宽开关与「紧急强行启用」随拦截语义退役
+  /// （2026-10-31 用户裁决）。
   static ({bool pass, String reason}) check(
     DeviceProbe p, {
     bool sessionResident = false,

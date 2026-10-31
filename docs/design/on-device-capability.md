@@ -8,6 +8,8 @@ updated: 2026-10-30
 > 绑定 epic = `on-device`。本文件是「端侧推理能力」升格为**公共服务**的设计 SSOT（芯片平台分发 / 双后端 / 分期）。现状盘点见 `context/epics/on-device/memory.md`；本次为草案（draft），落地前须经 solution-admission 口径与产品侧分期拍板。
 >
 > **v3 路线修订（2026-10-28 用户拍板）：推理内核采用高通 GenieX Android SDK**——`:engine` 进程内部的 Tokenizer/KV-Cache/采样/Decode 循环/停用词下沉/流式回调由 Genie 内置管线承担，替换「手写 QNN C API 推理内核」计划；**外围防护架构全部不变**（`:engine` 独立进程隔离、AIDL 控制面 + Ashmem 数据面、两级熔断、三态状态机、磁盘门禁、切云降级）。资产格式改 GGUF（不再绑定 HTP 专属 context 二进制）。获取 = Qualcomm AI Hub `qai-hub download-model-assets`（免企业授权，免费 Qualcomm ID）。受影响章节细化修订待 SDK 落位实证后同轮回写。
+>
+> **v3.2 路线修订（2026-10-31 用户拍板）：NPU 兜底**——`:engine` 的 `GenieSession.doLoad` 以 `QAIRT+NPU` 为主路，**仅高端 NPU 设备在 QAIRT build 失败（NPU 驱动/HTP 不可用）时回落 `llama_cpp+CPU` 运行时**完成本轮（同份 GGUF 资产 + tokenizer，两插件 AAR 均捆绑）；**热/OOM 不触发兜底**，仍经既有决策收口云端（遵「禁 CPU 分流」/「OOM CPU 反向」）；D1a 设备分档不变（中低端仍直收纯云端），仅推翻 D1「无 CPU 兜底」条款；Dart 路由层 / AIDL 不变（运行时无关）。详见 `context/epics/on-device/decisions.md` ADR。
 
 ## 0. 需求与范围
 
@@ -43,17 +45,20 @@ updated: 2026-10-30
   enum EngineStatus {
     ready,              // 就绪可用
     busy,               // 执行中，支持抢占 / 策略 B 驳回
-    assetMissing,       // 驱动就绪但模型未下载
+    assetMissing,       // 资产缺失（M4 起回归终态语义：真·未导入/校验不过）
     insufficientMemory, // 当前可用 RAM 低于门禁
     circuitBroken,      // 处于熔断保护期（引擎故障，需熔断器/人工介入）
     unsupportedDevice,  // 硬件 / 芯片架构不匹配（D1 中低端）
-    thermalCutoff,      // 6 热降级切云期（≥SEVERE；环境降级可自愈，温度回落即恢复）
+    thermalCutoff,      // 6 热降级切云期（**2026-10-31 退役**：序数保留防漂移，永不产出——温控全链摘除）
+    loading,            // 7 M4 追加（受理态，P2-14 销账）：模型装载中
   }
 
   abstract interface class OnDeviceEngine {
-    Future<EngineStatus> checkStatus();                 // 结构化状态，取代单一 bool
-    Future<bool> isAvailable() async =>                 // 语法糖
-        (await checkStatus()) == EngineStatus.ready;
+    // M4 Contract：状态唯一来源 = :engine 票据面（checkSession）——
+    // checkStatus 轮询面已退役。票据不可得返回 null = 未知态（禁猜测）。
+    Future<EngineStatus?> authoritativeStatus();
+    Future<bool> isAvailable() async =>                 // 语法糖（未知按不可用）
+        (await authoritativeStatus()) == EngineStatus.ready;
     Future<void> warmup();
     Stream<EngineChunk> generate({
       required String requestId,
@@ -83,7 +88,7 @@ updated: 2026-10-30
   }
   ```
 
-  - **结构化状态与调度纪律（v2.6）**：`checkStatus()` 区分 `assetMissing` / `insufficientMemory` / `circuitBroken` / `unsupportedDevice` / `thermalCutoff` / `busy` / `ready`——但**仅前四类可作短时缓存或持久化锁定**；**`busy` 与 `ready` 严禁任何 TTL 缓存，必须随查随废**。**`thermalCutoff`（序数 6，2026-10-30 追加）= 热降级切云期（thermal ≥ SEVERE）**：环境性可自愈（温度回落即恢复），**禁缓存、禁计入熔断**，§5.2 Thermal→Cloud 切云——**严禁与 `circuitBroken` 熔断序数复用**（复用会把「设备过热」报成「熔断保护中」，并在装载路径把环境降级判成终态失败；真机实证「端侧加载失败：模型装载失败（circuitBroken）」）。调度铁律：**业务分流决策绝不依赖 `checkStatus()` 的 `busy`**——`busy` 仅供 UI 状态展示、健康检查与打点监控。多调用方严禁"先 check 后调用"防御式写法（`if (checkStatus()!=busy){generate();}` 存在 TOCTOU：A 过检未占槽时 B 插队，A 仍撞 `busy`）。正确路径：`HybridCloudEngine` 直接无脑调 `generate()`，由 `:engine` 内部 Mutex 原子抢占——抢占成功返流；槽被占且不可抢占（后台遇前台执行）立即抛 `ServiceBusyException`，调用方捕获即切云（见 §6.6）。`isAvailable()` 仅作 `== ready` 语法糖。
+  - **结构化状态与调度纪律（v2.6；M4 修订）**：状态区分 `assetMissing` / `insufficientMemory` / `circuitBroken` / `unsupportedDevice` / `thermalCutoff` / `busy` / `ready` / `loading`——但**仅前四类可作短时缓存或持久化锁定**；**`busy` 与 `ready` 严禁任何 TTL 缓存，必须随查随废**。**M4 受理/终态两义分离（P2-14 销账）**：`loading`（序数 7，2026-10-31 追加）= 装载受理态；`assetMissing` 回归**终态**语义（真·未导入/校验不过），「装载中」不再呈现为「资产缺失」。**`thermalCutoff`（序数 6，2026-10-30 追加；2026-10-31 退役）**：热降级切云态已随温控全链摘除退役——序数保留防跨端漂移，**`:engine` 永不产出该态**（OEM 热档位以 SoC 限频档为准非壳温，误判史多次实证；极端发热交 OEM 自身限频/降频保护）。历史描述存档：~~环境性可自愈（温度回落即恢复），禁缓存、禁计入熔断，§5.2 Thermal→Cloud 切云——严禁与 `circuitBroken` 熔断序数复用（真机实证「端侧加载失败：模型装载失败（circuitBroken）」）。~~调度铁律：**业务分流决策绝不依赖状态查询的 `busy`**——`busy` 仅供 UI 状态展示、健康检查与打点监控。多调用方严禁"先 check 后调用"防御式写法（`if (status!=busy){generate();}` 存在 TOCTOU：A 过检未占槽时 B 插队，A 仍撞 `busy`）。正确路径：`HybridCloudEngine` 直接无脑调 `generate()`，由 `:engine` 内部 Mutex 原子抢占——抢占成功返流；槽被占且不可抢占（后台遇前台执行）立即抛 `ServiceBusyException`，调用方捕获即切云（见 §6.6）。`isAvailable()` 仅作 `== ready` 语法糖。
   - **流生命周期自动绑定（v2.5）**：实现层须用 `StreamController(onCancel: () => cancel(requestId))`——无论页面退出还是 `StreamSubscription.cancel()`，均自动透传至 Native 取消，杜绝孤儿任务空跑发烫。
   - **在途 Token 清理（v2.5）**：`cancel` 触发后 Native 直接清空 RingBuffer 未消费在途 Token，下发单条 `finishReason: "cancelled"` 的 `EngineChunk` 后闭合流，避免序号不一致。
   - **KV-Cache 复用 = Prefix Cache 唯一主路线（v2.6 确认）**：多轮对话/固定上下文复用经 `truncateContext(keepTokens: n)` 回滚末轮 KV；**高频固定上下文（System Prompt / Agent 指令 / Tool 模板）截断对齐到固定分块（256/512 tokens），首次暖机跑完前缀将其 KV 保留在 NPU ION Buffer `[0, Prefix_Length)` 槽位，后续会话经 DMA 维持前缀 KV 指针不动、推理指针从 `Prefix_Length` 起写，免去重复 Prefill 算力**（详见 NPU 稿 §2.4）。**增量 Prefill 标记"未来探索项（需 SDK 动态图/Reshape 能力成熟）"，不作为本期验收标准**——NPU 静态图依赖编译期确定张量形状与 HTP 块对齐，动态长短增量 Prefill 易打乱 VTCM/SRAM Stationary 数据流、致编译失败或静默回退。
@@ -93,7 +98,7 @@ updated: 2026-10-30
 - **后端工厂**：`OnDeviceEngineFactory.resolve()` —— 先 `CapabilityProbe` 探测（`SoC 识别 → QNN/NeuroPilot 原生驱动与动态库可加载性 → NPU Delegate 初始化测试 → 系统可用 RAM 门禁`），再按芯片启发式（`Build.SOC_MANUFACTURER`：`qualcomm`→QNN；`mediatek`→NeuroPilot）选后端；**任一 NPU 后端不可用直接收口 `HybridCloudEngine` 纯云端，不回落 CPU 跑大模型**。
 - **复用既有**：`engineFor` 装配入口、`HybridCloudEngine` 云↔端路由、`OnDeviceResultSummarizer` 既有的「单一提取/分类 + 约束解码（Grammars/Regex）」职责（architecture §78 端侧职责硬约束不变）。
 - **IPC 通信架构（详见 NPU 部署稿 §6；S3-7 UDS 化收编 2026-10-30，TLV 协议定型）**：**控制面 Binder/AIDL**（init/generate/cancel/release/EngineDied 低频）+ **数据面 UDS socketpair 流式管道**（token 流式高频，TLV 成帧 `[2B 魔数 0x5A 0xA5][2B 帧类型][4B 大端 len][payload]`：TOKEN_CHUNK/EOS 在用，IMAGE_META/PROGRESS 留位多模态；魔数失步 fail-fast + 未知类型 skip 前向兼容；唤醒/背压/崩溃隔离由内核 socket 语义承载，写端 3s 有界超时判 IPC_DEADLOCK）——数据面消费 = 主进程 native worker（libgdw：epoll 等 socket 读端可读 + 帧重组 + `Dart_PostCObject_DL` 直投 Dart，EOF=数据面死亡判活自愈重建；S1-5 的 Binder onTokens 过渡通道已退役）；`:engine` 绑定须 `BIND_AUTO_CREATE | BIND_IMPORTANT` + `onTrimMemory` 驱动状态机；`cancel/release` 经 atomic `stop_requested` 下沉中断 NPU，避免后台空跑；FGS 保活须在 Activity 前台时预挂（Android 12+ 后台启动限制，见 NPU 稿 §6.2）。
-- **控制面 AIDL 契约（开工即落码，v2.7 拉齐；S1-2/S1-3 施工细化）**：`IOnDeviceEngineService.aidl` 方法集 = `int initEngine(in Bundle config, IOnDeviceEngineListener listener)`（细化：listener 入参承载 `onEngineDied()` 由 `:engine` 侧主动通知，v2.7 未指定传输面）/ `ParcelFileDescriptor getDataSocketFd()`（S3-7 UDS 化：数据面 socketpair 读端，:engine 持写端，fd 经 Binder detachFd 移交；成帧协议与 EOS 语义见 NPU 稿 §6.1 v3.1）/ `void startGenerate(String requestId, String promptJson, in Bundle generationParams)` / `void cancelGenerate(String requestId)` / `void truncateContext(int keepTokens)` / `void releaseEngine()` / `int checkStatus()`（映射 `EngineStatus` 枚举序数）。约束：`generationParams` 须承载 `GenerationConfig` 字段，**停用词以 intArray/intArrayList 传预编码 id 序列**（§6.7，禁字符串级匹配）。
+- **控制面 AIDL 契约（开工即落码，v2.7 拉齐；S1-2/S1-3 施工细化；M2/M3/M4 修订）**：`IOnDeviceEngineService.aidl` 方法集 = `int initEngine(in Bundle config, IOnDeviceEngineListener listener)`（细化：listener 入参承载 `onEngineDied()` 由 `:engine` 侧主动通知，v2.7 未指定传输面）/ `ParcelFileDescriptor getDataSocketFd()`（S3-7 UDS 化：数据面 socketpair 读端，:engine 持写端，fd 经 Binder detachFd 移交；成帧协议与 EOS 语义见 NPU 稿 §6.1 v3.1）/ `void startGenerate(String requestId, String promptJson, in Bundle generationParams, String expectInstanceId, long expectSeq)`（M3 原子自证：epoch 复合键入口闸，拒绝分码 `SESSION_EPOCH_MISMATCH`/`SESSION_LOADING`）/ `int loadModel(String modelDir, String modelId)`（M2：modelId = 资产面单点计算，票据回显承载 I3）/ `void cancelGenerate(String requestId)` / `void truncateContext(int keepTokens)` / `void releaseEngine()` / `Bundle checkSession()`（M4 起为**唯一**状态查询面：权威状态 + 代次 + 资产身份票据，`checkStatus` 轮询面已删）。约束：`generationParams` 须承载 `GenerationConfig` 字段，**停用词以 intArray/intArrayList 传预编码 id 序列**（§6.7，禁字符串级匹配）。
 - **公共服务注册**：作为 App 级内核纳入注册中心（类比 `ServiceDirectory`），UI 零直连；对外暴露面走既有 `host` 虚拟服务纪律（`host-tools-gateway-export.md`），**零隐私只读默认**，推理/写能力须单独立项。
 
 ## 3. 芯片分发与模型分发
@@ -101,7 +106,7 @@ updated: 2026-10-30
 - **模型产物按芯片 + HTP 架构版本分（均为 3B~4B 级 LLM）**：高通 QNN 优化包须**按 HTP 架构版本精确到 SoC**（8 Gen2=HTP v73、8 Gen3=HTP v75、8 Elite=HTP v79；**跨版本 context 二进制互不兼容**，针对 v75 编译的产物无法在 v73/v79 加载，见 NPU 稿 §3.5/§4.5）；联发科 Neuron 编译产物按天玑具体型号（9300/9400）下发；二者均**不随包**，按本机 SoC/HTP 版本动态下发。**LiteRT `.tflite` 仅作为百兆级轻量小模型（意图分类/PII 提取）产物，不承载 3B~4B LLM**。Google 系统模型（Gemini Nano / AICore）因不对第三方开放，不纳入本方案资产链。
 - **原生驱动库内置 `jniLibs`（v2.5 新增）**：`libQnn*.so` / Neuron 运行时 `.so` 必须随 APK/AAR 的 `jniLibs` 发布（单架构 ~30MB），**不**经 OTA 下发——规避 Android W^X / `dlopen` 限制（详见 NPU 稿 §4.7）；OTA 仅分发模型 `.bin` 静态数据资产。
 - **分发策略**：APK **不内嵌**大模型（体积/合规，Google Play AAB ≤200MB、国内商店禁数 GB 包）；经既有自更新 / 资源中心通道**按需分片下载 + 校验 + 签名 + 本地解密**（对齐 `self-update.md` 的 sha256 + R2 源），按探测到的后端/SoC 选对应产物。
-- **设备分档与降级链**：先按 RAM / SoC 档位分档——**中低端档直接标记 `engineUnavailable`，收口纯云端（D1，不尝试 LiteRT-CPU）**；高端档按芯片走 `QNN-HTP(高通)` 或 `Neuron NPU(联发科)` 加速；**NPU 驱动不可用或异常时直接收口 `HybridCloudEngine` 纯云端，不做端侧 LLM CPU 兜底**（D1 已明确 LiteRT-CPU 不对外暴露）。既有 `HybridCloudEngine` 降级判据不变。
+- **设备分档与降级链**：先按 RAM / SoC 档位分档——**中低端档直接标记 `engineUnavailable`，收口纯云端（D1，不尝试 LiteRT-CPU）**；高端档按芯片走 `QNN-HTP(高通)` 或 `Neuron NPU(联发科)` 加速；**NPU 降级链（v3.2 NPU 兜底）：QAIRT build 失败（NPU 驱动/HTP 不可用）时，高端 NPU 设备先回落 `llama_cpp+CPU` 运行时完成本轮，兜底再败才收口 `HybridCloudEngine` 纯云端；热（≥SEVERE）/OOM 不触发 CPU 兜底，仍直接收口纯云端**（遵「禁 CPU 分流」；D1a 设备分档不变，LiteRT-CPU 仍不对外暴露）。既有 `HybridCloudEngine` 降级判据不变。
 
 ## 4. 分期
 

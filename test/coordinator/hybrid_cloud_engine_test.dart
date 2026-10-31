@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/coordinator/degradation_controller.dart';
@@ -172,7 +173,7 @@ void main() {
     expect(controller.health, CloudHealth.healthy);
   });
 
-  test('降级态无工具请求直走端侧（云端零调用），消息压平为单发 prompt', () async {
+  test('降级态无工具请求直走端侧（云端零调用），消息序列 JSON 跨 AIDL', () async {
     controller.reportTransportTimeout();
     device.next = '端侧产出';
     final events = await engine
@@ -183,7 +184,13 @@ void main() {
         )
         .toList();
     expect(cloud.calls, isEmpty);
-    expect(device.prompts.single, 'sys|u1');
+    // 2026-10-31 设计修正：prompt = 消息序列 JSON（多轮 ChatML 由 :engine
+    // 模板承载角色；旧单发压平 + 文字标注因复读环退役）。
+    final turns =
+        (jsonDecode(device.prompts.single) as List).cast<Map<String, dynamic>>();
+    expect(turns.map((m) => m['role']).toList(), ['system', 'user']);
+    expect(turns[0]['content'], 'sys');
+    expect(turns[1]['content'], 'u1');
     expect(events.whereType<CloudTextDelta>().single.text, '端侧产出');
     expect(
       events.whereType<CloudDone>().single.finishReason,
@@ -385,8 +392,9 @@ void main() {
     expect(device.cancelCalls, 0);
   });
 
-  test('设备门禁关闸：降级态也走云端（关闸 ≡ 端侧不可用）', () async {
+  test('门禁不达标（advisory）：降级态端侧照走，不拦路由（2026-10-31 裁决）', () async {
     controller.reportTransportTimeout();
+    device.next = '端侧产出';
     var checked = false;
     final gated = HybridCloudEngine(
       controller: controller,
@@ -397,11 +405,10 @@ void main() {
         return (pass: false, reason: '电量 10% < 15%（未充电）');
       },
     );
-    cloud.script.add(() => textStream('云端接管'));
     final events = await gated.send(noTools).toList();
-    expect(checked, isTrue);
-    expect(device.prompts, isEmpty); // 端侧零调用
-    expect(events.whereType<CloudTextDelta>().single.text, '云端接管');
+    expect(checked, isTrue, reason: 'advisory 判定仍执行（留痕可观测）');
+    expect(device.prompts, hasLength(1), reason: '门禁只留痕，不拦路由');
+    expect(events.whereType<CloudTextDelta>().single.text, '端侧产出');
   });
 
   test('设备门禁放行：端侧路径照常', () async {
@@ -418,39 +425,36 @@ void main() {
     expect(events.whereType<CloudTextDelta>().single.text, '端侧产出');
   });
 
-  test('设备门禁关闸且无云端 → 可观测上抛（禁静默吞）', () async {
+  test('门禁不达标 + 无云端 → 端侧照走（advisory 不构成挡点）', () async {
     controller.reportTransportTimeout();
+    device.next = 'advisory 无云端侧';
     final gated = HybridCloudEngine(
       controller: controller,
       cloud: null,
       onDevice: device,
+      preferOnDevice: true,
       deviceTierGate: () async => (pass: false, reason: '省电模式'),
     );
-    await expectLater(
-      gated.send(noTools).toList(),
-      throwsA(isA<InferenceException>()),
-    );
-    expect(device.prompts, isEmpty);
+    final events = await gated.send(noTools).toList();
+    expect(events.whereType<CloudTextDelta>().single.text, 'advisory 无云端侧');
   });
 
-  test('P2-1：门禁探测异常 → fail-closed 关闸（原放行方向偏危险）', () async {
+  test('门禁探测异常 → 重探后仍失败仅 advisory 留痕，不拦路由', () async {
     controller.reportTransportTimeout();
+    device.next = '端侧产出';
     final gated = HybridCloudEngine(
       controller: controller,
       cloud: cloud,
       onDevice: device,
+      preferOnDevice: true,
       deviceTierGate: () async {
         throw Exception('探针通道不可用');
       },
     );
-    cloud.script.add(() => textStream('云端接管'));
     final events = await gated.send(noTools).toList();
-    expect(device.prompts, isEmpty, reason: '关闸 ≡ 端侧不可用——不在状态未知的弱设备上跑端侧');
-    expect(
-      events.whereType<CloudTextDelta>().single.text,
-      '云端接管',
-      reason: '有云端走云端，用户仍得到回答',
-    );
+    expect(device.prompts, hasLength(1),
+        reason: '探测异常 = 未知态，advisory 层如实留痕不拦截');
+    expect(events.whereType<CloudTextDelta>().single.text, '端侧产出');
   });
 
   group('云端空产出兜底（T7 实测：推理型模型烧光 max_tokens 零可见内容）', () {
@@ -592,16 +596,24 @@ void main() {
       expect(cloud.calls, hasLength(1), reason: '死亡即切云，一次直达');
     });
 
-    test('云端未配置态端侧死亡 → EngineDiedException 原样上抛（无云可切）', () async {
+    test('云端未配置态端侧死亡 → 白话 InferenceException（禁裸抛内部切云信号）', () async {
       final bare = HybridCloudEngine(
         controller: controller,
         cloud: null,
         onDevice: device,
       );
       device.dieOnGenerate = true;
+      // 2026-10-31 契约修订：EngineDiedException 是内部切云信号，无云可切时
+      // 翻译成白话报错（出路提示），不再裸抛 'EngineDiedException: ...' 上墙。
       await expectLater(
         bare.send(noTools).toList(),
-        throwsA(isA<EngineDiedException>()),
+        throwsA(
+          isA<InferenceException>().having(
+            (e) => e.message,
+            'message',
+            contains('端侧已中断且未配置云端兜底'),
+          ),
+        ),
       );
     });
 
@@ -669,47 +681,46 @@ void main() {
       expect(events.whereType<CloudTextDelta>().single.text, '偏好端侧');
     });
 
-    test('紧急强行启用：门禁关闸仍走端侧（即便云端健康）', () async {
-      device.next = '强行端侧';
+    test('门禁不达标 → advisory 留痕不拦截，端侧照走（2026-10-31 裁决）', () async {
+      device.next = '门禁放行端侧';
       final e = HybridCloudEngine(
         controller: controller,
         cloud: cloud,
         onDevice: device,
-        forceOnDevice: true,
+        preferOnDevice: true,
         deviceTierGate: () async => (pass: false, reason: '省电模式'),
       );
       final events = await e.send(noTools).toList();
-      expect(device.prompts, hasLength(1));
+      expect(device.prompts, hasLength(1), reason: '门禁只留痕，不拦路由');
       expect(cloud.calls, isEmpty);
-      expect(events.whereType<CloudTextDelta>().single.text, '强行端侧');
+      expect(events.whereType<CloudTextDelta>().single.text, '门禁放行端侧');
     });
 
-    test('紧急强行 + 无云端 + 门禁关闸 → 端侧路径（不报错）', () async {
-      device.next = '强行端侧无云';
+    test('门禁不达标 + 无云端 → 端侧路径（不报错）', () async {
+      device.next = 'advisory 端侧无云';
       final e = HybridCloudEngine(
         controller: controller,
         cloud: null,
         onDevice: device,
-        forceOnDevice: true,
+        preferOnDevice: true,
         deviceTierGate: () async => (pass: false, reason: 'RAM 不足'),
       );
       final events = await e.send(noTools).toList();
-      expect(events.whereType<CloudTextDelta>().single.text, '强行端侧无云');
+      expect(events.whereType<CloudTextDelta>().single.text, 'advisory 端侧无云');
     });
 
-    test('§2 工具面不可被偏好/强行绕过（带 MCP 工具仍走云端）', () async {
+    test('§2 工具面不可被偏好绕过（带 MCP 工具仍走云端）', () async {
       device.next = '不应到达';
       final e = HybridCloudEngine(
         controller: controller,
         cloud: cloud,
         onDevice: device,
         preferOnDevice: true,
-        forceOnDevice: true,
         deviceToolPolicy: (tools) => tools.every((t) => t.name == 'get_connected_apps'),
       );
       cloud.script.add(() => textStream('云端编排'));
       final events = await e.send(withServerTool).toList();
-      expect(device.prompts, isEmpty, reason: '§2 工具面不受偏好/强行影响');
+      expect(device.prompts, isEmpty, reason: '§2 工具面不受偏好影响');
       expect(events.whereType<CloudTextDelta>().single.text, '云端编排');
     });
   });
@@ -744,14 +755,14 @@ void main() {
       expect(DeviceTierGate.check(probe, ignoreThermal: true).pass, isTrue);
     });
 
-    test('RAM 总量 6GB 硬件准入不受 ignoreAvailRam 影响（需 force 绕过）', () {
+    test('RAM 总量 6GB 硬件准入不受 ignoreAvailRam 影响（advisory 层保留判据）', () {
       final weak = DeviceProbe(totalRamBytes: 4 << 30, availRamBytes: bigAvail);
       expect(DeviceTierGate.check(weak, ignoreAvailRam: true).pass, isFalse);
     });
   });
 
   group('端侧多轮输入面与零产出归因（2026-10-30 真机「第二轮没有输出」）', () {
-    test('第二轮（带历史）→ 端侧 prompt 带角色标注、当前提问单独成段', () async {
+    test('第二轮（带历史）→ 端侧 prompt 为消息序列 JSON（角色由模板承载）', () async {
       controller.reportTransportTimeout(); // 降级态 → 走端侧
       device.next = '端侧产出';
       await engine
@@ -766,11 +777,16 @@ void main() {
             ),
           )
           .toList();
-      final prompt = device.prompts.single;
-      expect(prompt, contains('[用户] u1'));
-      expect(prompt, contains('[助手] a1'));
-      expect(prompt, contains('[当前问题]'));
-      expect(prompt.trimRight().endsWith('u2'), isTrue);
+      // 2026-10-31 设计修正：单发压平 + 文字标注因复读环退役——prompt =
+      // messages JSON，assistant 回答以 assistant 角色独立成轮。
+      final turns =
+          (jsonDecode(device.prompts.single) as List).cast<Map<String, dynamic>>();
+      expect(turns.map((m) => m['role']).toList(),
+          ['system', 'user', 'assistant', 'user']);
+      expect(turns[1]['content'], 'u1');
+      expect(turns[2]['role'], 'assistant', reason: '历史回答独立成 assistant 轮');
+      expect(turns[2]['content'], 'a1');
+      expect(turns[3]['content'], 'u2');
     });
 
     test('端侧零产出 → 显式上抛并带真因（禁笼统「空产出」）', () async {

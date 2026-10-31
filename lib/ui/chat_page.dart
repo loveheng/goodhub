@@ -47,6 +47,7 @@ import '../sandbox/conversation_store.dart';
 import 'components/call_card.dart';
 import 'components/cross_source_consent_card.dart';
 import 'components/conversation_drawer.dart';
+import '../core/notice_category.dart';
 import 'components/dual_track_stream.dart';
 import 'components/session_context_sheet.dart';
 import 'error_copy.dart';
@@ -202,16 +203,19 @@ class _ChatPageState extends State<ChatPage>
   /// 撤下；failed 由请求级错误卡显式说明，不重复提示）。
   static const String _kOnDeviceLoadingNote = '⏳ 端侧模型加载中…';
 
+  /// 端侧加载瞬态 pill 是否已展示（过程类不收纳，用本地标记管理显隐）。
+  bool _loadingNoticeActive = false;
+
   void _onOnDeviceLoadStateChanged() {
     if (!mounted) return;
     final loading = sharedOnDeviceEngine.loadState.value == OnDeviceLoadState.loading;
-    final hasNote = _status.tracks
-        .any((e) => e is TrackNote && e.text == _kOnDeviceLoadingNote);
-    if (loading && !hasNote) {
-      _add(TrackNote(_kOnDeviceLoadingNote, danger: false));
-    } else if (!loading && hasNote) {
-      _status.removeWhere(
-          (e) => e is TrackNote && e.text == _kOnDeviceLoadingNote);
+    // 过程类瞬态提示（2026-10-31 后续治理）：加载中显瞬态 pill，就绪/failed 撤下；
+    // failed 由请求级错误卡显式说明，不重复提示。
+    if (loading && !_loadingNoticeActive) {
+      _loadingNoticeActive = true;
+      _showTransientNotice(_kOnDeviceLoadingNote, false);
+    } else if (!loading && _loadingNoticeActive) {
+      _loadingNoticeActive = false;
     }
   }
 
@@ -237,7 +241,7 @@ class _ChatPageState extends State<ChatPage>
     // P2-1：配额损坏/签名不符不再静默清零——原文件已备份，用户可见提示
     // （旧行为：用户对额度重置毫无知觉）。
     if (_sessionSvc.archive?.lastQuotaError != null) {
-      _add(TrackNote('⚠ 用量配额记录损坏，已按全新额度计算（原文件已备份）', danger: true));
+      _add(TrackNote('⚠ 用量配额记录损坏，已按全新额度计算（原文件已备份）', danger: true, category: TrackNoticeCategory.fact));
     }
     if (mounted) setState(() {}); // 配额/会话已从服务恢复
   }
@@ -255,18 +259,21 @@ class _ChatPageState extends State<ChatPage>
     final ok = await _sessionSvc.persistCurrent(
       // ux-hardening P0-1：引导卡瞬态（动作回调不可序列化）——持久化前
       // 过滤，恢复会话不出现；未配置状态由 _loadEndpoints 重插。
+      // 快照经 flushedTracks 取值（读即刷盘）：Run 收尾 ≤40ms 尾帧必在
+      // 快照内（否则恢复会话缺尾句）。
       trackJson: TrackEntryCodec.encode(
-        _status.tracks.where((e) => e is! TrackGuide).toList(),
+        _status.flushedTracks.where((e) => e is! TrackGuide).toList(),
       ),
     );
-    if (!ok) _add(TrackNote('⚠ 会话快照保存失败（见日志）', danger: true));
+    if (!ok) _add(TrackNote('⚠ 会话快照保存失败（见日志）', danger: true, category: TrackNoticeCategory.fact));
   }
 
   /// 切换/删除前的当前会话保底。
   Future<void> _persistIfAny() async {
     await _sessionSvc.persistIfAny(
+      // 同 [_persistCurrent]：读即刷盘（快照必含未落盘的尾帧）。
       trackJson: TrackEntryCodec.encode(
-        _status.tracks.where((e) => e is! TrackGuide).toList(),
+        _status.flushedTracks.where((e) => e is! TrackGuide).toList(),
       ),
     );
   }
@@ -346,8 +353,29 @@ class _ChatPageState extends State<ChatPage>
 
   void _add(TrackEntry entry) {
     if (!mounted) return;
+    // 过程类通告不收纳（2026-10-31 后续治理）：仅瞬态 pill 一闪即过，不进阅读轨
+    // 也不进账本；其余类别交 controller 按 category 路由（错误内联 / 事实单槽）。
+    if (entry is TrackNote && entry.category == TrackNoticeCategory.process) {
+      _showTransientNotice(entry.text, entry.danger);
+      return;
+    }
     _status.addEntry(entry);
     _pinToBottom();
+  }
+
+  /// 过程类通告的瞬态展示（2026-10-31 后续治理）：一闪即过的 pill（SnackBar），
+  /// 不进阅读轨也不进账本；危险过程（极少）以错误色调呈现。
+  void _showTransientNotice(String message, bool danger) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor:
+            danger ? Theme.of(context).colorScheme.errorContainer : null,
+      ),
+    );
   }
 
   /// 错误行动卡（ux-hardening P0-2）：异常白话翻译 + 原始异常留痕 + 重试
@@ -370,14 +398,23 @@ class _ChatPageState extends State<ChatPage>
     _add(card);
   }
 
-  /// 会话记忆汇总列表（BottomSheet）：轨道内全部 TrackMemoryCapsule 快照，
-  /// 已撤销条目灰阶弱化（终态锁定语义，ui-design §3.2）。纯展示——落盘与
-  /// 撤销仍由内联胶囊的 undo 通道负责，此处不做修改入口。
-  void _showMemoryListSheet() {
+  /// 本轮记录汇总面板（2026-10-31 + 后续治理）：会话窗口右上角入口的
+  /// BottomSheet，两节合成一处——
+  ///
+  /// - **① 系统通告**：仅保留**最新一份**事实类通告（按发生次数聚合展示）。
+  ///   来源 [ChatStatusController.latestFactNotice] / [noticeCount]：错误类通告
+  ///   已回对话流内联、过程类不收纳（瞬态 pill），账本只收事实且单槽（2026-10-31
+  ///   用户拍板「只留最新一份」），单写逻辑在 controller，页面侧只读不写。
+  /// - **② 本轮记忆**：轨道内全部 TrackMemoryCapsule 快照，已撤销条目灰阶
+  ///   弱化（终态锁定语义，ui-design §3.2）。纯展示——落盘与撤销仍由内联胶囊
+  ///   的 undo 通道负责，此处不做修改入口。
+  void _showRoundRecordSheet() {
     final t = consoleTokens(context);
     final capsules = _status.tracks.whereType<TrackMemoryCapsule>().toList(
       growable: false,
     );
+    final note = _status.latestFactNotice;
+    final factCount = _status.noticeCount;
     unawaited(
       showModalBottomSheet<void>(
         context: context,
@@ -389,9 +426,49 @@ class _ChatPageState extends State<ChatPage>
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                const Text(
+                  '本轮记录',
+                  style: TextStyle(
+                    fontSize: Fsz.telemetry,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '本轮运行的系统通告（仅保留最新一份）与记忆留痕',
+                  style: TextStyle(fontSize: Fsz.note, color: t.terminalMuted),
+                ),
+                const Divider(height: 16),
+                Text(
+                  '系统通告（$factCount）',
+                  style: const TextStyle(
+                    fontSize: Fsz.telemetry,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '运行中的事实状态；仅保留最新一份（共发生 $factCount 次）',
+                  style: TextStyle(fontSize: Fsz.note, color: t.terminalMuted),
+                ),
+                if (note == null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      // 与记忆节同源口径（P2-11）：空态必须回答「什么时候这里
+                      // 会有东西」——点开一个空面板而不给答案等于把用户丢在真空
+                      // 里（与 SSOT §1「禁止静默禁用」同源）。
+                      '本会话暂无事实类通告。出现服务挂载、配置降级或重名跳过时'
+                      '会记录在这里。',
+                      style: TextStyle(fontSize: Fsz.note, color: t.terminalMuted),
+                    ),
+                  )
+                else
+                  _RoundNoteRow(note: note),
+                const Divider(height: 16),
                 Text(
                   '本轮记忆（${capsules.length}）',
-                  style: TextStyle(
+                  style: const TextStyle(
                     fontSize: Fsz.telemetry,
                     fontWeight: FontWeight.w600,
                   ),
@@ -401,52 +478,18 @@ class _ChatPageState extends State<ChatPage>
                   '模型从对话中提取落库的事实要点（session/user/srv 域）',
                   style: TextStyle(fontSize: Fsz.note, color: t.terminalMuted),
                 ),
-                const Divider(height: 16),
                 if (capsules.isEmpty)
-                  Text(
-                    // P2-11：常驻入口必须有「为什么这里是空的」的答案——否则点开
-                    // 一个空面板等于把用户丢在真空里（禁静默禁用同源口径）。
-                    '本会话暂无提取的记忆。模型从对话里认出稳定事实时会写入这里，'
-                    '入轨的每条都可在流内逐条撤销。',
-                    style: TextStyle(
-                      fontSize: Fsz.note,
-                      color: t.terminalMuted,
-                    ),
-                  ),
-                for (final c in capsules)
                   Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 3),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Container(
-                          width: 6,
-                          height: 6,
-                          margin: const EdgeInsets.only(top: 6),
-                          decoration: BoxDecoration(
-                            color: c.undone ? t.terminalMuted : t.l1Ok,
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            c.undone
-                                ? '${c.key}=${c.value}（已撤销）'
-                                : '${c.key}=${c.value}',
-                            style: TextStyle(
-                              fontFamily: t.monoFamily,
-                              fontSize: Fsz.note,
-                              color: c.undone ? t.terminalMuted : null,
-                              decoration: c.undone
-                                  ? TextDecoration.lineThrough
-                                  : null,
-                            ),
-                          ),
-                        ),
-                      ],
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      // P2-11：常驻入口必须有「为什么这里是空的」的答案。
+                      '本会话暂无提取的记忆。模型从对话里认出稳定事实时会写入'
+                      '这里，入轨的每条都可在流内逐条撤销。',
+                      style: TextStyle(fontSize: Fsz.note, color: t.terminalMuted),
                     ),
-                  ),
+                  )
+                else
+                  for (final c in capsules) _RoundMemoryRow(capsule: c),
               ],
             ),
           ),
@@ -455,12 +498,13 @@ class _ChatPageState extends State<ChatPage>
     );
   }
 
-  void _appendText(String delta) {
+  void _appendText(String delta, {required ChatRunId run}) {
     if (!mounted) return;
     // P0 流控层（stream-perf §3）：delta 入池，40ms 节拍批量刷盘；流结束/中止/
     // 异常路径由 _send 的 finally 强制 flush，尾帧不丢。缓冲与保序铁律
-    // （非文本条目入轨前先刷盘）归口 ChatStatusController。
-    _status.appendStreamText(delta);
+    // （非文本条目入轨前先刷盘）归口 ChatStatusController。[run] = 归属 Run
+    // 令牌（跨 Run 气泡边界由 controller 归属判定内建）。
+    _status.appendStreamText(delta, run: run);
   }
 
   /// 用户滚动监听：离开底部即暂停自动跟随（流式输出不劫持滚动），回到
@@ -779,7 +823,7 @@ class _ChatPageState extends State<ChatPage>
     // （键随计数变，见 ChatStatusController.claimSessionNotice）。
     if (unmounted > 0 &&
         _status.claimSessionNotice('unmounted-services:$unmounted')) {
-      _add(TrackNote('⊘ 有 $unmounted 个服务已卸载，未参与本次任务（设置页可重新挂载）', danger: false));
+      _add(TrackNote('⊘ 有 $unmounted 个服务已卸载，未参与本次任务（设置页可重新挂载）', danger: false, category: TrackNoticeCategory.fact));
     }
     // T-trans-4：本地插件零配置发现（系统托管，不进手填配置）；与 HTTP 端点合并判定。
     final locals = <LocalPluginInfo>[];
@@ -802,11 +846,16 @@ class _ChatPageState extends State<ChatPage>
     if (!isRetry) _inputCtrl.clear();
     // 切片 B：运行态收口到 controller——beginRun 一次性落 running/connecting/
     // 自动跟随/已耗时起点，合并为单次状态通知（替代原 4 行整页 setState）。
-    _status.beginRun(startedAt: DateTime.now());
+    // beginRun 同时发号本 Run 的归属令牌（气泡边界据此派生，调用方零纪律）。
+    final runId = _status.beginRun(startedAt: DateTime.now());
     _activeThinkingEntry = null; // 思考轨按 Run 生灭（多轮内按工具卡分段）
+    // 跨 Run 气泡边界由 controller 归属判定内建（appendStreamText 携带 Run
+    // 令牌）——此处无需断流（防御式双保险已退役，见设计修正注释）。
     if (!isRetry) {
       // 编排 B1：续跑合成消息渲染为灰阶系统事件行（非普通用户气泡）。
-      asSystemEvent ? _add(TrackNote(prompt, danger: false)) : _add(TrackUser(prompt));
+      asSystemEvent
+          ? _add(TrackNote(prompt, danger: false, category: TrackNoticeCategory.fact))
+          : _add(TrackUser(prompt));
     }
     // T3b：会话懒建（首个任务起落盘；标题截取策略在 Archive 内核）。
     await _archive!.ensureCurrent(prompt: prompt);
@@ -829,7 +878,7 @@ class _ChatPageState extends State<ChatPage>
         if (!_status.tracks.any(
           (e) => e is TrackNote && e.text == kMemoryFirstNotice,
         )) {
-          _add(const TrackNote(kMemoryFirstNotice, danger: false));
+          _add(const TrackNote(kMemoryFirstNotice, danger: false, category: TrackNoticeCategory.fact));
         }
         final capsule = TrackMemoryCapsule(key: key, value: value);
         capsule.onUndo = () {
@@ -847,7 +896,7 @@ class _ChatPageState extends State<ChatPage>
       void onWriteFailure(String key, String scope) {
         if (!mounted) return;
         setState(() {
-          _add(TrackNote('⚠ 记忆写入失败（$scope 域 $key），本条事实未保存', danger: true));
+          _add(TrackNote('⚠ 记忆写入失败（$scope 域 $key），本条事实未保存', danger: true, category: TrackNoticeCategory.error));
         });
       }
 
@@ -869,7 +918,7 @@ class _ChatPageState extends State<ChatPage>
             final ok = await showTrustCard(context, info);
             if (!ok) {
               _add(
-                TrackNote('⚠ 未信任本地插件 ${info.serverTitle}，已跳过挂载', danger: true),
+                TrackNote('⚠ 未信任本地插件 ${info.serverTitle}，已跳过挂载', danger: true, category: TrackNoticeCategory.fact),
               );
               continue;
             }
@@ -929,8 +978,8 @@ class _ChatPageState extends State<ChatPage>
           },
           elicitationDelegate: ChatElicitationDelegate(this),
           planDelegate: ChatPlanDelegate(this), // 编排 B1：计划确认卡
-          onNote: (message, {danger = false}) =>
-              _add(TrackNote(message, danger: danger)),
+          onNote: (message, {danger = false, category = TrackNoticeCategory.fact}) =>
+              _add(TrackNote(message, danger: danger, category: category)),
           onProgress: (tool, progress, total, message) {
             // A2：进度胶囊同步人话动作标签（原名归 CallCard 遥测轨）。
             final action = StatusStrip.toolAction(tool, toolDescriptions);
@@ -954,6 +1003,7 @@ class _ChatPageState extends State<ChatPage>
                   TrackNote(
                     '⚠ 连接中断，在途 ${report.inFlightCancelled} 个请求已取消，不重放',
                     danger: true,
+                    category: TrackNoticeCategory.error,
                   ),
                 );
               case ConnectionReportKind.backlog:
@@ -961,6 +1011,7 @@ class _ChatPageState extends State<ChatPage>
                   TrackNote(
                     '⚠ 连接中断，积压 ${report.droppedCount} 个请求已丢弃，不重放',
                     danger: true,
+                    category: TrackNoticeCategory.error,
                   ),
                 );
               case ConnectionReportKind.resourceUpdated:
@@ -968,13 +1019,14 @@ class _ChatPageState extends State<ChatPage>
                   TrackNote(
                     '${McpConnection.resourceStaleMessage}（${report.uri}）',
                     danger: false,
+                    category: TrackNoticeCategory.process,
                   ),
                 );
             }
           },
         );
       final useCase = ChatSendUseCase(
-        sink: _RunSink(this, toolDescriptions),
+        sink: _RunSink(this, toolDescriptions, runId),
         orchestrator: _runOrchestrator,
       );
       _useCase = useCase;
@@ -1004,7 +1056,7 @@ class _ChatPageState extends State<ChatPage>
         userPromptStoreProvider: userGlobalPromptsStore,
         onNoticeOnce: (key, message) {
           if (_status.claimSessionNotice(key)) {
-            _add(TrackNote(message, danger: true));
+          _add(TrackNote(message, danger: true, category: TrackNoticeCategory.error));
           }
         },
       );
@@ -1039,7 +1091,7 @@ class _ChatPageState extends State<ChatPage>
         userPrompt: prompt,
         onCapsule: onCapsule,
         onWriteFailure: onWriteFailure,
-        onSlotNotice: (notice) => _add(TrackNote(notice!, danger: true)),
+        onSlotNotice: (notice) => _add(TrackNote(notice!, danger: true, category: TrackNoticeCategory.error)),
         onAttribution: (plan) {
           // 上下文归因（展示 only）：本轮注入的记忆/服务快照挂轨道，点开
           // BottomSheet 查详情。
@@ -1057,7 +1109,7 @@ class _ChatPageState extends State<ChatPage>
                   ),
               ],
               droppedCount: plan.droppedCount,
-              onViewMemories: _showMemoryListSheet,
+              onViewMemories: _showRoundRecordSheet,
             ),
           );
         },
@@ -1140,7 +1192,7 @@ class _ChatPageState extends State<ChatPage>
     setState(() {});
     refreshSheet();
     if (state.armed) {
-      _add(const TrackNote('总管模式已开启：跨插件写操作将先出计划再一次确认', danger: false));
+      _add(const TrackNote('总管模式已开启：跨插件写操作将先出计划再一次确认', danger: false, category: TrackNoticeCategory.fact));
     }
   }
 
@@ -1247,20 +1299,31 @@ class _ChatPageState extends State<ChatPage>
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
-          // B2（page-beautify）：会话记忆入口上收 AppBar——原右下悬浮 ≡ FAB
+          // B2（page-beautify）：会话记录入口上收 AppBar——原右下悬浮 ≡ FAB
           // 与「回到最新」同尺寸垂直堆叠、主次不分，且 reorder 图标表意弱
           // （排序/菜单心智，且与归因条「≡」前缀撞车，A3 同源半题）。改 Bolt
-          // 图标（与流内「⚡ 已记录」胶囊同符号）；点击弹 BottomSheet 汇总列表
-          // （_showMemoryListSheet，纯展示不变）。
+          // 图标（与流内「⚡ 已记录」胶囊同符号）；点击弹 BottomSheet 汇总面板
+          // （_showRoundRecordSheet，纯展示不变）。
           actions: [
             // A7（page-beautify P3）：命名与抽屉「记忆库」（全局）区分——
             // 原「会话记忆」vs「记忆看板」两套「记忆」用户必混。
             // P2-11（2026-10-22）：由「有胶囊才出现」改**常驻且恒可点**——
             // ① 消灭首颗胶囊入轨时 AppBar 的布局跳变；② 常驻但不给动作 = 死
-            // 控件（违反 SSOT §1「禁止静默禁用」），故无记忆时点开仍是同一个
-            // 汇总列表的空态说明，而不是置灰。有/无记忆以图标色分档（§6 双
+            // 控件（违反 SSOT §1「禁止静默禁用」），故无记载时点开仍是同一个
+            // 汇总面板的空态说明，而不是置灰。有/无内容以图标色分档（§6 双
             // 通道：颜色 + tooltip 文本）。
-            _MemoryEntryButton(hasMemory: _status.hasMemoryCapsules, onPressed: _showMemoryListSheet),
+            // round-record（2026-10-31）：① 记载范围自「记忆」扩到「通告 + 记忆」
+            // ——系统通告全部搬出阅读轨，独此一处可查，含告警时图标转警示色；
+            // ② 单独包 ListenableBuilder 挂在 tracksListenable 上——Scaffold 经
+            // child 缓存不随 track 变更重建，入口若不自刷新就永远停在首次快照。
+            ListenableBuilder(
+              listenable: _status.tracksListenable,
+              builder: (context, _) => _RoundRecordButton(
+                hasRecord: _status.hasMemoryCapsules || _status.noticeCount > 0,
+                hasDanger: _status.hasDangerNotice,
+                onPressed: _showRoundRecordSheet,
+              ),
+            ),
             // A6（page-beautify P3）已撤销（2026-10-17 用户拍板）：⚙ 设置直达
             // 从对话页 AppBar 摘除，设置入口回归抽屉底部。
           ],
@@ -1383,29 +1446,130 @@ class _ChatPageState extends State<ChatPage>
   }
 }
 
-/// AppBar「本轮记忆」入口（B2 定位 + P2-11 常驻化）。
+/// AppBar「本轮记录」入口（B2 定位 + P2-11 常驻化 + round-record 2026-10-31）。
 ///
-/// 常驻 + 恒可点：无记忆时点开汇总列表的空态说明（解释「什么时候这里会有
+/// 常驻 + 恒可点：无记载时点开汇总面板的空态说明（解释「什么时候这里会有
 /// 东西」），而不是置灰——置灰即死控件，违反 SSOT §1「禁止静默禁用」。
-/// 有/无记忆两档以图标色区分（§6 双通道：颜色 + tooltip 文本）。
-class _MemoryEntryButton extends StatelessWidget {
-  const _MemoryEntryButton({
-    required this.hasMemory,
+///
+/// 三档视觉（§6 双通道：颜色之外另有 tooltip 文本）：无记载灰阶 / 有记载
+/// Emerald / **含告警通告转警示色**——通告已全部搬出阅读轨（对话页一条不留），
+/// 入口颜色是用户唯一能感知「有情况」的第二通道。
+class _RoundRecordButton extends StatelessWidget {
+  const _RoundRecordButton({
+    required this.hasRecord,
+    required this.hasDanger,
     required this.onPressed,
   });
 
-  final bool hasMemory;
+  /// 是否有可查内容（通告或记忆任一）。
+  final bool hasRecord;
+
+  /// 是否含危险通告（danger）——入口转警示色的判据。
+  final bool hasDanger;
   final VoidCallback onPressed;
 
   @override
   Widget build(BuildContext context) {
     final t = consoleTokens(context);
     return IconButton(
-      tooltip: hasMemory ? '本轮记忆' : '本轮记忆（暂无，点击查看说明）',
+      // tooltip 明说档位（§6 双通道：颜色之外的第二通道）。
+      tooltip: hasDanger
+          ? '本轮记录（有告警，点击查看）'
+          : (hasRecord ? '本轮记录' : '本轮记录（暂无，点击查看说明）'),
       onPressed: onPressed,
       icon: Icon(
         Icons.bolt,
-        color: hasMemory ? t.l1Ok : t.terminalMuted,
+        color: hasDanger ? t.danger : (hasRecord ? t.l1Ok : t.terminalMuted),
+      ),
+    );
+  }
+}
+
+/// 记录面板内的单条系统通告行（round-record）：语义色圆点 + 正文——
+/// 危险态走正文警示色（§6：不只靠圆点颜色传态），完成态 Emerald，其余灰阶。
+class _RoundNoteRow extends StatelessWidget {
+  const _RoundNoteRow({required this.note});
+
+  final TrackNote note;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = consoleTokens(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            margin: const EdgeInsets.only(top: 6),
+            decoration: BoxDecoration(
+              color: _roundNoteColor(t, note),
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              note.text,
+              style: TextStyle(
+                fontSize: Fsz.note,
+                color: note.danger ? t.danger : null,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 通告语义色（ui-design §1）：危险态警示色 / 完成态 Emerald / 其余终态灰阶。
+Color _roundNoteColor(ConsoleTokens t, TrackNote n) {
+  if (n.danger) return t.danger;
+  return n.text == kTaskDoneNote ? t.l1Ok : t.terminalMuted;
+}
+
+/// 记录面板内的单条记忆行（终态锁定语义 ui-design §3.2）：已撤销条目灰阶 +
+/// 删除线；键值为遥测口径故走等宽（§2）。
+class _RoundMemoryRow extends StatelessWidget {
+  const _RoundMemoryRow({required this.capsule});
+
+  final TrackMemoryCapsule capsule;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = consoleTokens(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            margin: const EdgeInsets.only(top: 6),
+            decoration: BoxDecoration(
+              color: capsule.undone ? t.terminalMuted : t.l1Ok,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              capsule.undone
+                  ? '${capsule.key}=${capsule.value}（已撤销）'
+                  : '${capsule.key}=${capsule.value}',
+              style: TextStyle(
+                fontFamily: t.monoFamily,
+                fontSize: Fsz.note,
+                color: capsule.undone ? t.terminalMuted : null,
+                decoration: capsule.undone ? TextDecoration.lineThrough : null,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1454,10 +1618,14 @@ class _ScrollToBottomFab extends StatelessWidget {
 ///
 /// 同库私有可见：直接访问 [_ChatPageState] 的轨道与状态带成员。
 class _RunSink implements ChatRunSink {
-  _RunSink(this._state, this._descriptions);
+  _RunSink(this._state, this._descriptions, this._runId);
 
   final _ChatPageState _state;
   final Map<String, String> _descriptions;
+
+  /// 本 Run 的归属令牌（controller 发号）——文本气泡的跨轮边界据此派生，
+  /// 页面层不再持有「这段文本属于哪一轮」的隐含知识。
+  final ChatRunId _runId;
 
   @override
   void onThinking(String text) {
@@ -1472,7 +1640,7 @@ class _RunSink implements ChatRunSink {
   }
 
   @override
-  void onText(String text) => _state._appendText(text);
+  void onText(String text) => _state._appendText(text, run: _runId);
 
   @override
   void onCallStarted(AssembledToolCall call) {
@@ -1484,8 +1652,8 @@ class _RunSink implements ChatRunSink {
     _state._activeCallEntry = entry;
     // 思考轨分段断开：工具卡之后的下一轮思维另起条目。
     _state._activeThinkingEntry = null;
-    // 工具卡插入打断文本流：先刷盘残余保序。
-    _state._status.breakTextStream();
+    // 工具卡插入打断文本流：**无须手工断流**——块级条目入轨即关闭活动
+    // 文本段（controller 按轨道结构派生边界，页面层零纪律）。
     _state._add(entry);
     _state._watcher?.start();
   }
@@ -1538,10 +1706,12 @@ class _RunSink implements ChatRunSink {
   void onFinished(String text, List<CloudChatMessage> transcript) {
     // 步 3 写回契约（§8.1-1）：全量替换（非 append），防止多轮后条数翻倍。
     _state._session.replaceTranscript(transcript);
-    _state._appendText(text.isEmpty ? '' : '\n');
+    // 收尾换行仍归本 Run 气泡；跨 Run 边界由 controller 归属判定内建
+    // （2026-10-31 设计修正：活动条目所有权归 Run 令牌，无需手工断流）。
+    _state._appendText(text.isEmpty ? '' : '\n', run: _runId);
     // P0-3 降噪：本轮已有可见正文时答案本身即完成信号；零正文才补完成行。
     if (text.trim().isEmpty) {
-      _state._add(const TrackNote(kTaskDoneNote, danger: false));
+      _state._add(const TrackNote(kTaskDoneNote, danger: false, category: TrackNoticeCategory.process));
     }
     _state._setPill('done', CapsuleTone.idle);
     unawaited(HapticFeedback.selectionClick());

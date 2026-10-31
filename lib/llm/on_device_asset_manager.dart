@@ -67,30 +67,52 @@ class OnDeviceAssetManager {
   /// 此值——分发键（SoC × HTP 版本 × 驱动指纹）经 manifest.url/query 承载。
   final String? baseUrlOverride;
 
-  static const String _defaultBase =
-      'http://127.0.0.1:8090/qwen3_1_7b-geniex_qairt-w4a16-qualcomm_snapdragon_8_elite_for_galaxy';
-  static const String _defaultDirName = 'qwen3_1_7b-geniex_qairt-w4a16';
-
   /// 本地导入资产的 meta 版本前缀（2026-10-30 用户裁决：模型改导入制，
   /// 废弃在线 OTA 依赖——模型体积过大无在线存储）。带此前缀的资产在
   /// [ensureAssets] 里完全跳过 manifest/网络面，尺寸校验过即用。
   static const String _importedVersionPrefix = 'local-import';
 
-  /// 装载目标解析（§4.5 分发键经 catalog 选项承载）：显式 model（设置页
-  /// 选择）优先 > 实例构造 override（测试注入）> 默认（1.7B 首发资产）。
-  String _baseOf(OnDeviceModelOption? model) =>
-      model?.base ?? baseUrlOverride ?? _defaultBase;
+  /// 装载目标解析（§4.5 分发键经选项承载）：显式 model（设置页选择）优先 >
+  /// 实例构造 override（测试注入）。**无默认模型**（2026-10-31 固定档位退役，
+  /// 纯导入制）：未选/未装模型 → null，调用方收口「资产缺失」，不拉默认资产。
+  String? _baseOf(OnDeviceModelOption? model) =>
+      model?.base ?? baseUrlOverride;
 
-  String _dirOf(OnDeviceModelOption? model) =>
-      model?.dirName ?? _defaultDirName;
+  String? _dirOf(OnDeviceModelOption? model) => model?.dirName;
+
+  /// 资产身份 modelId（设计 §2.5 I3 单点计算）：`目录名@meta版本摘要前12位`。
+  /// 导入/删除/重导后取值必然变化——装载单飞去重键（I7）与会话票据对账
+  /// （I3）共用此值；`:engine` 票据回显经 loadModel 入参承载，双端口径同源。
+  /// meta 不可读退化为目录名（仍可对账，只是丢失版本粒度）。
+  Future<String?> modelIdOf(OnDeviceModelOption? model) async {
+    final dirName = _dirOf(model);
+    if (dirName == null) return null;
+    try {
+      final support =
+          await (supportDirResolver ?? getApplicationSupportDirectory)();
+      final metaFile =
+          File('${support.path}/models/$dirName/${ModelRegistry.metaFileName}');
+      if (!await metaFile.exists()) return dirName;
+      final meta = jsonDecode(await metaFile.readAsString()) as Map<String, dynamic>;
+      final version = meta['version'] as String? ?? '';
+      if (version.isEmpty) return dirName;
+      final digest = version.length > 12 ? version.substring(0, 12) : version;
+      return '$dirName@$digest';
+    } catch (_) {
+      return dirName;
+    }
+  }
 
   /// §4.6 双倍空间门禁（≈2.5× 1.8GB 模型体积，含解压峰值余量）。
   static const int _minFreeBytes = 5 * 1024 * 1024 * 1024;
 
-  /// 导入内容体积与所选档位预期值的容差（±20%）：超出即判「档位错配」拒绝
-  /// 导入——真机实证「1.7B 档装 4B 分片」把装载内存峰值翻倍，装载必被 LMK
-  /// 打断（端侧永远装不上）。
-  static const double _assetSizeTolerance = 0.2;
+  /// 自由导入**绝对体积上限**（唯一体积硬闸）：12GB 远超任何现实
+  /// 端侧模型（7B@Q8≈4.5GB），越过即拒——防用户误把超大权重导到端侧必 OOM。
+  static const int _importMaxBytes = 12 * 1024 * 1024 * 1024;
+
+  /// 自由导入体积**告警线**（4GB，7B@Q8 量级）：越过仅提示「可能内存不足」
+  /// 不阻断——装载期内存护栏 + 快死棘轮仍是运行时兜底，此处只作 UX 预警。
+  static const int _importWarnBytes = 4 * 1024 * 1024 * 1024;
 
   /// 可注入探针（测试面）：磁盘余量 / 驱动指纹。真机走平台通道。
   final Future<int?> Function()? freeBytesProvider;
@@ -98,9 +120,10 @@ class OnDeviceAssetManager {
   final Future<Directory> Function()? supportDirResolver;
   final DateTime Function()? now;
 
-  /// 装配入口（main.dart 启动引导 / 冒烟诊断 / 设置页共用）：幂等——已装
-  /// 版本与 manifest 一致且文件尺寸全对即跳过；否则整包重下并原子替换。
-  /// [model] = 装载目标（设置页选择；null = 默认 1.7B 首发资产）。
+  /// 装配入口（main.dart 启动引导 / 冒烟诊断 / 设置页共用）：已装（导入 meta
+  /// 在场且尺寸全对）即返回；否则对带 [model.base] 的目标走 manifest 下载
+  /// 通道（测试/冒烟面）。**纯导入制无默认模型**（2026-10-31 固定档位退役）：
+  /// [model] 为 null → 资产缺失返回 null（调用方收口云端），不拉默认资产。
   /// 返回模型目录；失败返回 null（DEGRADE 留痕，调用方走云端默认通路）。
   Future<Directory?> ensureAssets({
     OnDeviceModelOption? model,
@@ -112,11 +135,15 @@ class OnDeviceAssetManager {
       } catch (_) {}
     }
 
+    if (model == null) {
+      debugPrint('[DEGRADE] on-device assets: no model selected → 资产缺失（无默认模型）');
+      return null;
+    }
     final base = _baseOf(model);
     try {
       final support = await (supportDirResolver ?? getApplicationSupportDirectory)();
       final modelsRoot = Directory('${support.path}/models');
-      final target = Directory('${modelsRoot.path}/${_dirOf(model)}');
+      final target = Directory('${modelsRoot.path}/${model.dirName}');
 
       // 导入资产优先（2026-10-30 拍板：模型改导入制）：在盘且尺寸全对即
       // 直接返回，manifest 不可达/在线通道退役都不影响装载。
@@ -126,6 +153,12 @@ class OnDeviceAssetManager {
         return target;
       }
 
+      // base 空串语义 = 导入制无下载基址（fromInstalled/toOption 约定），
+      // 与 null 同归「无基址」——否则空串拼 URI 空跑一次必然失败的 manifest 拉取。
+      if (base == null || base.isEmpty) {
+        debugPrint('[DEGRADE] on-device assets: ${model.dirName} 未导入且无下载基址 → 资产缺失');
+        return null;
+      }
       report(const AssetPullProgress(phase: 'manifest'));
       final manifest = await _fetchManifest(base);
       if (manifest == null) return await _installedFallback(target);
@@ -188,10 +221,12 @@ class OnDeviceAssetManager {
   /// [ensureAssets] 整包重拉。**不计入熔断**（§6.5 口径），本件不触碰
   /// EngineCircuitBreaker。
   Future<void> markDirty({OnDeviceModelOption? model}) async {
+    final dirName = _dirOf(model);
+    if (dirName == null) return; // 无目标（未选模型）→ no-op
     try {
       final support =
           await (supportDirResolver ?? getApplicationSupportDirectory)();
-      final target = Directory('${support.path}/models/${_dirOf(model)}');
+      final target = Directory('${support.path}/models/$dirName');
       if (await target.exists()) {
         await _rmdirQuiet(target);
         debugPrint('[on-device] asset marked dirty (removed for re-fetch)');
@@ -204,9 +239,11 @@ class OnDeviceAssetManager {
   /// 驱动指纹漂移自愈：已装资产的指纹 ≠ 当前指纹 → 脏删（§4.8 单向匹配，
   /// 旧产物不回灌也不复用）。
   Future<bool> recoverIfDriverChanged({OnDeviceModelOption? model}) async {
+    final dirName = _dirOf(model);
+    if (dirName == null) return false; // 无目标（未选模型）→ 无可自愈
     final support =
         await (supportDirResolver ?? getApplicationSupportDirectory)();
-    final target = Directory('${support.path}/models/${_dirOf(model)}');
+    final target = Directory('${support.path}/models/$dirName');
     if (!await target.exists()) return false;
     if (await _driverFingerprintDrifted(target)) {
       await markDirty(model: model);
@@ -230,6 +267,12 @@ class OnDeviceAssetManager {
       return false;
     }
   }
+
+  /// 注册表扫描（身份唯一源，2026-10-31 多模型导入制）：已装模型列表（含
+  /// 自由导入 + 内置档位）。注入 [supportDirResolver] 生效（测试面）；失败
+  /// 降级为空（不阻断）。设置页据此渲染「已装模型」而非固定目录。
+  Future<List<InstalledModel>> listInstalled() =>
+      ModelRegistry.scan(supportDirResolver: supportDirResolver);
 
   // ---- manifest ----
 
@@ -445,22 +488,111 @@ class OnDeviceAssetManager {
 
   // ---- 本地导入通道（2026-10-30 拍板：模型改导入制，废弃在线 OTA 依赖）----
 
+  /// 导入期**结构校验**（预过滤，非最终裁定）：在 staging 压平后、原子替换前
+  /// 跑。规则（spike 冻结前口径）：
+  /// - **GGUF 魔数硬拒**（无歧义）：任一 `.gguf` 头 4 字节非 `GGUF` → 拒（坏包）。
+  /// - **运行时检测**（回填 meta，不强制布局）：`genie_config.json` 在场 →
+  ///   [OnDeviceRuntime.qairt]；否则有 `.gguf` → [OnDeviceRuntime.llamaCpp]；
+  ///   否则 [OnDeviceRuntime.auto]（未知布局**不硬拒**——spike 实证 llama_cpp
+  ///   资产布局前，避免误拒合法资产）。
+  /// - **qairt 布局告警**：`tokenizer.json` / `metadata.json` 缺失仅 `[DEGRADE]`
+  ///   留痕不拒——**最终裁定在 `doLoad`（build 真伪）**，导入期只省垃圾拷贝。
+  /// 校验自身异常降级为 auto（不阻断，保持兼容既有 .bin 形态测试资产）。
+  Future<_AssetLayout> _validateAssetLayout(Directory dir) async {
+    try {
+      final files = <String>[];
+      await for (final e in dir.list()) {
+        if (e is File) files.add(e.uri.pathSegments.last);
+      }
+      final lower = {for (final f in files) f.toLowerCase()};
+      final ggufs = [
+        for (final f in files)
+          if (f.toLowerCase().endsWith('.gguf')) f
+      ];
+      final hasGenie = lower.contains('genie_config.json');
+
+      for (final g in ggufs) {
+        if (!await _ggufMagicOk(File('${dir.path}/$g'))) {
+          return _AssetLayout(error: '$g 非有效 GGUF（头魔数不符）');
+        }
+      }
+
+      String runtime;
+      if (hasGenie) {
+        runtime = OnDeviceRuntime.qairt;
+        if (!lower.contains('tokenizer.json')) {
+          debugPrint('[DEGRADE] asset layout: qairt bundle missing tokenizer.json');
+        }
+        if (!lower.contains('metadata.json')) {
+          debugPrint('[DEGRADE] asset layout: qairt bundle missing metadata.json '
+              '(qairt dispatch 强制，doLoad 将失败)');
+        }
+      } else if (ggufs.isNotEmpty) {
+        runtime = OnDeviceRuntime.llamaCpp;
+      } else {
+        runtime = OnDeviceRuntime.auto;
+      }
+      return _AssetLayout(runtime: runtime);
+    } catch (e) {
+      debugPrint('[DEGRADE] asset layout validate: $e');
+      return const _AssetLayout();
+    }
+  }
+
+  /// GGUF 文件头魔数校验：前 4 字节须为 `GGUF`（0x47 0x47 0x55 0x46）。
+  Future<bool> _ggufMagicOk(File f) async {
+    try {
+      final raf = await f.open(mode: FileMode.read);
+      try {
+        await raf.setPosition(0);
+        final head = <int>[0, 0, 0, 0];
+        final n = await raf.readInto(head);
+        return n == 4 &&
+            head[0] == 0x47 &&
+            head[1] == 0x47 &&
+            head[2] == 0x55 &&
+            head[3] == 0x46;
+      } finally {
+        await raf.close();
+      }
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// 在盘导入资产校验：meta 版本带导入前缀 + meta 记录的每个文件在场且
   /// 尺寸全对。sha256 不重算（导入源完整性由用户侧保证，同 [_verifyInstalled]
   /// 的廉价口径）。
   Future<bool> _isImportedVerified(Directory target) async {
     try {
       final metaFile = File('${target.path}/.asset-meta.json');
-      if (!await metaFile.exists()) return false;
+      if (!await metaFile.exists()) {
+        debugPrint('[DEGRADE] imported-asset verify: meta 缺失 (${target.path})');
+        return false;
+      }
       final meta = jsonDecode(await metaFile.readAsString()) as Map<String, dynamic>;
       final version = meta['version'] as String? ?? '';
-      if (!version.startsWith(_importedVersionPrefix)) return false;
+      if (!version.startsWith(_importedVersionPrefix)) {
+        debugPrint('[DEGRADE] imported-asset verify: 版本前缀不符 '
+            '(version=$version, 期望 $_importedVersionPrefix*)');
+        return false;
+      }
       final sizes = (meta['sizes'] as Map<String, dynamic>?) ?? const {};
-      if (sizes.isEmpty) return false;
+      if (sizes.isEmpty) {
+        debugPrint('[DEGRADE] imported-asset verify: meta sizes 为空');
+        return false;
+      }
       for (final entry in sizes.entries) {
         final file = File('${target.path}/${entry.key}');
-        if (!await file.exists()) return false;
-        if (await file.length() != (entry.value as num).toInt()) return false;
+        if (!await file.exists()) {
+          debugPrint('[DEGRADE] imported-asset verify: ${entry.key} 缺失');
+          return false;
+        }
+        if (await file.length() != (entry.value as num).toInt()) {
+          debugPrint('[DEGRADE] imported-asset verify: ${entry.key} 尺寸不符 '
+              '(盘=${await file.length()} meta=${entry.value})');
+          return false;
+        }
       }
       return true;
     } catch (e) {
@@ -479,7 +611,7 @@ class OnDeviceAssetManager {
   /// 驱动指纹照记——§4.8 漂移自愈对导入资产同样生效（脏删后需重新导入）。
   Future<Directory?> importFromPickedFiles(
     List<String> pickedPaths, {
-    OnDeviceModelOption? model,
+    required ImportTarget target,
     void Function(AssetPullProgress progress)? onProgress,
   }) async {
     void report(AssetPullProgress p) {
@@ -487,13 +619,12 @@ class OnDeviceAssetManager {
         onProgress?.call(p);
       } catch (_) {}
     }
-
     try {
       if (pickedPaths.isEmpty) return null;
       final support =
           await (supportDirResolver ?? getApplicationSupportDirectory)();
       final modelsRoot = Directory('${support.path}/models');
-      final target = Directory('${modelsRoot.path}/${_dirOf(model)}');
+      final destDir = Directory('${modelsRoot.path}/${target.dirName}');
 
       // 展开为 (源路径, 落盘文件名)，同名校验 + 体积累计。
       final entries = <(String, String)>[];
@@ -512,25 +643,18 @@ class OnDeviceAssetManager {
       }
       if (entries.isEmpty) return null;
       if (!await _diskGate(totalBytes)) return null;
-      // 档位一致性校验（2026-10-30 真机实证）：所选档位 ↔ 导入内容必须同档
-      // ——「1.7B 档装 4B 分片」把装载内存峰值翻倍（3.17GB 权重 + ION 瞬态
-      // 击穿整机 min watermark → `:engine` 被 LMK 连杀 5 次 → 端侧永远装不上）。
-      // 目录名自拟不可信 → 靠体积对账钉死（偏差超容差即拒绝）。
-      final expected = model?.expectedTotalBytes;
-      if (expected != null) {
-        final drift = (totalBytes - expected).abs() / expected;
-        if (drift > _assetSizeTolerance) {
-          debugPrint('[DEGRADE] import size mismatch: dir=${_dirOf(model)} '
-              'expected≈${expected ~/ 1048576}MB got=${totalBytes ~/ 1048576}MB '
-              '(drift=${(drift * 100).round()}%) → refused');
-          report(AssetPullProgress(
-              phase: 'file',
-              fileName: entries.first.$2,
-              totalBytes: totalBytes,
-              detail: '导入内容与所选档位不符（预期 ≈${expected ~/ 1048576}MB，'
-                  '实测 ${totalBytes ~/ 1048576}MB）'));
-          return null;
-        }
+      // 绝对体积上限（自由导入唯一硬闸，无档位对账兜底）：超 12GB 直接拒。
+      if (totalBytes > _importMaxBytes) {
+        debugPrint('[DEGRADE] import size over hard ceiling: '
+            '${totalBytes ~/ 1073741824}GB > ${_importMaxBytes ~/ 1073741824}GB '
+            '→ refused');
+        report(AssetPullProgress(
+            phase: 'file',
+            fileName: entries.first.$2,
+            totalBytes: totalBytes,
+            detail: '模型体积超出端侧上限（>${_importMaxBytes ~/ 1073741824}GB），'
+                '已拒绝'));
+        return null;
       }
 
       report(AssetPullProgress(
@@ -538,6 +662,7 @@ class OnDeviceAssetManager {
       final staging = Directory(
           '${modelsRoot.path}/.staging-import-${(now ?? DateTime.now)().millisecondsSinceEpoch}');
       await staging.create(recursive: true);
+      String importedRuntime = OnDeviceRuntime.auto;
       try {
         var doneBytes = 0;
         for (final (src, name) in entries) {
@@ -554,16 +679,35 @@ class OnDeviceAssetManager {
               receivedBytes: doneBytes,
               totalBytes: totalBytes));
         }
-        await _writeImportMeta(staging, entries, totalBytes);
-        await _atomicSwap(staging, target, modelsRoot);
+        // 结构校验（预过滤，非最终裁定）：GGUF 魔数硬拒 + 运行时检测回填 meta。
+        final layout = await _validateAssetLayout(staging);
+        if (layout.error != null) {
+          debugPrint('[DEGRADE] import layout: ${layout.error} → refused');
+          report(AssetPullProgress(
+              phase: 'file',
+              fileName: entries.first.$2,
+              totalBytes: totalBytes,
+              detail: '资产校验失败：${layout.error}'));
+          return await _cleanupStaging(staging);
+        }
+        if (totalBytes > _importWarnBytes) {
+          debugPrint('[on-device] import size warn: '
+              '${totalBytes ~/ 1048576}MB > ${_importWarnBytes ~/ 1048576}MB '
+              '(可能内存不足，装载期内存护栏兜底)');
+        }
+        await _writeImportMeta(staging, entries, totalBytes,
+            runtime: layout.runtime, displayName: target.displayName);
+        await _atomicSwap(staging, destDir, modelsRoot);
+        importedRuntime = layout.runtime;
       } catch (_) {
         await _rmdirQuiet(staging);
         rethrow;
       }
-      debugPrint('[on-device] assets imported '
-          '(${entries.length} files, ${totalBytes ~/ 1048576}MB) → ${target.path}');
-      // 逐文件尺寸对账（S2-5 闪退换向）：4B@W4A16 全 bundle 预期 ~2.3GB，
-      // 目录名自拟不可信——合计 ~4.5GB+ 即导入误标大模型，装载期 dmabuf 对账用。
+      debugPrint('[on-device] assets imported (runtime=$importedRuntime) '
+          '(${entries.length} files, ${totalBytes ~/ 1048576}MB) '
+          '→ ${destDir.path}');
+      // 逐文件尺寸对账（S2-5 闪退换向）：目录名自拟不可信——合计 ~4.5GB+
+      // 即导入误标大模型，装载期 dmabuf 对账用。
       for (final (src, name) in entries) {
         debugPrint('[on-device] import size: $name='
             '${await File(src).length()}B');
@@ -573,7 +717,7 @@ class OnDeviceAssetManager {
           receivedBytes: totalBytes,
           totalBytes: totalBytes,
           detail: 'local-import'));
-      return target;
+      return destDir;
     } catch (e) {
       debugPrint('[DEGRADE] asset import: $e');
       return null;
@@ -583,12 +727,11 @@ class OnDeviceAssetManager {
   /// 压缩包导入（2026-10-30 增补）：单选 zip/tar/tar.gz 模型包 → archive 包
   /// 流式解压进 `.staging-archive-*`（不整载内存）→ 压平到 staging 根
   /// （嵌套目录按 basename 提升；点前缀文件删除、重名整批拒绝）→
-  /// 档位体积对账（同 [importFromPickedFiles] 容差）→ 写 local-import
-  /// meta → `_atomicSwap` 原子替换。解压解码错误抛 ArchiveException →
-  /// 外层 catch 收口 null。
+  /// 绝对体积上限 + 结构校验 → 写 local-import meta → `_atomicSwap` 原子替换。
+  /// 解压解码错误抛 ArchiveException → 外层 catch 收口 null。
   Future<Directory?> importFromArchive(
     String archivePath, {
-    OnDeviceModelOption? model,
+    required ImportTarget target,
     void Function(AssetPullProgress progress)? onProgress,
   }) async {
     void report(AssetPullProgress p) {
@@ -596,7 +739,6 @@ class OnDeviceAssetManager {
         onProgress?.call(p);
       } catch (_) {}
     }
-
     Directory? staging;
     try {
       if (_archiveExtension(archivePath) == null) {
@@ -606,7 +748,7 @@ class OnDeviceAssetManager {
       final support =
           await (supportDirResolver ?? getApplicationSupportDirectory)();
       final modelsRoot = Directory('${support.path}/models');
-      final target = Directory('${modelsRoot.path}/${_dirOf(model)}');
+      final destDir = Directory('${modelsRoot.path}/${target.dirName}');
       // 解压膨胀留量：压缩包体积 ×3 作为磁盘门禁输入（模型权重压缩比有限，
       // ×3 覆盖文本类 tokenizer 包；真不足时 extractFileToDisk 亦会抛盘满）。
       if (!await _diskGate(await File(archivePath).length() * 3)) return null;
@@ -664,35 +806,47 @@ class OnDeviceAssetManager {
       for (final (src, _) in entries) {
         totalBytes += await File(src).length();
       }
-      // 档位体积对账（同 importFromPickedFiles：包名/目录名自拟不可信）。
-      final expected = model?.expectedTotalBytes;
-      if (expected != null) {
-        final drift = (totalBytes - expected).abs() / expected;
-        if (drift > _assetSizeTolerance) {
-          debugPrint("[DEGRADE] archive import size mismatch: "
-              "dir=${_dirOf(model)} expected≈${expected ~/ 1048576}MB "
-              "got=${totalBytes ~/ 1048576}MB");
-          report(AssetPullProgress(
-              phase: "file",
-              fileName: entries.first.$2,
-              totalBytes: totalBytes,
-              detail: "导入内容与所选档位不符"));
-          return await _cleanupStaging(staging);
-        }
+      // 绝对体积上限（自由导入唯一硬闸）：超 12GB 直接拒。
+      if (totalBytes > _importMaxBytes) {
+        debugPrint("[DEGRADE] archive import size over hard ceiling: "
+            "${totalBytes ~/ 1073741824}GB > ${_importMaxBytes ~/ 1073741824}GB");
+        report(AssetPullProgress(
+            phase: "file",
+            fileName: entries.first.$2,
+            totalBytes: totalBytes,
+            detail: "模型体积超出端侧上限（>${_importMaxBytes ~/ 1073741824}GB），"
+                "已拒绝"));
+        return await _cleanupStaging(staging);
+      }
+      // 结构校验（预过滤）：GGUF 魔数硬拒 + 运行时检测回填 meta。
+      final layout = await _validateAssetLayout(staging);
+      if (layout.error != null) {
+        debugPrint("[DEGRADE] archive import layout: ${layout.error} → refused");
+        report(AssetPullProgress(
+            phase: "file",
+            fileName: entries.first.$2,
+            totalBytes: totalBytes,
+            detail: "资产校验失败：${layout.error}"));
+        return await _cleanupStaging(staging);
+      }
+      if (totalBytes > _importWarnBytes) {
+        debugPrint("[on-device] archive import size warn: "
+            "${totalBytes ~/ 1048576}MB > ${_importWarnBytes ~/ 1048576}MB");
       }
 
-      await _writeImportMeta(staging, entries, totalBytes);
-      await _atomicSwap(staging, target, modelsRoot);
+      await _writeImportMeta(staging, entries, totalBytes,
+          runtime: layout.runtime, displayName: target.displayName);
+      await _atomicSwap(staging, destDir, modelsRoot);
       staging = null; // 已原子转正，finally 不再清
       debugPrint("[on-device] assets imported from archive "
-          "(${entries.length} files, ${totalBytes ~/ 1048576}MB) "
-          "-> ${target.path}");
+          "(runtime=${layout.runtime}) (${entries.length} files, "
+          "${totalBytes ~/ 1048576}MB) -> ${destDir.path}");
       report(AssetPullProgress(
           phase: "done",
           receivedBytes: totalBytes,
           totalBytes: totalBytes,
           detail: "local-import"));
-      return target;
+      return destDir;
     } catch (e) {
       debugPrint("[DEGRADE] asset archive import: $e");
       return null;
@@ -711,7 +865,12 @@ class OnDeviceAssetManager {
   }
 
   Future<void> _writeImportMeta(
-      Directory dir, List<(String, String)> entries, int totalBytes) async {
+    Directory dir,
+    List<(String, String)> entries,
+    int totalBytes, {
+    required String runtime,
+    String? displayName,
+  }) async {
     final fingerprint = await _currentFingerprint();
     final sizes = <String, int>{};
     for (final (_, name) in entries) {
@@ -723,6 +882,11 @@ class OnDeviceAssetManager {
       'driverFingerprint': fingerprint,
       'totalBytes': totalBytes,
       'sizes': sizes,
+      // 多模型导入制（2026-10-31）：注册表据此渲染展示名 + doLoad 据此选运行时
+      // 主路。runtime 由结构校验检测回填（qairt/llama_cpp/auto）。
+      'runtime': runtime,
+      if (displayName != null && displayName.isNotEmpty)
+        'displayName': displayName,
     };
     await SequentialFileWriter(File('${dir.path}/.asset-meta.json'))
         .write(jsonEncode(meta));
@@ -781,6 +945,14 @@ class _AssetFile {
         (json['size'] as num).toInt(),
         json['sha256'] as String,
       );
+}
+
+/// 结构校验结果（文件顶层，Dart 无嵌套类）：[error] 非 null = 无歧义损坏
+/// （拒）；[runtime] = 按资产布局检测出的运行时（回填 meta）。
+class _AssetLayout {
+  const _AssetLayout({this.error, this.runtime = OnDeviceRuntime.auto});
+  final String? error;
+  final String runtime;
 }
 
 /// sha256 分块转换的接收端（close 前最终 Digest 落 [value]）。

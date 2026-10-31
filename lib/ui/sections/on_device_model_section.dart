@@ -56,10 +56,9 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
   OnDeviceAssetManager get _assets =>
       widget._assetManagerOverride ?? OnDeviceAssetManager.instance;
 
-  String? _selectedId;
-  final Set<String> _installed = <String>{};
+  String? _selectedDir;
+  List<InstalledModel> _models = <InstalledModel>[];
   bool _busy = false;
-  String? _downloadingId;
   String _progressText = '';
   String? _error;
 
@@ -125,17 +124,16 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
 
   Future<void> _refresh() async {
     try {
+      // 注册表（身份唯一源，2026-10-31）：已装模型来自磁盘扫描（经注入的
+      // assetManager 支持目录）；选择持久化按 dirName 解析。选择器经静态
+      // read() 读真实支持目录（测试环境降级为 null，不影响主功能；生产与
+      // listInstalled 同目录，一致）。
+      final installed = await _assets.listInstalled();
       final selected = await OnDeviceModelSelection.read();
-      final installed = <String>{};
-      for (final option in kOnDeviceModelCatalog) {
-        if (await _assets.isInstalled(option)) installed.add(option.id);
-      }
       if (!mounted) return;
       setState(() {
-        _selectedId = selected?.id;
-        _installed
-          ..clear()
-          ..addAll(installed);
+        _models = installed;
+        _selectedDir = selected?.dirName;
       });
     } catch (e) {
       if (mounted) setState(() => _error = '端侧模型目录读取失败：$e');
@@ -158,63 +156,6 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
     if (!mounted) return;
     setState(() => _gateOverride = _gateOverride!.copyWith(preferOnDevice: v));
     widget.onFlash?.call(v ? '已设为优先使用端侧' : '已恢复云端优先');
-  }
-
-  Future<void> _setIgnoreAvailRam(bool v) async {
-    await OnDeviceGateOverride.writeIgnoreAvailRam(v);
-    if (!mounted) return;
-    setState(() => _gateOverride = _gateOverride!.copyWith(ignoreAvailRam: v));
-  }
-
-  Future<void> _setIgnoreBattery(bool v) async {
-    await OnDeviceGateOverride.writeIgnoreBattery(v);
-    if (!mounted) return;
-    setState(() => _gateOverride = _gateOverride!.copyWith(ignoreBattery: v));
-  }
-
-  Future<void> _setIgnoreThermal(bool v) async {
-    await OnDeviceGateOverride.writeIgnoreThermal(v);
-    if (!mounted) return;
-    setState(() => _gateOverride = _gateOverride!.copyWith(ignoreThermal: v));
-  }
-
-  /// 紧急强行启用：危险操作，开启前显式确认风险提示。
-  Future<void> _setForce(bool v) async {
-    if (v) {
-      final ok = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('⚠ 紧急强行启用端侧'),
-          content: const Text(
-            '将绕过全部设备门禁（含内存 / 电量 / 温控）。弱设备上可能 OOM、'
-            '过热降频或快速掉电；端侧失败时若无云端将直接报错。'
-            '仅紧急场合开启，用后建议关闭。',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('取消'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('仍要开启'),
-            ),
-          ],
-        ),
-      );
-      if (ok != true) {
-        if (mounted) {
-          setState(
-            () => _gateOverride = _gateOverride!.copyWith(forceOnDevice: false),
-          );
-        }
-        return;
-      }
-    }
-    await OnDeviceGateOverride.writeForceOnDevice(v);
-    if (!mounted) return;
-    setState(() => _gateOverride = _gateOverride!.copyWith(forceOnDevice: v));
-    widget.onFlash?.call(v ? '已强行启用端侧（绕过门禁）' : '已关闭强行启用');
   }
 
   Widget _toggleRow(
@@ -244,21 +185,44 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
     );
   }
 
-  /// 本地导入（2026-10-30 拍板：模型改导入制）：系统文件选择器多选模型
-  /// 目录下全部文件 → 拷入应用私有目录 + 原子替换。导入完成即选中。
-  Future<void> _import(OnDeviceModelOption option) async {
+  /// 自由导入新模型（纯导入制，2026-10-31 固定档位退役）：命名 → 生成唯一
+  /// 落盘目录 → 自由导入（绝对体积上限 + 结构校验）。任意 GGUF/QAIRT 包。
+  Future<void> _importFree() async {
     if (_busy) return;
     final picked = await FilePicker.pickFiles(type: FileType.any);
     if (picked.isEmpty) return; // 用户取消
+    // 系统文件选择器全屏遮盖可停留很久，返回时段可能已被 ListView 懒构建
+    // 销毁重建——未 mounted 就 showDialog 会把 dialog 挂进失效子树（真机
+    // 实证 InheritedElement `_dependents.isEmpty` 断言崩溃，2026-10-31）。
+    if (!mounted) return;
+    final firstBase = picked.first.name.split('/').last;
+    final suggested = firstBase
+        .replaceFirst(RegExp(r'\.(gguf|zip|tar\.gz|tgz|tar|bin)$', caseSensitive: false), '');
+    final name = await _promptModelName(suggested.isNotEmpty ? suggested : 'model');
+    if (name == null || name.trim().isEmpty) return;
+    final dirName = await _uniqueDirName(name.trim());
+    final paths =
+        picked.where((f) => f.path != null).map((f) => f.path!).toList();
+    await _doImport(
+      paths,
+      target: ImportTarget(dirName: dirName, displayName: name.trim()),
+      flashName: name.trim(),
+    );
+  }
+
+  /// 导入执行（自由导入唯一入口）：散文件/压缩包路由 + 进度 + 选择 +
+  /// 刷新注册表。
+  Future<void> _doImport(
+    List<String> paths, {
+    required ImportTarget target,
+    required String flashName,
+  }) async {
     setState(() {
       _busy = true;
-      _downloadingId = option.id;
       _error = null;
       _progressText = '准备导入…';
     });
     try {
-      final paths =
-          picked.where((f) => f.path != null).map((f) => f.path!).toList();
       // 单选压缩包（zip/tar/tar.gz）→ 解压导入通道；否则按散文件多选导入。
       final lowerSingle =
           paths.length == 1 ? paths.single.toLowerCase() : null;
@@ -286,45 +250,92 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
       }
       final dir = isArchive
           ? await _assets.importFromArchive(paths.single,
-              model: option, onProgress: onProgress)
+              target: target, onProgress: onProgress)
           : await _assets.importFromPickedFiles(paths,
-              model: option, onProgress: onProgress);
+              target: target, onProgress: onProgress);
       if (dir == null) {
         if (mounted) {
           setState(() {
-            _error = '导入失败（磁盘门禁/文件读取/重名冲突），见日志';
+            _error = '导入失败（磁盘门禁/文件读取/重名冲突/资产校验），见日志';
             _progressText = '';
           });
         }
         return;
       }
-      await OnDeviceModelSelection.write(option.id);
+      await OnDeviceModelSelection.write(target.dirName);
       if (!mounted) return;
-      setState(() {
-        _installed.add(option.id);
-        _selectedId = option.id;
-        _progressText = '';
-      });
-      widget.onFlash?.call('${option.displayName} 已导入，首次使用端侧时自动加载');
+      await _refresh();
+      if (!mounted) return;
+      setState(() => _progressText = '');
+      widget.onFlash?.call('$flashName 已导入，首次使用端侧时自动加载');
     } catch (e) {
       if (mounted) setState(() => _error = '导入失败：$e');
     } finally {
       if (mounted) {
         setState(() {
           _busy = false;
-          _downloadingId = null;
         });
       }
     }
   }
 
-  Future<void> _delete(OnDeviceModelOption option) async {
+  /// 模型命名对话框：返回用户输入（取消/null = 放弃）。
+  Future<String?> _promptModelName(String suggested) async {
+    final ctrl = TextEditingController(text: suggested);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('导入模型'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: '模型名称'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+            child: const Text('导入'),
+          ),
+        ],
+      ),
+    );
+    // 不在此处 dispose [ctrl]：pop 返回时退出动画仍在跑，TextField 仍引用
+    // controller——立即 dispose 是同类树生命周期错位（真机 `_dependents.
+    // isEmpty` 断言同族隐患）；局部短命对象交 GC 回收。
+    return name;
+  }
+
+  /// 由展示名生成唯一落盘目录名（slug 化 + 撞名自增）——不与已装模型/内置档位冲突。
+  Future<String> _uniqueDirName(String name) async {
+    final slug = name
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '-')
+        .replaceAll(RegExp(r'^-+|-+$'), '');
+    final base = slug.isEmpty ? 'model' : slug;
+    final taken = <String>{
+      for (final m in _models) m.dirName,
+    };
+    var candidate = base;
+    var i = 2;
+    while (taken.contains(candidate)) {
+      candidate = '$base-$i';
+      i++;
+    }
+    return candidate;
+  }
+
+  Future<void> _delete(InstalledModel m) async {
     if (_busy) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('删除端侧模型'),
-        content: Text('移除已下载的 ${option.displayName} 资产？（下次使用需重新下载）'),
+        content:
+            Text('移除已导入的 ${m.displayName} 资产？（下次使用需重新导入）'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -343,25 +354,28 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
       _error = null;
     });
     try {
-      await _assets.markDirty(model: option);
+      await _assets.markDirty(model: m.toOption());
       if (!mounted) return;
-      setState(() {
-        _installed.remove(option.id);
-        if (_selectedId == option.id) _selectedId = null;
-      });
-      widget.onFlash?.call('${option.displayName} 已删除');
+      await _refresh();
+      if (!mounted) return;
+      widget.onFlash?.call('${m.displayName} 已删除');
     } catch (e) {
       if (mounted) setState(() => _error = '删除失败：$e');
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) {
+        setState(() {
+          _busy = false;
+        });
+      }
     }
   }
 
-  Future<void> _select(OnDeviceModelOption option) async {
-    await OnDeviceModelSelection.write(option.id);
+  Future<void> _select(InstalledModel m) async {
+    await OnDeviceModelSelection.write(m.dirName);
     if (!mounted) return;
-    setState(() => _selectedId = option.id);
-    widget.onFlash?.call('端侧模型已切换为 ${option.displayName}，首次使用端侧时自动加载');
+    setState(() => _selectedDir = m.dirName);
+    widget.onFlash?.call(
+        '端侧模型已切换为 ${m.displayName}，首次使用端侧时自动加载');
   }
 
   @override
@@ -375,34 +389,36 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('端侧模型（NPU）',
+            Text('端侧模型',
                 style: TextStyle(
                     fontSize: Fsz.telemetry, color: t.l2Accent)),
             const SizedBox(height: 4),
-            if (_batteryExempt == false && (_installed.isNotEmpty || _selectedId != null)) ...[
+            if (_batteryExempt == false && (_models.isNotEmpty || _selectedDir != null)) ...[
               _batteryExemptRow(t),
               const SizedBox(height: 6),
             ],
             if (_gateOverride != null) ...[
-              Text('端侧启用与门禁（用户覆盖）',
+              // 门禁已 advisory 化（2026-10-31 裁决）：判定只留痕不拦截，
+              // ignore*/强行启用开关随拦截语义退役——本组只剩路由偏好。
+              Text('端侧启用偏好（用户覆盖）',
                   style: TextStyle(fontSize: Fsz.telemetry, color: t.l2Accent)),
               const SizedBox(height: 4),
               _toggleRow(t, '优先使用端侧（云端可用也走端侧）',
                   _gateOverride!.preferOnDevice, _setPrefer),
-              _toggleRow(t, '忽略可用内存门槛（2.5GB，针对大内存机后台占用）',
-                  _gateOverride!.ignoreAvailRam, _setIgnoreAvailRam),
-              _toggleRow(t, '忽略电量 / 省电模式门禁',
-                  _gateOverride!.ignoreBattery, _setIgnoreBattery),
-              _toggleRow(t, '忽略温控门禁',
-                  _gateOverride!.ignoreThermal, _setIgnoreThermal),
-              _toggleRow(t, '⚠ 紧急强行启用（绕过全部门禁，可能 OOM / 过热）',
-                  _gateOverride!.forceOnDevice, _setForce, danger: true),
               const SizedBox(height: 6),
             ],
-            for (final option in kOnDeviceModelCatalog) ...[
-              _modelRow(t, option),
+            // 已装模型（注册表，身份唯一源）
+            for (final m in _models) ...[
+              _modelRow(t, m),
               const SizedBox(height: 6),
             ],
+            // 自由导入新模型（GGUF / QAIRT 包，任意体积档）
+            TextButton(
+              key: const ValueKey('on-device-model-import-free'),
+              onPressed: _busy ? null : () => unawaited(_importFree()),
+              child: const Text('＋ 导入模型（GGUF / QAIRT 包）'),
+            ),
+            const SizedBox(height: 6),
             if (_progressText.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 2),
@@ -440,24 +456,33 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
     );
   }
 
-  Widget _modelRow(ConsoleTokens t, OnDeviceModelOption option) {
-    final installed = _installed.contains(option.id);
-    final selected = _selectedId == option.id;
-    final downloading = _downloadingId == option.id;
+  /// 运行时标识 → 白话徽标（NPU / CPU / 自动）。
+  String _runtimeLabel(String r) =>
+      r == OnDeviceRuntime.qairt ? 'NPU'
+          : r == OnDeviceRuntime.llamaCpp ? 'CPU'
+              : '自动';
+
+  String _sizeLabel(int bytes) =>
+      bytes >= (1 << 30)
+          ? '${(bytes / (1 << 30)).toStringAsFixed(1)}GB'
+          : '${bytes ~/ (1 << 20)}MB';
+
+  /// 已装模型行（注册表条目）：展示名 + 运行时徽标 + 体积 + 使用/删除。
+  Widget _modelRow(ConsoleTokens t, InstalledModel m) {
+    final selected = _selectedDir == m.dirName;
     return Row(
       children: [
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(option.displayName,
+              Text(m.displayName,
                   style: TextStyle(
                       fontSize: Fsz.body,
                       color: selected ? t.l1Ok : t.l1Info)),
               Text(
-                installed
-                    ? (selected ? '已导入 · 当前使用' : '已导入')
-                    : (downloading ? '导入中…' : '未导入'),
+                '${_runtimeLabel(m.runtime)}  ${_sizeLabel(m.totalBytes)}'
+                '${selected ? '  当前使用' : ''}',
                 style: TextStyle(
                     fontSize: Fsz.note,
                     color: selected ? t.l1Ok : t.terminalMuted),
@@ -465,26 +490,19 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
             ],
           ),
         ),
-        if (!installed)
+        if (!selected)
           TextButton(
-            key: ValueKey('on-device-model-import-${option.id}'),
-            onPressed: _busy ? null : () => unawaited(_import(option)),
-            child: const Text('导入'),
-          )
-        else ...[
-          if (!selected)
-            TextButton(
-              key: ValueKey('on-device-model-select-${option.id}'),
-              onPressed: _busy ? null : () => unawaited(_select(option)),
-              child: const Text('使用'),
-            ),
-          TextButton(
-            key: ValueKey('on-device-model-delete-${option.id}'),
-            onPressed: _busy ? null : () => unawaited(_delete(option)),
-            child: Text('删除', style: TextStyle(color: t.danger)),
+            key: ValueKey('on-device-model-select-${m.dirName}'),
+            onPressed: _busy ? null : () => unawaited(_select(m)),
+            child: const Text('使用'),
           ),
-        ],
+        TextButton(
+          key: ValueKey('on-device-model-delete-${m.dirName}'),
+          onPressed: _busy ? null : () => unawaited(_delete(m)),
+          child: Text('删除', style: TextStyle(color: t.danger)),
+        ),
       ],
     );
   }
 }
+

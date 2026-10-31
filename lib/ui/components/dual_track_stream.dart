@@ -17,6 +17,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../core/notice_category.dart';
 import '../../coordinator/permission_gateway.dart';
 import '../../coordinator/fenced_cloud_engine.dart';
 import '../../coordinator/plan_proposal_tool.dart';
@@ -50,7 +51,9 @@ const String kTaskDoneNote = '✓ 任务完成';
 const String kThinkingHint = '模型内部推理 · 不进对话历史，不影响结果';
 
 const String kMemoryFirstNotice =
-    '模型从对话中提取了一条事实写入记忆（可逐条撤销；顶部「本轮记忆」查看全部）';
+    // round-record（2026-10-31）：通告不再在阅读轨里呈现，说明句中的查看入口
+    // 指向 AppBar「本轮记录」面板（系统通告 + 记忆同一处）。
+    '模型从对话中提取了一条事实写入记忆（可逐条撤销；顶部「本轮记录」查看全部）';
 
 /// 阅读轨文本（流式追加：页面往 [text] 写 delta）。
 ///
@@ -203,11 +206,16 @@ class TrackFence extends TrackEntry {
 }
 
 /// 通告行（收尾/错误/状态注记；danger = Rose）。
+///
+/// [category]（2026-10-31 后续治理）决定去向：事实类入「本轮记录」账本单槽、
+/// 错误类回对话流内联、过程类不收纳仅瞬态 pill——见 [TrackNoticeCategory]。
+/// 缺省 [fact]（安全默认：漏标的非危险通告至少留在账本，不会被误丢）。
 class TrackNote extends TrackEntry {
-  const TrackNote(this.text, {required this.danger});
+  const TrackNote(this.text, {required this.danger, this.category = TrackNoticeCategory.fact});
 
   final String text;
   final bool danger;
+  final TrackNoticeCategory category;
 }
 
 /// 引导卡（ux-hardening P0-1 冷启动）：会话内可操作提示——正文 + 单一
@@ -297,7 +305,7 @@ class TrackContextAttribution extends TrackEntry {
   /// 预留：单条排除回调（null = 不渲染排除按钮；当前页面不接线）。
   void Function(ContextAttributionItem item)? onItemExclude;
 
-  /// P1-7（2026-10-22）：直接跳 AppBar「本轮记忆」汇总列表的回调。
+  /// P1-7（2026-10-22）：直接跳 AppBar「本轮记录」汇总面板的回调。
   /// null = 详情仍按旧样逐条列出（历史恢复态同口径：无活页面可跳）。
   /// 动机：同一份记忆曾有三处展示（归因详情 / AppBar 列表 / 流内胶囊），用户
   /// 分辨不出哪一处是「可管理的那份」——此处降级为计数 + 直达入口。
@@ -367,6 +375,9 @@ class DualTrackStream extends StatelessWidget {
     }
     // P2 运行概要收敛：连续的灰阶通告行（遥测类 TrackNote）折叠为一条可展开
     // 概要——阅读轨不被系统通告刷屏；危险通告（Rose）保持独立凸显。
+    // round-record（2026-10-31）：聊天主页已不再把系统通告交给本件（通告全额
+    // 落「本轮记录」账本、阅读轨零占位），此处折叠转为**兜底**——仍可能拿到
+    // TrackNote 的调用面（历史快照回放、联调页操作轨）照旧不刷屏。
     final rows = <Widget>[];
     final pendingNotes = <TrackNote>[];
     void flushNotes() {
@@ -1259,8 +1270,8 @@ class _ContextAttributionRow extends StatelessWidget {
                 ],
                 if (memories.isNotEmpty) ...[
                   const Divider(height: 16),
-                  // P1-7：有直达入口时**不再在此重抄**记忆条目——同一份内容三处
-                  // 展示（归因详情 / AppBar 本轮记忆 / 流内胶囊），用户认不出哪份
+                  // P1-7：有直达入口时**不再在此重抄**记忆条目——同一份内容多处
+                  // 展示（归因详情 / AppBar 本轮记录 / 流内胶囊），用户认不出哪份
                   // 可管理。此处降级为计数 + 直达；历史恢复态（回调 null）保旧样。
                   if (onViewMemories != null)
                     ListTile(
@@ -1268,7 +1279,7 @@ class _ContextAttributionRow extends StatelessWidget {
                       contentPadding: EdgeInsets.zero,
                       leading: Icon(Icons.bolt, size: 18, color: t.dataRef),
                       title: Text('本轮注入记忆 ${memories.length} 条'),
-                      subtitle: const Text('点开「本轮记忆」查看全部'),
+                      subtitle: const Text('点开「本轮记录」查看全部'),
                       trailing: Icon(Icons.chevron_right, size: 18,
                           color: t.terminalMuted),
                       onTap: () {
@@ -1554,10 +1565,11 @@ extension TrackEntryCodec on TrackEntry {
       'reason': answer?.reason,
       'decidedAt': ?decidedAt?.millisecondsSinceEpoch,
     },
-    TrackNote(:final text, :final danger) => {
+    TrackNote(:final text, :final danger, :final category) => {
       'type': 'note',
       'text': text,
       'danger': danger,
+      'category': category.name,
     },
     // 瞬态条目：页面持久化前已过滤；此处兜底防直插（丢动作保文本）。
     TrackGuide(:final text) => {'type': 'note', 'text': text, 'danger': false},
@@ -1602,7 +1614,7 @@ extension TrackEntryCodec on TrackEntry {
     final out = <TrackEntry>[];
     for (final item in raw) {
       if (item is! Map) {
-        out.add(const TrackNote('⚠ 存在无法恢复的轨道条目（格式未知）', danger: true));
+        out.add(const TrackNote('⚠ 存在无法恢复的轨道条目（格式未知）', danger: true, category: TrackNoticeCategory.error));
         continue;
       }
       final m = Map<String, Object?>.from(item);
@@ -1616,6 +1628,7 @@ extension TrackEntryCodec on TrackEntry {
           out.add(TrackNote(
             summary ?? '⚠ 计划卡无决策记录（会话中断）',
             danger: summary == null || !(m['approved'] == true),
+            category: TrackNoticeCategory.error,
           ));
         case 'plan_result':
           final status = PlanAggregateStatus.values.firstWhere(
@@ -1688,6 +1701,7 @@ extension TrackEntryCodec on TrackEntry {
             TrackNote(
               m['text'] as String? ?? '',
               danger: m['danger'] as bool? ?? false,
+              category: _decodeCategory(m['category'] as String?),
             ),
           );
         case 'error':
@@ -1747,7 +1761,7 @@ extension TrackEntryCodec on TrackEntry {
           );
         case 'breaker':
           if (m['toolName'] is! String) {
-            out.add(const TrackNote('⚠ 会话中断于排查卡', danger: true));
+            out.add(const TrackNote('⚠ 会话中断于排查卡', danger: true, category: TrackNoticeCategory.error));
             continue;
           }
           out.add(
@@ -1776,7 +1790,7 @@ extension TrackEntryCodec on TrackEntry {
         case 'fence':
           final sendRaw = m['sendRaw'] as bool?;
           if (sendRaw == null) {
-            out.add(const TrackNote('⚠ 会话中断于围栏拦截卡', danger: true));
+            out.add(const TrackNote('⚠ 会话中断于围栏拦截卡', danger: true, category: TrackNoticeCategory.error));
             continue;
           }
           out.add(
@@ -1822,5 +1836,15 @@ extension TrackEntryCodec on TrackEntry {
   }
 
   static TrackNote _interruptedNote(String what) =>
-      TrackNote('⚠ 会话中断于待决卡片（$what 未裁决）', danger: true);
+      TrackNote('⚠ 会话中断于待决卡片（$what 未裁决）', danger: true, category: TrackNoticeCategory.error);
+
+  /// 恢复存档的 category 还原（兼容旧存档无此字段）：
+  /// 有字段按名映射；无字段则按 danger 推断（danger = 错误类内联，否则事实类入账本）。
+  static TrackNoticeCategory _decodeCategory(String? name) {
+    if (name == null) return TrackNoticeCategory.fact;
+    return TrackNoticeCategory.values.firstWhere(
+      (c) => c.name == name,
+      orElse: () => TrackNoticeCategory.fact,
+    );
+  }
 }

@@ -115,7 +115,7 @@ void main() {
     expect(find.byKey(const ValueKey('on-device-battery-exempt-request')),
         findsNothing);
     // 模型段主功能仍在（目录标题可见）
-    expect(find.text('端侧模型（NPU）'), findsOneWidget);
+    expect(find.text('端侧模型'), findsOneWidget);
   });
 
   testWidgets('白名单查询抛异常按未知处理——不显引导行不崩（面板主功能不受阻）', (tester) async {
@@ -129,6 +129,6 @@ void main() {
 
     expect(find.byKey(const ValueKey('on-device-battery-exempt-request')),
         findsNothing);
-    expect(find.text('端侧模型（NPU）'), findsOneWidget);
+    expect(find.text('端侧模型'), findsOneWidget);
   });
 }

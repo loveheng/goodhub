@@ -79,13 +79,15 @@ class OnDeviceBench {
     }
     debugPrint('[on-device-bench] loadModel($dir) -> ${st.name}');
     for (var i = 0; i < 90; i++) {
-      final s = await sharedOnDeviceEngine.checkStatus();
+      // M4：票据面权威状态（checkStatus 轮询面已退役）；未知（null）= 装载
+      // 中继续轮（禁猜测终态）。
+      final s = await sharedOnDeviceEngine.authoritativeStatus();
       if (s == EngineStatus.ready) {
         debugPrint('[on-device-bench] model ready after ~${i}s');
         return;
       }
       if (s == EngineStatus.unsupportedDevice) {
-        debugPrint('[on-device-bench] loadModel rejected: ${s.name}');
+        debugPrint('[on-device-bench] loadModel rejected: ${s?.name}');
         return;
       }
       await Future.delayed(const Duration(seconds: 1));

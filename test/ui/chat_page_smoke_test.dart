@@ -110,10 +110,12 @@ void main() {
         reason: '空发送不触发「未配置」引导流程');
   });
 
-  // P2-11（2026-10-22）：本轮记忆入口**常驻且恒可点**——原先「首颗胶囊入轨才
-  // 出现」让 AppBar 布局跳变；若改为常驻置灰则成了死控件（违反 SSOT §1「禁止
-  // 静默禁用」），故无记忆时点开是同一个汇总列表的空态说明。
-  testWidgets('本轮记忆入口常驻可点：无记忆时点开空态说明（非死控件）',
+  // P2-11（2026-10-22）：记录入口**常驻且恒可点**——原先「首颗胶囊入轨才出现」
+  // 让 AppBar 布局跳变；若改为常驻置灰则成了死控件（违反 SSOT §1「禁止静默
+  // 禁用」），故无记载时点开是同一个汇总面板的空态说明。
+  // round-record（2026-10-31）：入口自「本轮记忆」扩为「本轮记录」——系统通告
+  // 已搬出阅读轨（对话页零占位），此处是唯一查看处，故必须能列出通告节。
+  testWidgets('本轮记录入口常驻可点：无记载时点开两节空态说明（非死控件）',
       (tester) async {
     await tester.pumpWidget(
       MaterialApp(home: ChatPage(endpointStoreOverride: _FakeEpStore())),
@@ -123,14 +125,17 @@ void main() {
     final btn = tester.widget<IconButton>(
       find.widgetWithIcon(IconButton, Icons.bolt),
     );
-    expect(btn.onPressed, isNotNull, reason: '无记忆时也不得置灰（静默禁用）');
+    expect(btn.onPressed, isNotNull, reason: '无记载时也不得置灰（静默禁用）');
 
     await tester.tap(find.widgetWithIcon(IconButton, Icons.bolt));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
     await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('本轮记录'), findsOneWidget, reason: '面板标题');
+    expect(find.text('系统通告（0）'), findsOneWidget,
+        reason: '通告节必须存在——它是通告的唯一去处（对话页已零占位）');
     expect(find.textContaining('模型从对话里认出稳定事实'), findsOneWidget,
-        reason: '空态必须回答「什么时候这里会有东西」');
+        reason: '记忆节空态必须回答「什么时候这里会有东西」');
   });
 
   testWidgets('未配置时发送：留在聊天页、输入保留、引导卡不重复', (tester) async {

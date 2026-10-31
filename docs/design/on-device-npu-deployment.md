@@ -9,6 +9,7 @@ updated: 2026-10-30
 >
 > **v3 路线修订（2026-10-28 用户拍板）：推理内核改用 GenieX Android SDK（Genie/llama.cpp 管线）**——本稿中以下自研实现项由 Genie 内置能力取代，相关章节待 SDK 落位实证后同轮细化修订：§2.4/§3.6 Prefix Cache 分桶与 Prefill 编译（Genie 内置 KV 管理/前缀复用）、§3.5/§4.5 资产格式（**GGUF 取代 HTP 专属 context 二进制**，分发简化）、§6.7 停用词下沉（Genie 原生 stop sequences）、§6.4 Detokenizer（Genie 内置流式回调）。
 > **v3.1 数据面修订（2026-10-30 用户拍板，S3-7）**：§6.1 数据面由 **Ashmem RingBuffer + eventfd/pipe 唤醒整体退役，换 UDS socketpair 流式管道**——唤醒（socket 可读事件）、背压（SO_SNDBUF 满 → 写端阻塞，500ms 有界超时判 IPC_DEADLOCK）、崩溃隔离（对端关闭 → EOF → 判活自愈重建）全部由内核语义承载；无共享游标，P2-10/S2-5 游标错位类问题整体消失。成帧协议 = `[4B 大端 payload_len][payload]`，`len==0` = EOS 流终结帧（每代生成收尾前必发，Dart 收空批即本代流终，跨通道顺序凭据），`read()==0`（EOF）= 数据面死亡。以下 §6.1/§6.3/§6.4 中 RingBuffer/游标/唤醒协议表述为历史设计，**现行实现以 S3-7 落地标注为准**：写端 = `SocketTokenWriter`（:engine，Kotlin），读端 = `libgdw.so`（主进程 native）；句柄 = AIDL `getDataSocketFd():ParcelFileDescriptor`（socketpair 读端，detachFd 移交）。**不变章节**：§6.2 LMK/FGS/OEM 防护、§6.5 两级熔断、§6.6 单执行槽/原子抢占、§4.1 三态状态机。
+> **v3.2 路线修订（2026-10-31 用户拍板）：NPU 兜底**——`:engine` 的 `GenieSession.doLoad` 以 `QAIRT+NPU` 为主路，**仅高端 NPU 设备在 QAIRT build 失败（NPU 驱动/HTP 不可用）时回落 `llama_cpp+CPU` 运行时**完成本轮（同份 GGUF 资产 + tokenizer）。**不改「禁 CPU 分流」决策**：§2.1/§5.2「热降频不迁矩阵运算到 CPU」与「Thermal→Cloud SEVERE 全量切云」仍成立（热/OOM 仍收口云端、无 CPU 兜底）；仅「装载期 NPU 不可用（QAIRT build 失败）」的降级链改为「先 CPU 兜底、再切云」。§3.5「不做 CPU 兜底」的总述据此修订（见总纲 v3.2 / decisions.md ADR）。
 > 关联：`docs/design/on-device-capability.md`（端侧能力总纲）、`context/epics/on-device/`
 > 适用：依 D1，本方案仅针对**高端旗舰**（NPU 可用机型）；中低端收口纯云端。
 > 视角修正：v1 偏"芯片原厂 Reference Design"，v2 改为**移动端第三方 App（含 Flutter/Dart）真机落地**视角，修正指标失真、HAL 权限越界、LMK/分发/FFI 盲点。
@@ -138,7 +139,7 @@ updated: 2026-10-30
 
 > **分发粒度拍板（v2.4）**：确认路线 (a) **每 HTP 版本独立编译产物**——客户端由 `CapabilityProbe` 探测本机 HTP 版本**单选下载对应一份（≈1.8GB）**，用户流量与"兼容单一 graph"方案完全一致；云端仅多存数份静态文件（R2/S3 边际成本可忽略），CI/CD **Matrix Build** 统一产出，维护成本可控。因立项前提是"旗舰最大化压榨 NPU 利用率"，(b) 路线损失 10~20% 性能会跌出产品容忍阈值，故不取。
 
-> 决策取舍：各芯片用**原厂 SDK**（保峰值利用率）；3B~4B 级 LLM **不做 CPU 兜底**——NPU 不可用时直接收口云端（与总纲 D1/降级链一致），LiteRT 仅用于百兆级轻量小模型。Dart 抽象接口之上封装"编译产物 + 加载器"，上层 coordinator 不感知芯片差异（与总纲公共服务化一致）。
+> 决策取舍：各芯片用**原厂 SDK**（保峰值利用率）；3B~4B 级 LLM **常态不做 CPU 兜底**——**v3.2 NPU 兜底修订后：QAIRT build 失败（NPU 驱动/HTP 不可用）时高端 NPU 设备先回落 `llama_cpp+CPU` 运行时完成本轮，兜底再败才收口云端；热/OOM 仍直接收口云端、无 CPU 兜底**（与总纲 D1/降级链一致，见总纲 v3.2 / decisions.md ADR），LiteRT 仅用于百兆级轻量小模型。Dart 抽象接口之上封装"编译产物 + 加载器"，上层 coordinator 不感知芯片差异（与总纲公共服务化一致）。
 
 ### 3.6 Prefill 分桶编译（v2.6 新增）
 
