@@ -8,6 +8,12 @@ last-merge: none
 
 # on-device · decisions
 
+### [2026-10-31] 空闲驱逐后恢复链路断裂 + 端侧运行零感知：三缺口修复（src: user 报告 + ai 评估）
+- **场景/痛点**：用户报告「启用端侧后初次可用，过段时间端侧不可用，App 内对端侧运行完全无感知」。评估定谳三根因：① `:engine` 拒绝同进程重载（loadedOnce 单进程单装载纪律）复用 `assetMissing` 终态序数捎带「进程将自杀重启装载」→ Dart 按终态「模型未导入」判死且误导重下，重载链路实际已断；② `EngineServiceBridge.bind()` 幂等判据 = `connection != null`（发起过绑定），进程死亡后 engine 置 null 而连接对象保留 → bind() 永久 no-op，恢复只剩 AMS 自动重启一条腿（其退避可达 ~11min）；③ `OnDeviceLoadState.loading` 全仓无人写入（UI「⏳ 端侧模型加载中…」为死代码），驱逐静默复位 unloaded 零提示——端侧「何时在跑/何时失效/下次为何变慢」全程不可见。
+- **最终决定**：① `EngineStatus.reloading`（序数 8，末尾追加，双端同轮锚定）专用信号，Dart 按可重试中断走后台重试（短退避 600ms/1500ms 分档：等自杀落地 / 密询冷启动就绪）；重启窗口内 `not_bound`/连接超时不计入快死棘轮（`expectRestart` 标志防「有意自杀」被误判 LMK 快死把起跑水位抬到 5GB 反堵重载）。② 桥面幂等判据改「活引擎在位」（`engine != null`），断连即时重发 bindService，连接对象缓存复用（同一 ServiceConnection 不产生第二套回调）。③ 装载任务起跑即置 `loading`；AppBar 常驻端侧状态芯片（就绪/重载中/已释放/不可用，ListenableBuilder 自管重建）+ 驱逐/失败转场瞬态提示；装载在途时进程死亡不复位 loadState（防「装载中」指示被打断成「未启用」）。
+- **AI 洞察**：P0-3 驱逐上行链路本身是通的（复位语义正确）——故障不在「知道被驱逐」，在「驱逐之后接不回来」。三缺口是同一事故的三个剖面：恢复语义错误（报错面）+ 重绑缺失（机制面）+ 感知缺失（观测面），单修任何一个都只会换个姿势复发。
+- **收敛条件**：真机复测「启用端侧 → 空闲 5min+ → 再提问」应自动重载完成本轮（AppBar 显示「端侧重载中…」），不再出现「请重新导入模型」；混沌矩阵 `kill × rebind × evict × reload` 回归（§6 验收 1）覆盖本路径。P2-14 的 `getLoadError` 查询面（终态归因细化）仍开放，与本轮正交。
+
 ### [2026-10-31] 会话一致性设计评审：四类隐患裁定 + 五项裁决（src: 外部评审 + ai）
 - **场景/痛点**：`docs/design/on-device-lifecycle-single-source.md` v2 出稿后收到外部深度评审——四类工程盲点（在途生成 vs 驱逐重入、epoch 持久化弱点、Binder 死亡时隙、装载惊群）+ 五项裁决建议。需逐条裁定（含**不采纳项**），避免"评审意见全盘照收"把既有实证决策冲掉。
 - **逐条裁定（含否决理由）**：
@@ -53,6 +59,66 @@ last-merge: none
   - B) 驱动/热/OOM 三者全兜底 CPU（**否决**：热→CPU 违反已锁定「禁 CPU 分流」决策——CPU 能效差 5~10×、分流加剧发热；OOM→CPU 权重全驻 DRAM 反向，内存压力最大时最雪上加霜）。
   - C) 不做 CPU 维持纯云端（**否决**：NPU 驱动失败成为端侧硬断点，本轮无端侧兜底）。
   - D) 扩到中低端设备跑 CPU（**否决**：属推翻 D1a 设备分档的独立决策项，超出本轮「NPU 兜底」范围）。
-- **最终决定**：`GenieSession.doLoad` 以 `QAIRT+NPU` 为主路；**仅 QAIRT build 失败（NPU 驱动/HTP 不可用）时回落 `llama_cpp+CPU`** 完成本会话（同资产 + tokenizer）；`activeRuntime` 落 `:engine` 日志供可观测。**热/OOM 不触发兜底**——仍经既有决策收口云端。Dart 路由层（`HybridCloudEngine`/AIDL/`checkStatus`）**不动**，保持运行时无关。**D1a 设备分档不变**（中低端仍直收纯云端）；仅推翻 D1「无 CPU 跑大模型兜底」条款，且限定为高端 NPU 设备的「QAIRT 加载/驱动失败」情形。
+- **最终决定**（⚠ **已被同日 GPU 档 ADR 推翻**：CPU 兜底全量退役，见下条）：`GenieSession.doLoad` 以 `QAIRT+NPU` 为主路；**仅 QAIRT build 失败（NPU 驱动/HTP 不可用）时回落 `llama_cpp+CPU`** 完成本会话（同资产 + tokenizer）；`activeRuntime` 落 `:engine` 日志供可观测。**热/OOM 不触发兜底**——仍经既有决策收口云端。Dart 路由层（`HybridCloudEngine`/AIDL/`checkStatus`）**不动**，保持运行时无关。**D1a 设备分档不变**（中低端仍直收纯云端）；仅推翻 D1「无 CPU 跑大模型兜底」条款，且限定为高端 NPU 设备的「QAIRT 加载/驱动失败」情形。
 - **AI 洞察**：① 运行时选择归 `:engine` 后端层而非 Dart 路由——路由层只知 ready/not-ready，兜底落 `doLoad` 是单点责任；② 兜底是**反应式**（装载期 QAIRT 失败）而非预测式（probe 期选路）——probe 期无法预知 NPU 装载会失败，反应式是唯一正确落点；③ 设计原已规定 `OnDeviceEngineFactory.resolve()` 作主运行时选择但代码未建——本轮为「兜底」能力的**最小闭环**，factory（主运行时选择）留 P1-B NeuroPilot；④ `activeRuntime` 现仅 `:engine` 日志，UI 暴露（「端侧（CPU 兜底）」）需 AIDL 变更，留后续。
 - **收敛条件**：引入第三运行时（P1-B NeuroPilot / 联发科）或需将 `activeRuntime` 暴露到 UI（须 AIDL 变更）→ 升级为一等「运行时选择」能力（`OnDeviceEngineFactory.resolve()` + AIDL runtime 字段），回本 ADR 重评。
+
+### [2026-10-31] GPU 档落地 + CPU 全量退役：运行时阶梯收口为「NPU → GPU → 终态」(src: user + ai)
+- **场景/痛点**：同日「NPU 兜底」ADR 落地后复盘——① CPU 兜底（`llama_cpp+CPU`）两处契约均挂 UNCERTAIN 未真机实证（model_path/tokenizer_path 假设、输入形态猜测），属未验证即发货；② CPU 能效差 5~10×、2GB 权重全驻 DRAM，热降频不可持续（「不够长久」），兜底路径真实价值趋零；③ 纯 GGUF 资产走 `llama_cpp+NPU` 契约同样未实证，且 NPU 档绑定逐 SoC 预编译 ctx-bin，模型池被 AI Hub 预编译列表锁死——用户目标「可用模型多一些」与此反向。
+- **可选方案（含否决理由）**：
+  - A) 维持 NPU→CPU 兜底（**否决**：未实证代码 + 能效硬伤，见痛点）。
+  - B) 阶梯收口为「qairt bundle→QAIRT+NPU 终态 / 纯 GGUF→llama_cpp+GPU 终态」，CPU 全量退役（**采纳**）：GPU（Adreno/Mali 通用 Vulkan/OpenCL）是任意 GGUF 即导入即用的唯一通路，非高通设备唯一档；`ComputeUnitValue` 枚举 GPU 档实证在座（AAR 反编译 CPU/GPU/NPU/HYBRID）。
+  - C) 连 llama_cpp 运行时一并砍掉、qairt 单运行时（**否决**：砍掉纯 GGUF 导入制，模型池收窄，与目标反向——留待后续仅发 qairt bundle 形态时再评）。
+  - D) LiteRT-LM / MNN-LLM 作非高通档主力（**否决**：`.litertlm`/`.mnn` 资产格式分裂模型池；MNN 需逐模型转换、MTK GPU 稳定性坑未清；均挂观察名单）。
+- **最终决定**：① `GenieSession.doLoad` 阶梯化——qairt bundle → `QAIRT+NPU`（build 失败 = 终态收口云端）；纯 GGUF → `llama_cpp+GPU`（build 失败 = 终态）；两处 CPU 兜底分支删除；② 热/OOM 一律经既有决策收口云端（既有「禁 CPU 分流」收严为「CPU 档不存在」）；③ Dart 侧 `OnDeviceRuntime.llamaCpp` 口径同步为 GPU 档，AIDL/票据/路由零改动（runtime 仅诊断归因）；④ GPU 契约（`compute_unit=GPU` 实际后端 Vulkan/OpenCL + GGUF 输入形态）挂 UNCERTAIN，spike 与既有 #1 同次 Ace 6 真机裁定。
+- **AI 洞察**：模型池宽窄的根因是**资产形态与 SoC 的耦合度**——ctx-bin 逐 SoC 编译 = 池锁死，GGUF+GPU 通用通路 = 池放开；砍掉低价值兜底分支（CPU）同时删掉两处 UNCERTAIN，是减法换确定性的典型收益。非高通不选 NeuroPilot（NDA + DLA 资产不通）、LiteRT-LM/MNN（格式分裂）的裁定一并留档。
+- **收敛条件**：Ace 6 真机 spike 裁定 GPU 契约（归因日志确认后端与 GGUF 输入形态）→ 删 UNCERTAIN；混沌矩阵补「GGUF 资产 GPU 装载」用例；P1-B NeuroPilot / LiteRT-LM NPU 抽象触发条件不变（GPU 档吞吐实测不达标时回评）。
+
+### [2026-10-31] 数据面唯一真相源：废弃 SDK 文本回调，锁定 token-id + GHDT（#三 UTF-8 治本）(src: user + ai)
+- **场景/痛点**：当前存在两条并行解码路径——Kotlin `StreamTextSanitizer` 修 SDK `gen` 文本回调（SDK 内部 detokenize 按单字节解码把"中"拆成 `ä¸­`），以及 Dart `StreamingDetokenizer`（token-id + GHDT 表自重组、坏字节重建解码器，自承治标）。两端各打一层补丁且互不知对方擦什么屁股；更关键：若生产走 SDK 吐文本路径，腐化已发生在 SDK 内部 detokenize、早于任何 App 能拿到的字节，下游任何补丁都接不住。
+- **可选方案（含否决理由）**：
+  - A) 锁定 token-id + GHDT 离线表为唯一合法生产链路（**采纳**）：在 `libgdw` 原生 Worker 内完成 `id -> bytes -> UTF-8 滑动窗口` 原子组装，多字节序列未凑齐则滞留在 RingBuffer 绝不向上抛，只向 Dart 吐出保证合法的 String。App 掌控 detokenization，源头字节级腐化被消灭。
+  - B) 保留 SDK 文本回调 + Kotlin `StreamTextSanitizer` 修字节（**否决**）：腐化发生在 SDK 内部 decode→text 边界，App 侧拿到的已是拆坏的 String，修复是事后拼凑、半截字节拼不出必丢字符；且无法保证跨 token 边界合法。
+  - C) Dart `StreamingDetokenizer` 作为唯一源（**否决**）：Dart 侧仍感知裸字节、坏字节重建解码器是治标自承；UTF-8 变长状态机应下沉原生单点，Dart 只收 String。
+- **最终决定**：① 彻底废弃 Kotlin `StreamTextSanitizer` 及其基于 SDK 文本回调的整条路径；② 锁定 `token-id + GHDT 离线表` 为唯一合法生产链路，GHDT 表随 `model.bin` 同源 OTA 下发（已既定）；③ `id -> bytes -> UTF-8 滑动窗口` 原子组装下沉 `libgdw` 原生 Worker，未完成字符滞留 RingBuffer 绝不外抛；④ Dart `StreamingDetokenizer` 退役，Dart 侧 EventChannel/Stream 只接收合法 String。
+- **AI 洞察**：UTF-8 合法性的唯一正确落点是"掌控 detokenization 的那一层"——既然 SDK 内部 detokenize 不可信，就必须绕开它（token-id 旁路），而非在它的输出上打补丁。token-id 路径本就存在（GHDT 表已下发），废弃文本路径是收口而非新增能力。
+- **收敛条件**：确认生产路径确已全量切到 token-id（无残留走 `gen` 文本回调的请求）；`libgdw` RingBuffer 实现需单测覆盖"跨帧多字节滞留 + 完整字符才外抛"；退役 `StreamTextSanitizer` 后其单测一并移除。
+
+### [2026-10-31] 死因可见性：LMK 墓碑机制（排除法裁定 SIGKILL，#五 指纹分类前置）(src: user + ai)
+- **场景/痛点**：系统 LMK 发出的是**不可捕获的 SIGKILL**，进程死因对 App 不可见，导致 `kEngineInterruptCodes` 的软故障（LMK_SIGKILL / ION_OOM）与硬故障（驱动崩溃）长期靠 `livedMs < 30000` 推断 fastKill，启发式本身残留、分类不准。指纹退火熔断要区分软/硬故障，前提是死因可被确定性裁定。
+- **可选方案（含否决理由）**：
+  - A) 墓碑 + 排除法（**采纳**）：`:engine` 启动写 PID 命名状态标记文件（`FLAG_LOADING`/`FLAG_READY`）；JNI 注册可截获信号处理器（SIGSEGV/SIGABRT/SIGBUS 落盘 Crash Stack）；主进程 `DeathRecipient` 触发时——有 Stack → 驱动/SDK 硬崩溃；无 Stack 且状态 `FLAG_LOADING` + 整机可用内存低 → **100% 裁定 LMK_SIGKILL**，不再靠猜。
+  - B) 继续 `livedMs < 30000` 推断（**否决**：是概率启发式，无法区分"暖机慢"与"被 LMK"，且快死未必是 OOM）；
+  - C) 捕获 SIGKILL 本身（**否决**：SIGKILL 按 POSIX 不可捕获，技术上不可行）。
+- **最终决定**：① `:engine` 启动时写 `<pid>.flag` 标记文件，`loadModel` 受理前 `FLAG_LOADING`、SDK `create` 返回后 `FLAG_READY`，进程正常退出时清标记；② JNI 层注册 `sigaction` 捕获 SIGSEGV/SIGABRT/SIGBUS，将 Crash Stack（PC/寄存器/backtrace）落盘到崩溃目录；③ 主进程 `DeathRecipient` 触发后读取 `<deadPid>.flag` 与崩溃目录：有 Stack → `HARD_CRASH`（驱动/SDK 崩溃，归入硬故障）；无 Stack + `FLAG_LOADING` + `ActivityManager` 内存水位低 → `LMK_SIGKILL`（软故障）；无 Stack + `FLAG_READY` → 运行期外部终止（按环境再判）；④ 裁决结果写入结构化死因文件供下次启动分类，替代 `livedMs` 推断。
+- **AI 洞察**：SIGKILL 不可捕获，所以"直接观测死因"走不通，只能走"排除法 + 墓碑"——用"有没有 Crash Stack"把硬崩溃与 LMK 切开，再用"死在 FLAG_LOADING 且内存低"把 LMK 钉死。这是把不可观测事件转成可裁决契约的标准手法。注意 flag 文件须用 PID 命名且正常退出清理，否则进程复用 PID 会误判。
+- **收敛条件**：真机验证 flag 清理时序（`:engine` 崩溃来不及清 flag 的情况须由主进程死亡时发现 stale flag 处理）；崩溃 Stack 落盘路径须在 `:engine` 独立进程沙箱内可写；与 #五 指纹字典联调——`LMK_SIGKILL`/`HARD_CRASH` 分类须被 `kEngineInterruptCodes` 消费以驱动退火。
+
+### [2026-10-31] [ADR] SessionToken 拒绝引入 pid/sha256 及消费侧前置 Assert（终态架构评审裁定）(src: 用户 + ai)
+- **场景/痛点**：终态架构评审提案将票据升级为三元复合体 `{epoch, pid, modelSha256}` 并要求消费侧发起调用前执行「前置原子 Assert」比对，以强收口 S2（modelId 对账只建未用）。
+- **可选方案（含否决理由）**：
+  - A) 三元 token + Dart 前置 Assert（**否决**，三处）：① pid 可复用（进程重启后旧票据撞新进程），§2.2 立法时已论证弃用；② 对 1.5~3GB 权重全盘 sha256 是运行时 IO 惩罚，I3 的 `modelIdOf`（目录名@meta 指纹前 12 位）零计算成本且身份必变语义等价；③ Dart 侧「先比对后发调用」复活 I4 明令禁止的 TOCTOU——查完到发之间会话仍可被驱逐/换模型；
+  - B) expectModelId 进既有 startGenerate 原子比对（**采纳**）：给已落地的 epoch 闸门加一个比对维度（`expectInstanceId, expectSeq, expectModelId`），`:engine` 同一入口原子裁决，失配抛 `SESSION_MODEL_MISMATCH` 新拒绝码，Dart 作废镜像走重装——不是新造 token 格式，是补齐 §2.5 未兑现的一半。
+- **最终决定**：① 票据维持 `(instanceId UUID, seq)` 复合键不扩字段，资产身份用 `modelIdOf` meta 指纹，严禁运行时全盘哈希；② S2 修复 = `startGenerate` 原子比对加 `expectModelId` 维度（F2），不在 Dart 侧新增任何判定；③ 大载荷传输（共享内存/fd 解除 Binder 上限）与 2B 模型 KV-Cache 推理窗口（阶梯截断保留）**解耦立法**——1200 字符预算是推理约束非纯传输迁就，通道升级不解锁模型窗口；④ 装载超时由 `:engine` 内部自治裁决（分阶段活体回调 + 阶段硬超时 → 自签 `LOAD_STALLED` 终态票据 → 走 reloading 冷重载自裁），主进程**不新增跨进程 SIGKILL 权**——否则墓碑排除法把有意重启误判为 LMK 快死，`fastKillStreak` 抬水位反堵重载（上轮已修 bug 换姿势复发）；⑤ 原语降级「可自动、不可静默」：failFast/degradeToCloud/degradeToTruncate 三档类型化 + `[DEGRADE]` 标记，熔断双轨隔离（PrimitiveFailureCounter 不污染聊天会话 CircuitBreaker）。
+- **AI 洞察**：终态目标与 Expand-Contract 施工不矛盾——前者定义终点，后者是抵达终点的唯一安全路径；评审提案的「意图」全部成立，被否决的是三处「机制落点」：可碰撞键、IO 惩罚型身份、把判定权从唯一主权者手里拿回客户端。
+- **收敛条件**：F2 落地后混沌矩阵扩「modelId 失配重装」与「装载停滞 LOAD_STALLED」两用例；`SESSION_MODEL_MISMATCH` 码与既有 `SESSION_EPOCH_MISMATCH`/`SESSION_LOADING` 同走 message 前缀分码管线。
+
+### [2026-10-31] [ADR 修订] G1 手段修订：token-id 直取 → QAIRT Genie C API 直绑（长期方案，弃反编译/边界还原短期路）(src: 用户拍板 + ai)
+- **场景/痛点**：G1-3「切 token-id + libgdw 原子组装」的实施前提被证伪——geniex-android 0.3.5 AAR 的 `LlmStreamResult.Token` 输出回调**只吐 `result.text`（已 detokenize 文本），无 token-id 出口**（全仓取证零命中；`inputIds` 仅输入侧）。候选补救中「反编译 AAR 查内部面」被用户否决：内部面无版本契约，SDK 升级即断；「Latin-1 边界还原」自校验方案被判为短期形态，不采纳。
+- **可选方案（含否决理由）**：
+  - A) 反编译 AAR 内部面直取 token-id（**否决**：无文档契约，版本升级即断链，静默腐化风险回归）；
+  - B') Latin-1 字节还原 + 启动自校验探针（**否决**：用户裁定为短期形态——还原依赖 SDK 腐化模式恒为 Latin-1 误读，探针 fail-loud 仍需双管线维护，是妥协不是终态）；
+  - C) 绑定 QAIRT Genie C API 直取代 AAR wrapper（**采纳**）：QAIRT SDK 免费可下，Genie C API 为官方文档化契约，版本稳定性由 Qualcomm 版本本契约背书；若其回调暴露 token 级出口，G1 按原 ADR 落地且摆脱 AAR 黑盒。
+- **最终决定**：① G1 前置 = **spike：安装 QAIRT SDK（qpm-cli / Qualcomm ID），核查 Genie C API 对话回调的 token 级出口**（头文件实证，不反编译）；② spike 通过 → G1-1/2/3 按「GenieSession 走 C API 绑定层（JNI 新建）、数据面载 token-id + libgdw 原子组装」施工，`StreamTextSanitizer`/Dart 旧解码路径物理退役照原 ADR；③ spike 证伪（C API 亦无 token 级出口）→ **回本 ADR 重裁**（届时候选 = C API 文本回调 + 边界还原降级形态 / 上游 issue 等 SDK 修 detokenize 边界，维持现状为默认）；④ 弃用短期方案是用户主权决策，Latin-1 还原路径不再评估。
+- **AI 洞察**：「唯一事实源」的不变量（Dart 只收绝对合法 UTF-8）不变，被推翻的是手段层的可达性假设——ADR 立法时「token-id 路径本就存在」未经代码实证，本轮取证证伪后按裁决链回修手段而非硬切。
+- **收敛条件**：spike 结论（C API 回调面核查报告）回填本 ADR；通过则 G1 三子项按 B 路线重排施工，证伪则按 ③ 重裁。
+
+### [2026-10-31] [ADR 终裁] G1 关闭：QAIRT SDK 不安装 + 私有方法不探测 → 维持现状为终态 (src: 用户拍板)
+- **场景/痛点**：B 路线（QAIRT Genie C API 直绑）的前置 = 安装 QAIRT SDK 做 spike。用户拍板：**QAIRT SDK 不会装、私有方法不去探测**——B 路线的前置永久不可达，G1「数据面唯一真相源」三子项（废弃 StreamTextSanitizer / 解码器退直通 / token-id+libgdw 组装）按 ③ 预案关闭。
+- **可选方案（含否决理由）**：
+  - 反编译 / 内部面探测（**否决**：用户裁决——无版本契约 + 不探测私有方法）；
+  - Latin-1 边界还原（**已否决**：前轮裁定短期形态，不再评估）；
+  - **维持现状（采纳，终态）**：SDK 文本回调（`LlmStreamResult.Token.text`）+ Kotlin `StreamTextSanitizer` 修复 + Dart identity 直通——在「SDK 能力边界」约束下这是可用且实证过的方案（真机 S2-5 全链验证）。
+- **最终决定**：① G1-1/2/3 **不实施**，G1 关闭；② 现状件重新定性：`StreamTextSanitizer` 从「补丁自认治标」改为「**SDK 能力边界内的合法方案**」（注释去自贬，留已知局限说明）；③ 唯一后续通道 = **登记上游问题**（geniex-android / Qualcomm：detokenize 按单字节解码拆散 UTF-8 多字节字符的边界缺陷，期望 SDK 输出侧提供 token-id 或修复 detokenize 边界）——SDK 若未来修复，重开 G1 评估；④ UTF-8 腐化的**运行时防线保持现状不撤**（sanitizer + Dart 对账打点），任何下游改动不得绕过。
+- **AI 洞察**：「唯一事实源」不变量在 SDK 黑盒约束下无法以 App 侧手段达成——承认约束、把方案定性从「治标」翻转为「边界内终态」，比挂着永远不可达的前置更诚实；上游 issue 是唯一能让约束松动的杠杆。
+- **收敛条件**：上游 issue 登记完成；geniex-android 后续版本若暴露 token-id 输出或修复 detokenize 边界 → 重开 G1 评估（回本 ADR）。

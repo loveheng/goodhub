@@ -19,7 +19,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 /// 运行时标识（`doLoad` 据此选主路，decisions.md ADR④）。
 /// - [qairt]：HTP/NPU 专属 bundle（genie_config.json + tokenizer.json + metadata.json）
-/// - [llamaCpp]：通用 GGUF（CPU/GPU，llama.cpp 运行时）
+/// - [llamaCpp]：通用 GGUF（GPU 档，llama.cpp 运行时；CPU 兜底已于 2026-10-31 全量退役）
 /// - [auto]：未标注 / 混合 → doLoad 按资产布局自适应（genie_config 在场走 qairt 主路）
 abstract final class OnDeviceRuntime {
   static const String qairt = 'qairt';

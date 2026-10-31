@@ -65,7 +65,8 @@ class GenieSession(private val context: Context) {
     /** 装载失败原因（诊断：loadModel 受理后未 ready 时读取）。 */
     @Volatile var loadError: String? = null
 
-    /// 当前生效运行时（PLUGIN_ID_*）：qairt=NPU 主路 / llama_cpp=CPU 兜底。
+    /// 当前生效运行时（PLUGIN_ID_*）：qairt=NPU 主路（qairt bundle）/
+    /// llama_cpp=GPU 档（纯 GGUF，非高通设备唯一档；CPU 兜底已退役）。
     /// 供 :engine 日志可观测与后续 AIDL 回报（UI「端侧（CPU 兜底）」指示）；
     /// [close] 时复位为 qairt 默认。
     @Volatile var activeRuntime: String = GenieXSdk.PLUGIN_ID_QAIRT
@@ -176,11 +177,13 @@ class GenieSession(private val context: Context) {
                     compute_unit = unit.value,
                 )
             }
-            // 纯 GGUF 资产的 llama_cpp 输入。
-            //   // UNCERTAIN: llama_cpp 的 model_path/tokenizer_path 契约未真机实证
-            //   （spike #1 待冻结）：此处假设 model_path 指向 .gguf 文件、tokenizer
-            //   在场则用独立 tokenizer.json、否则回指 .gguf（llama.cpp 读 GGUF 内嵌
-            //   词表）。spike 实证后按实修正。
+            // 纯 GGUF 资产的 llama_cpp 输入（GPU 档）。
+            //   // UNCERTAIN: llama_cpp 的 model_path/tokenizer_path 与
+            //   compute_unit=GPU 契约均未真机实证（spike #1 待冻结，与 GPU 档
+            //   同次上机）：此处假设 model_path 指向 .gguf 文件、tokenizer 在场
+            //   则用独立 tokenizer.json、否则回指 .gguf（llama.cpp 读 GGUF 内嵌
+            //   词表）；GPU 档实际后端（Vulkan/OpenCL）以真机归因日志裁定。
+            //   spike 实证后按实修正。
             val buildGguf = { unit: ComputeUnitValue ->
                 LlmCreateInput(
                     model_path = ggufFiles.first().absolutePath,
@@ -191,39 +194,22 @@ class GenieSession(private val context: Context) {
                     compute_unit = unit.value,
                 )
             }
-            // 运行时选择（2026-10-31 NPU 兜底 + 多模型导入制，见 ADR）：
-            // - qairt bundle → QAIRT+NPU 主路；NPU build 失败（驱动/HTP 不可用）
-            //   → 回落 llama_cpp+CPU 完成本会话（同份资产，两插件 AAR 均捆绑）。
-            // - 纯 GGUF → 直走 llama_cpp+CPU（qairt dispatch 强制 genie_config/
-            //   metadata，此类资产走 qairt 必败，跳过必败尝试）。
-            // **热/OOM 不触发兜底**——热→既有「禁 CPU 分流」决策，OOM→CPU 权重
-            // 全驻 DRAM 反向，两者仍经既有决策收口云端。
+            // 运行时阶梯（2026-10-31 GPU 档拍板 + CPU 全量退役，见 decisions.md ADR）：
+            // - qairt bundle → QAIRT+NPU 主路；build 失败 = **终态**（loadError
+            //   收口云端，无兜底——CPU 档已全量退役）。
+            // - 纯 GGUF → llama_cpp + GPU（Adreno/Mali 通用 Vulkan/OpenCL 通路，
+            //   任意 GGUF 即导入即用，非高通设备唯一档）；build 失败 = 终态。
+            // **CPU 档全量退役**（用户拍板 2026-10-31：CPU 能效差 5~10×、热降频
+            // 不可持续，「不够长久」）；热/OOM 一律经既有决策收口云端。
             var active: String
             var result: Result<LlmWrapper>
             if (hasGenie) {
                 active = GenieXSdk.PLUGIN_ID_QAIRT
                 result = buildSession(buildInput(GenieXSdk.PLUGIN_ID_QAIRT, ComputeUnitValue.NPU))
-                if (result.isFailure) {
-                    Log.w(TAG, "[DEGRADE] QAIRT(NPU) build failed → fallback llama_cpp(CPU): " +
-                        "${result.exceptionOrNull()?.message}")
-                    result = buildSession(buildInput(GenieXSdk.PLUGIN_ID_LLAMA_CPP, ComputeUnitValue.CPU))
-                    active = GenieXSdk.PLUGIN_ID_LLAMA_CPP
-                }
             } else {
-                // 纯 GGUF → llama_cpp 插件，**NPU 主路 + CPU 兜底**（2026-10-31
-                // 用户拍板「使用 GenieX llama.cpp」；AI Hub 实证同款运行时在
-                // 8 Elite NPU 上 22.6 tok/s decode → GenieX llama.cpp 插件
-                // 可能接受 NPU）。NPU build 失败回落 CPU 完成本会话。
-                //   // UNCERTAIN: llama_cpp 插件 compute_unit=NPU 契约未真机实证
-                //   （spike 归因日志裁定）；model_path/tokenizer 同前述 UNCERTAIN。
-                Log.i(TAG, "pure GGUF asset → llama_cpp direct (no genie_config), NPU primary")
+                Log.i(TAG, "pure GGUF asset → llama_cpp GPU (no genie_config)")
                 active = GenieXSdk.PLUGIN_ID_LLAMA_CPP
-                result = buildSession(buildGguf(ComputeUnitValue.NPU))
-                if (result.isFailure) {
-                    Log.w(TAG, "[DEGRADE] llama_cpp(NPU) build failed → fallback llama_cpp(CPU): " +
-                        "${result.exceptionOrNull()?.message}")
-                    result = buildSession(buildGguf(ComputeUnitValue.CPU))
-                }
+                result = buildSession(buildGguf(ComputeUnitValue.GPU))
             }
             activeRuntime = active
             result.fold(
@@ -469,6 +455,11 @@ fun interface GenieChunkSink {
 
 /**
  * 流式投递前的文本修复管线（2026-10-30 真机实证两缺陷）：
+ *
+ * **定性（G1 终裁 2026-10-31，ADR）**：本类不是「治标补丁」，是 **SDK 能力
+ * 边界内的合法方案**——SDK 回调面只有 `Token(String)`，token-id/字节出口
+ * 不存在且上游不可修（QAIRT SDK 不装/私有方法不探测，B 路线关闭），
+ * 本管线的字节还原 + think 剥离即边界内终态；任何下游改动不得绕过。
  *
  * 1. **跨 token 多字节 UTF-8 拆裂还原**：geniex-android SDK 流式增量
  *    detokenize 把跨 token 边界的 UTF-8 序列按单字节（ISO-8859-1 语义）
