@@ -58,6 +58,12 @@ class EngineService : Service() {
         }
 
         // 由 engine_tombstone.cpp 实现（G2-2）：注册崩溃信号处理器。
+        // @JvmStatic（墓碑修复 2026-11-01）：companion 内 external 默认把 native
+        // 注册在 EngineService$Companion 类名下（JVM 找 `_00024Companion` 符号），
+        // 而 cpp 提供的是外层类符号 → UnsatisfiedLinkError（G2 轮起 stack 捕获
+        // 路径从未生效，死因裁定实际退化为 flag-only——真机首启日志实证）。
+        // @JvmStatic 令 native 注册到外层类静态方法，与 cpp 既有符号对齐。
+        @JvmStatic
         private external fun nativeInitTombstone(dir: String)
     }
 

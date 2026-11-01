@@ -83,6 +83,22 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
     unawaited(_refresh());
     unawaited(_refreshBatteryExemption());
     unawaited(_refreshGateOverride());
+    // 增配块接线收口（2026-11-01 真机暴露）：状态刷新与进度反投订阅此前
+    // 缺失——`_geniex` 恒 null 令增配块永不渲染（_geniexBlock 的
+    // st==null 短路），`_geniexPct` 恒 null 会显示「下载中 null%」；
+    // 块自 P2 落地起从未在真机呈现已实证（干净安装轮暴露）。
+    unawaited(_refreshGeniex());
+    _geniexEvents ??= GenieXRuntimeControl.listen(
+      onProgress: (pct) {
+        if (!mounted) return;
+        setState(() => _geniexPct = pct);
+      },
+      onDone: (ok) {
+        if (!mounted) return;
+        setState(() => _geniexPct = null);
+        unawaited(_refreshGeniex());
+      },
+    );
   }
 
   @override

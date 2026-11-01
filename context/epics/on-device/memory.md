@@ -73,4 +73,4 @@ last-merge: none
 
 ## 断点
 
-- [断点] 多栈构型代码轮收口（2026-11-01）：LiteRT-LM Runner 集成代码轮落地（OnDeviceRunner 接口 + LiteRtLmRunner + QAIRT 单源 + 停用词接线 + 装载闸翻真 + D-3 空表缺口修复；ADR 在 decisions.md），非真机门禁全绿（Kotlin 编译+单测 / analyze 0 / test/llm 202）；**下一步 = .litertlm 真机验证（受阻于用户资产获取，HF gated 全通路 403）**——资产到位后：装载→生成→停用词→降级链 + D-4 基准探针（NPU/GPU 同口径，对照 llama_cpp+GPU 39 tok/s，仅归档不触发删除）；UNCERTAIN U1~U5 + dispatch 库疑点已登记（decisions.md ADR / todos.md 注记）；其余外部依赖触发（换版实战 checklist / v73/75/81 真机 / S2-3 short-repeat 复核）仍挂起
+- [断点] 多栈构型真机验证预检（2026-11-01）：代码轮收口 + 预检轮修两处存量缺陷（tombstone @JvmStatic JNI 符号 = G2 轮起 stack 路径从未生效 / 增配块 initState 接线 = P2 轮起块从未渲染），已提交；真机环境就位（Ace 6 debug 包 + GenieX 增配 v0.10.0 arch=v79 → NPU 档判据就绪）；**下一步 = .litertlm 资产（受阻于用户 HF per-repo 授权——zhok 账号需在 litert-community/Gemma3-1B-IT 页面点同意，用户稍后处理）**——授权后：经代理（192.168.1.93:2080 已打通 HF 200）重下 → adb push /sdcard/Download → App UI SAF 导入（run-as 该设备不可用 = SELinux targetSdk 36）→ 装载→生成→停用词→降级链 + D-4 基准探针（NPU/GPU 同口径，对照 llama_cpp+GPU 39 tok/s，仅归档）；UNCERTAIN U1~U5 + dispatch 库疑点已登记；其余外部依赖触发（换版实战 checklist / v73/75/81 真机 / S2-3 short-repeat 复核）仍挂起
