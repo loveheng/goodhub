@@ -55,6 +55,20 @@ object GenieXRuntime {
     fun markerFile(context: Context): File = File(context.filesDir, "geniex-runtime/marker-$VERSION.txt")
 
     /**
+     * QAIRT 运行库单源判据（多栈构型 ADR 2026-11-01）：QNN 运行库目录两栈
+     * 共用——GenieX `ensureLoaded`（setQairtRuntimePath）与 LiteRtLmRunner
+     * `Backend.NPU(nativeLibraryDir)` 均消费本解析器，**禁第二判据源**
+     *（双份捆绑 = 符号冲突 + 判据漂移）。
+     *
+     * 语义 = 「增配已装且完整」（marker 版本/驱动指纹 + 装载集逐文件在盘）；
+     * 未装/指纹漂移（OTA 更新 DSP 驱动）= null → NPU 档不可用：GenieX 系
+     * loadError 收口云端、LiteRT-LM 系自动 GPU 档——产品语义（增配选装）
+     * 与工程判据同构。
+     */
+    fun qnnRuntimeDirOrNull(context: Context): File? =
+        if (installed(context)) runtimeDir(context) else null
+
+    /**
      * 已装且完整：marker（版本+arch+驱动指纹）在场 + 装载集逐文件在场且大小吻合。
      * 指纹漂移（OTA 更新 DSP 驱动）→ 视为未装（脏），重装写新指纹（§4.8 对齐）。
      */

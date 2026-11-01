@@ -33,7 +33,11 @@ import java.util.concurrent.TimeUnit
 /// 架构边界（solution-admission 2026-10-29）：仅换 `:engine` 推理后端实现，
 /// 进程隔离/AIDL 控制面/两级熔断/资产 OTA 通道外围 100% 保留；旧的
 /// cpp/genie_session.cpp + GenieSmoke 同轮退役（单实现，无双路分支）。
-class GenieSession(private val context: Context) {
+///
+/// 多栈构型（ADR 2026-11-01）：实现 [OnDeviceRunner]（GenieX 系 Runner）——
+/// Runner 中立统一契约；query 签名默认值上收调用方（EngineService 统一经
+/// GenerationParams 单源传入，override 不允许默认参数）。
+class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDeviceRunner {
 
     companion object {
         private const val TAG = "GenieSession"
@@ -48,38 +52,52 @@ class GenieSession(private val context: Context) {
 
     @Volatile private var wrapper: LlmWrapper? = null
 
-    @Volatile var ready: Boolean = false
+    @Volatile override var ready: Boolean = false
         private set
 
     // S3-3 起「生成在途」判据单源化至 engine/EngineSlot（策略 B + 抢占语义），
     // 本类不再承载 busy 位（双源易漂移）。
 
     /// loadModel 单飞闸（[beginLoad] synchronized 置位，[doLoad] finally 清除）。
-    @Volatile var creating: Boolean = false
+    @Volatile override var creating: Boolean = false
         private set
 
     /// cancel 信号（§6.3）：abort() 置位 → 流回调返回 false 停止；
     /// 下一次 query 起始清除（单执行槽，无跨请求污染）。
-    @Volatile var abortRequested: Boolean = false
+    @Volatile override var abortRequested: Boolean = false
         private set
 
     /** 装载失败原因（诊断：loadModel 受理后未 ready 时读取）。 */
-    @Volatile var loadError: String? = null
+    @Volatile override var loadError: String? = null
 
     /// 当前生效运行时（PLUGIN_ID_*）：qairt=NPU 主路（qairt bundle）/
     /// llama_cpp=GPU 档（纯 GGUF，非高通设备唯一档；CPU 兜底已退役）。
     /// 供 :engine 日志可观测与后续 AIDL 回报（UI「端侧（CPU 兜底）」指示）；
     /// [close] 时复位为 qairt 默认。
-    @Volatile var activeRuntime: String = GenieXSdk.PLUGIN_ID_QAIRT
+    @Volatile override var activeRuntime: String = GenieXSdk.PLUGIN_ID_QAIRT
         private set
 
     /** 上轮 query 的真实生成 token 数（Completed profile；-1=不可用）。 */
     @Volatile private var lastGeneratedTokens: Int = -1
 
     /** 上轮 query 的 SDK 性能画像（Completed profile；null=不可用）——TTFT/
-     *  decodeSpan/numGenerated 的官方单源（2026-10-31 替代宿主手写秒表）。 */
-    @Volatile var lastProfile: com.geniex.sdk.bean.ProfilingData? = null
+     *  decodeSpan/numGenerated 的官方单源（2026-10-31 替代宿主手写秒表）。
+     *  多栈构型 2026-11-01：Runner 中立画像 = [OnDeviceRunner.lastProfile]
+     *  （EngineProfile 映射），本字段为 GenieX 原始单源。 */
+    @Volatile var lastGenieProfile: com.geniex.sdk.bean.ProfilingData? = null
         private set
+
+    /** 多栈构型（ADR 2026-11-01）：Runner 统一画像面（EngineService 收尾打点消费）。 */
+    override val lastProfile: com.zzh.goodhub.engine.EngineProfile?
+        get() = lastGenieProfile?.let {
+            com.zzh.goodhub.engine.EngineProfile(
+                ttftMs = it.ttftMs,
+                decodeTimeMs = it.decodeTimeMs,
+                generatedTokens = it.generatedTokens.toInt(),
+                decodingSpeed = it.decodingSpeed,
+                stopReason = it.stopReason,
+            )
+        }
 
     /** query 期间收集到的运行时错误（负状态码归因）。 */
     @Volatile private var lastStreamError: Throwable? = null
@@ -132,7 +150,7 @@ class GenieSession(private val context: Context) {
 
     /** 单飞闸：已 ready/creating 返回 false（不重建）。 */
     @Synchronized
-    fun beginLoad(): Boolean {
+    override fun beginLoad(): Boolean {
         if (ready || creating) return false
         creating = true
         return true
@@ -142,7 +160,7 @@ class GenieSession(private val context: Context) {
      * 会话创建（**阻塞数秒**——调用方必须置于后台线程）。前置：已获
      * [beginLoad]；finally 统一清除 creating 闸（异常不卡死后续装载）。
      */
-    fun doLoad(modelDir: String) {
+    override fun doLoad(modelDir: String) {
         try {
             if (ready) return
             loadError = null
@@ -276,22 +294,23 @@ class GenieSession(private val context: Context) {
      * 每请求 [LlmWrapper.reset] 单发隔离（KV 清空，与旧 dialogReset 语义
      * 对齐）；流式回调在插件线程，Token 回调返回 false 即停（abort 路径）。
      */
-    fun query(
+    override fun query(
         prompt: String,
         maxTokens: Int,
         sink: GenieChunkSink,
-        temperature: Float = 0.7f,
-        topP: Float = 0.8f,
+        temperature: Float,
+        topP: Float,
         // D-3 契约（decisions.md ADR 2026-11-01）：停用词字符串序列下发，终止
         // 判定在本 Runner 文本流自治（SDK 拒收 stop -100016，见 collect 段注）。
-        // 默认 = ChatML 闭合 token，对齐既有截断语义。
-        stopSequences: List<String> = StopSequenceMatcher.DEFAULT,
+        // 多栈构型：默认值不在实现层（override 禁默认参数）——调用方
+        // （EngineService）统一经 GenerationParams 单源传入。
+        stopSequences: List<String>,
     ): Int {
         val w = wrapper ?: throw IllegalStateException("genie session not created")
         abortRequested = false
         lastStreamError = null
         lastGeneratedTokens = -1
-        lastProfile = null
+        lastGenieProfile = null
         Log.i(TAG, "query start: promptChars=${prompt.length} maxTokens=$maxTokens")
         // 单发隔离的会话重置（每请求清 KV）：重置失败后**带病生成 = 零产出且
         // 无归因**（真机实证「同一对话第二次提问没有输出」的候选面之一——
@@ -335,7 +354,13 @@ class GenieSession(private val context: Context) {
         val sanitizer = StreamTextSanitizer()
         // D-3：跨帧停用词匹配（防 stop 序列被切在 chunk 边界）；匹配在
         // sanitizer 输出后进行——终止边界 = 用户可见文本边界。
-        val stopMatcher = StopSequenceMatcher(stopSequences)
+        // 空表回退默认表（D-3 裁决：GenieX 系默认表 = im_end，对齐既有截断
+        // 语义）——AIDL 侧缺省下发为空表（Dart GenerationConfig 默认 const
+        // []，生产路径无赋值点），不回退则默认表恒死码、Qwen 模板防御线
+        // 失守（多栈构型轮 2026-11-01 移除默认参数时暴露的 D-3 轮潜伏缺口）。
+        val stopMatcher = StopSequenceMatcher(
+            stopSequences.ifEmpty { StopSequenceMatcher.DEFAULT }
+        )
         val flow = w.generateStreamFlow(
             chatPrompt,
             // 0.10 起签名 = (prompt?, inputIds?, inputEmbd?, inputEmbdDim, config)
@@ -396,7 +421,7 @@ class GenieSession(private val context: Context) {
                             }
                         }
                         lastGeneratedTokens = p.generatedTokens.toInt()
-                        lastProfile = p
+                        lastGenieProfile = p
                         Log.i(TAG, "bench: ttft=${p.ttftMs.toInt()}ms " +
                             "decodeSpan=${p.decodeTimeMs.toInt()}ms " +
                             "chunks=${p.generatedTokens} numGenerated=${p.generatedTokens} " +
@@ -418,7 +443,7 @@ class GenieSession(private val context: Context) {
         return status
     }
 
-    /// 上次 query 的 SDK 性能画像单源 = [lastProfile]（Completed profile：
+    /// 上次 query 的 SDK 性能画像单源 = [lastGenieProfile]（Completed profile：
     /// ttft/decodeSpan/generatedTokens/decodingSpeed/stopReason）——宿主手写
     /// 秒表与 numGenerated 查询面已退役（2026-10-31 替代）。
 
@@ -434,7 +459,13 @@ class GenieSession(private val context: Context) {
      * 等待（≤[waitMs]）——既保证信号尽快送达（抢占让槽的前提），又不占死
      * 调用线程。
      */
-    fun abort(waitMs: Long = ABORT_WAIT_MS) {
+    override fun abort() {
+        abortInternal(ABORT_WAIT_MS)
+    }
+
+    /// 多栈构型（2026-11-01）：override 不允许默认参数——内部实现保留有界等待
+    /// 语义（ABORT_WAIT_MS 钉在接口默认路径，调用方无需感知）。
+    private fun abortInternal(waitMs: Long) {
         abortRequested = true
         val w = wrapper ?: return
         val done = java.util.concurrent.CountDownLatch(1)
@@ -450,7 +481,7 @@ class GenieSession(private val context: Context) {
         runCatching { done.await(waitMs, TimeUnit.MILLISECONDS) }
     }
 
-    fun close() {
+    override fun close() {
         val w = wrapper ?: return
         wrapper = null
         ready = false

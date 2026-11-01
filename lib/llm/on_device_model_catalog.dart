@@ -65,10 +65,10 @@ abstract final class OnDeviceAssetFamily {
 }
 
 /// LiteRT-LM 栈装载开关（首发节奏，decisions.md ADR「首发节奏」2026-11-01）：
-/// 首发 = 仅 `.litertlm` 族（从 LiteRT-LM 起步），但 Runner 尚未集成——`.litertlm`
-/// 资产可导入/入注册表（资产路由 backend 维度先行），装载在此 **fail-fast**
-/// 显式拒绝（不落 `:engine` 报模糊错）。Runner 集成落地时翻真。
-const bool kOnDeviceLiteRtLmEnabled = false;
+/// 首发 = 仅 `.litertlm` 族（从 LiteRT-LM 起步）。Runner 集成已落地
+/// 2026-11-01（`LiteRtLmRunner`，多栈构型 ADR）——翻真：`.litertlm` 装载
+/// 经 `:engine`（NPU（GenieX 增配已装）→ GPU → 云端收口，CPU 全程出局）。
+const bool kOnDeviceLiteRtLmEnabled = true;
 
 /// llama.cpp 通路用户面开关（首发节奏关闸，decisions.md ADR「首发节奏」
 /// 2026-11-01：llama.cpp 先不放出，从 LiteRT-LM 起步）——代码与已实证能力

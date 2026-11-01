@@ -67,8 +67,18 @@ class EngineService : Service() {
     /// 失败降级为 null（控制面后续调用快速失败，不拖垮绑定）。
     private var dataPlane: com.zzh.goodhub.engine.EngineDataPlane? = null
 
-    /// Genie 正式会话（S2 正式接线）：持久 Dialog 生成后端。
-    private val session = GenieSession(this)
+    // ==== 多栈构型（ADR 2026-11-01）：Runner 注册表（单点分派）====
+    // 资产族定栈（D-1 双段路由）：loadModel 入口按资产布局单点选 Runner，
+    // 调用链（startGenerate/checkSession/release/驱逐回调）零双路分支——
+    // 全部经 OnDeviceRunner 中立契约消费。外围防护（单执行槽/epoch 闸/数据面
+    // /墓碑/FGS/TTL/熔断）进程级、Runner 无关，零改动。
+    // 注册表扩展位 = NeuroPilot（ADR「接口留位」：不实现不排期；重评触发 =
+    // .litertlm NPU 资产目录扩展或天玑真机到位）。
+    private val genieSession = GenieSession(this)
+    private val liteRtLmRunner = com.zzh.goodhub.engine.LiteRtLmRunner(this)
+
+    /// 当前生效 Runner（装载分派目标；默认 GenieX 系——既有资产布局）。
+    private var session: com.zzh.goodhub.engine.OnDeviceRunner = genieSession
 
     /// 会话票据的**进程实例标识**（M1 Expand；设计 §2.2）：进程启动时生成的
     /// UUID——进程重建必变，故无需磁盘持久化即可判别「票据来自另一进程实例」。
@@ -365,6 +375,19 @@ class EngineService : Service() {
                 }
                 return EngineStatus.reloading.ordinal
             }
+            // D-1 资产族定栈（多栈 ADR）：注册表单点分派——.litertlm →
+            // LiteRtLmRunner；其余布局 → GenieSession（栈内阶梯在其 doLoad
+            // 自裁）。跨 Runner 切换时先 close 旧会话（进程单装载纪律
+            // loadedOnce 保证同一进程内实际不跨族切换——此分支为防御性
+            // 收口，非预期路径）。
+            val targetRunner: com.zzh.goodhub.engine.OnDeviceRunner =
+                if (isLitertlmAsset(modelDir)) liteRtLmRunner else genieSession
+            if (session !== targetRunner) {
+                Log.i(TAG, "runner dispatch: ${session.javaClass.simpleName} -> " +
+                    "${targetRunner.javaClass.simpleName} (modelDir=$modelDir)")
+                session.close()
+                session = targetRunner
+            }
             if (session.beginLoad()) {
                 loadedOnce = true
                 writeTombstoneFlag("FLAG_LOADING") // G2-1：死因排除法锚点
@@ -406,6 +429,13 @@ class EngineService : Service() {
             // 的「资产缺失」措辞；就绪后经票据面转 ready）。
             return EngineStatus.loading.ordinal
         }
+
+        /// 资产布局 → Runner 族（分派判据单源；与 Dart 导入面
+        /// .litertlm 识别同判据）：.litertlm 单文件在场 → LiteRT-LM 系；
+        /// 其余（qairt bundle / GGUF）→ GenieX 系（栈内阶梯由 doLoad 自裁）。
+        private fun isLitertlmAsset(modelDir: String): Boolean =
+            java.io.File(modelDir).listFiles()
+                ?.any { it.isFile && it.name.lowercase().endsWith(".litertlm") } == true
 
         override fun getDataSocketFd(): ParcelFileDescriptor =
             dataPlane?.dataSocketFd()

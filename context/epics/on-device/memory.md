@@ -73,4 +73,4 @@ last-merge: none
 
 ## 断点
 
-- [断点] 下一步：P7 全部收口（deployment v3.2 六章节落位实证修订 + §7.1.1 实测基准快照回填 + 口径标注，docs-lint OK）；npu-geniex-runtime P1~P7 全周期完成；下一步：外部依赖解除触发（换版实战 checklist / v73/75/81 真机到位）或 short-repeat 前缀复用收益复核（S2-3 遗留观测项）
+- [断点] 多栈构型代码轮收口（2026-11-01）：LiteRT-LM Runner 集成代码轮落地（OnDeviceRunner 接口 + LiteRtLmRunner + QAIRT 单源 + 停用词接线 + 装载闸翻真 + D-3 空表缺口修复；ADR 在 decisions.md），非真机门禁全绿（Kotlin 编译+单测 / analyze 0 / test/llm 202）；**下一步 = .litertlm 真机验证（受阻于用户资产获取，HF gated 全通路 403）**——资产到位后：装载→生成→停用词→降级链 + D-4 基准探针（NPU/GPU 同口径，对照 llama_cpp+GPU 39 tok/s，仅归档不触发删除）；UNCERTAIN U1~U5 + dispatch 库疑点已登记（decisions.md ADR / todos.md 注记）；其余外部依赖触发（换版实战 checklist / v73/75/81 真机 / S2-3 short-repeat 复核）仍挂起

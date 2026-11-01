@@ -83,4 +83,34 @@ class ChatMLComposerTest {
         assertNull(ChatMLComposer.parseMessages("[]"))
         assertNull(ChatMLComposer.parseMessages("""[{"role":"x","content":"c"}]"""))
     }
+
+    @Test
+    fun `parseNeutral 中立轮次序列（多栈构型解析单源：顺序保真 + 清洗）`() {
+        val turns = ChatMLComposer.parseNeutral(
+            """[{"role":"system","content":"S"},{"role":"user","content":"你好"},{"role":"assistant","content":"回答"}]""",
+        )!!
+        assertEquals(3, turns.size)
+        assertEquals("system", turns[0].role)
+        assertEquals("S", turns[0].content)
+        assertEquals("user", turns[1].role)
+        assertEquals("你好", turns[1].content)
+        assertEquals("assistant", turns[2].role)
+        assertEquals("回答", turns[2].content)
+    }
+
+    @Test
+    fun `parseNeutral 末轮角色保真（LiteRT-LM Runner 末轮必user契约的判定输入）`() {
+        val turns = ChatMLComposer.parseNeutral(
+            """[{"role":"user","content":"当前提问"}]""",
+        )!!
+        assertEquals("user", turns.last().role)
+    }
+
+    @Test
+    fun `parseNeutral 非法输入回退 null（与 compose 与 parseMessages 同判据）`() {
+        assertNull(ChatMLComposer.parseNeutral("纯文本"))
+        assertNull(ChatMLComposer.parseNeutral("[]"))
+        assertNull(ChatMLComposer.parseNeutral("""[{"role":"tool","content":"x"}]"""))
+        assertNull(ChatMLComposer.parseNeutral("""[{"role":"user","content":""}]"""))
+    }
 }
