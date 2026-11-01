@@ -67,9 +67,32 @@ android {
     }
 
     packaging {
-        // geniex-android AAR 捆绑的 QNN 离线图编译库（87MB）：运行时推理不加载
-        // （S2-5 A/B 实证），排除防 APK 膨胀；换 DLC/在线编译路线时取回。
-        jniLibs.excludes += "**/libQnnHtpPrepare.so"
+        // npu-geniex-runtime 拆分（设计稿 §4，2026-11-01）：geniex-android
+        // 0.10.0 全家桶 native 库全部移出 APK（classes-only），运行时按机型
+        // 下载 AAR 后经 GenieXRuntime 解压装载（app storage + ADSP_LIBRARY_PATH
+        // 通道，Spike-1 实证）。excludes 按库族通配（AAR 51 库全覆盖），
+        // 不得使用宽泛 lib*.so（防误伤自有 libgdw/libengine_tombstone 与
+        // 内置基线 liblitertlm_jni）。
+        // 例外：libgeniex_plugin_{llama_cpp,qairt}.so（合计 614KB）留守 APK——
+        // GenieXSdk.init() 从 nativeLibraryDir 注册插件，缺失即回调 onFailure
+        // （P1 验收 12:27 实证）；其 NEEDED 核心库由 GenieXRuntime 预载解决。
+        jniLibs.excludes += setOf(
+            "**/libgeniex.so",
+            "**/libgeniex-proc.so",
+            "**/libgeniex-proc-vision.so",
+            "**/libgeniex_core.so",
+            "**/libgeniex_vlm.so",
+            "**/libggml*.so",
+            "**/libllama*.so",
+            "**/libmtmd.so",
+            "**/libnpu_jni.so",
+            "**/libQnn*.so",
+            "**/libhta_hexagon*.so",
+            "**/libomp.so",
+            "**/libPlatformValidatorShared.so",
+            "**/libcalculator.so",
+            "**/libCalculator_skel.so",
+        )
     }
 }
 

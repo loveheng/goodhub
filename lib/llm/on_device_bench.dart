@@ -68,14 +68,18 @@ class OnDeviceBench {
   ///
   /// 4B 会话创建（3GB ctx-bin）显著慢于 1.7B，故就绪轮询放宽到 90s。
   static Future<void> _loadExplicitModelDir(String dir) async {
-    EngineStatus st;
-    try {
-      st = await sharedOnDeviceEngine.loadModel(dir);
-    } on OnDeviceLoadException catch (e) {
-      // 装载链路通道异常（进程中断 / 未知码）现按语义上抛而非折算
-      // unsupportedDevice——bench 诊断面如实打印原因后收手。
-      debugPrint('[on-device-bench] loadModel($dir) FAILED: ${e.reason}');
-      return;
+    // Spike-1 测量期重试（npu-geniex-runtime 设计稿 §6）：启动首调可能撞
+    // force-stop 后旧 ：engine binder 死亡（进程中断），等 3s 重试避开竞态。
+    EngineStatus st = EngineStatus.assetMissing;
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      try {
+        st = await sharedOnDeviceEngine.loadModel(dir);
+        break;
+      } on OnDeviceLoadException catch (e) {
+        debugPrint('[on-device-bench] loadModel($dir) attempt#$attempt FAILED: ${e.reason}');
+        if (attempt == 3) return;
+        await Future.delayed(const Duration(seconds: 3));
+      }
     }
     debugPrint('[on-device-bench] loadModel($dir) -> ${st.name}');
     for (var i = 0; i < 90; i++) {

@@ -73,4 +73,4 @@ last-merge: none
 
 ## 断点
 
-- [断点] 下一步：P1/P2 批次（P1-6/P1-7/P2-9 已修+P1-5 设计定稿+P2-11 周期采样）收口完毕，回到 GPU 档真机 Spike（进行中，断点不变）；残差：P2-12 SDK 实证 + P1-5 机制落地挂 context-stepped-pruning draft + §6.5 文档对齐待 docs 轮
+- [断点] 下一步：P7 全部收口（deployment v3.2 六章节落位实证修订 + §7.1.1 实测基准快照回填 + 口径标注，docs-lint OK）；npu-geniex-runtime P1~P7 全周期完成；下一步：外部依赖解除触发（换版实战 checklist / v73/75/81 真机到位）或 short-repeat 前缀复用收益复核（S2-3 遗留观测项）

@@ -76,22 +76,22 @@ class EngineChunk {
 
 /// 生成参数（总纲 §2 GenerationConfig）。
 ///
-/// 约束（§6.7）：停用词不接受原始字符串——客户端无全功能 BPE encoder，
-/// 字符串→id 编码由共享 tokenizer/服务端在 Prompt 编排层完成后传入。
+/// 停用词契约（D-3 重构 2026-11-01，decisions.md ADR）：下发原始字符串序列
+/// `stopSequences`，编码判定下沉各 Runner Native 自治（自绑 tokenizer 实时
+/// match）——预编码 id 跨后端词表不互通（GGUF BPE vs .litertlm SentencePiece），
+/// 旧 `stopTokenIds` 契约已退役。
 class GenerationConfig {
   const GenerationConfig({
     this.maxTokens = 512,
     this.temperature = 0.7,
     this.topP = 0.9,
-    this.stopTokenIds = const {},
-    this.stopTokenSequences = const [],
+    this.stopSequences = const [],
   });
 
   final int maxTokens;
   final double temperature;
   final double topP;
-  final Set<int> stopTokenIds;
-  final List<List<int>> stopTokenSequences;
+  final List<String> stopSequences;
 }
 
 /// `:engine` 进程死亡/致命事件（总纲 §2）：驱动 Panic、算子越界 abort、

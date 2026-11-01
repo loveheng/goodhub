@@ -14,6 +14,7 @@ import 'coordinator/ref_store.dart';
 import 'task/task_consume_ledger.dart';
 import 'llm/on_device_bench.dart';
 import 'llm/on_device_engine_aidl.dart';
+import 'llm/geniex_runtime_binding.dart';
 import 'llm/on_device_asset_manager.dart';
 import 'llm/on_device_model_catalog.dart';
 import 'sandbox/memory_store.dart';
@@ -26,6 +27,18 @@ import 'ui/tokens/app_theme.dart';
 /// §6.5 reset 语义 = 手动清缓存/模型版本更新路径；用于验证轮间清锁。
 const bool kOnDeviceBreakerReset =
     bool.fromEnvironment('ON_DEVICE_BREAKER_RESET', defaultValue: false);
+
+/// P2 验收触发（测量期构建专用，验收后退役）：启动引导期自动安装 GenieX
+/// 增配（写新指纹 marker），用于「正常装」场景自动化——
+///   --dart-define=ON_DEVICE_GENIEX_INSTALL=true
+const bool kGeniexAutoInstall =
+    bool.fromEnvironment('ON_DEVICE_GENIEX_INSTALL', defaultValue: false);
+
+/// P3 弱网演练触发（测量期构建专用）：先卸载（删指纹 marker + 运行目录）
+/// 再安装——绕过 installed() 短路，演练「干净装/断点续传/换版清理」全链。
+///   --dart-define=ON_DEVICE_GENIEX_REINSTALL=true
+const bool kGeniexAutoReinstall =
+    bool.fromEnvironment('ON_DEVICE_GENIEX_REINSTALL', defaultValue: false);
 
 void main() async {
   // 三态主题（暗/亮/暖）持久化于 SharedPreferences，启动期读取后注入单例，
@@ -128,7 +141,27 @@ class _GoodHubAppState extends State<GoodHubApp> with WidgetsBindingObserver {
       if (kOnDeviceBenchOnReady) {
         // §1.2 吞吐正式测量：先显式加载（bind→就绪→资产→loadModel→worker），
         // 就绪后跑测量（enable 已保证 ready，无需额外就绪轮询）。
-        await engine.enable();
+        // P2 验收（测量期）：启动引导期自动安装 GenieX 增配（写新指纹
+        // marker），受理后轮询就绪——bench 装载须在安装完成后。
+        if (kGeniexAutoInstall || kGeniexAutoReinstall) {
+          if (kGeniexAutoReinstall) {
+            // 演练口径：连 AAR 缓存一起清 → 强制全新下载（可被断网打断造
+            // partial），供断点续传/缓存复用两场景分别演练。
+            await GenieXRuntimeControl.uninstall(deleteCache: true);
+          }
+          final mirrors = await GenieXRuntimeControl.loadMirrors();
+          await GenieXRuntimeControl.install(mirrors);
+          for (var i = 0; i < 60; i++) {
+            final st = await GenieXRuntimeControl.status();
+            if (st.installed) { debugPrint('[geniex-auto] installed after ~${i * 2}s'); break; }
+            await Future.delayed(const Duration(seconds: 2));
+          }
+        }
+        // 显式指定 MODEL_DIR 时跳过 enable（否则 bootstrap 会话先 ready，
+        // EngineService.loadModel 幂等闸拒绝重建 → 显式装载被短路）。
+        if (kOnDeviceBenchModelDir.isEmpty) {
+          await engine.enable();
+        }
         await OnDeviceBench.run();
       }
     } catch (e) {

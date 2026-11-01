@@ -18,6 +18,20 @@ format: v1
 - [x] D1 投影策略收窄为一轴（对外契约变更 · **已裁决 2026-10-23：单轴 policy + 兼容别名**，落地见 memory.md「投影策略单轴化」）：现状 = URL 轴 `?strategy=single|pruned|full`（+`server`/`tag`）与控制面轴 `scope=single|private|full`（+`server_id`）两套词表，PC 侧模型须同时记两轴，且 `pruned` 只在 URL 有、`private` 只在控制面有。→ **待裁决**（默认建议：单轴 `policy` = 字面量并集 `single|private|full|pruned`，旧 `strategy=`/`scope=` 作兼容别名保留一个版本；工具名与参数名不破坏性改名——本 epic 刚因旧名残留出 P0 幻觉调用）
 - [x] D3 `mcp_gateway_handler.dart` 是否继续拆「投影接线」（**已裁决 2026-10-23：不拆**）：现状 612 行（< 800 软红线），且「纯管道在 `projection_pipeline.dart`、接线在 handler」的分层本已正确。→ **默认建议：不拆**（边际收益低、搬动 PC 可见语义代码风险高；其真正价值已被 D1 吸收——两处字面量判定应收敛到一处）
 
+## on-device / capability-vs-geniex-runtime（fallback 口径对齐 · 2026-11-01 联动复查轮）
+
+> 背景：npu-geniex-runtime D1 终裁「LiteRT-LM 内置 APK 作 fallback 链终点（GenieX 未装/不支持机型兜底）」与 `on-device-capability.md` v3.2 既有条款「LiteRT 仅作百兆级轻量小模型、不承接 LLM 级；LiteRT-CPU 不对外暴露；不支持设备直收纯云端」冲突。两处均涉用户拍板，需对齐 capability 文档口径或收窄 fallback 语义。
+
+- [x] D5 fallback 链中内置 LiteRT-LM 的角色（**已裁决 2026-11-01：B·仅基线在场**）：运行库内置在场、LLM 端侧缺位仍收云端——capability v3.2 产品分层不动，npu-geniex-runtime §3 fallback 语义收窄为「装载基线」；LiteRT-LM 内置价值 = 框架/小模型基线在场，LLM 端侧缺位不新增降级路径
+
+## on-device / npu-geniex-runtime（GenieX 运行库按需拆分 · 2026-11-01 立项轮）
+
+> 背景：参考 IRIDIS v2.2.0（`/home/zzh/Downloads/ai/IRIDIS`）把 geniex-android 0.10.0 全家桶（~80MB native）从 APK 拆为运行时按需下载 + 按机型选库解压（`SOC_MODEL→Hexagon arch→forArch()`、PINS size+SHA-256 钉版、marker 完整性校验）。前置技术 Spike（非决策项）：① goodhub 10-28 真机实证「Skel 须真实文件在 /data/app lib」与 IRIDIS「Skel 落 app storage + ADSP_LIBRARY_PATH」需真机重验裁决；② IRIDIS PINS 基于 0.8.0，goodhub 用 0.10.0 须重新生成钉版表。
+
+- [x] D1 范围（**三裁 2026-11-01 终版：LiteRT-LM 默认内置 APK（仅 liblitertlm_jni.so 21.5MB，压缩后 APK 增重约 10-12MB，基线开箱即用）；GenieX 0.10.0 拆出运行时按需下载（~80MB 减重大头保留）**。初裁 GenieX 先行 → 用户改裁两个一起拆 → 终裁 LiteRT-LM 回归内置作 fallback 链终点，与「SoC 探测 + 厂商增配」策略咬合）
+- [x] D2 flavor（**已裁决 2026-11-01：不引 flavor**）：统一运行时按需下载，GenieX 依赖保留 classes-only + jniLibs excludes，构建矩阵不翻倍
+- [x] D3 下载源（**已裁决 2026-11-01：IRIDIS 同款双源**）：Maven Central 主源 + 阿里云镜像兜底 + 字节数/SHA-256 双校验 + 断点续传；PINS 表按 0.10.0 从 AAR 实测重生成；镜像列表后续可配置化
+
 ## meta-upgrade（元体系升舱 · 2026-10-23 立项评估轮）
 
 > 背景：架构评估修复轮实证「回写不完整」复发模式（D1 单轴化漏 7 处：PC 话术旧词表 ×3 / SSOT 文档矛盾 ×4）+ 纪律漂移 ×3（协议版本双源 / 版本读取三源 / mcp_runtime 体量净增）。每轮靠人工评估+手修+手抄断言，成本线性累积。solution-admission 判定 **S2**（缺能力，禁补丁糊）。

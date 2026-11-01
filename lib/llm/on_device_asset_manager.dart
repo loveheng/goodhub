@@ -513,6 +513,10 @@ class OnDeviceAssetManager {
         for (final f in files)
           if (f.toLowerCase().endsWith('.gguf')) f
       ];
+      final litertlms = [
+        for (final f in files)
+          if (f.toLowerCase().endsWith('.litertlm')) f
+      ];
       final hasGenie = lower.contains('genie_config.json');
 
       for (final g in ggufs) {
@@ -531,6 +535,11 @@ class OnDeviceAssetManager {
           debugPrint('[DEGRADE] asset layout: qairt bundle missing metadata.json '
               '(qairt dispatch 强制，doLoad 将失败)');
         }
+      } else if (litertlms.isNotEmpty) {
+        // D-1 资产族（2026-11-01）：`.litertlm` 单文件标准化资产 → LiteRT-LM 系；
+        // 装载由 Dart 侧 `kOnDeviceLiteRtLmEnabled` 闸裁定（Runner 未集成前
+        // fail-fast），导入面只负责识别入册。
+        runtime = OnDeviceRuntime.litertlm;
       } else if (ggufs.isNotEmpty) {
         runtime = OnDeviceRuntime.llamaCpp;
       } else {
@@ -887,8 +896,10 @@ class OnDeviceAssetManager {
       'totalBytes': totalBytes,
       'sizes': sizes,
       // 多模型导入制（2026-10-31）：注册表据此渲染展示名 + doLoad 据此选运行时
-      // 主路。runtime 由结构校验检测回填（qairt/llama_cpp/auto）。
+      // 主路。runtime 由结构校验检测回填（qairt/llama_cpp/litertlm/auto）。
       'runtime': runtime,
+      // D-1 资产族（2026-11-01）：backend 维度栈映射，单源 = familyOf(runtime)。
+      'family': OnDeviceAssetFamily.familyOf(runtime),
       if (displayName != null && displayName.isNotEmpty)
         'displayName': displayName,
     };

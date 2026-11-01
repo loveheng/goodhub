@@ -58,7 +58,7 @@ data class GenerationParams(
     val maxTokens: Int,
     val temperature: Double,
     val topP: Double,
-    val stopTokenIds: IntArray,
+    val stopSequences: List<String>,
     /** 前台态由主进程判定注入（S3-3 抢占语义 §6.6）。 */
     val foreground: Boolean,
     /** F3 大载荷通道（2026-10-31 ADR）：超内联上限的 promptJson 落临时文件，
@@ -70,25 +70,25 @@ data class GenerationParams(
         putInt(KEY_MAX_TOKENS, maxTokens)
         putDouble(KEY_TEMPERATURE, temperature)
         putDouble(KEY_TOP_P, topP)
-        putIntArray(KEY_STOP_TOKEN_IDS, stopTokenIds)
+        putStringArrayList(KEY_STOP_SEQUENCES, ArrayList(stopSequences))
         putBoolean(KEY_FOREGROUND, foreground)
         if (!promptFilePath.isNullOrEmpty()) putString(KEY_PROMPT_FILE_PATH, promptFilePath)
     }
 
     override fun equals(other: Any?): Boolean = other is GenerationParams &&
         maxTokens == other.maxTokens && temperature == other.temperature &&
-        topP == other.topP && stopTokenIds.contentEquals(other.stopTokenIds) &&
+        topP == other.topP && stopSequences == other.stopSequences &&
         foreground == other.foreground
 
     override fun hashCode(): Int = listOf(
-        maxTokens, temperature, topP, stopTokenIds.contentHashCode(), foreground,
+        maxTokens, temperature, topP, stopSequences, foreground,
     ).hashCode()
 
     companion object {
         const val KEY_MAX_TOKENS = "maxTokens"
         const val KEY_TEMPERATURE = "temperature"
         const val KEY_TOP_P = "topP"
-        const val KEY_STOP_TOKEN_IDS = "stopTokenIds"
+        const val KEY_STOP_SEQUENCES = "stopSequences"
         const val KEY_FOREGROUND = "foreground"
         const val KEY_PROMPT_FILE_PATH = "promptFilePath"
 
@@ -101,7 +101,7 @@ data class GenerationParams(
             maxTokens = b?.getInt(KEY_MAX_TOKENS, DEFAULT_MAX_TOKENS) ?: DEFAULT_MAX_TOKENS,
             temperature = b?.getDouble(KEY_TEMPERATURE, DEFAULT_TEMPERATURE) ?: DEFAULT_TEMPERATURE,
             topP = b?.getDouble(KEY_TOP_P, DEFAULT_TOP_P) ?: DEFAULT_TOP_P,
-            stopTokenIds = b?.getIntArray(KEY_STOP_TOKEN_IDS) ?: IntArray(0),
+            stopSequences = b?.getStringArrayList(KEY_STOP_SEQUENCES) ?: emptyList(),
             foreground = b?.getBoolean(KEY_FOREGROUND, false) ?: false,
         )
 
@@ -110,8 +110,8 @@ data class GenerationParams(
             maxTokens = (args["maxTokens"] as? Number)?.toInt() ?: DEFAULT_MAX_TOKENS,
             temperature = (args["temperature"] as? Number)?.toDouble() ?: DEFAULT_TEMPERATURE,
             topP = (args["topP"] as? Number)?.toDouble() ?: DEFAULT_TOP_P,
-            stopTokenIds = (args["stopTokenIds"] as? List<*>)
-                ?.map { (it as Number).toInt() }?.toIntArray() ?: IntArray(0),
+            stopSequences = (args["stopSequences"] as? List<*>)
+                ?.map { it?.toString().orEmpty() } ?: emptyList(),
             foreground = foreground,
             promptFilePath = args["promptFilePath"] as? String,
         )

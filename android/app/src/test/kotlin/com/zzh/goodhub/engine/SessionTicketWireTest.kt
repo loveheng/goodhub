@@ -64,7 +64,7 @@ class SessionTicketWireTest {
             maxTokens = 1024,
             temperature = 0.3,
             topP = 0.95,
-            stopTokenIds = intArrayOf(1, 2, 3),
+            stopSequences = listOf("<|im_end|>", "\nUser:"),
             foreground = true,
         )
         val back = GenerationParams.fromBundle(p.toBundle())
@@ -75,7 +75,7 @@ class SessionTicketWireTest {
                 "maxTokens" to 1024,
                 "temperature" to 0.3,
                 "topP" to 0.95,
-                "stopTokenIds" to listOf(1, 2, 3),
+                "stopSequences" to listOf("<|im_end|>", "\nUser:"),
             ),
             foreground = true,
         )
@@ -90,6 +90,6 @@ class SessionTicketWireTest {
         assertEquals(0.9, fromBundle.topP, 0.0)
         assertEquals(512, fromBundle.maxTokens)
         assertEquals(0.7, fromBundle.temperature, 0.0)
-        assertArrayEquals(IntArray(0), fromBundle.stopTokenIds)
+        assertEquals(emptyList<String>(), fromBundle.stopSequences)
     }
 }

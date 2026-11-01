@@ -224,6 +224,25 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
               retryable: true);
         }
       final resolvedModel = model ?? await OnDeviceModelSelection.read();
+      // 首发节奏关闸（decisions.md ADR 2026-11-01）：llama.cpp 通路先不放出，
+      // 从 LiteRT-LM 起步——GGUF 模型（含存量已选/压缩包混入路径）在此
+      // 兜底拒装载，非 retryable 终态失败（显式报错口径，UI 导入/选择闸
+      // 已前置，此处覆盖一切绕道路径）。测量期放开 = ON_DEVICE_LLAMACPP。
+      if (!kOnDeviceLlamaCppEnabled &&
+          resolvedModel != null &&
+          resolvedModel.runtime == OnDeviceRuntime.llamaCpp) {
+        throw const OnDeviceLoadException(
+            'llama.cpp 通路暂未开放（首发从 LiteRT-LM 起步）');
+      }
+      // D-1 资产路由（2026-11-01）：`.litertlm` 族（LiteRT-LM 系）可导入入册
+      // （backend 维度先行），但 Runner 未集成——装载在此 fail-fast 显式拒绝，
+      // 不落 `:engine` 报模糊错。Runner 集成落地时翻 `kOnDeviceLiteRtLmEnabled`。
+      if (!kOnDeviceLiteRtLmEnabled &&
+          resolvedModel != null &&
+          resolvedModel.runtime == OnDeviceRuntime.litertlm) {
+        throw const OnDeviceLoadException(
+            'LiteRT-LM 栈尚未接入（Runner 集成后启用）');
+      }
       final target = await OnDeviceAssetManager.instance
           .ensureAssets(model: resolvedModel);
       if (target == null) {
@@ -616,7 +635,7 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
               'maxTokens': config.maxTokens,
               'temperature': config.temperature,
               'topP': config.topP,
-              'stopTokenIds': config.stopTokenIds.toList(),
+              'stopSequences': config.stopSequences,
               // 票据缺失（通道异常等）= 未知态：发空 epoch 让 :engine 权威拒绝
               //（禁本地猜测放行——I2）。
               'expectInstanceId': ticket?.instanceId ?? '',

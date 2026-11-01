@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 import '../components/panel_error_row.dart';
 import '../tokens/console_tokens.dart';
 import '../../gateway_api/gateway_control.dart';
+import '../../llm/geniex_runtime_binding.dart';
 import '../../llm/on_device_asset_manager.dart';
 import '../../llm/on_device_gate_override.dart';
 import '../../llm/on_device_model_catalog.dart';
@@ -58,6 +59,9 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
 
   String? _selectedDir;
   List<InstalledModel> _models = <InstalledModel>[];
+  GenieXStatus? _geniex;
+  int? _geniexPct;
+  void Function()? _geniexEvents;
   bool _busy = false;
   String _progressText = '';
   String? _error;
@@ -84,6 +88,7 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _geniexEvents?.call();
     super.dispose();
   }
 
@@ -92,6 +97,120 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
     // 从系统白名单弹窗返回 → 复查状态（弹窗里点「允许」当场不会回传）。
     if (state == AppLifecycleState.resumed) {
       unawaited(_refreshBatteryExemption());
+    }
+  }
+
+  /// GenieX 增配状态刷新（设计稿 §7 状态机：未提供/可下载/已装）。
+  Future<void> _refreshGeniex() async {
+    try {
+      final st = await GenieXRuntimeControl.status();
+      if (!mounted) return;
+      setState(() => _geniex = st);
+    } on Object catch (e) {
+      debugPrint('[DEGRADE] on-device-panel: GenieX 状态查询失败: $e');
+    }
+  }
+
+  Future<void> _installGeniex() async {
+    try {
+      final mirrors = await GenieXRuntimeControl.loadMirrors();
+      final accepted = await GenieXRuntimeControl.install(mirrors);
+      if (!mounted) return;
+      setState(() => _geniexPct = accepted ? 0 : null);
+      widget.onFlash?.call(accepted ? 'GenieX 增配安装已受理' : 'GenieX 增配安装未受理（可能已在进行）');
+    } on Object catch (e) {
+      if (mounted) widget.onFlash?.call('GenieX 安装发起失败：$e');
+    }
+  }
+
+  Future<void> _uninstallGeniex() async {
+    try {
+      final ok = await GenieXRuntimeControl.uninstall();
+      if (!mounted) return;
+      widget.onFlash?.call(ok ? 'GenieX 增配已卸载（端侧 LLM 将收口云端，可随时重装）' : 'GenieX 增配本就未安装');
+      await _refreshGeniex();
+    } on Object catch (e) {
+      if (mounted) widget.onFlash?.call('GenieX 卸载失败：$e');
+    }
+  }
+
+  /// GenieX 增配块（设计稿 §7 状态机）：不支持机型不渲染；状态胶囊
+  /// （未装/下载中 pct%/已装）+ 安装/卸载动作。
+  Widget _geniexBlock(ConsoleTokens t) {
+    final st = _geniex;
+    if (st == null || !st.supported) return const SizedBox.shrink();
+    final pct = _geniexPct;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('GenieX 增配（骁龙 NPU 加速包）',
+          style: TextStyle(fontSize: Fsz.telemetry, color: t.l2Accent)),
+      const SizedBox(height: 2),
+      Row(children: [
+        Expanded(
+          child: Text(
+            st.installing || pct != null
+                ? '下载中 $pct%（约 89MB，断点续传）'
+                : st.installed
+                    ? '已装 v${st.version}（NPU v${st.arch}）· 占用 ${_sizeLabel(st.sizeBytes)}'
+                    : '未安装（端侧 LLM 走云端；内置基线仅承载框架/小模型）',
+            style: TextStyle(fontSize: Fsz.telemetrySm, color: t.l1Info),
+          ),
+        ),
+        if (st.installed)
+          TextButton(
+            key: const ValueKey('geniex-uninstall'),
+            onPressed: () => unawaited(_uninstallGeniex()),
+            child: const Text('卸载'),
+          )
+        else if (!st.installing && pct == null)
+          TextButton(
+            key: const ValueKey('geniex-install'),
+            onPressed: () => unawaited(_installGeniex()),
+            child: const Text('安装'),
+          ),
+        TextButton(
+          key: const ValueKey('geniex-mirrors'),
+          onPressed: () => unawaited(_editMirrors()),
+          child: const Text('镜像'),
+        ),
+      ]),
+    ]);
+  }
+
+  /// 镜像列表编辑（D3 镜像可配置化，P3）：多行文本每行一个 URL，空 =
+  /// 回退内置双源默认。保存即持久化（下次安装生效）。
+  Future<void> _editMirrors() async {
+    final current = await GenieXRuntimeControl.loadMirrors();
+    if (!mounted) return;
+    final controller = TextEditingController(text: current.join('\n'));
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('下载镜像（每行一个 URL，留空回退默认）'),
+        content: TextField(
+          key: const ValueKey('geniex-mirrors-input'),
+          controller: controller,
+          maxLines: 5,
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          TextButton(
+            key: const ValueKey('geniex-mirrors-save'),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    if (saved != true) return;
+    final mirrors = controller.text
+        .split('\n')
+        .map((s) => s.trim())
+        .where((s) => s.startsWith('http'))
+        .toList();
+    await GenieXRuntimeControl.saveMirrors(mirrors);
+    if (mounted) {
+      widget.onFlash?.call(mirrors.isEmpty ? '镜像已清空——回退内置双源默认' : '镜像已保存（${mirrors.length} 个，下次安装生效）');
     }
   }
 
@@ -191,6 +310,15 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
     if (_busy) return;
     final picked = await FilePicker.pickFiles(type: FileType.any);
     if (picked.isEmpty) return; // 用户取消
+    // 首发节奏关闸（decisions.md ADR 2026-11-01）：GGUF（llama.cpp 通路）
+    // 先不放出，仅 QAIRT 包可导入；压缩包内 GGUF 无法在此识别，交
+    // `enable()` 装载闸兜底（runtime=llama_cpp 拒装载）。
+    final directGguf =
+        picked.any((f) => f.name.toLowerCase().endsWith('.gguf'));
+    if (!kOnDeviceLlamaCppEnabled && directGguf) {
+      widget.onFlash?.call('GGUF 模型导入暂未开放（首发从 LiteRT-LM 起步）');
+      return;
+    }
     // 系统文件选择器全屏遮盖可停留很久，返回时段可能已被 ListView 懒构建
     // 销毁重建——未 mounted 就 showDialog 会把 dialog 挂进失效子树（真机
     // 实证 InheritedElement `_dependents.isEmpty` 断言崩溃，2026-10-31）。
@@ -371,6 +499,11 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
   }
 
   Future<void> _select(InstalledModel m) async {
+    // 首发节奏关闸（decisions.md ADR 2026-11-01）：llama.cpp 通路模型不可选。
+    if (!kOnDeviceLlamaCppEnabled && m.runtime == OnDeviceRuntime.llamaCpp) {
+      widget.onFlash?.call('llama.cpp 通路暂未开放（首发从 LiteRT-LM 起步）');
+      return;
+    }
     await OnDeviceModelSelection.write(m.dirName);
     if (!mounted) return;
     setState(() => _selectedDir = m.dirName);
@@ -407,6 +540,9 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
                   _gateOverride!.preferOnDevice, _setPrefer),
               const SizedBox(height: 6),
             ],
+            // GenieX 增配运行库（npu-geniex-runtime P2，设计稿 §7）
+            _geniexBlock(t),
+            const SizedBox(height: 6),
             // 已装模型（注册表，身份唯一源）
             for (final m in _models) ...[
               _modelRow(t, m),
@@ -456,11 +592,12 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
     );
   }
 
-  /// 运行时标识 → 白话徽标（NPU / CPU / 自动）。
+  /// 运行时标识 → 白话徽标（NPU / CPU / LiteRT-LM / 自动）。
   String _runtimeLabel(String r) =>
       r == OnDeviceRuntime.qairt ? 'NPU'
           : r == OnDeviceRuntime.llamaCpp ? 'CPU'
-              : '自动';
+              : r == OnDeviceRuntime.litertlm ? 'LiteRT-LM'
+                  : '自动';
 
   String _sizeLabel(int bytes) =>
       bytes >= (1 << 30)

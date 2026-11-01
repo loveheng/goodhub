@@ -10,6 +10,7 @@ import com.geniex.sdk.bean.LlmCreateInput
 import com.geniex.sdk.bean.LlmStreamResult
 import com.geniex.sdk.bean.ModelConfig
 import com.geniex.sdk.bean.SamplerConfig
+import com.zzh.goodhub.engine.StopSequenceMatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import java.io.File
@@ -98,6 +99,14 @@ class GenieSession(private val context: Context) {
             val latch = CountDownLatch(1)
             sdkInitLatch = latch
             sdkInitFailed = null
+            // 增配运行库装载闸（npu-geniex-runtime 设计稿 §5/§6）：未装且
+            // （不支持机型或下载/解压失败）→ loadError 收口云端（fallback 链）。
+            if (!com.zzh.goodhub.engine.GenieXRuntime.ensureLoaded(context.applicationContext)) {
+                sdkInitFailed = "geniex runtime not installed (增配未下载或机型不支持)"
+                loadError = sdkInitFailed
+                Log.w(TAG, "[DEGRADE] $loadError")
+                return false
+            }
             GenieXSdk.getInstance().init(
                 context.applicationContext,
                 object : GenieXSdk.InitCallback {
@@ -178,12 +187,12 @@ class GenieSession(private val context: Context) {
                 )
             }
             // 纯 GGUF 资产的 llama_cpp 输入（GPU 档）。
-            //   // UNCERTAIN: llama_cpp 的 model_path/tokenizer_path 与
-            //   compute_unit=GPU 契约均未真机实证（spike #1 待冻结，与 GPU 档
-            //   同次上机）：此处假设 model_path 指向 .gguf 文件、tokenizer 在场
-            //   则用独立 tokenizer.json、否则回指 .gguf（llama.cpp 读 GGUF 内嵌
-            //   词表）；GPU 档实际后端（Vulkan/OpenCL）以真机归因日志裁定。
-            //   spike 实证后按实修正。
+            //   契约已真机实证（2026-11-01 S2-5 GPU Spike）：model_path=.gguf、
+            //   tokenizer_path 二态皆可（独立 tokenizer.json 在场即用；缺位回指
+            //   .gguf 内嵌词表），compute_unit=GPU 会话创建+bench 39.3~39.6tok/s。
+            //   排障注记：外部目录（/data/local/tmp 等）装载模型须 644 权限——
+            //   660 时报误导性 "Model loading failed"（实为 App uid 无读，
+            //   mmap 失败），非 tokenizer 问题。
             val buildGguf = { unit: ComputeUnitValue ->
                 LlmCreateInput(
                     model_path = ggufFiles.first().absolutePath,
@@ -273,6 +282,10 @@ class GenieSession(private val context: Context) {
         sink: GenieChunkSink,
         temperature: Float = 0.7f,
         topP: Float = 0.8f,
+        // D-3 契约（decisions.md ADR 2026-11-01）：停用词字符串序列下发，终止
+        // 判定在本 Runner 文本流自治（SDK 拒收 stop -100016，见 collect 段注）。
+        // 默认 = ChatML 闭合 token，对齐既有截断语义。
+        stopSequences: List<String> = StopSequenceMatcher.DEFAULT,
     ): Int {
         val w = wrapper ?: throw IllegalStateException("genie session not created")
         abortRequested = false
@@ -320,6 +333,9 @@ class GenieSession(private val context: Context) {
         val queryStart = System.currentTimeMillis()
         var firstTokenAt = 0L
         val sanitizer = StreamTextSanitizer()
+        // D-3：跨帧停用词匹配（防 stop 序列被切在 chunk 边界）；匹配在
+        // sanitizer 输出后进行——终止边界 = 用户可见文本边界。
+        val stopMatcher = StopSequenceMatcher(stopSequences)
         val flow = w.generateStreamFlow(
             chatPrompt,
             // 0.10 起签名 = (prompt?, inputIds?, inputEmbd?, inputEmbdDim, config)
@@ -345,31 +361,39 @@ class GenieSession(private val context: Context) {
                     is LlmStreamResult.Token -> {
                         if (abortRequested) return@collect
                         // stopWords 已随 qairt 兼容性移除（见 GenerationConfig
-                        // 注），EOS 停止由管线内置；im_end 若仍漏进文本则截断。
+                        // 注），EOS 停止由管线内置；停用词残留在 sanitizer 输出
+                        // 上经 StopSequenceMatcher 跨帧匹配截断（D-3 参数化，
+                        // 默认 <|im_end|> 对齐既有语义）。
                         val text = result.text
                         if (firstTokenAt == 0L) {
                             firstTokenAt = System.currentTimeMillis()
                             Log.i(TAG, "first token after ${firstTokenAt - queryStart}ms")
                         }
-                        val cut = text.indexOf("<|im_end|>")
-                        if (cut >= 0) {
-                            val head = sanitizer.feed(text.substring(0, cut))
-                            if (head.isNotEmpty()) sink.onChunk(head)
-                            // 零内容早停 = 模型在首个 token 就闭合模板（本轮零产出
-                            // 的直接证据；与「复读到 maxTokens」是两种不同病灶）。
-                            Log.i(TAG, "im_end observed in stream -> stop (headChars=${head.length})")
-                            abortRequested = true
-                        } else {
-                            // 乱码还原 + think 剥离（StreamTextSanitizer doc）
-                            val clean = sanitizer.feed(text)
-                            if (clean.isNotEmpty()) sink.onChunk(clean)
+                        // 乱码还原 + think 剥离（StreamTextSanitizer doc）
+                        val clean = sanitizer.feed(text)
+                        if (clean.isNotEmpty()) {
+                            val m = stopMatcher.feed(clean)
+                            if (m.release.isNotEmpty()) sink.onChunk(m.release)
+                            if (m.stopped) {
+                                // 零内容命中 = 模型在首个 token 就闭合模板（本轮零
+                                // 产出的直接证据；与「复读到 maxTokens」两种病灶）。
+                                Log.i(TAG, "stop sequence observed -> stop (headChars=${m.release.length})")
+                                abortRequested = true
+                            }
                         }
                     }
                     is LlmStreamResult.Completed -> {
                         val p = result.profile
                         if (!abortRequested) {
                             val rest = sanitizer.flush()
-                            if (rest.isNotEmpty()) sink.onChunk(rest)
+                            if (rest.isNotEmpty()) {
+                                val m = stopMatcher.feed(rest)
+                                if (m.release.isNotEmpty()) sink.onChunk(m.release)
+                                if (m.stopped) {
+                                    Log.i(TAG, "stop sequence at stream end -> stop")
+                                    abortRequested = true
+                                }
+                            }
                         }
                         lastGeneratedTokens = p.generatedTokens.toInt()
                         lastProfile = p

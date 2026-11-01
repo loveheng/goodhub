@@ -7,9 +7,9 @@ updated: 2026-10-30
 
 > 状态：active（v2.7 定稿，2026-10-28 开工准入拍板；v2，2026-10-28 依评审修订；叠加 v2.6 工程拍板：Prefix Cache 唯一主路线 / 防 TOCTOU 原子抢占 / 连续分桶 KV / CPU 绑核 / 状态机术语对齐 / 6 深水区盲点补强：OTA 驱动断层·CMA 碎片·Detokenizer 资产·Stop Sequences 下沉·Prefill 分桶·OEM 冻结；v2.7 评审收敛：单 Context 多图打包 / FGS 前台时序 / Prompt 拓扑正规化 / 超长 KV Compaction / 驱动释放冷却 / RingBuffer 写超时）
 >
-> **v3 路线修订（2026-10-28 用户拍板）：推理内核改用 GenieX Android SDK（Genie/llama.cpp 管线）**——本稿中以下自研实现项由 Genie 内置能力取代，相关章节待 SDK 落位实证后同轮细化修订：§2.4/§3.6 Prefix Cache 分桶与 Prefill 编译（Genie 内置 KV 管理/前缀复用）、§3.5/§4.5 资产格式（**GGUF 取代 HTP 专属 context 二进制**，分发简化）、§6.7 停用词下沉（Genie 原生 stop sequences）、§6.4 Detokenizer（Genie 内置流式回调）。
+> **v3 路线修订（2026-10-28 用户拍板）：推理内核改用 GenieX Android SDK（Genie/llama.cpp 管线）**——本稿中以下自研实现项由 Genie 内置能力取代，相关章节待 SDK 落位实证后同轮细化修订：§2.4/§3.6 Prefix Cache 分桶与 Prefill 编译（Genie 内置 KV 管理/前缀复用）、§3.5/§4.5 资产格式（**GGUF 取代 HTP 专属 context 二进制**，分发简化）、§6.7 停用词下沉（Genie 原生 stop sequences）、§6.4 Detokenizer（Genie 内置流式回调）。**【收口 2026-11-01，SDK 落位 P1~P6 实证后同轮细化完成】**：上述章节均已加「落位实证」标注——其中 §2.4/§3.6 自研实现由 Genie 内置取代（不适用）、§3.5/§4.5 分发路线改导入制+增配 AAR、§6.7 下沉路线被 SDK 拒收（ErrorCode -100016）、§6.4 G1 数据面终态；各章节以落位标注为准。
 > **v3.1 数据面修订（2026-10-30 用户拍板，S3-7）**：§6.1 数据面由 **Ashmem RingBuffer + eventfd/pipe 唤醒整体退役，换 UDS socketpair 流式管道**——唤醒（socket 可读事件）、背压（SO_SNDBUF 满 → 写端阻塞，500ms 有界超时判 IPC_DEADLOCK）、崩溃隔离（对端关闭 → EOF → 判活自愈重建）全部由内核语义承载；无共享游标，P2-10/S2-5 游标错位类问题整体消失。成帧协议 = `[4B 大端 payload_len][payload]`，`len==0` = EOS 流终结帧（每代生成收尾前必发，Dart 收空批即本代流终，跨通道顺序凭据），`read()==0`（EOF）= 数据面死亡。以下 §6.1/§6.3/§6.4 中 RingBuffer/游标/唤醒协议表述为历史设计，**现行实现以 S3-7 落地标注为准**：写端 = `SocketTokenWriter`（:engine，Kotlin），读端 = `libgdw.so`（主进程 native）；句柄 = AIDL `getDataSocketFd():ParcelFileDescriptor`（socketpair 读端，detachFd 移交）。**不变章节**：§6.2 LMK/FGS/OEM 防护、§6.5 两级熔断、§6.6 单执行槽/原子抢占、§4.1 三态状态机。
-> **v3.2 路线修订（2026-10-31 用户拍板）：NPU 兜底**——`:engine` 的 `GenieSession.doLoad` 以 `QAIRT+NPU` 为主路，**仅高端 NPU 设备在 QAIRT build 失败（NPU 驱动/HTP 不可用）时回落 `llama_cpp+CPU` 运行时**完成本轮（同份 GGUF 资产 + tokenizer）。**不改「禁 CPU 分流」决策**：§2.1/§5.2「热降频不迁矩阵运算到 CPU」与「Thermal→Cloud SEVERE 全量切云」仍成立（热/OOM 仍收口云端、无 CPU 兜底）；仅「装载期 NPU 不可用（QAIRT build 失败）」的降级链改为「先 CPU 兜底、再切云」。§3.5「不做 CPU 兜底」的总述据此修订（见总纲 v3.2 / decisions.md ADR）。
+> **v3.2 路线修订（2026-10-31 用户拍板）：NPU 兜底**——`:engine` 的 `GenieSession.doLoad` 以 `QAIRT+NPU` 为主路，**仅高端 NPU 设备在 QAIRT build 失败（NPU 驱动/HTP 不可用）时回落 `llama_cpp+GPU` 运行时**完成本轮（同份 GGUF 资产 + tokenizer；2026-11-01 GPU 档真机实证 model_path/tokenizer_path 契约与 39.3~39.6 tok/s，CPU 档已全量退役）。**不改「禁 CPU 分流」决策**：§2.1/§5.2「热降频不迁矩阵运算到 CPU」与「Thermal→Cloud SEVERE 全量切云」仍成立（热/OOM 仍收口云端、无 CPU 兜底）；仅「装载期 NPU 不可用（QAIRT build 失败）」的降级链改为「先 CPU 兜底、再切云」。§3.5「不做 CPU 兜底」的总述据此修订（见总纲 v3.2 / decisions.md ADR）。
 > 关联：`docs/design/on-device-capability.md`（端侧能力总纲）、`context/epics/on-device/`
 > 适用：依 D1，本方案仅针对**高端旗舰**（NPU 可用机型）；中低端收口纯云端。
 > 视角修正：v1 偏"芯片原厂 Reference Design"，v2 改为**移动端第三方 App（含 Flutter/Dart）真机落地**视角，修正指标失真、HAL 权限越界、LMK/分发/FFI 盲点。
@@ -81,7 +81,9 @@ updated: 2026-10-30
 - **CPU（在 `:engine` 内部 C++ 推理循环）**：① **Token Masking**——用 xgrammar / outlines 状态机将不符合 regex/JSON 语法的 token 概率置 `-∞`；② **Temperature 采样**（或 greedy/beam）→ 产出最终 token id 写入 §6.1 环形缓冲。
 - **与 §2.1 的边界**：CPU 此处**只做采样与语法 Mask 的控制流**（tiny 开销），**绝不承接任何 matmul/注意力矩阵运算**；矩阵计算 100% 在 NPU。两者不冲突。
 
-### 2.4 Prefix Cache 实现（KV-Cache 复用，v2.6 确认）
+### 2.4 Prefix Cache 实现（KV-Cache 复用，v2.6 确认；**v3 落位实证 2026-11-01**）
+
+> **落位实证（2026-11-01）**：Genie 管线内置 KV-Cache 管理——自研 ION Buffer 槽位固化/DMA 指针维持不适用（Genie 封装）；前缀复用收益观测已入 bench `short-repeat` 用例（§7.1）。Prompt 拓扑正规化与 `truncateContext` 边界仍有效（后者 Kotlin 侧 no-op：Genie 无部分回滚 API，见 §6.4 S3-6 标注）。
 
 移动端 NPU 物理约束下，**Prefix Cache（固定前缀 KV 缓存）是唯一符合静态图约束的 KV 复用路线**；增量 Prefill 不作为本期基线（标记未来探索项）。
 
@@ -126,7 +128,9 @@ updated: 2026-10-30
 - 固定上下文上限 + 增长式 KV；超长上下文用滑动窗口/稀疏注意力。
 - base 权重常驻，LoRA/adapter 小张量按需挂载。
 
-### 3.5 工具链（v2 修正：联发科改走 NeuroPilot）
+### 3.5 工具链（v2 修正：联发科改走 NeuroPilot；**v3 落位实证 2026-11-01**）
+
+> **落位实证（2026-11-01）**：高通推理内核 = **geniex-android 0.10.0**（Genie/llama.cpp 管线，Maven Central 公开构件，用户拍板 2026-10-28）——自研 QNN 编译链（qnn-context-binary-generator/Matrix Build）退役；**QAIRT 仅 8 Elite 系（v79/v81）作 HTP 加速后端**，v73/v75 走 llama.cpp 档；运行库分发 = 增配 AAR 运行时下载（`on-device-npu-runtime-split.md`）。下表 QNN SDK/QAIRT 行指该 AAR 内捆绑的 QAIRT 运行时，非独立自研工具链。
 
 | 芯片 | 工具链（v2 基线） | 说明 |
 |---|---|---|
@@ -139,9 +143,11 @@ updated: 2026-10-30
 
 > **分发粒度拍板（v2.4）**：确认路线 (a) **每 HTP 版本独立编译产物**——客户端由 `CapabilityProbe` 探测本机 HTP 版本**单选下载对应一份（≈1.8GB）**，用户流量与"兼容单一 graph"方案完全一致；云端仅多存数份静态文件（R2/S3 边际成本可忽略），CI/CD **Matrix Build** 统一产出，维护成本可控。因立项前提是"旗舰最大化压榨 NPU 利用率"，(b) 路线损失 10~20% 性能会跌出产品容忍阈值，故不取。
 
-> 决策取舍：各芯片用**原厂 SDK**（保峰值利用率）；3B~4B 级 LLM **常态不做 CPU 兜底**——**v3.2 NPU 兜底修订后：QAIRT build 失败（NPU 驱动/HTP 不可用）时高端 NPU 设备先回落 `llama_cpp+CPU` 运行时完成本轮，兜底再败才收口云端；热/OOM 仍直接收口云端、无 CPU 兜底**（与总纲 D1/降级链一致，见总纲 v3.2 / decisions.md ADR），LiteRT 仅用于百兆级轻量小模型。Dart 抽象接口之上封装"编译产物 + 加载器"，上层 coordinator 不感知芯片差异（与总纲公共服务化一致）。
+> 决策取舍：各芯片用**原厂 SDK**（保峰值利用率）；3B~4B 级 LLM **常态不做 CPU 兜底**——**v3.2 NPU 兜底修订后：QAIRT build 失败（NPU 驱动/HTP 不可用）时高端 NPU 设备先回落 `llama_cpp+GPU` 运行时完成本轮，兜底再败才收口云端；热/OOM 仍直接收口云端、无 CPU 兜底**（与总纲 D1/降级链一致，见总纲 v3.2 / decisions.md ADR），LiteRT 仅用于百兆级轻量小模型。Dart 抽象接口之上封装"编译产物 + 加载器"，上层 coordinator 不感知芯片差异（与总纲公共服务化一致）。
 
-### 3.6 Prefill 分桶编译（v2.6 新增）
+### 3.6 Prefill 分桶编译（v2.6 新增；**v3 落位实证 2026-11-01：整章自研设计不适用**）
+
+> **落位实证（2026-11-01，SDK 落位后同轮细化）**：Genie 管线内置动态 batch/KV 管理——自研分桶编译、单 Context 多图打包、`SoC × HTP_ver × Bucket` Matrix Build 整章**不适用**（Genie 封装形状管理，资产即 GGUF/QAIRT bundle）。本章保留为 v2 时代 QNN 自研路线历史设计；现行资产/分发口径见 §3.5 落位标注与 `on-device-npu-runtime-split.md`。
 
 §2.4 已确立"Prefix Cache 固化高频前缀"，但**用户每次输入的动态 Prompt 长度不可控**（10~500 tokens），而 NPU 无法执行动态形状的矩阵乘。若将最大上下文（如 2048）作为唯一编译形状，无论输入多短都 Padding 到满长 Prefill，短问答会产生数十倍无效算力，TTFT 从 ~150ms 被拉长到 2s+。
 
@@ -200,7 +206,9 @@ updated: 2026-10-30
 
 定期 roofline（算术强度 vs 可达 GFLOPS）：decode 落带宽受限区 → 优化方向是 INT4/减搬运；prefill 落算力区 → 优化方向是融合/提 MAC 利用率。
 
-### 4.5 动态分发与冷启动缓存（v2 新增）
+### 4.5 动态分发与冷启动缓存（v2 新增；**v3 落位实证 2026-11-01**）
+
+> **落位实证（2026-11-01）**：模型资产分发路线已改——**2026-10-31 多模型导入制拍板，OTA 分片下发退役**：本地导入（File Picker + 结构校验 + 分片合并，`OnDeviceAssetManager`）为主通道；**运行库（.so）分发改增配 AAR**（Maven 双源 + 断点续传，见 `on-device-npu-runtime-split.md`，与本章「.so 须内置 APK jniLibs」旧表述一并作废）。Tokenizer 版本对齐约束仍有效（QAIRT bundle 须 genie_config+tokenizer 同源同版）。
 
 端侧大模型最痛的资产链，v1 完全缺失，此处补全：
 
@@ -336,7 +344,7 @@ Dart/Flutter **无法直接从 eventfd `read`**，须由主进程 Native 胶水�
 - **S3-7 落地标注（2026-10-30，UDS 化定案；同日评审五点修订 + TLV 协议定型收口）**：消费闭环换 UDS 读循环——native worker epoll 监听数据面 socket 读端（可读事件即唤醒，40ms 兜底节拍退役）+ `[2B 魔数 0x5A 0xA5][2B 帧类型][4B BE len][payload]` TLV 魔数校验帧重组（魔数不匹配/帧长 >1MB 判协议腐化 → worker 终态退出自愈重建；未知类型 skip + 计数日志，前向兼容）+ **首帧直通/微批聚合**（TOKEN 帧聚合，≥4KB 或可读沿收口即投，高吞吐段 N 次 `Dart_PostCObject_DL` 压 1 次，防 Dart 事件循环被高频小事件冲垮丢帧；投递形状 kArray `[Int32 type, Uint8List payload]`）；`read()==0`（EOF）= `:engine` 数据面死亡 → **投 Dart kNull 信号**即刻 failAllActive 后 worker 退出 → `isAlive` 判活自愈重建。IPC 死锁自救链换轨：socket 写超时（3s 有界，512KB 缓冲池吸收瞬时卡顿）→ sink 就地 `session.abort()` + `dp.close()`（EOF 通知对端）→ AIDL `onIpcDeadlock`（oneway）→ Dart `EngineDiedException` 切云（不计熔断，仅 500ms 冷却）。JVM 单测：`SocketTokenWriterTest`（TLV 成帧/EOS/部分写/写超时）。
 - **端侧流无进展看门狗（2026-10-30 收口）**：端侧流此前**无任何超时兜底**——`:engine` 收尾事件（`onGenerateFinished`）一旦丢失/迟到，活跃流永挂 → 混合引擎的端侧单发聚合 await-for 永挂 → **本轮问答零响应**（真机实证「第二轮没有任何响应」）。判据取「字节活体」：生成期字节每 ~40ms 一批（§6.1 微批），连续 30s（对齐云端首 token 口径）无字节即判数据面失联 → 以 `EngineDiedException` 收口 → 混合引擎无缝切云（产出优先，**绝不静默挂死**）。切云沿的云端流同样复用 `_cloudSend` 的自适应看门狗（禁裸 `c.send()`）。
 - **核心亲和度绑定（CPU Affinity）**：`:engine` 推理循环、Grammar Masking 以及主进程的 eventfd Worker 线程，必须通过 `sched_setaffinity` 强制绑定至性能核心（Performance Cores），严禁运行于效率小核（Efficiency Cores），消除因内核调度颠簸造成的 JNI/IPC 与采样延迟毛刺。
-- **轻量 Detokenizer（v2.6 补强）**：主进程 `utf8.decoder` 重组前需 `id → raw bytes` 映射。仅载入 `tokenizer.json` 导出的**只读紧凑 ID-to-Byte 表**（mmap 只读，避免 RSS 尖峰），**禁止引入全功能 BPE 分词框架**（30~60MB，且客户端无需 encode）；该表由 §4.5 OTA 包随 `model.bin` 同源下发并版本对齐。停用词/终止判定不在此做（见 §6.7）。
+- **轻量 Detokenizer（v2.6 补强；**G1 终态 2026-10-31**）**：主进程 `utf8.decoder` 重组前需 `id → raw bytes` 映射。仅载入 `tokenizer.json` 导出的**只读紧凑 ID-to-Byte 表**（mmap 只读，避免 RSS 尖峰），**禁止引入全功能 BPE 分词框架**（30~60MB，且客户端无需 encode）；该表由 §4.5 OTA 包随 `model.bin` 同源下发并版本对齐。停用词/终止判定不在此做（见 §6.7）。**G1 数据面终态（用户拍板 2026-10-31）**：Genie 管线载荷即文本块（SDK 文本回调），现行 = `StreamTextSanitizer` + Dart identity 直通——token-id 直取/C API 直绑/Latin-1 还原三路均不可达，本方案为 SDK 能力边界内的合法方案而非治标补丁；唯一后续通道 = geniex-android 上游 issue（detokenize 单字节解码拆散 UTF-8）。
 
 ### 6.5 进程守护与熔断（Circuit Breaker，v2.3 新增）
 
@@ -368,7 +376,9 @@ Dart/Flutter **无法直接从 eventfd `read`**，须由主进程 Native 胶水�
 - **与 cancel 联动**：`cancel(requestId)` / 抢占中断均经 atomic `stop_requested` 下沉（§6.3），中断完成方可接纳下一请求。
 - **原子抢占与防 TOCTOU 约束**：上层 `HybridCloudEngine` 严禁采用「先 `checkStatus()` 后 `generate()`」的非原子调用模式。`checkStatus()` 返回的 `busy` 仅作为瞬时监控展示，严禁建立 TTL 缓存；一切推理任务直接调用 `generate()`，由 `:engine` 进程内部的互斥锁进行原子判定。冲突时由 Native 层原子抛出 `ServiceBusyException`，上层捕获该异常瞬间切云，杜绝并发竞争缝隙（与总纲 §2 v2.6 调度纪律一致）。
 
-### 6.7 生成终止条件下沉（Stop Sequences，v2.6 新增）
+### 6.7 生成终止条件下沉（Stop Sequences，v2.6 新增；**v3 落位实证 2026-11-01：下沉路线被 SDK 拒收**）
+
+> **落位实证（2026-10-30 真机 / 2026-11-01 收录）**：qairt 插件**拒收** `--stop` / `--stop-file` 参数（geniex ErrorCode -100016 直接拒绝整个 LlmCreate）——「终止条件全下沉/stop_token_sequences」设计**不可行**。现行实现：`:engine` GenieSession 流回调内文本级 `<|im_end|>` 截断 + 主进程 `StreamTextSanitizer` 兜底；多 token 停用词待 geniex-android 上游支持（与 G1 同通道）。本章保留为 v2 时代设计历史。
 
 **盲点**：对话模型除单 token EOS（如 `<|im_end|>`）外，还依赖多 token 组成的自定义停用词（如 `\nUser:`、`\nAssistant:`）。若停用词匹配放主进程做，Ashmem 按 40ms 微批排空，主进程识别并下发 `cancel` 时 NPU 已在片上超前生成 2~4 个无意义 Token，UI 停止后闪现半句假话、破坏下一轮 Prompt 对齐。
 
@@ -385,6 +395,18 @@ Dart/Flutter **无法直接从 eventfd `read`**，须由主进程 Native 胶水�
 - 真实负载：会话 trace、摘要/提取标准集、常驻检测周期任务。
 - 压力：长上下文 + 持续生成（验热稳态）、多会话并发（验连续分桶 KV 与常驻共享）、**后台切回（验 LMK 状态机与冷重载）**、**首跑分发（验 §4.5 下载/校验/编译）**、**并发 `generate` 互斥（验 §6.6 原子抢占不 Panic，不维护堆积队列）**、**Crash 重启风暴熔断（验 §6.5 5min≥2 次休眠）**、**模型热更新原子替换（验 §4.6 不 SIGBUS）**。
 - **深水区盲点验收（v2.6 新增）**：① OTA 驱动断层自愈（模拟 DSP 驱动升级后旧 `.bin` 加载报 `INCOMPATIBLE_BINARY`，验 §4.8 脏删+重拉+不计入熔断）；② CMA 碎片（长开机后试分配 1.8GB ION，验 §4.9 探针失败降级云端）；③ Detokenizer 资产（验 §4.5 Zip 含 `tokenizer.json` 且主进程 mmap 只读 ID-to-Byte 表、不引入全功能框架）；④ Stop Sequences 下沉（验 §6.7 多 token 停用词在 `:engine` 内即时阻断、无在途冗余 Token）；⑤ Prefill 分桶（验 §3.6 短问答对齐 128 桶、TTFT 不退化到 2s+）；⑥ OEM 冻结（模拟后台长生成，验 §6.2 前台服务+降档不被 SIGKILL、被 SIGKILL 走 `EngineDiedException` 不计入熔断）；⑦ FGS 前台时序（Android 12/14 真机验 §6.2：前台预挂 `dataSync` 通知，退后台瞬切不抛 `ForegroundServiceStartNotAllowedException`）；⑧ Crash 后重拉冷却（验 §6.5 500ms 冷却窗口内阻断暖机、不撞 FastRPC 僵尸通道）。
+
+### 7.1.1 实测基准快照（2026-11-01，S2-5 真机回填）
+
+> **口径标注（防误读）**：单机（S2-5 = 一加 Ace 6，SM8750/HTP v79）单轮多测汇总，历次 bench 会话热态波动区间内取值（decode 17.6~20.5 全区间见 epic devlog）；**非合同指标**，合同口径仍以 §1.2 分层指标为准。bench 口径 = `short~256ctx` / `long~2Kctx` / `short-repeat`（前缀复用观测）三用例 ×128 tokens。
+
+| 档位 | 模型 | decode | TTFT short | TTFT long 2K | 备注 |
+|---|---|---|---|---|---|
+| **QAIRT+NPU**（主路） | qwen3-4b W4A16 QAIRT bundle（3GB） | 17.6~20.5 tok/s | 196~229ms | 1205~1338ms | §1.2 2K≤5s **达标**；装载 model ready ~8-9s |
+| **llama_cpp+GPU**（兜底档） | qwen3.5-2b Q4_0 GGUF（1.2GB） | 37.5~39.6 tok/s | 739~961ms | ~6619ms | 2K TTFT 超 §1.2 5s 档——兜底档长上下文 Prefill 为 NPU 档 ~5×（§3.5 落位实证口径） |
+| short-repeat（前缀复用观测） | 同 QAIRT 主路 | 18.0~20.5 tok/s | 196~217ms | — | 与首案基本一致，**前缀复用收益未显著观测**（S2-3 遗留观测项仍开） |
+
+装载链实测（增配 AAR 89MB）：全量下载 ~102s；**断点续传 ~34s**（弱网演练，partial 保留跨触发）；解压+指纹 marker 秒级；双断网周期演练三次触发完成（P3/P4）。
 
 ### 7.2 指标采集
 

@@ -117,6 +117,22 @@ epic: on-device
 
 > 注：G2 三项代码已落地（实现落点实为 `EngineService.kt` + `engine_tombstone.cpp` + `on_device_death_cause.dart`，与原清单落点描述略有偏差）。残存验收余项（非阻塞）：① `.stack` 读墓碑后未清理，PID 复用时可能误判 `hardCrash`；② 真机 `am kill`/LMK 场景 100% 裁定收敛未回归。
 
+## 多栈框架构型子步骤（2026-11-01 四裁决落盘·代码未落地）
+
+> 来源：decisions.md 同日 ADR「LiteRT-LM 内置底座 + GenieX 增配选装」四裁决（D-1~D-4）+ 联发科通道升格。开工前按 solution-admission 单项放行。
+
+- [x] [2026-11-01] (功能) (重:重) (层:跨端) **D-3 AIDL 停用词契约重写**：`stopTokenIds: intArray` → `stopSequences: List<String>` 字符串下发，编码判定下沉各 Runner Native 自治（自绑 tokenizer 实时 match）；须覆盖 Genie 拒收现状（ErrorCode -100016，`GenieSession` 文本截断+sanitize 兜底不回归）；施工同轮修 goodshare `ai-dev-spec.md` §4（立法源） (src: 用户拍板 2026-11-01)
+> 已落地（devlog 同日）：AIDL 注释/`GenerationParams`（Bundle stringArrayList + fromArgs）/`EngineService` 传参贯通；新增 `engine/StopSequenceMatcher`（跨帧滑动窗口匹配，默认 `<|im_end|>` 保持现行为，匹配在 sanitizer 输出后 = 用户可见边界；Kotlin 单测 6 例）；`GenieSession.query` 加 `stopSequences` 参、硬编码 im_end 截断退役；Dart `GenerationConfig` 字段 `stopSequences: List<String>`（预编码 id 字段双端同轮退役）；goodshare `ai-dev-spec.md` §4 新增「端侧推理接缝」条款。验证：`:app:compileDebugKotlin` + Kotlin 单测 11 绿；flutter analyze 0 issue + test/llm 200 全绿。关联 P1-8 的停用词失效面随本项收口（采样参数面 P1-8 仍开）。
+- [ ] [2026-11-01] (功能) (重:中) **QAIRT 运行库单源化**：GenieX 增配（GenieXRuntime 4 件套）与 LiteRT-LM QNN dispatch 共享一份 `libQnnHtp*` runtime 依赖，统一 `nativeLibraryDir`/`setQairtRuntimePath` 指向，防双份捆绑符号冲突 (src: 用户拍板 2026-11-01)
+- [ ] [2026-11-01] (功能) (重:重) (层:真机) **LiteRT-LM GPU/NPU 基准探针（D-4 能力对照）**：同口径真机基准（TTFT/TPOT/内存/发热），对照 llama_cpp+GPU 39 tok/s 基线；**llama.cpp 永久保留不删除**（2026-11-01 用户修订），基准数据仅归档作能力对照，不触发分支删除 (src: 用户拍板 2026-11-01)
+- [x] [2026-11-01] (功能) (重:重) **首发节奏关闸（llama.cpp 先不放出，从 LiteRT-LM 起步）**：llama.cpp 通路代码保留但用户面不暴露——GGUF 导入入口、分发推荐、设置面关闸（feature flag/编译保留，代码与已实证能力不删）；首发资产路线 = 仅 `.litertlm` 族（LiteRT-LM 栈）；重评触发 = LiteRT-LM 首发稳定 + GGUF 资产链就绪，届时新 ADR 立项放开 (src: 用户拍板 2026-11-01)
+> 已落地（devlog 同日）：编译期开关 `kOnDeviceLlamaCppEnabled`（`ON_DEVICE_LLAMACPP` 默认 false）+ 三闸（导入 UI 拒收 GGUF 直选 / `_select` 拒选 llama_cpp 模型 / `enable()` 装载闸兜底非 retryable 终态报错）；analyze 0 issue + test/llm 200 全绿。
+- [x] [2026-11-01] (功能) (重:中) **资产路由 backend 维度（D-1 落地）**：`asset-meta`/分发推荐层加资产族（gguf/litertlm）→ 栈映射；`.litertlm` 按 SoC 分发（官方 NPU 目录现仅 Gemma3-1B，SM8550/8650/8750 + MT6989/6991，ctx 1280）；**首发仅接 `.litertlm` 分支**（GGUF 分支在码未启用） (src: 用户拍板 2026-11-01)
+> 已落地（devlog 同日）：`OnDeviceAssetFamily`（geniex/litertlm/unknown + `familyOf` 单源映射）+ `OnDeviceRuntime.litertlm` + meta `family` 字段 + 结构校验 `.litertlm` 识别 + `kOnDeviceLiteRtLmEnabled` 装载闸（Runner 未集成 fail-fast）+ UI 徽标；test/llm 202 全绿。**SoC 分发键未实现**——导入制下无在线分发面，键=`ro.soc.model` 待分发面立项时接线（官方 NPU 资产按 SoC 精确分发，跨 SoC 不互通同 GGUF ctx-bin）。后续主体 = LiteRT-LM Runner 集成（独立工程，落地时翻 `kOnDeviceLiteRtLmEnabled`）。
+> 联发科（2026-11-01 用户修订）：**接口留位，现阶段不支持**——Runner 注册表预留 NeuroPilot 扩展位，不实现、不排期真机实证；重评触发 = `.litertlm` NPU 资产目录扩展（出 3B 级/多模型）或天玑旗舰真机到位，届时回 decisions.md ADR 立项（路线 = LiteRT-LM + NeuroPilot Delegate，免 GenAI Toolkit 企业 NDA）。
+
+- [ ] [2026-11-01] (功能) (重:重) **LiteRT-LM Runner 集成（多栈主体工程，独立会话开工）**：① `:engine` 内新增 LiteRT-LM Runner（litertlm-android 0.16.0 钉版数据已在 geniex-0.10.0-pins.txt 备查；`ModelRunner` 执行契约 = 装载/生成流/release + getHardwareType）② 装载链：资产族路由进 doLoad——family=litertlm → LiteRT-LM Runner（翻 `kOnDeviceLiteRtLmEnabled`），geniex 系走既有 GenieSession ③ 停用词：Runner 自治匹配（复用 `StopSequenceMatcher`，D-3 契约）④ QAIRT 运行库单源化随本轮（GenieX 4 件套与 LiteRT-LM QNN dispatch 共享一份 `libQnnHtp*`，统一 `nativeLibraryDir`/`setQairtRuntimePath`）⑤ 基准探针：LiteRT-LM GPU/NPU 同口径真机基准（TTFT/TPOT/内存/发热，对照 llama_cpp+GPU 39 tok/s，仅归档不触发删除）⑥ 真机 = Ace 6（SM8750，.litertlm NPU 支持表在列）；验收 = 装载→生成→停用词命中→降级链全绿 + 关闸面回归。前置阅读：decisions.md 2026-11-01 多栈 ADR + capability v3.3 + 本节已落地三项（关闸/D-3/资产族） (src: 用户拍板 2026-11-01)
+
 ## 待裁决（需产品/架构拍板优先级）
 
 - [ ] A1 端侧模型管理链复活拍板（archive/local_model 已归档零接线，需翻转裁决）
@@ -132,3 +148,8 @@ epic: on-device
 - [x] 超大 Tool Result 硬截断（D-I `kToolResultHardCap=2000t`）
 - [x] Loop Storm 环路防护（`hop_count≤2` 熔断）
 - [x] N7 正则四类 PII + 无人值守 fail-closed
+
+## 挂起（外部依赖，机制已就绪）
+
+- [ ] (外部依赖: 高通 Maven 发版) 增配包换版实战 0.10.0→N：checklist 四步见 `docs/design/on-device-npu-runtime-split.md` §8 P4 行（VERSION/PINS 重生成 → 插件 API 面复查 → REINSTALL 换版演练 → bench 对照）
+- [ ] (外部依赖: 真机到位) 多机型增配覆盖 v73/v75/v81：installSet 三档映射已走查确认，缺各档真机实证（v73/v75 仅核心档 llama.cpp GPU、v81 QAIRT 集）

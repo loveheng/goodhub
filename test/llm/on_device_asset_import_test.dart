@@ -81,5 +81,28 @@ void main() {
         jsonDecode(await File('${dir!.path}/.asset-meta.json').readAsString())
             as Map<String, dynamic>;
     expect(meta['runtime'], OnDeviceRuntime.llamaCpp);
+    expect(meta['family'], OnDeviceAssetFamily.geniex); // D-1 族映射单源
+  });
+
+  test('.litertlm 资产 → 收（runtime=litertlm，family=litertlm）', () async {
+    final f = await sparseFile(tmp, 'gemma3-1b.litertlm', 1024 * 1024);
+    final dir = await mgr.importFromPickedFiles([f.path], target: target);
+    expect(dir, isNotNull);
+    final meta =
+        jsonDecode(await File('${dir!.path}/.asset-meta.json').readAsString())
+            as Map<String, dynamic>;
+    expect(meta['runtime'], OnDeviceRuntime.litertlm);
+    expect(meta['family'], OnDeviceAssetFamily.litertlm); // 首发 .litertlm 族
+  });
+
+  test('familyOf 单源映射钉（runtime → 资产族，D-1 双段路由）', () {
+    expect(OnDeviceAssetFamily.familyOf(OnDeviceRuntime.qairt),
+        OnDeviceAssetFamily.geniex);
+    expect(OnDeviceAssetFamily.familyOf(OnDeviceRuntime.llamaCpp),
+        OnDeviceAssetFamily.geniex);
+    expect(OnDeviceAssetFamily.familyOf(OnDeviceRuntime.litertlm),
+        OnDeviceAssetFamily.litertlm);
+    expect(OnDeviceAssetFamily.familyOf(OnDeviceRuntime.auto),
+        OnDeviceAssetFamily.unknown);
   });
 }

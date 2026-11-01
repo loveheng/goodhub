@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-30
+updated: 2026-11-01
 ---
 
 # on-device-capability · 端侧能力公共服务设计
@@ -9,12 +9,14 @@ updated: 2026-10-30
 >
 > **v3 路线修订（2026-10-28 用户拍板）：推理内核采用高通 GenieX Android SDK**——`:engine` 进程内部的 Tokenizer/KV-Cache/采样/Decode 循环/停用词下沉/流式回调由 Genie 内置管线承担，替换「手写 QNN C API 推理内核」计划；**外围防护架构全部不变**（`:engine` 独立进程隔离、AIDL 控制面 + Ashmem 数据面、两级熔断、三态状态机、磁盘门禁、切云降级）。资产格式改 GGUF（不再绑定 HTP 专属 context 二进制）。获取 = Qualcomm AI Hub `qai-hub download-model-assets`（免企业授权，免费 Qualcomm ID）。受影响章节细化修订待 SDK 落位实证后同轮回写。
 >
-> **v3.2 路线修订（2026-10-31 用户拍板）：NPU 兜底**——`:engine` 的 `GenieSession.doLoad` 以 `QAIRT+NPU` 为主路，**仅高端 NPU 设备在 QAIRT build 失败（NPU 驱动/HTP 不可用）时回落 `llama_cpp+CPU` 运行时**完成本轮（同份 GGUF 资产 + tokenizer，两插件 AAR 均捆绑）；**热/OOM 不触发兜底**，仍经既有决策收口云端（遵「禁 CPU 分流」/「OOM CPU 反向」）；D1a 设备分档不变（中低端仍直收纯云端），仅推翻 D1「无 CPU 兜底」条款；Dart 路由层 / AIDL 不变（运行时无关）。详见 `context/epics/on-device/decisions.md` ADR。
+> **v3.3 构型修订（2026-11-01 用户拍板）：多栈推理框架 = LiteRT-LM 内置底座 + GenieX 增配选装**——四裁决见 `context/epics/on-device/decisions.md` 同日 ADR：**D-1 双段路由**（资产分发期按资产族定栈：GGUF→GenieX 系、.litertlm→LiteRT-LM 系；运行期仅同栈内降级，**禁跨栈横跳**）；**D-2 D1 设备分档维持**（中低端纯云端不因底座解禁）；**D-3 停用词契约重构**（AIDL 改传 `stopSequences: List<String>`，编码下沉各 Runner Native 自治；施工须同轮修 goodshare `ai-dev-spec` §4）；**D-4 GPU 档双轨并存**（2026-11-01 用户修订：**llama.cpp 永久保留不删除**，不设退役条件、无 PATCH——llama.cpp 承载 GGUF 通用通路与已实证基线，LiteRT-LM 承载 .litertlm 标准化通路，LiteRT-LM GPU 真机基准仅作能力对照归档）。**联发科接口留位**（2026-11-01 用户修订：现阶段不支持）——路线认定 = LiteRT-LM + NeuroPilot Delegate 打 APU（联发科×Google 官方合作，免 GenAI Toolkit 企业 NDA），但 Runner 注册表仅预留 NeuroPilot 扩展位，不实现、不排期实证；重评触发 = `.litertlm` NPU 资产目录扩展或天玑真机到位。**首发节奏**（2026-11-01 用户修订：**llama.cpp 先不放出，从 LiteRT-LM 起步**）——D-4 的「永久保留」指代码保留不删，不指用户面放开：llama.cpp 通路（GGUF 导入/GPU 兜底档）首发关闸不暴露（GGUF 导入入口、分发推荐、设置面均不开放，feature flag/编译保留），首发资产路线 = **仅 `.litertlm` 族（LiteRT-LM 栈）**，双段路由 GGUF 分支为「在码未启用」；重评触发 = LiteRT-LM 首发稳定 + GGUF 资产链就绪，按新 ADR 立项放开。QAIRT 运行库**单源化**（一份 runtime 依赖两栈共用，防 `libQnnHtp*` 符号冲突）。
+
+> **v3.2 路线修订（2026-10-31 用户拍板）：NPU 兜底**——`:engine` 的 `GenieSession.doLoad` 以 `QAIRT+NPU` 为主路，**仅高端 NPU 设备在 QAIRT build 失败（NPU 驱动/HTP 不可用）时回落 `llama_cpp+GPU` 运行时**完成本轮（同份 GGUF 资产 + tokenizer，两插件 AAR 均捆绑；2026-10-31 CPU 档全量退役改 GPU 档，2026-11-01 GPU 契约真机实证）；**热/OOM 不触发兜底**，仍经既有决策收口云端（遵「禁 CPU 分流」/「OOM CPU 反向」）；D1a 设备分档不变（中低端仍直收纯云端），仅推翻 D1「无 CPU 兜底」条款；Dart 路由层 / AIDL 不变（运行时无关）。详见 `context/epics/on-device/decisions.md` ADR。
 
 ## 0. 需求与范围
 
 - **公共服务化**：端侧推理引擎从「聊天页私有内部 widget」升格为 App 级能力内核，经**纯 Dart 抽象接口**暴露，由 coordinator 装配注入，不限于 UI 私有调用。
-- **芯片平台分发**（安卓，v2 修正）：Qualcomm → **QNN / QAIRT（HTP）**；MediaTek → **MediaTek NeuroPilot（Neuron Runtime）**。NNAPI 已废弃、Google AICore 仅 Pixel/限定合作机型系统级开放、不对国内 OEM 第三方 App 提供加载任意大模型能力，故联发科基线为 NeuroPilot 而非 LiteRT/AICore。
+- **芯片平台分发**（安卓，v2 修正；v3.3 修订）：Qualcomm → **QNN / QAIRT（HTP）**；MediaTek → **接口留位，现阶段不支持**（路线认定 = LiteRT-LM + NeuroPilot Delegate 打 APU，联发科×Google 官方合作、免 GenAI Toolkit 企业 NDA；Runner 注册表预留 NeuroPilot 扩展位，不实现不排期，重评触发 = `.litertlm` NPU 资产目录扩展或天玑真机到位）。NNAPI 已废弃、Google AICore 仅 Pixel/限定合作机型系统级开放、不对国内 OEM 第三方 App 提供加载任意大模型能力。
 - **设备分层（产品决策 D1）**：**中低端设备明确不支持端侧能力**，直接收口为纯云端——不在该类设备启用端侧推理/摘要/提取；即便 LiteRT-CPU 可跑，亦不作为受支持能力对外暴露。仅高端旗舰（**QNN / NeuroPilot 可用**，即高通=QNN、联发科=NeuroPilot）启用端侧加速。
 - **分期（P1 分阶段交付）**：
   - **P1-A（首发验证基线 · 高通 QNN）**：骁龙 8 Gen3/8 Elite 旗舰 + QNN（工具链完全开放，可打包进 APK/AAR）+ **独立进程 `:engine`** + 云端降级，率先拉通 Dart 接口与引擎全链路闭环。
@@ -74,16 +76,16 @@ updated: 2026-10-30
   class GenerationConfig {
     final int maxTokens;          // 生成长度上限截断
     final double temperature; final double topP;
-    final Set<int> stopTokenIds;             // 预编码 token id（含 EOS，§6.7）
-    final List<List<int>> stopTokenSequences; // 多 token 停用词，预编码 id 序列（§6.7）
-    // 约束：停用词不接受原始字符串——客户端无全功能 BPE encoder，
-    // 字符串→id 编码由共享 tokenizer/服务端在 Prompt 编排层完成后传入。
+    final List<String> stopSequences;  // 停用词字符串序列（D-3 契约，2026-11-01）：
+    // 编码判定下沉各 Runner Native 自治（自绑 tokenizer 实时 match）——预编码 id
+    // 跨后端词表不互通（GGUF BPE vs .litertlm SentencePiece），旧 stopTokenIds
+    // 契约已退役。GenieX Runner 落点 = :engine 文本流跨帧匹配（SDK 拒收 stop
+    // sequences，ErrorCode -100016；StopSequenceMatcher，默认 <|im_end|>）。
     const GenerationConfig({
       this.maxTokens = 512,
       this.temperature = 0.7,
       this.topP = 0.9,
-      this.stopTokenIds = const {},
-      this.stopTokenSequences = const [],
+      this.stopSequences = const [],
     });
   }
   ```
@@ -103,10 +105,10 @@ updated: 2026-10-30
 
 ## 3. 芯片分发与模型分发
 
-- **模型产物按芯片 + HTP 架构版本分（均为 3B~4B 级 LLM）**：高通 QNN 优化包须**按 HTP 架构版本精确到 SoC**（8 Gen2=HTP v73、8 Gen3=HTP v75、8 Elite=HTP v79；**跨版本 context 二进制互不兼容**，针对 v75 编译的产物无法在 v73/v79 加载，见 NPU 稿 §3.5/§4.5）；联发科 Neuron 编译产物按天玑具体型号（9300/9400）下发；二者均**不随包**，按本机 SoC/HTP 版本动态下发。**LiteRT `.tflite` 仅作为百兆级轻量小模型（意图分类/PII 提取）产物，不承载 3B~4B LLM**。Google 系统模型（Gemini Nano / AICore）因不对第三方开放，不纳入本方案资产链。
+- **模型产物按芯片 + HTP 架构版本分（均为 3B~4B 级 LLM）**：高通 QNN 优化包须**按 HTP 架构版本精确到 SoC**（8 Gen2=HTP v73、8 Gen3=HTP v75、8 Elite=HTP v79；**跨版本 context 二进制互不兼容**，针对 v75 编译的产物无法在 v73/v79 加载，见 NPU 稿 §3.5/§4.5）；联发科**现阶段不支持**（v3.3 修订：接口留位）——届时路线 = **LiteRT-LM + NeuroPilot Delegate** 下发 `.litertlm` 资产（按天玑 SoC 分发：MT6989=9300 / MT6991=9400 已入官方 NPU 支持表），原生 Neuron 编译产物不作基线；二者均**不随包**，按本机 SoC/HTP 版本动态下发。**LiteRT `.tflite` 仅作为百兆级轻量小模型（意图分类/PII 提取）产物，不承载 3B~4B LLM**。Google 系统模型（Gemini Nano / AICore）因不对第三方开放，不纳入本方案资产链。
 - **原生驱动库内置 `jniLibs`（v2.5 新增）**：`libQnn*.so` / Neuron 运行时 `.so` 必须随 APK/AAR 的 `jniLibs` 发布（单架构 ~30MB），**不**经 OTA 下发——规避 Android W^X / `dlopen` 限制（详见 NPU 稿 §4.7）；OTA 仅分发模型 `.bin` 静态数据资产。
 - **分发策略**：APK **不内嵌**大模型（体积/合规，Google Play AAB ≤200MB、国内商店禁数 GB 包）；经既有自更新 / 资源中心通道**按需分片下载 + 校验 + 签名 + 本地解密**（对齐 `self-update.md` 的 sha256 + R2 源），按探测到的后端/SoC 选对应产物。
-- **设备分档与降级链**：先按 RAM / SoC 档位分档——**中低端档直接标记 `engineUnavailable`，收口纯云端（D1，不尝试 LiteRT-CPU）**；高端档按芯片走 `QNN-HTP(高通)` 或 `Neuron NPU(联发科)` 加速；**NPU 降级链（v3.2 NPU 兜底）：QAIRT build 失败（NPU 驱动/HTP 不可用）时，高端 NPU 设备先回落 `llama_cpp+CPU` 运行时完成本轮，兜底再败才收口 `HybridCloudEngine` 纯云端；热（≥SEVERE）/OOM 不触发 CPU 兜底，仍直接收口纯云端**（遵「禁 CPU 分流」；D1a 设备分档不变，LiteRT-CPU 仍不对外暴露）。既有 `HybridCloudEngine` 降级判据不变。
+- **双段路由与降级链（v3.3 定型）**：路由拆两段——**资产路由（静态/下载面）**：按机型与资产族定栈，GGUF→GenieX 系、`.litertlm`→LiteRT-LM 系，二选一下载，跨栈推荐只发生在此层；**运行时降级链（同栈内闭环）**：GGUF 族 `QAIRT(NPU) → llama_cpp+GPU → 云端 [DEGRADE]`、`.litertlm` 族 `LiteRT-LM(NPU) → LiteRT-LM(GPU) → 云端 [DEGRADE]`；**禁运行期跨栈横跳**（资产内存镜像不互通，切栈=1.5~2GB 卸载+冷装载，单请求内不可达）。热/OOM 不触发兜底，直接收口 `HybridCloudEngine` 纯云端（遵「禁 CPU 分流」，CPU 全程出局；D-4 修订：llama.cpp 永久保留，双栈长期并存无退役条件）。既有 `HybridCloudEngine` 降级判据不变。
 
 ## 4. 分期
 

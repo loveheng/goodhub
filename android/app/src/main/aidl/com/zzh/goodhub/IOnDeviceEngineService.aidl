@@ -40,13 +40,16 @@ interface IOnDeviceEngineService {
     // 承载；旧「单发压平 + 文字标注」因复读环退役）。generationParams 承载
     // GenerationConfig（总纲 §2）：
     // maxTokens(int) / temperature(double) / topP(double) /
-    // stopTokenIds(int[]) / stopTokenSequences(int[][]，Serializable)——
-    // 停用词一律预编码 id（§6.7，禁字符串级匹配）。
+    // stopSequences(List<String>)——停用词字符串序列下发，编码判定下沉各
+    // Runner Native 自治（D-3 契约重构 2026-11-01，decisions.md ADR；预编码
+    // id 跨后端词表不互通已退役）。GenieX Runner = :engine 文本流跨帧匹配
+    // （SDK 拒收 stop sequences，ErrorCode -100016，deployment §6.7）。
     // 契约细化（F3 2026-10-31）：promptJson 超内联上限（kPromptInlineBinderLimitChars）
     // 时 Dart 侧落临时文件、generationParams 携 promptFilePath 短元数据，:engine
     // 读后即删（Binder 只传短元数据，§8 载荷上限立法）。maxTokens 经
     // GenieDialog_setMaxNumTokens 逐请求生效；temperature/topP 已接线（2026-10-30
-    // 复读环修复采样接线）；stopTokenIds 预编码 id 直传。
+    // 复读环修复采样接线）；stopSequences 经 StopSequenceMatcher 文本流匹配
+    // （GenieSession，D-3 参数化）。
     // 契约细化（M3 Atomic，on-device-lifecycle-single-source.md §2.2/§2.3）：
     // expectInstanceId/expectSeq = 主进程最近见证票据的 epoch 复合键
     //（instanceId UUID + 实例内代次 seq）——:engine 在**同一入口内原子比对**

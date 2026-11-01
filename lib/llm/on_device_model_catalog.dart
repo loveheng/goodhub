@@ -20,15 +20,63 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// 运行时标识（`doLoad` 据此选主路，decisions.md ADR④）。
 /// - [qairt]：HTP/NPU 专属 bundle（genie_config.json + tokenizer.json + metadata.json）
 /// - [llamaCpp]：通用 GGUF（GPU 档，llama.cpp 运行时；CPU 兜底已于 2026-10-31 全量退役）
+/// - [litertlm]：`.litertlm` 标准化资产（LiteRT-LM 运行时，D-1 双段路由 2026-11-01）
 /// - [auto]：未标注 / 混合 → doLoad 按资产布局自适应（genie_config 在场走 qairt 主路）
 abstract final class OnDeviceRuntime {
   static const String qairt = 'qairt';
   static const String llamaCpp = 'llama_cpp';
+  static const String litertlm = 'litertlm';
   static const String auto = 'auto';
 
   static bool isKnown(String? r) =>
-      r == qairt || r == llamaCpp || r == auto;
+      r == qairt || r == llamaCpp || r == litertlm || r == auto;
 }
+
+/// 资产族（backend 维度，D-1 双段路由 2026-11-01）：**资产分发期定栈**的映射
+/// 单源——运行期仅同族内降级（NPU→GPU→云），禁跨栈横跳（资产内存镜像不互通，
+/// 切栈=1.5~2GB 卸载+冷装载）；构型选择发生在下载/导入面，不发生在推理运行时。
+abstract final class OnDeviceAssetFamily {
+  /// GenieX 系：qairt bundle（QAIRT+NPU 主路）与 GGUF（llama.cpp GPU 档），
+  /// 同栈内共享 GenieX 运行库与降级链。
+  static const String geniex = 'geniex';
+
+  /// LiteRT-LM 系：`.litertlm` 标准化资产（首发路线，联发科 APU 通路同族）。
+  static const String litertlm = 'litertlm';
+
+  /// 未知（auto / 布局待判）：装载期由 Runner 裁定。
+  static const String unknown = 'unknown';
+
+  static bool isKnown(String? f) =>
+      f == geniex || f == litertlm || f == unknown;
+
+  /// runtime → 资产族**单源映射**：meta `family` 字段写入与路由判定共用此
+  /// 函数（禁双源）。auto 归 unknown——布局待判，装载期由 Runner 裁定。
+  static String familyOf(String runtime) {
+    switch (runtime) {
+      case OnDeviceRuntime.qairt:
+      case OnDeviceRuntime.llamaCpp:
+        return geniex;
+      case OnDeviceRuntime.litertlm:
+        return litertlm;
+      default:
+        return unknown;
+    }
+  }
+}
+
+/// LiteRT-LM 栈装载开关（首发节奏，decisions.md ADR「首发节奏」2026-11-01）：
+/// 首发 = 仅 `.litertlm` 族（从 LiteRT-LM 起步），但 Runner 尚未集成——`.litertlm`
+/// 资产可导入/入注册表（资产路由 backend 维度先行），装载在此 **fail-fast**
+/// 显式拒绝（不落 `:engine` 报模糊错）。Runner 集成落地时翻真。
+const bool kOnDeviceLiteRtLmEnabled = false;
+
+/// llama.cpp 通路用户面开关（首发节奏关闸，decisions.md ADR「首发节奏」
+/// 2026-11-01：llama.cpp 先不放出，从 LiteRT-LM 起步）——代码与已实证能力
+/// 保留不删，仅用户面（GGUF 导入 / 已装 GGUF 模型选择 / 装载入口）关闸，
+/// 关闸点 = 导入 UI 拒收 + `_select` 拒选 + `enable()` 装载闸兜底。
+/// 测量期放开：`--dart-define=ON_DEVICE_LLAMACPP=true`。
+const bool kOnDeviceLlamaCppEnabled =
+    bool.fromEnvironment('ON_DEVICE_LLAMACPP', defaultValue: false);
 
 /// 端侧模型描述符（装载目标）。身份锚点 = [dirName]（`models/` 下落盘目录名）。
 class OnDeviceModelOption {

@@ -122,3 +122,21 @@ last-merge: none
 - **最终决定**：① G1-1/2/3 **不实施**，G1 关闭；② 现状件重新定性：`StreamTextSanitizer` 从「补丁自认治标」改为「**SDK 能力边界内的合法方案**」（注释去自贬，留已知局限说明）；③ 唯一后续通道 = **登记上游问题**（geniex-android / Qualcomm：detokenize 按单字节解码拆散 UTF-8 多字节字符的边界缺陷，期望 SDK 输出侧提供 token-id 或修复 detokenize 边界）——SDK 若未来修复，重开 G1 评估；④ UTF-8 腐化的**运行时防线保持现状不撤**（sanitizer + Dart 对账打点），任何下游改动不得绕过。
 - **AI 洞察**：「唯一事实源」不变量在 SDK 黑盒约束下无法以 App 侧手段达成——承认约束、把方案定性从「治标」翻转为「边界内终态」，比挂着永远不可达的前置更诚实；上游 issue 是唯一能让约束松动的杠杆。
 - **收敛条件**：上游 issue 登记完成；geniex-android 后续版本若暴露 token-id 输出或修复 detokenize 边界 → 重开 G1 评估（回本 ADR）。
+
+### [2026-11-01] [ADR] 端侧多栈推理框架构型：LiteRT-LM 内置底座 + GenieX 增配选装——四裁决 + 联发科通道升格 (src: 用户 + ai)
+- **场景/痛点**：用户提出「LiteRT-LM 必装通用底座 + 厂商原生 SDK 选装包（高通先行、联发科留位）」的框架重构，初稿含「GenieX(NPU) 挂死 → 运行期切 LiteRT-LM(QNN) 跨栈兜底」链路。评估发现三处硬约束被忽略：① GGUF 与 `.litertlm` 资产内存镜像完全不互通，运行期跨栈=先卸载 1.5~2GB 再数十秒冷装载，单请求内必超时且冲破内存水门；② AIDL 现契约 `stopTokenIds` 传预编码 id，GGUF（BPE 词表）与 `.litertlm`（SentencePiece/Gemma vocab）词表无关联，跨后端传硬编码 id = 静默乱码或无法截断；③ GenieX AAR 与 LiteRT-LM QNN dispatch 各自捆绑 `libQnnHtp*` 系 QAIRT 库会产生符号冲突 + 数十 MB 冗余。LiteRT-LM NPU 官方事实已核实（Google AI Edge：Qualcomm AI Engine Direct / MediaTek NeuroPilot 双通道，`.litertlm` NPU 资产目录现仅 Gemma3-1B、ctx 1280、按 SoC 分发 SM8550/8650/8750 + MT6989/6991）。与 devlog 同日 npu-geniex-runtime D1 终裁（LiteRT-LM 内置默认 APK + GenieX 拆增配）互相印证。
+- **可选方案（含否决理由）**：
+  - A) 运行期跨栈横跳兜底（**否决**：资产族不互通，切栈=换模型，1.5~2GB 卸载+冷装载在单请求内不可达；正确落点=资产分发期定栈）；
+  - B) 「仅高通」构型（砍掉 LiteRT-LM 底座）（**否决**：底座运行库仅 +10-12MB 且已被 D1 终裁定为内置基线；砍掉后 GenieX 崩溃/熔断/EXCLUDED 时无本地退路直接跳云端，测试矩阵 2 态变 3 态，收益趋零）；
+  - C) 停用词维持预编码 id 契约（**否决**：预编码绑定单一 tokenizer，多资产族下跨栈语义错乱，属隐形定式炸弹）；
+  - D) LiteRT-LM GPU 实证前直接退役 llama.cpp（**否决**：llama_cpp+GPU 已真机实证 39.3~39.6 tok/s（2026-11-01 拍板基线），未实证先删 = 回退链中段失稳）；
+  - E) 中低端借 LiteRT-LM 解禁端侧（**否决**：GPU/CPU 档能效未经中低端实证，D1 设备分档产品决策维持）。
+- **最终决定**（四裁决 + 一升格）：
+  - **D-1 跨栈横跳剔除，固化为双段路由**：① 资产路由（静态/下载面）= 按机型与资产族定栈，GGUF→GenieX 系、.litertlm→LiteRT-LM 系，二选一下载；② 运行时降级链（同栈内闭环）= GGUF 族 `QAIRT(NPU) → llama_cpp(GPU) → 云端 [DEGRADE]`、.litertlm 族 `LiteRT-LM(NPU) → LiteRT-LM(GPU) → 云端 [DEGRADE]`；CPU 全程出局（禁 CPU 分流不变）；跨栈兜底只发生在资产分发推荐层，禁入推理运行时。
+  - **D-2 D1 设备分档维持**：中低端（≤6GB RAM）不对端侧大模型开放，即便 LiteRT-LM 底座具备跨平台能力；`DeviceTierGate` 门禁不变。
+  - **D-3 停用词契约重构**：AIDL `stopTokenIds: intArray` → `stopSequences: List<String>` 字符串序列下发，编码判定下沉各 Runner Native 自治（自绑 tokenizer 实时 match）；属接缝契约变更，施工时须同轮修 goodshare 仓 `ai-dev-spec.md` §4（立法源）。关联既有事实：Genie SDK 曾拒收 stop sequences（ErrorCode -100016，deployment §6.7 落位标注），GenieX 现行走 `:engine` 文本截断+sanitize 兜底——重构须覆盖该现状语义，不得回退。
+  - **D-4 GPU 档双轨并存（2026-11-01 用户修订：llama.cpp 永久保留）**：已实证 `llama_cpp+GPU`（39 tok/s 基线）与 LiteRT-LM GPU **长期并存，llama.cpp 代码留着不删除**——不设退役条件、不打 PATCH 标记（非权宜，是长期并存架构：llama.cpp 承载 GGUF 通用通路与已实证基线，LiteRT-LM 承载 .litertlm 标准化通路）；LiteRT-LM GPU 真机基准仅作能力对照归档，不触发任何分支删除。
+  - **联发科接口留位（2026-11-01 用户修订：现阶段不支持）**：路线认定不变 = `LiteRT-LM + NeuroPilot Delegate` 打 APU（联发科×Google 官方合作，免 GenAI Toolkit 企业 NDA，天玑 9300/9400 已入 .litertlm NPU 支持表）；但**现阶段不支持**——Runner 注册表/接口预留 NeuroPilot 扩展位，不实现、不排期真机实证；P1-B NDA 专项不再阻塞任何路径。重评触发 = 官方 `.litertlm` NPU 资产目录扩展（出 3B 级/多模型）或天玑旗舰真机到位，届时回本 ADR 立项。
+  - **首发节奏（2026-11-01 用户修订：llama.cpp 先不放出，从 LiteRT-LM 起步）**：D-4 的「永久保留」指**代码保留**，不指用户面放开——llama.cpp 通路（GGUF 导入/GPU 兜底档）首发**关闸不暴露**：GGUF 导入入口、分发推荐、设置面均不开放（feature flag/编译保留，代码与已实证能力不删）；首发资产路线 = **仅 `.litertlm` 族（LiteRT-LM 栈）**，双段路由的 GGUF 分支降为「在码未启用」。重评触发 = LiteRT-LM 首发稳定运行且 GGUF 资产链（分发/推荐面）就绪，届时按新 ADR 立项放开。
+- **AI 洞察**：① 路由的真正维度是「模型资产族」而非「设备装配状态」——构型选择发生在下载面，运行时只做同族降级，这一刀切下去跨栈问题整体消失；② LiteRT-LM 的战略价值不在 GPU 档，而在它是唯一同时打通高通/联发科 NPU 官方通道的标准化运行时（联发科侧且免 NDA）；③ QAIRT 运行库必须单源化（共享一份 runtime 依赖，两栈经 `nativeLibraryDir`/`setQairtRuntimePath` 统一指向），双份捆绑是符号冲突定时炸弹；④ llama.cpp 永久保留后，双栈并存的长期成本 = GGUF 与 .litertlm 两套资产链的维护面，由资产路由 backend 维度单点收敛，不外溢到路由层。
+- **收敛条件**：① LiteRT-LM GPU 真机基准完成 → 数据归档作能力对照，**不触发 llama.cpp 删除**（永久并存，llama.cpp 退役需新 ADR 立项）；② `.litertlm` NPU 资产目录扩展出 3B 级模型且高通 SoC 覆盖对齐 → 评估 GenieX 增配包收敛为纯 QAIRT/HTP 加速器；③ 联发科：`.litertlm` NPU 目录扩展或天玑真机到位 → 回本 ADR 立项实证 NeuroPilot Delegate（此前仅接口留位，不排期）；④ D-3 施工时若 Genie 系停用词下沉仍被 SDK 拒收 → 契约按「字符串下发 + 各 Runner 自治实现」双轨评审后落码。

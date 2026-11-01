@@ -9,10 +9,12 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <execinfo.h>
+#include <dlfcn.h>
 #include <android/log.h>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <string>
 
 #define LOG_TAG "engine-tombstone"
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
@@ -79,4 +81,41 @@ Java_com_zzh_goodhub_EngineService_nativeInitTombstone(JNIEnv *env, jclass /*cla
     installHandler(SIGABRT);
     installHandler(SIGBUS);
     LOGW("tombstone crash handlers installed -> %s", g_tombstone_dir);
+}
+
+// 生产版（npu-geniex-runtime 设计稿 §6 结论 2，Spike-1 实证转正）：
+// geniex_set_qairt_runtime_path 必须先于 geniex_init（libnpu_jni 的
+// JNI_OnLoad）；且 libgeniex.so 本体已移出 APK（excludes）——故按
+// [libgeniexPath]（app storage 绝对路径）dlopen 后直调，再设 [rtPath]。
+// 返回诊断串 "rc=<n>" / "rc=<n> err=<dlerror>"。
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_zzh_goodhub_GenieXNative_setQairtRuntimePath(JNIEnv *env, jclass /*clazz*/,
+                                                      jstring libgeniexPath, jstring rtPath) {
+    if (libgeniexPath == nullptr || rtPath == nullptr) return env->NewStringUTF("rc=-1 err=null-arg");
+    const char *libP = env->GetStringUTFChars(libgeniexPath, nullptr);
+    if (libP == nullptr) return env->NewStringUTF("rc=-1 err=utf-alloc");
+    const char *rtP = env->GetStringUTFChars(rtPath, nullptr);
+    if (rtP == nullptr) { env->ReleaseStringUTFChars(libgeniexPath, libP); return env->NewStringUTF("rc=-1 err=utf-alloc"); }
+
+    void *h = dlopen(libP, RTLD_NOW | RTLD_GLOBAL);
+    if (h == nullptr) {
+        std::string e = std::string("rc=-2 err=") + dlerror();
+        env->ReleaseStringUTFChars(libgeniexPath, libP);
+        env->ReleaseStringUTFChars(rtPath, rtP);
+        return env->NewStringUTF(e.c_str());
+    }
+    typedef int (*SetPathFn)(const char *);
+    SetPathFn fn = reinterpret_cast<SetPathFn>(dlsym(h, "geniex_set_qairt_runtime_path"));
+    if (fn == nullptr) {
+        std::string e = std::string("rc=-3 err=") + dlerror();
+        dlclose(h);
+        env->ReleaseStringUTFChars(libgeniexPath, libP);
+        env->ReleaseStringUTFChars(rtPath, rtP);
+        return env->NewStringUTF(e.c_str());
+    }
+    int rc = fn(rtP);
+    dlclose(h);
+    env->ReleaseStringUTFChars(libgeniexPath, libP);
+    env->ReleaseStringUTFChars(rtPath, rtP);
+    return env->NewStringUTF(("rc=" + std::to_string(rc)).c_str());
 }

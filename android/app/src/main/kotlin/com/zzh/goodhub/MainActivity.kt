@@ -21,5 +21,7 @@ class MainActivity : FlutterActivity() {
         GatewayConsentBridge.register(this, flutterEngine.dartExecutor.binaryMessenger)
         // 端侧引擎绑定桥（on-device S1-1）：goodhub/on_device_engine
         EngineServiceBridge.register(this, flutterEngine.dartExecutor.binaryMessenger)
+        // GenieX 增配安装面通道（npu-geniex-runtime P2，设计稿 §7）
+        GenieXBridge.register(this, flutterEngine.dartExecutor.binaryMessenger)
     }
 }
