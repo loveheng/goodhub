@@ -73,17 +73,22 @@ void main() {
     test('正常产出（trim 后非空）', () async {
       final ch = newChannel();
       mock(ch, (call) async => '  hello ');
-      expect(await ChannelLlmEngine(channel: ch).generate('p'), 'hello');
+      final text = await ChannelLlmEngine(channel: ch)
+          .generateStream('p')
+          .join();
+      expect(text, 'hello');
     });
 
-    test('空产出 / null → null（翻译式降级，不抛）', () async {
+    test('空产出 / null → 无事件 close（翻译式降级，不抛）', () async {
       final ch1 = newChannel();
       mock(ch1, (call) async => '   ');
-      expect(await ChannelLlmEngine(channel: ch1).generate('p'), isNull);
+      expect(await ChannelLlmEngine(channel: ch1).generateStream('p').toList(),
+          isEmpty);
 
       final ch2 = newChannel();
       mock(ch2, (call) async => null);
-      expect(await ChannelLlmEngine(channel: ch2).generate('p'), isNull);
+      expect(await ChannelLlmEngine(channel: ch2).generateStream('p').toList(),
+          isEmpty);
     });
 
     test('参数映射：system / maxTokens / response_format（含约束解码）', () async {
@@ -93,12 +98,14 @@ void main() {
         seen = call.arguments as Map<Object?, Object?>?;
         return '{"ok":true}';
       });
-      await ChannelLlmEngine(channel: ch).generate(
-        'prompt',
-        system: 'sys',
-        maxTokens: 128,
-        responseFormat: const LlmResponseFormat.jsonSchema('{"type":"object"}'),
-      );
+      await ChannelLlmEngine(channel: ch)
+          .generateStream(
+            'prompt',
+            system: 'sys',
+            maxTokens: 128,
+            responseFormat: const LlmResponseFormat.jsonSchema('{"type":"object"}'),
+          )
+          .drain<void>();
       expect(seen!['prompt'], 'prompt');
       expect(seen!['system'], 'sys');
       expect(seen!['max_tokens'], 128);
@@ -112,18 +119,22 @@ void main() {
         seen = call.arguments as Map<Object?, Object?>?;
         return 'x';
       });
-      await ChannelLlmEngine(channel: ch).generate('p');
+      await ChannelLlmEngine(channel: ch).generateStream('p').drain<void>();
       expect(seen!.containsKey('response_format'), isFalse);
     });
 
-    test('桥缺失 / 平台异常 → null', () async {
+    test('桥缺失 / 平台异常 → 无事件 close', () async {
       final ch1 = newChannel();
       mockMissing(ch1);
-      expect(await ChannelLlmEngine(channel: ch1).generate('p'), isNull);
+      expect(
+          await ChannelLlmEngine(channel: ch1).generateStream('p').toList(),
+          isEmpty);
 
       final ch2 = newChannel();
       mock(ch2, (call) async => throw PlatformException(code: 'E'));
-      expect(await ChannelLlmEngine(channel: ch2).generate('p'), isNull);
+      expect(
+          await ChannelLlmEngine(channel: ch2).generateStream('p').toList(),
+          isEmpty);
     });
   });
 
@@ -162,12 +173,12 @@ void main() {
   });
 
   group('UnavailableLlmEngine 兜底', () {
-    test('恒不可用且 generate 恒 null（测试 / 无原生桥平台）', () async {
+    test('恒不可用且生成流恒空（测试 / 无原生桥平台）', () async {
       const e = UnavailableLlmEngine('未下载模型');
       expect(await e.isAvailable, isFalse);
       expect(e.unavailableReason, '未下载模型');
       expect(await e.unavailableReasonAsync(), '未下载模型');
-      expect(await e.generate('p'), isNull);
+      expect(await e.generateStream('p').toList(), isEmpty);
       expect(await e.warmup(), isFalse);
       expect(await e.cancelActive(), isFalse);
       expect(await e.isWarmed(), isFalse);

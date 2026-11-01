@@ -179,13 +179,15 @@ class FakeDevice implements OnDeviceLlmEngine, OnDeviceEnableCapable {
   Future<String?> unavailableReasonAsync() async => null;
 
   @override
-  Future<String?> generate(
+  Stream<String> generateStream(
     String prompt, {
     String? system,
     int maxTokens = 512,
     LlmResponseFormat? responseFormat,
-  }) async =>
-      next;
+  }) async* {
+    final text = next;
+    if (text != null && text.isNotEmpty) yield text;
+  }
 
   @override
   Future<bool> cancelActive() async => true;

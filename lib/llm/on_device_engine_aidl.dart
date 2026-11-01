@@ -66,6 +66,13 @@ OnDeviceLoadException _loadFailureOf(String? code) =>
             retryable: true)
         : OnDeviceLoadException('端侧引擎通道错误（$code）');
 
+/// waitReady 等待窗口（P1-7，2026-11-01）：首次 enable = 首次 bind + `:engine`
+/// 冷启动（JVM + geniex AAR），真机实测 3~8s——旧硬编码 3s 在弱机上常态超时，
+/// 新装首请求被判「未就绪」空转装载链。统一 10s（与 binding 默认窗口一致，
+/// 防双源）。超时口径不变：可自愈等待（装载路径 retryable 退避 / 生成路径交
+/// 会话闸门走装载链或切云），绝不判终态失败。
+const Duration kWaitReadyTimeout = Duration(seconds: 10);
+
 class AidlOnDeviceEngine implements OnDeviceEngine {
   AidlOnDeviceEngine({
     OnDeviceEngineBinding? binding,
@@ -210,7 +217,7 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
       try {
         await _binding.bind();
         final status =
-            await _binding.waitReady(timeout: const Duration(seconds: 3));
+            await _binding.waitReady(timeout: kWaitReadyTimeout);
         if (status == null) {
           // :engine 冷启动/重启中（实测 3~8s）——中断类，交后台退避重试。
           throw const OnDeviceLoadException('端侧引擎未就绪（:engine 连接超时）',
@@ -538,9 +545,10 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
       }
       try {
         await _binding.bind(); // 幂等：已绑定 no-op
-        // bind 竞态收口（超时 3s 快速失败切云；否则 not_bound 被误判驳回）。
+        // bind 竞态收口（等待窗口 kWaitReadyTimeout，超时交会话闸门——
+        // 装载链路 / 切云，可自愈非终态；否则 not_bound 被误判驳回）。
         final status =
-            await _binding.waitReady(timeout: const Duration(seconds: 3));
+            await _binding.waitReady(timeout: kWaitReadyTimeout);
         // 会话闸门（M2 第一刀，设计 §2.3）：**票据未就绪 / 未连接即交装载链路**
         // ——取代「loadState 说 ready 就跳过装载」与「bind 超时即判死」两条
         // 推断口径（2026-10-31 两类真机事故的同源解药：拿不到票据 = 未知）。

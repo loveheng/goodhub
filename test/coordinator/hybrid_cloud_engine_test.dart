@@ -68,12 +68,12 @@ class FakeDeviceEngine implements OnDeviceLlmEngine, OnDeviceFailureReasonAware 
   Future<String?> unavailableReasonAsync() async => null;
 
   @override
-  Future<String?> generate(
+  Stream<String> generateStream(
     String prompt, {
     String? system,
     int maxTokens = 512,
     LlmResponseFormat? responseFormat,
-  }) async {
+  }) async* {
     prompts.add(system == null ? prompt : '$system|$prompt');
     formats.add(responseFormat);
     if (dieOnGenerate) {
@@ -82,9 +82,10 @@ class FakeDeviceEngine implements OnDeviceLlmEngine, OnDeviceFailureReasonAware 
     final hang = hangUntil;
     if (hang != null) {
       await hang.future;
-      return null; // 被取消/落空后按空产出结束
+      return; // 被取消/落空后按零产出结束（无事件 close）
     }
-    return next;
+    final text = next;
+    if (text != null && text.isNotEmpty) yield text;
   }
 
   @override

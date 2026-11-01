@@ -33,6 +33,7 @@ import '../coordinator/plan_proposal_tool.dart'
     show PlanProposalDecision;
 import '../coordinator/task_plan.dart' show PlanAggregateRecord;
 import '../llm/cloud/cloud_llm.dart';
+import '../llm/on_device_pending_load.dart';
 import '../llm/on_device_engine.dart';
 import '../llm/on_device_engine_aidl.dart';
 
@@ -192,6 +193,25 @@ class _ChatPageState extends State<ChatPage>
     unawaited(_loadConfig());
     unawaited(_initConversations());
     unawaited(_loadEndpoints());
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    // OD2 前台提示消费（2026-11-01）：场景 B 后台冷装载留的暂存标记，回前台
+    // 时消费——只提示不抢槽（devlog 227④ 立法）：不主动调 enable()，与用户
+    // 当次对话争抢端侧单执行槽的风险为零；下次对话请求经会话闸门自然触发装载。
+    if (state != AppLifecycleState.resumed) return;
+    unawaited(_consumePendingForegroundLoadNotice());
+  }
+
+  /// 消费「待前台装载」标记：展示提示后即 clear（标记已消费，TTL 仅为过期
+  /// 兜底不承担重试）；无论回前台时是否有在途请求都消费——在途请求本身就是
+  /// 前台流程，装载会被它自然触发，提示无需再来一次。
+  Future<void> _consumePendingForegroundLoadNotice() async {
+    if (!await OnDevicePendingLoad.hasPending()) return;
+    await OnDevicePendingLoad.clear();
+    _toast('已检测到后台端侧任务：下次对话将自动启动端侧加速');
   }
 
   @override

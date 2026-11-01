@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import 'llm.dart';
@@ -68,56 +70,57 @@ class AidlOnDeviceLlmEngineAdapter
   Future<bool> isForeground() => _inner.isForeground();
 
   @override
-  Future<String?> generate(
+  Stream<String> generateStream(
     String prompt, {
     String? system,
     int maxTokens = 512,
     LlmResponseFormat? responseFormat,
-  }) async {
+  }) {
     final requestId = 'aidl-${DateTime.now().microsecondsSinceEpoch}';
     _currentRequestId = requestId;
     // prompt = 消息序列 JSON（2026-10-31 设计修正），system 已在消息序列内
     //（由 :engine 侧 ChatML 构造 system 轮）——旧 system 拼接退役。
     final fullPrompt = prompt;
-    try {
-      final buf = StringBuffer();
-      await for (final chunk in _inner.generate(
-        requestId: requestId,
-        prompt: fullPrompt,
-        config: GenerationConfig(maxTokens: maxTokens),
-      )) {
-        buf.write(chunk.deltaText);
-      }
-      final text = buf.toString();
-      // 内容取证（2026-10-31 真机「第二轮没有任何输出」：outChars=99 与
-      // bytes=550 不符、两轮 outChars 恰好相同——复读环 / sanitizer 剥剩
-      // 空白 / UI 链吞文本三选一，须看到实际内容才能定位）。
-      final preview = text.length <= 80
-          ? text
-          : '${text.substring(0, 60)}…(${text.length - 80} chars)…${text.substring(text.length - 20)}';
-      final blankOnly = text.trim().isEmpty;
-      debugPrint('[on_device] gen done requestId=$requestId '
-          'promptChars=${fullPrompt.length} outChars=${text.length} '
-          'blankOnly=$blankOnly preview=[$preview]');
-      if (text.isEmpty) {
-        _lastFailureReason = '空产出（端侧模型未产出任何内容）';
-        return null;
-      }
-      _lastFailureReason = null;
-      return text;
-    } on EngineDiedException {
-      rethrow; // 死亡兜底契约（S1-5）：原样上抛给混合引擎捕获切云，禁在此吞。
-    } catch (e) {
-      // OnDeviceLlmEngine 契约：生成失败返回 null（翻译式降级）——上层发
-      // 「端侧生成失败」可观测报错（unavailableReasonAsync 带真值），
-      // 不再让裸 StateError 穿透成错误卡。
-      _lastFailureReason = '端侧生成异常：${e.runtimeType}'
-          '${e is StateError ? '（${e.message}）' : ''}';
-      debugPrint('[DEGRADE] on_device generate: $e');
-      return null;
-    } finally {
-      if (_currentRequestId == requestId) _currentRequestId = null;
-    }
+    // 双层控制器：内层 _inner 流的取消须同步联动 cancelActive（onCancel 里
+    // 退订内层订阅触发 _inner 的 onCancel → cancel(requestId)），外层订阅者
+    // 取消 = 内层退订 = 生成终止（流生命周期自动绑定，杜绝孤儿生成空跑）。
+    late final StreamController<String> ctrl;
+    StreamSubscription<EngineChunk>? sub;
+    var sawAny = false;
+    ctrl = StreamController<String>(
+      onCancel: () async {
+        await sub?.cancel();
+        if (_currentRequestId == requestId) _currentRequestId = null;
+      },
+    );
+    sub = _inner.generate(
+      requestId: requestId,
+      prompt: fullPrompt,
+      config: GenerationConfig(maxTokens: maxTokens),
+    ).listen(
+      (chunk) {
+        if (chunk.deltaText.isEmpty) return;
+        sawAny = true;
+        ctrl.add(chunk.deltaText);
+      },
+      onError: (Object e) {
+        if (_currentRequestId == requestId) _currentRequestId = null;
+        ctrl.addError(e);
+      },
+      onDone: () async {
+        if (_currentRequestId == requestId) _currentRequestId = null;
+        // 内容取证（与旧聚合路径同口径：outChars/bytes 不符、复读环等须见
+        // 实际内容才能定位）；零产出归因在此落 lastFailureReason，调用方
+        // 经 OnDeviceFailureReasonAware 取真因（契约：零产出 = 无事件 close）。
+        debugPrint('[on_device] gen stream done requestId=$requestId '
+            'promptChars=${fullPrompt.length} sawAny=$sawAny');
+        _lastFailureReason =
+            sawAny ? null : '空产出（端侧模型未产出任何内容）';
+        await ctrl.close();
+      },
+      cancelOnError: true,
+    );
+    return ctrl.stream;
   }
 
   @override

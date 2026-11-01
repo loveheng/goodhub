@@ -11,6 +11,15 @@ import '../llm/device_tier.dart';
 import '../llm/llm.dart';
 import 'tokens/console_tokens.dart';
 
+/// 聚合语义兜底：收集流全文（null 语义 = 零产出/失败无事件 close）。
+Future<String?> _collectGen(Stream<String> stream) async {
+  final buf = StringBuffer();
+  await for (final delta in stream) {
+    buf.write(delta);
+  }
+  return buf.isEmpty ? null : buf.toString();
+}
+
 /// M2-T3 grammar spike 探针页（仅 kDebugMode 可见）：LiteRT-LM `ResponseFormat`
 /// 约束解码实证（architecture §2 首个 UNCERTAIN 的裁决输入）。
 ///
@@ -117,12 +126,12 @@ class _GrammarSpikePageState extends State<GrammarSpikePage> {
     }
     for (final o in _outcomes) {
       final sw = Stopwatch()..start();
-      // generate 契约不抛（失败/空产出= null），失败判定与日志见 ChannelLlmEngine
-      final out = await engine.generate(
+      // generateStream 契约不抛（失败/空产出= 无事件 close），失败判定与日志见 ChannelLlmEngine
+      final out = await _collectGen(engine.generateStream(
         o.spec.prompt,
         maxTokens: o.spec.maxTokens,
         responseFormat: o.spec.format,
-      );
+      ));
       sw.stop();
       if (!mounted) return;
       setState(() {
@@ -146,7 +155,8 @@ class _GrammarSpikePageState extends State<GrammarSpikePage> {
       return;
     }
     final sw = Stopwatch()..start();
-    final genDone = engine.generate('写一篇 300 字关于端侧大模型的小短文：\n', maxTokens: 512);
+    final genDone =
+        _collectGen(engine.generateStream('写一篇 300 字关于端侧大模型的小短文：\n', maxTokens: 512));
     await Future<void>.delayed(const Duration(milliseconds: 800));
     final cancelSw = Stopwatch()..start();
     final hit = await engine.cancelActive();
@@ -186,7 +196,8 @@ class _GrammarSpikePageState extends State<GrammarSpikePage> {
     }
     final warmMs = sw.elapsedMilliseconds;
     final sw2 = Stopwatch()..start();
-    final text = await engine.generate('输出两个字：好的', maxTokens: 8);
+    final text = await _collectGen(
+        engine.generateStream('输出两个字：好的', maxTokens: 8));
     sw2.stop();
     if (!mounted) return;
     setState(

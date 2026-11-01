@@ -51,11 +51,21 @@ abstract class OnDeviceLlmEngine {
   /// 默认回退到同步值；原生桥实现（ChannelLlmEngine）向原生取真值。
   Future<String?> unavailableReasonAsync() async => unavailableReason;
 
-  /// 文本生成。失败 / 不可用 / 空产出返回 null（不抛，翻译式降级）。
+  /// 流式文本生成（P1-6，2026-11-01）：端侧生成唯一契约形态——按产出节拍逐
+  /// delta 投递（旧单发聚合 `generate` 已在 Contract 步移除，调用方一律走流）。
+  ///
+  /// 契约口径（翻译式降级不破坏）：
+  /// - 仅投递非空 delta；正常结束但**零产出 = 不发任何事件直接 close**
+  ///  （零产出归因由调用方经 [unavailableReasonAsync] / [OnDeviceFailureReasonAware]
+  ///   取真因，与「显式失败上抛禁静默」语义一致）；
+  /// - 失败经流错误（addError）穿透：[EngineDiedException] 原样穿透供上层
+  ///   切云，其余异常同样以流错误交付；
+  /// - 订阅取消 = 取消生成（实现须联动 [cancelActive]，流生命周期自动绑定）；
+  /// - 聚合语义调用方（单发提取）自行收集流全文。
   ///
   /// [system] 为任务指令（摘要/关键词等由调用方组装）；[maxTokens] 限制输出长度；
   /// [responseFormat] 传约束解码规格（缺省 = 无约束；约束失败与普通失败同口径降级）。
-  Future<String?> generate(
+  Stream<String> generateStream(
     String prompt, {
     String? system,
     int maxTokens = 512,
@@ -141,12 +151,12 @@ class ChannelLlmEngine implements OnDeviceLlmEngine {
   }
 
   @override
-  Future<String?> generate(
+  Stream<String> generateStream(
     String prompt, {
     String? system,
     int maxTokens = 512,
     LlmResponseFormat? responseFormat,
-  }) async {
+  }) async* {
     try {
       final r = await channel.invokeMethod<String>('generate', {
         'prompt': prompt,
@@ -155,13 +165,13 @@ class ChannelLlmEngine implements OnDeviceLlmEngine {
         if (responseFormat != null) 'response_format': responseFormat.toChannelArgs(),
       });
       final t = r?.trim();
-      return (t == null || t.isEmpty) ? null : t;
+      if (t != null && t.isNotEmpty) yield t;
     } on MissingPluginException {
-      return null;
+      return; // 契约：零产出 = 无事件 close（桥缺失视为不可用）
     } on PlatformException catch (e) {
       // message 带上：spike 期间「SDK 不支持约束」与「空产出」靠它区分
       debugPrint('[LlmEngine] generate failed: ${e.code} ${e.message ?? ''}');
-      return null;
+      return;
     }
   }
 
@@ -258,12 +268,12 @@ class UnavailableLlmEngine implements OnDeviceLlmEngine {
   Future<String?> unavailableReasonAsync() async => reason;
 
   @override
-  Future<String?> generate(
+  Stream<String> generateStream(
     String prompt, {
     String? system,
     int maxTokens = 512,
     LlmResponseFormat? responseFormat,
-  }) async => null;
+  }) => const Stream.empty();
 
   @override
   Future<bool> cancelActive() async => false;

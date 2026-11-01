@@ -38,6 +38,12 @@ class EngineService : Service() {
         /// B-1 装载窗口 abort 线：跌破 = 整机内存进入击杀窗口，best-effort 早退。
         private const val LOAD_ABORT_AVAIL_MEM_BYTES = 1024L * 1024 * 1024
 
+        /// 护栏周期采样间隔（P2-11，2026-11-01）：生成期（内存活动峰值段，数十秒）
+        /// 每 5s 采样一次 availMem 护栏——旧实现仅 finally 收尾采样一次，
+        /// 「逼近 LMK 提前驱逐」只兑现 1/N。5s = 采样周期量级，与评估器
+        /// 8MB 抖动容差匹配（一个周期的抖动量级），不追峰值精度。
+        private const val GUARD_SAMPLE_INTERVAL_MS = 5000L
+
         // ==== 旧裸 Genie C API 注入面（日志级别/per-stage 策略/config 键
         // 覆写/投递链 DRAIN 档）随 S3 换线退役====：geniex-android 管线无
         // 对应注入 API——日志与调优归 SDK 默认 + 资产 htp config
@@ -268,6 +274,30 @@ class EngineService : Service() {
             currentAvailMemBytes = readAvailMem(),
         ) ?: return
         lifecycle.onGuardBreached(reason)
+    }
+
+    /// 生成期护栏周期采样（P2-11，2026-11-01）：守护线程每
+    /// [GUARD_SAMPLE_INTERVAL_MS] 采样一次护栏，收尾由调用方中断——
+    /// 旧实现仅 finally 采样一次，生成峰值段（数十秒）零覆盖，
+    /// 「逼近 LMK 提前驱逐」只兑现 1/N。护栏触发走 [lifecycle.onGuardBreached]
+    /// 与收尾采样同一路径（abort 在途 + 状态机驱逐），线程本体不做驱逐动作。
+    private fun startGuardSampler(): Thread {
+        val t = Thread {
+            try {
+                while (true) {
+                    Thread.sleep(GUARD_SAMPLE_INTERVAL_MS)
+                    checkMemoryGuard()
+                }
+            } catch (e: InterruptedException) {
+                // 收尾中断 = 正常退出路径（finally 统一收口）。
+            } catch (e: Exception) {
+                Log.w(TAG, "[DEGRADE] guard sampler: $e")
+            }
+        }
+        t.name = "engine-guard-sampler"
+        t.isDaemon = true
+        t.start()
+        return t
     }
 
     /// 权威状态求值（S2 正式接线；M1 抽为单点供 `checkStatus` 与 `checkSession`
@@ -547,6 +577,9 @@ class EngineService : Service() {
                         }
                     }
                 }
+                // P2-11：生成期护栏周期采样（峰值段覆盖，finally 中断收口）。
+                // 声明在 try 外——try 块内局部量 finally 不可见。
+                val guardSampler = startGuardSampler()
                 try {
                     // F3 大载荷通道：effectivePrompt 已在受理同步段解析（评审
                     // 修复——读取前移，本线程不再触碰临时文件）。
@@ -619,6 +652,9 @@ class EngineService : Service() {
                     // S2-4：ACTIVE → WARM_STANDBY（重排 TTL + 内存预算护栏，
                     // §4.1「逼近 LMK 阈值即使 TTL 内也提前驱逐」）。
                     scheduleTtl(lifecycle.onGenerateFinished())
+                    // P2-11：先停周期采样（正常路径/异常路径统一收口），
+                    // 再做收尾单次采样（终态快照语义不变）。
+                    guardSampler.interrupt()
                     checkMemoryGuard()
                 }
             }, "engine-genie-generate").start()

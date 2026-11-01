@@ -6,17 +6,21 @@ void main() {
   late DateTime t;
   late EngineCircuitBreaker breaker;
   String? persistedLock;
+  String? persistedL1Triggers;
   bool cleared = false;
 
   setUp(() {
     t = DateTime(2026, 10, 28, 12);
     persistedLock = null;
+    persistedL1Triggers = null;
     cleared = false;
     breaker = EngineCircuitBreaker(
       now: () => t,
       readLock: () => Future<String?>.value(persistedLock),
       writeLock: (iso) async => persistedLock = iso,
       clearLock: () async => cleared = true,
+      readL1Triggers: () => Future<String?>.value(persistedL1Triggers),
+      writeL1Triggers: (list) async => persistedL1Triggers = list.join('|'),
     );
   });
 
@@ -96,8 +100,62 @@ void main() {
         readLock: () => Future<String?>.value(persistedLock),
         writeLock: (iso) async => persistedLock = iso,
         clearLock: () async => cleared = true,
+        readL1Triggers: () => Future<String?>.value(persistedL1Triggers),
+        writeL1Triggers: (list) async => persistedL1Triggers = list.join('|'),
       );
       expect(await fresh.isBroken, isFalse);
+    });
+
+    test('P2-9：稀疏 L1 跨重启同日累计 → L2（旧内存计数永不达 L2 的主画像）',
+        () async {
+      // 第一次进程生命周期：当天上午触发一次 L1 后进程被杀。
+      await breaker.report(countable: true);
+      t = t.add(const Duration(minutes: 1));
+      await breaker.report(countable: true); // L1 触发 #1，时间戳持久化
+      expect(persistedL1Triggers, isNotNull);
+      expect(persistedLock, isNull, reason: '仅 1 次 L1 不得触发 L2');
+
+      // 第二次进程生命周期（冷启动，间隔 >5min 但同日）：恢复持久化列表。
+      t = t.add(const Duration(hours: 1));
+      final fresh = EngineCircuitBreaker(
+        now: () => t,
+        readLock: () => Future<String?>.value(persistedLock),
+        writeLock: (iso) async => persistedLock = iso,
+        clearLock: () async => cleared = true,
+        readL1Triggers: () => Future<String?>.value(persistedL1Triggers),
+        writeL1Triggers: (list) async => persistedL1Triggers = list.join('|'),
+      );
+      await fresh.report(countable: true);
+      t = t.add(const Duration(minutes: 1));
+      await fresh.report(countable: true); // L1 触发 #2 → 同日累计达 2 → L2
+      expect(persistedLock, isNotNull, reason: '跨重启同日 2 次 L1 须触发 L2');
+      expect(await fresh.isBroken, isTrue);
+    });
+
+    test('P2-9：跨自然日的 L1 触发不累计（日界剪枝）', () async {
+      // 昨天（前一日 23:xx）触发 L1 一次并持久化。
+      t = DateTime(2026, 10, 27, 23, 50);
+      await breaker.report(countable: true);
+      t = t.add(const Duration(minutes: 1));
+      await breaker.report(countable: true); // L1 #1（前一日）
+      final yesterdayStamp = persistedL1Triggers;
+      expect(yesterdayStamp, isNotNull);
+
+      // 次日新进程：恢复后剪枝前一日时间戳，当天 2 次 crash 仅触发 L1。
+      t = DateTime(2026, 10, 28, 12);
+      final fresh = EngineCircuitBreaker(
+        now: () => t,
+        readLock: () => Future<String?>.value(persistedLock),
+        writeLock: (iso) async => persistedLock = iso,
+        clearLock: () async => cleared = true,
+        readL1Triggers: () => Future<String?>.value(persistedL1Triggers),
+        writeL1Triggers: (list) async => persistedL1Triggers = list.join('|'),
+      );
+      await fresh.report(countable: true);
+      t = t.add(const Duration(minutes: 1));
+      await fresh.report(countable: true); // 当天仅 1 次 L1 → 不达 L2
+      expect(await fresh.isBroken, isTrue, reason: 'L1 内存熔断照旧生效');
+      expect(persistedLock, isNull, reason: '跨日旧触发须被剪枝，不推进 L2');
     });
   });
 

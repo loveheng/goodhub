@@ -321,3 +321,14 @@ last-merge: none
 - [2026-10-31] [验证]: gradlew :app:compileDebugKotlin exit 0（注释级修订）
 - [2026-10-31] [变更]: GPU 档落地 + CPU 全量退役：GenieSession.doLoad 阶梯化——qairt bundle→QAIRT+NPU 终态 / 纯 GGUF→llama_cpp+GPU 终态，删两处 llama_cpp+CPU 兜底分支；UNCERTAIN 改挂 GPU 契约 spike（compute_unit=GPU 实际后端 + GGUF 输入形态，同次 Ace 6 裁定）；activeRuntime 与 Dart OnDeviceRuntime.llamaCpp 注释口径同步；AIDL/票据/路由零改动；ComputeUnitValue GPU 档经 AAR 反编译实证在座（decisions.md 新 ADR 在案，旧 NPU 兜底 ADR 标记被推翻）
 - [2026-10-31] [验证]: gradlew :app:compileDebugKotlin → exit 0；flutter analyze → No issues found
+- [2026-11-01] [变更]: P1-6 流式契约收口：OnDeviceLlmEngine 契约 Future<String?> generate → Stream<String> generateStream（Expand-Contract 三步单轮完成），AIDL 适配器真流式覆写（双层控制器取消联动），hybrid _deviceSend 逐 delta 投递 CloudTextDelta；archive 探针页/测试桩同步迁移，旧 generate 全删
+- [2026-11-01] [验证]: flutter analyze → 0 issue；flutter test --timeout 180s → 1466 全绿（含 hybrid_cloud_engine_test 51 项端侧流式/切云/取消联动回归）
+- [2026-11-01] [变更]: P1-7 waitReady 等待窗口收口：装载路径(:213)与生成路径(:543)两处硬编码 3s → 共享常量 kWaitReadyTimeout=10s（与 binding 默认窗口对齐防双源，覆盖冷启动实测 3~8s）；超时口径本就 retryable/交会话闸门非终态，注释同步钉死口径
+- [2026-11-01] [验证]: flutter analyze on_device_engine_aidl.dart → 0 issue；flutter test test/llm --timeout 180s → 192 全绿（无测试钉 3s 窗口）
+- [2026-11-01] [变更]: P2-9 熔断器 L2 判据重定（防御·状态模型修正）：_l1TriggerCount 进程内存计数 → 持久化 L1 触发时间戳列表（新键 on_device.engine.l1_trigger_at，| 拼接），report 时本地自然日剪枝 + 同日 ≥2 次跨重启累计触发 L2 并清列表；reset 同步清持久化列表；文档口径「当天累计 2 次」与实现双向对齐，稀疏崩溃（>5min 间隔坏驱动画像）可达 L2
+- [2026-11-01] [验证]: flutter analyze → 0 issue；flutter test --timeout 180s → 1468 全绿（熔断器 12 项含新增跨重启同日累计/跨日剪枝两条回归）
+- [2026-11-01] [设计]: P1-5 设计定稿（2026-11-01）：输入预算来源=资产面声明 n_ctx（运行时无读取通道，G1 已关闭），超窗=拒绝优先显式报错切云，禁在设备路径发明第二套截断（阶梯截断唯一机制归 context-stepped-pruning draft 落地统一接入），预检位置=_deviceSend 入口；超窗 SDK 行为 UNCERTAIN 观测钩子与 P2-12 同批真机。台账 P1-5 已更新定稿、P1-6/P1-7/P2-9 打勾
+- [2026-11-01] [变更]: P2-11 护栏周期采样收口：EngineService 生成路径加 startGuardSampler() 守护线程（5s 周期，GUARD_SAMPLE_INTERVAL_MS），query 前 start、finally 中断后保留收尾单次采样（终态快照语义不变）；绝对地板 1GB/增量线 6GB 评估器本已具备，阈值真机校准归 S2-5 批次
+- [2026-11-01] [验证]: :app:compileDebugKotlin → BUILD SUCCESSFUL（Kotlin 无单测面，编译门禁为准；护栏触发路径未真机验证）
+- [2026-11-01] [变更]: OD5 残差定谳销项 + OD2 前台提示消费接线——OD5 两残差均空集（on_device_smoke.dart 已随 S3 换线物理删除/devlog 98，外置路径不存在于生产；生产从未走外置 FUSE 无遗留资产），todos 残差注记更新为终态；OD2 接线 chat_page.didChangeAppLifecycleState→resumed 消费 OnDevicePendingLoad.hasPending，命中 _toast + clear——只提示不抢槽（devlog 227④ 立法）：不主动 enable()，下次对话请求经会话闸门自然触发装载，单执行槽零争抢；措辞按「不抢槽」口径诚实化不谎称已在装载（注：本条经 toolbox devlog 三次参数解析失败后手工降级追加）
+- [2026-11-01] [验证]: OD5=两次取证定谳（on_device_smoke.dart 物理删除、全仓无引用）；OD2=flutter analyze chat_page → 0 issue；chat_page_smoke_test → 10/10 全绿

@@ -73,4 +73,4 @@ last-merge: none
 
 ## 断点
 
-- [断点] GPU 档真机 Spike（进行中，2026-11-01 拍板）：在 `:engine` 独立进程把 `llama_cpp+GPU`（Vulkan/OpenCL）装载 + 1-token 探针跑通，产出首份真机体检数据。有界验证 4 指标：① Shader 编译稳定 + 产物落 `filesDir` 私有目录、二次装载命中缓存（数十秒→1~2s）；② 真实 RSS/VmHWM 峰值 + 显存释放彻底性（对照 MemGate 水位，勿冲 LMK）；③ 1-token 微基准（`"hi"`, max_tokens=1）合法首字节反解（TTFT 以测到为准，300~800ms 仅假设非门槛）；④ **异常确定性（否决性门槛）**：显存超限/驱动报错须抛结构化异常码，不得不可捕获 SIGSEGV 打挂 `:engine`。基线用真实在售 1.5B Q8 GGUF（非外来陌生权重）。通过后：撕 UNCERTAIN + 探针逻辑合流 `on_device_admission_probe.dart`/`probeBackend` + **物理删除 CPU 代码路径**（NPU→GPU→云硬编码）。Spike 未过期间 CPU 分支置 inert（保留代码、路由不走），回退链临时 = NPU→云。后续：混沌矩阵回归补 GGUF GPU 装载用例 + F1 冒烟。
+- [断点] 下一步：P1/P2 批次（P1-6/P1-7/P2-9 已修+P1-5 设计定稿+P2-11 周期采样）收口完毕，回到 GPU 档真机 Spike（进行中，断点不变）；残差：P2-12 SDK 实证 + P1-5 机制落地挂 context-stepped-pruning draft + §6.5 文档对齐待 docs 轮

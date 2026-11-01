@@ -405,11 +405,17 @@ class HybridCloudEngine implements CloudLlmEngine {
         // assistant 回答塞进 user 轮，违背训练分布 → 复读环（真机定谳）。
         final promptJson = buildOnDeviceChatPromptJson(request.messages);
         debugPrint('[HybridEngine] 端侧对话 prompt：promptJsonChars=${promptJson.length}');
-        final text = await device.generate(
+        // P1-6（2026-11-01）：流式契约——逐 delta 投递，消除「收满 512 token
+        // 才一次投递」的 30s 无出字缺口。零产出（无事件 close）走下方归因。
+        var sawOutput = false;
+        await for (final delta in device.generateStream(
           promptJson,
           maxTokens: request.maxTokens ?? 512,
-        );
-        if (text == null || text.isEmpty) {
+        )) {
+          sawOutput = true;
+          ctrl.add(CloudTextDelta(delta));
+        }
+        if (!sawOutput) {
           // 零产出归因（2026-10-30 真机实证「同一对话第二次提问没有输出」）：
           // 端侧**运行时**失败 ≠ 装载失败——q-1 的「显式失败不切云」只约束
           // **装载**失败（用户据此知道「模型没装好」）；此处引擎活着却零产出，
@@ -427,7 +433,6 @@ class HybridCloudEngine implements CloudLlmEngine {
           final why = aware ?? status ?? '空产出（模型未产出任何内容）';
           throw InferenceException('端侧生成失败（$reason）：$why');
         }
-        ctrl.add(CloudTextDelta(text));
         ctrl.add(const CloudDone(finishReason: CloudFinishReason.stop));
       } catch (e) {
         if (e is EngineDiedException) {
