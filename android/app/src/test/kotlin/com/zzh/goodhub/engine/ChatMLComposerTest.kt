@@ -113,4 +113,28 @@ class ChatMLComposerTest {
         assertNull(ChatMLComposer.parseNeutral("""[{"role":"tool","content":"x"}]"""))
         assertNull(ChatMLComposer.parseNeutral("""[{"role":"user","content":""}]"""))
     }
+
+    @Test
+    fun `dropOldestForOverflow：丢弃后首轮必须 user（SDK 模板交替护栏）`() {
+        // 真机形态：[u1,a1,u2] 丢 u1 → 裸 drop(1) 留 [a1,u2]（assistant 开头
+        // 违反交替）；修正 = 连带丢掉 a1。
+        val h1 = listOf(
+            ChatTurn("user", "q1"), ChatTurn("assistant", "a1"), ChatTurn("user", "q2"),
+        )
+        assertEquals(listOf(ChatTurn("user", "q2")), ChatMLComposer.dropOldestForOverflow(h1))
+
+        // 偶长历史 [u1,a1]：丢 u1 → [a1] → 空。
+        val h2 = listOf(ChatTurn("user", "q1"), ChatTurn("assistant", "a1"))
+        assertTrue(ChatMLComposer.dropOldestForOverflow(h2).isEmpty())
+
+        // 更长交替序列 [u1,a1,u2,a2,u3] → [a1,u2,a2,u3] → [u2,a2,u3]。
+        val h3 = listOf(
+            ChatTurn("user", "q1"), ChatTurn("assistant", "a1"), ChatTurn("user", "q2"),
+            ChatTurn("assistant", "a2"), ChatTurn("user", "q3"),
+        )
+        assertEquals(
+            listOf(ChatTurn("user", "q2"), ChatTurn("assistant", "a2"), ChatTurn("user", "q3")),
+            ChatMLComposer.dropOldestForOverflow(h3),
+        )
+    }
 }

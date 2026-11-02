@@ -97,4 +97,19 @@ object ChatMLComposer {
      */
     fun parseMessages(promptJson: String): Array<ChatMessage>? =
         parseNeutral(promptJson)?.map { ChatMessage(it.role, it.content) }?.toTypedArray()
+
+    /**
+     * 上下文溢出丢弃修正（2026-11-02 真机反证）：丢最老历史轮后首轮必须
+     * user——SDK 模板严格要求 user/assistant 交替（in template:15），单丢
+     * 一轮可能留 assistant 开头 → 模板交替违规 → 零产出（1291>=1280 溢出
+     * → drop → "roles must alternate" 真机日志）。数据面保证原序列严格
+     * 交替，故至多再丢一轮；while 为防御（异常输入序列）。
+     */
+    fun dropOldestForOverflow(history: List<ChatTurn>): List<ChatTurn> {
+        var dropped = history.drop(1)
+        while (dropped.isNotEmpty() && dropped.first().role != "user") {
+            dropped = dropped.drop(1)
+        }
+        return dropped
+    }
 }

@@ -1,8 +1,10 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/llm/on_device_asset_manager.dart';
+import 'package:goodhub/llm/on_device_model_catalog.dart';
 
 /// modelProfile 探测回归钉（声明式解析元数据，2026-11-02）。
 ///
@@ -94,6 +96,43 @@ void main() {
       await trunc.writeAsBytes(ggufHeader({'a': 'b'}).sublist(0, 20));
       expect(await OnDeviceAssetManager.ggufChatTemplate(trunc), isNull);
     });
+
+    test('组合探测：模板 + 架构前缀 context 键（qwen35.context_length 真实形态）',
+        () async {
+      final f = await writeGguf(ggufHeader({
+        'general.architecture': 'qwen35',
+        'qwen35.context_length': 262144,
+        'tokenizer.chat_template': '{% if m %}\u003c|im_start|>{% endif %}',
+      }));
+      expect(await OnDeviceAssetManager.ggufChatTemplate(f),
+          contains('\u003c|im_start|\u003e'));
+      expect(await OnDeviceAssetManager.ggufContextLength(f), 262144);
+    });
+
+    test('架构键缺失时回落磁盘上唯一 context 键', () async {
+      final f = await writeGguf(ggufHeader({
+        'mystery.context_length': 4096,
+        'tokenizer.chat_template': 'x',
+      }));
+      expect(await OnDeviceAssetManager.ggufContextLength(f), 4096);
+    });
+
+    test('无 context 键 → contextLength null（字段缺席）', () async {
+      final f = await writeGguf(ggufHeader({'tokenizer.chat_template': 'x'}));
+      expect(await OnDeviceAssetManager.ggufContextLength(f), isNull);
+    });
+
+    test('真实工件回归钉：Qwen3.5-2B GGUF（本机基准，缺席即跳过）', () async {
+      const real = '/home/zzh/Downloads/ai/Qwen3.5-2B-Q4_0.gguf';
+      final f = File(real);
+      if (!f.existsSync()) return; // 无本机基准 → 跳过（CI 安全）
+      final tpl = await OnDeviceAssetManager.ggufChatTemplate(f);
+      expect(tpl, isNotNull);
+      expect(
+          OnDeviceAssetManager.chatTemplateFamilyOfTemplate(tpl!),
+          'qwen_chatml');
+      expect(await OnDeviceAssetManager.ggufContextLength(f), 262144);
+    });
   });
 
   group('模板家族映射', () {
@@ -106,6 +145,143 @@ void main() {
           '<start_of_turn>user'), 'gemma');
       expect(OnDeviceAssetManager.chatTemplateFamilyOfTemplate('no markers'),
           'unknown');
+    });
+  });
+
+  group('stopSequences 家族闭合 token 推导（规格 §2 声明区）', () {
+    test('三已知家族按闭合 token 推导；unknown/null 缺席（禁猜测值）', () {
+      expect(OnDeviceAssetManager.stopSequencesForFamily('qwen_chatml'),
+          ['\u003c|im_end|\u003e']);
+      expect(OnDeviceAssetManager.stopSequencesForFamily('llama3'),
+          ['\u003c|eot_id|\u003e']);
+      expect(OnDeviceAssetManager.stopSequencesForFamily('gemma'),
+          ['\u003cend_of_turn\u003e']);
+      expect(OnDeviceAssetManager.stopSequencesForFamily('unknown'), isNull);
+      expect(OnDeviceAssetManager.stopSequencesForFamily(null), isNull);
+    });
+  });
+
+  group('模板可应用性静态探针（规格 §6）', () {
+    late Directory tmp;
+    setUp(() async => tmp = await Directory.systemTemp.createTemp('gh_tpl'));
+    tearDown(() async => tmp.delete(recursive: true));
+
+    test('qairt：tokenizer.json 在场 = verified，缺席 = false', () async {
+      final d = Directory('${tmp.path}/qa');
+      await d.create(recursive: true);
+      await File('${d.path}/genie_config.json').writeAsString('{}');
+      expect(
+          await OnDeviceAssetManager.templateApplicability(
+              d, OnDeviceRuntime.qairt),
+          isFalse);
+      await File('${d.path}/tokenizer.json').writeAsString('{}');
+      expect(
+          await OnDeviceAssetManager.templateApplicability(
+              d, OnDeviceRuntime.qairt),
+          isTrue);
+    });
+
+    test('litertlm：bundle 布局在场 = verified（静态检查止于布局）', () async {
+      final d = Directory('${tmp.path}/lt');
+      await d.create(recursive: true);
+      expect(
+          await OnDeviceAssetManager.templateApplicability(
+              d, OnDeviceRuntime.litertlm),
+          isFalse);
+      await File('${d.path}/gemma3-1b.litertlm').writeAsString('x');
+      expect(
+          await OnDeviceAssetManager.templateApplicability(
+              d, OnDeviceRuntime.litertlm),
+          isTrue);
+    });
+
+    test('auto → false（布局未判 = 未验证）', () async {
+      final d = Directory('${tmp.path}/au');
+      await d.create(recursive: true);
+      expect(
+          await OnDeviceAssetManager.templateApplicability(
+              d, OnDeviceRuntime.auto),
+          isFalse);
+    });
+  });
+
+  group('存量模型幂等迁移（规格 §7）', () {
+    late Directory tmp;
+    late OnDeviceAssetManager mgr;
+    setUp(() async {
+      tmp = await Directory.systemTemp.createTemp('gh_migrate');
+      mgr = OnDeviceAssetManager.forTest(
+        supportDirResolver: () async => tmp,
+        freeBytesProvider: () async => 20 * 1024 * 1024 * 1024,
+        fingerprintProvider: () async => 'fp-test',
+      );
+    });
+    tearDown(() async {
+      if (await tmp.exists()) await tmp.delete(recursive: true);
+    });
+
+    test('缺块 qairt 旧 meta → 补块 + 结构区回填，version 不变（modelId 稳定）',
+        () async {
+      final dir = Directory('${tmp.path}/models/old-qairt');
+      await dir.create(recursive: true);
+      await File('${dir.path}/genie_config.json').writeAsString('{}');
+      await File('${dir.path}/tokenizer.json').writeAsString('{}');
+      final metaFile = File('${dir.path}/.asset-meta.json');
+      await metaFile.writeAsString(jsonEncode({
+        'version': 'v9-old',
+        'installedAt': '2026-10-01T00:00:00.000',
+        'driverFingerprint': 'fp-test',
+        'sizes': {'genie_config.json': 2, 'tokenizer.json': 2},
+        'sha256': {'genie_config.json': 'aa', 'tokenizer.json': 'bb'},
+      }));
+
+      final models = await mgr.listInstalled();
+      final m = models.single;
+      expect(m.dirName, 'old-qairt');
+      expect(m.runtime, OnDeviceRuntime.qairt);
+      expect(m.templateVerified, isTrue);
+
+      final newMeta =
+          jsonDecode(await metaFile.readAsString()) as Map<String, dynamic>;
+      expect(newMeta['version'], 'v9-old'); // 身份仅认 version 前缀 → 不变
+      expect(newMeta['runtime'], OnDeviceRuntime.qairt);
+      expect(newMeta['family'], OnDeviceAssetFamily.geniex);
+      final profile = newMeta['modelProfile'] as Map<String, dynamic>;
+      expect(profile['chatTemplateFamily'], 'qwen_chatml');
+      expect(profile['stopSequences'], ['\u003c|im_end|\u003e']);
+    });
+
+    test('幂等：块在场后二次扫描不再重写', () async {
+      final dir = Directory('${tmp.path}/models/old-qairt');
+      await dir.create(recursive: true);
+      await File('${dir.path}/genie_config.json').writeAsString('{}');
+      await File('${dir.path}/tokenizer.json').writeAsString('{}');
+      final metaFile = File('${dir.path}/.asset-meta.json');
+      await metaFile.writeAsString(jsonEncode({
+        'version': 'v9-old',
+        'installedAt': 'x',
+        'driverFingerprint': 'fp-test',
+        'sizes': {'genie_config.json': 2, 'tokenizer.json': 2},
+      }));
+      await mgr.listInstalled();
+      final after1 = await metaFile.readAsString();
+      await mgr.listInstalled();
+      expect(await metaFile.readAsString(), after1);
+    });
+
+    test('探测失败（auto 无工件）→ 不写迁移（保块缺席，禁半效迁移）', () async {
+      final dir = Directory('${tmp.path}/models/plain');
+      await dir.create(recursive: true);
+      final metaFile = File('${dir.path}/.asset-meta.json');
+      await metaFile.writeAsString(jsonEncode({
+        'version': 'v1',
+        'installedAt': 'x',
+        'driverFingerprint': 'fp-test',
+        'sizes': {'model.bin': 1},
+      }));
+      final before = await metaFile.readAsString();
+      await mgr.listInstalled();
+      expect(await metaFile.readAsString(), before);
     });
   });
 }

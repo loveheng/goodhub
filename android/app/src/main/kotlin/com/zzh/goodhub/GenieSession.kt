@@ -1,7 +1,12 @@
 package com.zzh.goodhub
 
+import android.app.ActivityManager
 import android.content.Context
+import android.os.Build
 import android.util.Log
+import com.zzh.goodhub.engine.GenieXRuntime
+import com.zzh.goodhub.engine.MemoryGuardEvaluator
+import com.zzh.goodhub.engine.NpuCircuitBreaker
 import com.geniex.sdk.GenieXSdk
 import com.geniex.sdk.LlmWrapper
 import com.geniex.sdk.bean.ComputeUnitValue
@@ -10,6 +15,7 @@ import com.geniex.sdk.bean.LlmCreateInput
 import com.geniex.sdk.bean.LlmStreamResult
 import com.geniex.sdk.bean.ModelConfig
 import com.geniex.sdk.bean.SamplerConfig
+import com.zzh.goodhub.engine.RepetitionGuard
 import com.zzh.goodhub.engine.StopSequenceMatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
@@ -182,6 +188,13 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
                 Log.e(TAG, "[DEGRADE] $loadError")
                 return
             }
+            // P0 前置双闸（2026-11-02）：qairt NPU 路径（无 GPU 兜底）若内存地板
+            // 不足或已熔断，直接收口云端（省去沉重 NPU init + 避免低内存 LMK 风暴）；
+            // 纯 GGUF（llama_cpp GPU 档）不受影响，照常。
+            val arch = GenieXRuntime.hexagonArch()
+            val memOk = preloadMemoryOk()
+            val npuBroken = arch != null && NpuCircuitBreaker.isTripped(
+                context, "geniex", arch, Build.SOC_MODEL.orEmpty())
             val dir = File(modelDir)
             val configPath = File(dir, "genie_config.json")
             val tokenizerPath = File(dir, "tokenizer.json")
@@ -244,6 +257,12 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
             var active: String
             var result: Result<LlmWrapper>
             if (hasGenie) {
+                if (!memOk || npuBroken) {
+                    loadError = "qairt NPU skipped (memOk=$memOk, " +
+                        "broken=${arch != null && npuBroken}) → cloud fallback"
+                    Log.w(TAG, "[DEGRADE] $loadError")
+                    return
+                }
                 active = GenieXSdk.PLUGIN_ID_QAIRT
                 result = buildSession(buildInput(GenieXSdk.PLUGIN_ID_QAIRT, ComputeUnitValue.NPU))
             } else {
@@ -259,6 +278,13 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
                     Log.i(TAG, "session created (runtime=$active, geniex-android pipeline ready)")
                 },
                 onFailure = { e ->
+                    // P0：仅 qairt NPU 失败才落盘熔断（GGUF/llama_cpp GPU 档失败
+                    // 不属 NPU 缺陷，不污染熔断器）。
+                    if (active == GenieXSdk.PLUGIN_ID_QAIRT && arch != null) {
+                        NpuCircuitBreaker.trip(
+                            context, "geniex", arch, Build.SOC_MODEL.orEmpty(),
+                            "qairt_build_failed:${e.javaClass.simpleName}")
+                    }
                     loadError = "geniex build failed (runtime=$active): ${e.message}"
                     Log.e(TAG, "[DEGRADE] $loadError")
                 },
@@ -274,6 +300,25 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
             // 边界：仅削「装载后的稳态恢复」，削不平装载瞬态尖峰。
             Log.i(TAG, "shards parsed: page-cache reclaim handed to host ($modelDir)")
         }
+    }
+
+    /**
+     * P0 前置内存地板闸门：复用 [MemoryGuardEvaluator.ABSOLUTE_FLOOR_BYTES]（与
+     * 运行时护栏同一绝对地板口径，1GB）——低可用内存下强行拉起 qairt NPU 会瞬态
+     * 击穿整机 min watermark 触发 LMK 风暴。返回 false = 不拉起 NPU，交云端。
+     */
+    private fun preloadMemoryOk(): Boolean {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            ?: return true
+        val mi = ActivityManager.MemoryInfo()
+        am.getMemoryInfo(mi)
+        val floor = MemoryGuardEvaluator.ABSOLUTE_FLOOR_BYTES
+        if (mi.availMem < floor || mi.lowMemory) {
+            Log.w(TAG, "[DEGRADE] preload memory floor: avail=${mi.availMem / 1048576}MB " +
+                "floor=${floor / 1048576}MB lowMemory=${mi.lowMemory} → skip NPU")
+            return false
+        }
+        return true
     }
 
     /**
@@ -391,6 +436,10 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
                     ?: StopSequenceMatcher.DEFAULT
             }
         )
+        // 复读环看门狗（2026-11-02）：已放行文本尾部复读检测（2B 级小模型
+        // 低熵陷阱：数字环 / 句级环）；repetitionPenalty 1.05 只缓解不消除。
+        // 命中 = abort（不计数熔断——复读是模型质量问题，非设备缺陷）。
+        val repetitionGuard = RepetitionGuard()
         val flow = w.generateStreamFlow(
             chatPrompt,
             // 0.10 起签名 = (prompt?, inputIds?, inputEmbd?, inputEmbdDim, config)
@@ -428,7 +477,17 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
                         val clean = sanitizer.feed(text)
                         if (clean.isNotEmpty()) {
                             val m = stopMatcher.feed(clean)
-                            if (m.release.isNotEmpty()) sink.onChunk(m.release)
+                            if (m.release.isNotEmpty()) {
+                                sink.onChunk(m.release)
+                                // 复读环看门狗：已放行文本陷入短单元连续重复
+                                // → abort（保留已放行内容；[DEGRADE] 留取证，
+                                // 不计数熔断）。
+                                if (repetitionGuard.feed(m.release)) {
+                                    Log.w(TAG, "[DEGRADE] repetition loop detected -> stop " +
+                                        "(totalChars=${repetitionGuard.totalChars})")
+                                    abortRequested = true
+                                }
+                            }
                             if (m.stopped) {
                                 // 零内容命中 = 模型在首个 token 就闭合模板（本轮零
                                 // 产出的直接证据；与「复读到 maxTokens」两种病灶）。
@@ -448,6 +507,15 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
                                     Log.i(TAG, "stop sequence at stream end -> stop")
                                     abortRequested = true
                                 }
+                            }
+                            // 终态冲刷（2026-11-02 盲区修复）：匹配器为防跨帧
+                            // 切断恒滞留末尾 maxStop-1 字符——流终态未命中 = 非
+                            // 停用词，必须放行，否则静默丢尾（LiteRtLmRunner
+                            // onDone 同款 flush；GenieX 系此前漏了，尾部最多
+                            // 丢 9 字符）。
+                            if (!abortRequested) {
+                                val tail = stopMatcher.flush()
+                                if (tail.isNotEmpty()) sink.onChunk(tail)
                             }
                         }
                         lastGeneratedTokens = p.generatedTokens.toInt()

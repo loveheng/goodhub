@@ -3,9 +3,7 @@ import 'dart:async';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
-import '../../llm/on_device_admission_probe.dart';
-import '../../llm/on_device_asset_manager.dart';
-import '../../llm/on_device_model_catalog.dart';
+import '../../coordinator/on_device_admin.dart';
 
 /// 端侧模型自由导入共享流程（2026-11-02 用户拍板：导入入口从端侧模型设置段
 /// 拆到资源中心；设置段保留 选择/删除 管理面）。散文件/压缩包路由 + 命名 +
@@ -20,7 +18,7 @@ abstract final class OnDeviceModelImport {
     void Function(String message)? onFlash,
     Future<void> Function()? onImported,
   }) async {
-    final assets = assetsOverride ?? OnDeviceAssetManager.instance;
+    final assets = assetsOverride ?? OnDeviceAdmin.assets;
     final picked = await FilePicker.pickFiles(type: FileType.any);
     if (picked.isEmpty) return; // 用户取消
     if (!context.mounted) return; // 文件选择器全屏遮盖跨 async gap（原设置段同款护栏）
@@ -51,8 +49,7 @@ abstract final class OnDeviceModelImport {
     );
     if (!ok) return;
     // 导入后准入探针（DispatchProfile 设计稿 §3）：后台编排不挡 UI。
-    unawaited(sharedAdmissionProbe
-        .probeIfNeeded(OnDeviceModelOption.fromInstalled(dirName)));
+    OnDeviceAdmin.probeAdmission(dirName);
     await onImported?.call();
     onFlash?.call('$name 已导入，首次使用端侧时自动加载');
   }
@@ -155,7 +152,7 @@ abstract final class OnDeviceModelImport {
         onFlash?.call('导入失败（磁盘门禁/文件读取/重名冲突/资产校验），见日志');
         return false;
       }
-      await OnDeviceModelSelection.write(target.dirName);
+      await OnDeviceAdmin.selectModel(target.dirName);
       return true;
     } catch (e) {
       if (context.mounted) Navigator.of(context, rootNavigator: true).pop();

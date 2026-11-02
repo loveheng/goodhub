@@ -73,4 +73,4 @@ last-merge: none
 
 ## 断点
 
-- [断点] 下一步：下一步：modelProfile 待办已完成待真机合验（与探针二段/首问 222222 同批）——导入含 GGUF（llama_cpp 通道放开后）或 qairt/litertlm 模型 → 查 .asset-meta.json modelProfile 块 + GenieSession 日志 family/stopSequences/contextTokens；主线原断点不变：运行库体系重梳装机 + goodshare §4 增补条粘贴
+- [断点] 下一步：端侧默认⓪真裸已侧载（云端默认①不变）；下一步：真机日常对话复验（默认⓪下正常对话+多轮指代确认上下文丢失的体感可接受）；可选后续=⓪+精简短 system 变体（保行为约束，短指令是否触发未验证）

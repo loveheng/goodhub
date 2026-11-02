@@ -1,0 +1,1 @@
+- [x] (2026-11-03) F16 依赖护栏存量违例 5 边：ui→llm 五边经 coordinator 门面收敛（新 `lib/coordinator/on_device_admin.dart`；on_device_config_section / on_device_model_import 改走门面，零加白名单）；F16 测试全绿 + analyze 0 issue

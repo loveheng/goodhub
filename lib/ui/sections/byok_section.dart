@@ -16,6 +16,7 @@ import 'package:flutter/material.dart';
 
 import '../../llm/cloud/byok_store.dart';
 import '../../llm/cloud/cloud_llm.dart' show CloudProtocol;
+import '../../llm/on_device_history_policy_store.dart';
 import '../tokens/console_tokens.dart';
 
 /// 段 widget：注入 [store]（生产 = `ByokStore()`，测试传假件）、[onFlash]
@@ -54,6 +55,10 @@ class _ByokSectionState extends State<ByokSection>
   var _creating = false;
   String? _error;
 
+  /// 每 profile 历史策略偏好快照（策略挂模型本身，2026-11-02 用户拍板；
+  /// 键 = profile id，缺省 = 默认 ①，读失败不阻塞面板）。
+  final Map<String, String> _policyIds = <String, String>{};
+
   final _nameCtrl = TextEditingController();
   final _urlCtrl = TextEditingController();
   final _modelCtrl = TextEditingController();
@@ -85,12 +90,19 @@ class _ByokSectionState extends State<ByokSection>
         if (await widget.store.apiKey(p.id) != null) withKey.add(p.id);
       }
       final preferred = await widget.store.preferredProfileId();
+      final policyIds = <String, String>{
+        for (final p in profiles)
+          p.id: await HistoryPolicySelection.readForModel(p.id),
+      };
       if (!mounted) return;
       setState(() {
         _profiles = profiles;
         _hasKey
           ..clear()
           ..addAll(withKey);
+        _policyIds
+          ..clear()
+          ..addAll(policyIds);
         _preferredId =
             preferred ?? (profiles.isNotEmpty ? profiles.first.id : null);
         _creating = false;
@@ -242,6 +254,7 @@ class _ByokSectionState extends State<ByokSection>
                           color: t.terminalMuted,
                         ),
                       ),
+                      _policyPicker(context, t, p.id),
                     ],
                   ),
                 ),
@@ -278,6 +291,52 @@ class _ByokSectionState extends State<ByokSection>
               ],
             ),
     );
+  }
+
+  /// 单 profile 历史策略选择（策略挂模型本身：写偏好即时生效，下次请求按
+  /// 新策略拼装；云端默认档 ① 整体跳过裁剪 = 存量零变化）。
+  Widget _policyPicker(BuildContext context, ConsoleTokens t, String profileId) {
+    final id = _policyIds[profileId] ?? HistoryPolicyIds.dropOldest;
+    return Row(children: [
+      Text('历史策略',
+          style: TextStyle(
+            fontSize: Fsz.micro,
+            color: t.terminalMuted,
+          )),
+      DropdownButton<String>(
+        key: Key('history-policy-profile-$profileId'),
+        value: id,
+        underline: const SizedBox.shrink(),
+        isDense: true,
+        items: [
+          HistoryPolicyIds.dropOldest,
+          HistoryPolicyIds.anchorRecent,
+          HistoryPolicyIds.rollingSummary,
+          HistoryPolicyIds.bare,
+        ]
+            .map((pid) => DropdownMenuItem(
+                value: pid,
+                child: Text(HistoryPolicySelection.label(pid),
+                    style: TextStyle(
+                        fontSize: Fsz.micro,
+                        color: pid == HistoryPolicyIds.bare
+                            ? t.danger
+                            : t.terminalMuted))))
+            .toList(),
+        onChanged: (pid) async {
+          if (pid == null) return;
+          try {
+            await HistoryPolicySelection.writeForModel(profileId, pid);
+            if (!mounted) return;
+            setState(() => _policyIds[profileId] = pid);
+            widget.onFlash(
+                '历史策略已更新：${HistoryPolicySelection.label(pid)}（即时生效）');
+          } on Object catch (e) {
+            if (mounted) setState(() => _error = '历史策略保存失败：$e');
+          }
+        },
+      ),
+    ]);
   }
 
   /// 新增（profile == null）与编辑共用表单；编辑模式密钥留空 = 保持已存密钥。

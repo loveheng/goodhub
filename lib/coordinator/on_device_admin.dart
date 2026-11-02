@@ -1,0 +1,94 @@
+/// 端侧模型管理面门面（F16 依赖护栏结构修复，2026-11-03）：ui 窗口对 llm
+/// 域的管理调用收敛出口（coding-standards §1.4.4 门面收敛 / §8.2 先改结构）。
+/// 服务调用经 [OnDeviceAdmin] 静态转发；值类型经 `show` 导出供 UI 状态字段
+/// 使用——ui 文件不再直接 import llm 域（ui→llm 白名单只减不增）。
+library;
+
+import 'dart:async';
+
+import '../llm/geniex_runtime_binding.dart'
+    show GenieXRuntimeControl, GenieXStatus, LiteRtLmNpuControl,
+    LiteRtLmNpuStatus;
+import '../llm/on_device_admission_probe.dart' show sharedAdmissionProbe;
+import '../llm/on_device_asset_manager.dart' show OnDeviceAssetManager;
+import '../llm/on_device_gate_override.dart'
+    show GateOverride, OnDeviceGateOverride;
+import '../llm/on_device_model_catalog.dart'
+    show OnDeviceModelOption, OnDeviceModelSelection;
+
+export '../llm/geniex_runtime_binding.dart'
+    show GenieXStatus, LiteRtLmNpuStatus;
+export '../llm/on_device_asset_manager.dart'
+    show AssetPullProgress, OnDeviceAssetManager;
+export '../llm/on_device_gate_override.dart' show GateOverride;
+export '../llm/on_device_model_catalog.dart'
+    show ImportTarget, kOnDeviceLlamaCppEnabled, OnDeviceModelOption,
+    OnDeviceModelSelection;
+
+/// 端侧管理面服务聚合（设置段 / 导入流共用的唯一出口）。
+abstract final class OnDeviceAdmin {
+  // ---- 增配运行库（geniex_runtime_binding）----
+
+  /// 增配镜像列表读取（GenieX/LiteRT-LM 双族共用一套持久化）。
+  static Future<List<String>> loadMirrors() => GenieXRuntimeControl.loadMirrors();
+
+  static Future<void> saveMirrors(List<String> mirrors) =>
+      GenieXRuntimeControl.saveMirrors(mirrors);
+
+  /// GenieX 主通路增配状态。
+  static Future<GenieXStatus> geniexStatus() => GenieXRuntimeControl.status();
+
+  /// 受理 GenieX 增配安装（true = 已受理；进度/完成经 [npuListen] 反投）。
+  static Future<bool> geniexInstall(List<String> mirrors) =>
+      GenieXRuntimeControl.install(mirrors);
+
+  /// 卸载 GenieX 增配运行库（端侧 LLM 收口云端，可随时重装）。
+  static Future<bool> geniexUninstall({bool deleteCache = false}) =>
+      GenieXRuntimeControl.uninstall(deleteCache: deleteCache);
+
+  /// 增配运行库状态（通道不可用 = 不支持快照，UI 隐藏入口）。
+  static Future<LiteRtLmNpuStatus> npuStatus() => LiteRtLmNpuControl.status();
+
+  /// 受理增配安装（true = 已受理；进度/完成经 [npuListen] 反投）。
+  static Future<bool> npuInstall(List<String> mirrors) =>
+      LiteRtLmNpuControl.install(mirrors);
+
+  /// 增配通道事件订阅（litertlm + geniex 合并分发，禁各自独立订阅），
+  /// 返回取消订阅闭包。
+  static void Function() npuListen({
+    void Function(int pct)? onGeniexProgress,
+    void Function(bool ok)? onGeniexDone,
+    required void Function(int pct) onProgress,
+    required void Function(bool ok) onDone,
+  }) =>
+      LiteRtLmNpuControl.listen(
+        onGeniexProgress: onGeniexProgress,
+        onGeniexDone: onGeniexDone,
+        onProgress: onProgress,
+        onDone: onDone,
+      );
+
+  // ---- 路由覆盖偏好（on_device_gate_override）----
+
+  static Future<GateOverride> readGateOverride() => OnDeviceGateOverride.read();
+
+  static Future<void> writePreferOnDevice(bool v) =>
+      OnDeviceGateOverride.writePreferOnDevice(v);
+
+  // ---- 资产与准入（asset_manager / admission_probe）----
+
+  /// 资产管理面单例（列表/导入/删除经此）。
+  static OnDeviceAssetManager get assets => OnDeviceAssetManager.instance;
+
+  /// 导入完成后准入探针（DispatchProfile §3）：后台编排不挡 UI。
+  static void probeAdmission(String dirName) => unawaited(
+      sharedAdmissionProbe.probeIfNeeded(OnDeviceModelOption.fromInstalled(dirName)));
+
+  // ---- 模型选择（on_device_model_catalog）----
+
+  static Future<void> selectModel(String dirName) =>
+      OnDeviceModelSelection.write(dirName);
+
+  static Future<OnDeviceModelOption?> readSelectedModel() =>
+      OnDeviceModelSelection.read();
+}

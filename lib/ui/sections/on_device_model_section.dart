@@ -17,6 +17,7 @@ import '../components/on_device_model_import.dart';
 import '../tokens/console_tokens.dart';
 import '../../llm/on_device_asset_manager.dart';
 import '../../llm/on_device_model_catalog.dart';
+import '../../llm/on_device_history_policy_store.dart';
 
 /// 段 widget：注入 [assetManager]（生产 = 单例，测试传假件）、[onFlash]
 /// （页面级 toast 口径）、[errorRowBuilder]（面板级错误态统一件）。
@@ -52,6 +53,9 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
   bool _busy = false;
   String? _error;
 
+  /// 每模型历史策略偏好快照（键 = dirName；缺省 = 默认 ①，读失败不阻塞资产面）。
+  final Map<String, String> _policyIds = <String, String>{};
+
   @override
   void initState() {
     super.initState();
@@ -66,10 +70,18 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
     try {
       final installed = await _assets.listInstalled();
       final selected = await OnDeviceModelSelection.read();
+      final policyIds = <String, String>{
+        for (final m in installed)
+          m.dirName: await HistoryPolicySelection.readForModel(m.dirName,
+              device: true),
+      };
       if (!mounted) return;
       setState(() {
         _models = installed;
         _selectedDir = selected?.dirName;
+        _policyIds
+          ..clear()
+          ..addAll(policyIds);
       });
     } catch (e) {
       if (mounted) setState(() => _error = '端侧模型目录读取失败：$e');
@@ -188,7 +200,8 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
           ? '${(bytes / (1 << 30)).toStringAsFixed(1)}GB'
           : '${bytes ~/ (1 << 20)}MB';
 
-  /// 已装模型行（注册表条目）：展示名 + 运行时徽标 + 体积 + 使用/删除。
+  /// 已装模型行（注册表条目）：展示名 + 运行时徽标 + 体积 + 使用/删除 +
+  /// 历史策略选择（策略挂模型本身，2026-11-02 用户拍板）。
   Widget _modelRow(ConsoleTokens t, InstalledModel m) {
     final selected = _selectedDir == m.dirName;
     return Row(
@@ -203,11 +216,13 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
                       color: selected ? t.l1Ok : t.l1Info)),
               Text(
                 '${_runtimeLabel(m.runtime)}  ${_sizeLabel(m.totalBytes)}'
+                '${m.templateVerified == false ? '  未验证' : ''}'
                 '${selected ? '  当前使用' : ''}',
                 style: TextStyle(
                     fontSize: Fsz.note,
                     color: selected ? t.l1Ok : t.terminalMuted),
               ),
+              _policyPicker(t, m.dirName),
             ],
           ),
         ),
@@ -224,5 +239,46 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
         ),
       ],
     );
+  }
+
+  /// 单模型历史策略选择（紧凑下拉；写偏好即时生效，下次请求按新策略拼装）。
+  Widget _policyPicker(ConsoleTokens t, String dirName) {
+    final id = _policyIds[dirName] ?? HistoryPolicySelection.kDeviceDefaultPolicyId;
+    return Row(children: [
+      Text('历史策略',
+          style: TextStyle(fontSize: Fsz.telemetrySm, color: t.terminalMuted)),
+      DropdownButton<String>(
+        key: ValueKey('history-policy-model-$dirName'),
+        value: id,
+        underline: const SizedBox.shrink(),
+        isDense: true,
+        items: [
+          HistoryPolicyIds.dropOldest,
+          HistoryPolicyIds.anchorRecent,
+          HistoryPolicyIds.rollingSummary,
+          HistoryPolicyIds.bare,
+        ]
+            .map((pid) => DropdownMenuItem(
+                value: pid,
+                child: Text(HistoryPolicySelection.label(pid),
+                    style: TextStyle(
+                        fontSize: Fsz.telemetrySm,
+                        color:
+                            pid == HistoryPolicyIds.bare ? t.danger : t.l1Info))))
+            .toList(),
+        onChanged: (pid) async {
+          if (pid == null) return;
+          try {
+            await HistoryPolicySelection.writeForModel(dirName, pid);
+            if (!mounted) return;
+            setState(() => _policyIds[dirName] = pid);
+            widget.onFlash?.call(
+                '历史策略已更新：${HistoryPolicySelection.label(pid)}（即时生效）');
+          } on Object catch (e) {
+            if (mounted) widget.onFlash?.call('历史策略保存失败：$e');
+          }
+        },
+      ),
+    ]);
   }
 }

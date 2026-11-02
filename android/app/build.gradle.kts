@@ -41,6 +41,12 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    testOptions {
+        // 纯 JVM 单测：android.util.Log 等框架桩返回默认值（不抛 not mocked）——
+        // NpuCircuitBreaker 等被测类含 Log 留痕调用（2026-11-02 盲区批）。
+        unitTests.isReturnDefaultValues = true
+    }
+
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.zzh.goodhub"
@@ -107,7 +113,7 @@ dependencies {
     // 端侧 LLM 运行时（M2 自 goodshare 随迁）：LiteRT-LM 纯 Kotlin 引擎（Maven Central，
     // 无 NDK/CMake），跑 .litertlm 模型包。坐标经 AndroLLM 实际工程核实（2026-09-29）：
     // artifact 为 litertlm-android，非 litert-lm（后者在 Maven Central 不存在，构建期即解析失败）。
-    implementation("com.google.ai.edge.litertlm:litertlm-android:0.16.0")
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.18.1")
 
     // :engine 端侧推理后端（S3 换线，2026-10-29）：官方 GenieX Android 绑定
     // （官方 GenieX Chat 同款管线）。4B 同资产同参数对照钉死裸 libGenie C API

@@ -204,6 +204,7 @@ class InstalledModel {
     required this.imported,
     this.installedAt,
     this.modelProfile,
+    this.templateVerified,
   });
 
   final String dirName;
@@ -215,6 +216,23 @@ class InstalledModel {
 
   /// 声明式解析元数据（meta 无块 = null）。
   final OnDeviceModelProfile? modelProfile;
+
+  /// 模板可应用性探针结果（规格 on-device-asset-metadata.md §6，资产面
+  /// listInstalled 扫描时回填）：false = 未验证（注册表黄灯徽章）；null =
+  /// 未探测（选择路径不走探针面）。
+  final bool? templateVerified;
+
+  /// 徽章回填（资产面 listInstalled 专用——ModelRegistry.scan 保持纯读）。
+  InstalledModel withTemplateVerified(bool? verified) => InstalledModel(
+        dirName: dirName,
+        displayName: displayName,
+        runtime: runtime,
+        totalBytes: totalBytes,
+        imported: imported,
+        installedAt: installedAt,
+        modelProfile: modelProfile,
+        templateVerified: verified,
+      );
 
   OnDeviceModelOption toOption() => OnDeviceModelOption(
         id: dirName,

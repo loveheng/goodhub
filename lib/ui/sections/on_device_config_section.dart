@@ -9,9 +9,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../tokens/console_tokens.dart';
+import '../../coordinator/on_device_admin.dart';
 import '../../gateway_api/gateway_control.dart';
-import '../../llm/geniex_runtime_binding.dart';
-import '../../llm/on_device_gate_override.dart';
 
 /// 电池白名单查询/申请注入位（测试替换，范式同 on_device_model_section）。
 typedef BatteryStatusFn = Future<bool> Function();
@@ -67,7 +66,7 @@ class _OnDeviceConfigSectionState extends State<OnDeviceConfigSection>
     unawaited(_refreshGateOverride());
     unawaited(_refreshBatteryExemption());
     // 双族事件合并分发（单 handler——同通道 setMethodCallHandler 相互覆盖）。
-    _geniexEvents ??= LiteRtLmNpuControl.listen(
+    _geniexEvents ??= OnDeviceAdmin.npuListen(
       onGeniexProgress: (pct) {
         if (!mounted) return;
         setState(() => _geniexPct = pct);
@@ -107,7 +106,7 @@ class _OnDeviceConfigSectionState extends State<OnDeviceConfigSection>
   /// GenieX 增配状态刷新（设计稿 §7 状态机：未提供/可下载/已装）。
   Future<void> _refreshGeniex() async {
     try {
-      final st = await GenieXRuntimeControl.status();
+      final st = await OnDeviceAdmin.geniexStatus();
       if (!mounted) return;
       setState(() => _geniex = st);
     } on Object catch (e) {
@@ -118,7 +117,7 @@ class _OnDeviceConfigSectionState extends State<OnDeviceConfigSection>
   /// LiteRT-LM NPU 增配状态刷新（多机型口径：按芯片下载）。
   Future<void> _refreshLitertlm() async {
     try {
-      final st = await LiteRtLmNpuControl.status();
+      final st = await OnDeviceAdmin.npuStatus();
       if (!mounted) return;
       setState(() => _litertlm = st);
     } on Object catch (e) {
@@ -129,8 +128,8 @@ class _OnDeviceConfigSectionState extends State<OnDeviceConfigSection>
   /// 受理 LiteRT-LM NPU 安装（镜像复用 GenieX 双源持久化——一套裁决）。
   Future<void> _installLitertlm() async {
     try {
-      final mirrors = await GenieXRuntimeControl.loadMirrors();
-      final accepted = await LiteRtLmNpuControl.install(mirrors);
+      final mirrors = await OnDeviceAdmin.loadMirrors();
+      final accepted = await OnDeviceAdmin.npuInstall(mirrors);
       if (!mounted) return;
       setState(() => _litertlmPct = accepted ? 0 : null);
     } on Object catch (e) {
@@ -140,8 +139,8 @@ class _OnDeviceConfigSectionState extends State<OnDeviceConfigSection>
 
   Future<void> _installGeniex() async {
     try {
-      final mirrors = await GenieXRuntimeControl.loadMirrors();
-      final accepted = await GenieXRuntimeControl.install(mirrors);
+      final mirrors = await OnDeviceAdmin.loadMirrors();
+      final accepted = await OnDeviceAdmin.geniexInstall(mirrors);
       if (!mounted) return;
       setState(() => _geniexPct = accepted ? 0 : null);
       widget.onFlash?.call(accepted ? 'GenieX 增配安装已受理' : 'GenieX 增配安装未受理（可能已在进行）');
@@ -152,7 +151,7 @@ class _OnDeviceConfigSectionState extends State<OnDeviceConfigSection>
 
   Future<void> _uninstallGeniex() async {
     try {
-      final ok = await GenieXRuntimeControl.uninstall();
+      final ok = await OnDeviceAdmin.geniexUninstall();
       if (!mounted) return;
       widget.onFlash?.call(ok ? 'GenieX 增配已卸载（端侧 LLM 将收口云端，可随时重装）' : 'GenieX 增配本就未安装');
       await _refreshGeniex();
@@ -251,7 +250,7 @@ class _OnDeviceConfigSectionState extends State<OnDeviceConfigSection>
   /// 镜像列表编辑（D3 镜像可配置化，P3）：多行文本每行一个 URL，空 =
   /// 回退内置双源默认。保存即持久化（下次安装生效）。
   Future<void> _editMirrors() async {
-    final current = await GenieXRuntimeControl.loadMirrors();
+    final current = await OnDeviceAdmin.loadMirrors();
     if (!mounted) return;
     final controller = TextEditingController(text: current.join('\n'));
     final saved = await showDialog<bool>(
@@ -280,7 +279,7 @@ class _OnDeviceConfigSectionState extends State<OnDeviceConfigSection>
         .map((s) => s.trim())
         .where((s) => s.startsWith('http'))
         .toList();
-    await GenieXRuntimeControl.saveMirrors(mirrors);
+    await OnDeviceAdmin.saveMirrors(mirrors);
     if (mounted) {
       widget.onFlash?.call(mirrors.isEmpty ? '镜像已清空——回退内置双源默认' : '镜像已保存（${mirrors.length} 个，下次安装生效）');
     }
@@ -316,7 +315,7 @@ class _OnDeviceConfigSectionState extends State<OnDeviceConfigSection>
   /// 门禁覆盖偏好（§16 用户授权覆盖层）：读取用户对三维度门禁与偏好/强行的覆盖。
   Future<void> _refreshGateOverride() async {
     try {
-      final ov = await OnDeviceGateOverride.read();
+      final ov = await OnDeviceAdmin.readGateOverride();
       if (!mounted) return;
       setState(() => _gateOverride = ov);
     } on Object catch (e) {
@@ -325,7 +324,7 @@ class _OnDeviceConfigSectionState extends State<OnDeviceConfigSection>
   }
 
   Future<void> _setPrefer(bool v) async {
-    await OnDeviceGateOverride.writePreferOnDevice(v);
+    await OnDeviceAdmin.writePreferOnDevice(v);
     if (!mounted) return;
     setState(() => _gateOverride = _gateOverride!.copyWith(preferOnDevice: v));
     widget.onFlash?.call(v ? '已设为优先使用端侧' : '已恢复云端优先');

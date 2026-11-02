@@ -14,12 +14,49 @@ import com.zzh.goodhub.GenieXNative
  * marker 含驱动指纹（Build.FINGERPRINT，§4.8 对齐）：系统 OTA 更新 DSP 驱动
  * → 指纹漂移 → installed()=false（脏），待主进程重装后写新指纹。
  *
- * 机型映射（Build.SOC_MODEL）：sm8550→v73 / sm8650→v75 / sm8750→v79 /
- * sm8850→v81；QAIRT 全速集仅 v79/v81（Spike-2 定稿 4 件套）。
+ * 机型映射（P1 加固 2026-11-02）：sm8550/7675/7550→v73 / sm8650→v75 /
+ * sm8750→v79 / sm8850→v81（补骁龙 7 系；代号 kailua/pineapple/sun 兜底魔改
+ * ROM）；QAIRT 全速集仅 v79/v81（Spike-2 定稿 4 件套）。
  */
 object GenieXRuntime {
     private const val TAG = "GenieXRuntime"
     const val VERSION = "0.10.0"
+
+    // —— P1（2026-11-02）：SoC 识别健壮性加固 ——
+    // 高通参考平台代号 → Hexagon 代际。魔改 ROM 常把 ro.soc.model 改写为市场名
+    // 或代号，但 ro.board.platform / ro.hardware 多保留此代号（kailua/pineapple/sun），
+    // 故作为 sm/qcs 编号匹配失败后的兜底映射。仅收广泛公认代号，未知不臆造。
+    private val CODENAME_TO_ARCH = mapOf(
+        "kailua" to 73,    // SM8550 (8 Gen 2)
+        "pineapple" to 75, // SM8650 (8 Gen 3)
+        "sun" to 79,       // SM8750 (8 Elite)
+    )
+    private const val ARCH_UNSET = -2
+    private const val ARCH_NULL = -1
+    @Volatile private var archCache: Int = ARCH_UNSET
+
+    private fun readSystemProperty(key: String): String = try {
+        val p = Runtime.getRuntime().exec(arrayOf("getprop", key))
+        p.inputStream.bufferedReader().use { it.readLine().orEmpty().trim() }
+    } catch (_: Throwable) { "" }
+
+    /**
+     * 三级属性探测 SoC 标识：Build.SOC_MODEL → getprop ro.soc.model →
+     * ro.board.platform → ro.hardware；返回首个非空非 unknown 值（小写）。
+     */
+    fun resolveSocModel(): String {
+        val candidates = sequenceOf(
+            Build.SOC_MODEL.orEmpty(),
+            readSystemProperty("ro.soc.model"),
+            readSystemProperty("ro.board.platform"),
+            readSystemProperty("ro.hardware"),
+        )
+        for (raw in candidates) {
+            val t = raw.trim().lowercase()
+            if (t.isNotEmpty() && !t.equals("unknown", true)) return t
+        }
+        return ""
+    }
 
     /** System.load 依赖序（被依赖者先装；npu_jni 最后——其 JNI_OnLoad 跑 geniex_init）。 */
     private val LOAD_ORDER = listOf(
@@ -42,13 +79,45 @@ object GenieXRuntime {
         (LOAD_ORDER.toSet() - "libnpu_jni.so" + "libnpu_jni.so" + qnn)
     }
 
-    /** SoC → Hexagon 代际；null = 本库不支持（fallback 内置基线）。 */
+    /**
+     * SoC → Hexagon 代际；null = 本库不支持（fallback 内置基线）。进程内恒定缓存
+     * （芯片不变），避免 doLoad 高频路径反复 exec getprop。
+     */
     fun hexagonArch(): Int? {
-        val mfr = Build.SOC_MANUFACTURER ?: return null
-        if (!mfr.equals("QTI", true) && !mfr.contains("qualcomm", true)) return null
-        return when (Regex("^(sm|qcs)(\\d{4})").find(Build.SOC_MODEL.orEmpty().trim().lowercase())?.groupValues?.get(2)) {
-            "8550" -> 73; "8650" -> 75; "8750" -> 79; "8850" -> 81; else -> null
-        }
+        if (archCache != ARCH_UNSET) return if (archCache == ARCH_NULL) null else archCache
+        val result = computeArch()
+        archCache = result ?: ARCH_NULL
+        return result
+    }
+
+    private fun computeArch(): Int? {
+        val mfr = Build.SOC_MANUFACTURER.orEmpty().lowercase()
+        val isQti = mfr.contains("qti") || mfr.contains("qualcomm")
+        // 厂商白名单校验；SOC_MANUFACTURER 被清空/魔改时，借 ro.hardware 是否含
+        // qcom 兜底（仍可识别为高通平台）。
+        val hw = readSystemProperty("ro.hardware").lowercase()
+        if (!isQti && !hw.contains("qcom")) return null
+
+        val soc = resolveSocModel()
+        if (soc.isEmpty()) return null
+        // 1. 直接 sm/qcs 四位编号（放宽开头锚定，兼容 "qualcomm,sm8750" 等前缀噪声）。
+        val num = Regex("(sm|qcs)(\\d{4})").find(soc)?.groupValues?.get(2)
+        if (num != null) return mapArch(num)
+        // 2. 代号兜底（魔改 ROM 把 SOC_MODEL 改写时，ro.board.platform 常保留代号）。
+        CODENAME_TO_ARCH[soc]?.let { return it }
+        return null
+    }
+
+    private fun mapArch(num: String): Int? = when (num) {
+        // v73：8 Gen 2 / 7+ Gen 3 / 7 Gen 3（同 HTP 架构）
+        "8550", "7675", "7550" -> 73
+        // v75：8 Gen 3
+        "8650" -> 75
+        // v79：8 Elite
+        "8750" -> 79
+        // v81：8 Elite Gen 5
+        "8850" -> 81
+        else -> null
     }
 
     fun runtimeDir(context: Context): File = File(context.filesDir, "geniex-runtime/$VERSION")

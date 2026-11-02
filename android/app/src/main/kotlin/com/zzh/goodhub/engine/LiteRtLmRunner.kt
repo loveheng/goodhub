@@ -1,6 +1,8 @@
 package com.zzh.goodhub.engine
 
+import android.app.ActivityManager
 import android.content.Context
+import android.os.Build
 import android.util.Log
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Conversation
@@ -120,6 +122,25 @@ class LiteRtLmRunner(private val context: Context) : OnDeviceRunner {
         return null
     }
 
+    /**
+     * P0 前置内存地板闸门：复用 [MemoryGuardEvaluator.ABSOLUTE_FLOOR_BYTES]（与
+     * 运行时护栏同一绝对地板口径，1GB）——低可用内存下强行分配 ION/DMA-BUF 会
+     * 瞬态击穿整机 min watermark 触发 LMK 风暴。返回 false = 不拉起 NPU。
+     */
+    private fun preloadMemoryOk(): Boolean {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            ?: return true
+        val mi = ActivityManager.MemoryInfo()
+        am.getMemoryInfo(mi)
+        val floor = MemoryGuardEvaluator.ABSOLUTE_FLOOR_BYTES
+        if (mi.availMem < floor || mi.lowMemory) {
+            Log.w(TAG, "[DEGRADE] preload memory floor: avail=${mi.availMem / 1048576}MB " +
+                "floor=${floor / 1048576}MB lowMemory=${mi.lowMemory} → skip NPU")
+            return false
+        }
+        return true
+    }
+
     override fun doLoad(modelDir: String, backendHint: String?) {
         try {
             if (ready) return
@@ -128,6 +149,12 @@ class LiteRtLmRunner(private val context: Context) : OnDeviceRunner {
             // 'gpu' = 强制 GPU 档装载（跳过 NPU 库探测——「NPU 败再探 GPU」的
             // 第二段）；其余/null = Runner 自裁（NPU 库在位则 NPU 优先）。
             val forceGpu = backendHint == "gpu"
+            // P0 前置双闸（2026-11-02）：NPU 装载前内存绝对地板 + 持久化熔断，
+            // 任一不满足即跳过 NPU 沉重 init，避免低内存 LMK 风暴与坏机型反复卡死。
+            val arch = GenieXRuntime.hexagonArch()
+            val memOk = preloadMemoryOk()
+            val npuBroken = arch != null && NpuCircuitBreaker.isTripped(
+                context, "litertlm", arch, Build.SOC_MODEL.orEmpty())
             // ① 布局识别：.litertlm 单文件（D-1 资产族；Dart 导入面同判据
             // 识别入册，:engine 侧装载前复核防旁路）。
             val bundle = File(modelDir).listFiles()
@@ -148,7 +175,16 @@ class LiteRtLmRunner(private val context: Context) : OnDeviceRunner {
             // （如 sm8750 bundle 跑他芯）= warmup 失败自动降级，此为
             // bundle 自身语义，非配置错误。
             // backendHint='gpu'（探针第二段）→ 跳过 NPU 库探测，GPU-only。
-            val npuDir = if (forceGpu) null else npuLibDir()
+            // P0：forceGpu / 内存地板不足 / 已熔断 任一成立 → 跳过 NPU 探测直走 GPU。
+            val npuDir = if (forceGpu || !memOk || npuBroken) {
+                if (!forceGpu) {
+                    Log.w(TAG, "[DEGRADE] NPU skipped (memOk=$memOk, " +
+                        "broken=${arch != null && npuBroken}) → GPU-only")
+                }
+                null
+            } else {
+                npuLibDir()
+            }
             val backends: List<Backend> = if (npuDir != null) {
                 listOf(Backend.NPU(npuDir.absolutePath), Backend.GPU())
             } else {
@@ -188,6 +224,12 @@ class LiteRtLmRunner(private val context: Context) : OnDeviceRunner {
                     Log.w(TAG, "[DEGRADE] init failed (backend=${backend.name}): $e2")
                     runCatching { e.close() }
                     if (backend is Backend.NPU) {
+                        // P0：NPU init 失败（非崩溃）→ 落盘熔断，避免下次重复 2s 级试错。
+                        if (arch != null) {
+                            NpuCircuitBreaker.trip(
+                                context, "litertlm", arch, Build.SOC_MODEL.orEmpty(),
+                                "npu_init_failed:${e2.javaClass.simpleName}")
+                        }
                         Log.i(TAG, "NPU init failed → degrade to GPU tier")
                     }
                 }
@@ -233,8 +275,15 @@ class LiteRtLmRunner(private val context: Context) : OnDeviceRunner {
         abortRequested = false
         lastProfile = null
 
-        // 采样真实生效（P1-8 采样面在本栈的增量兑现）：temperature/topP
-        // 直通，非 SDK 默认（topK=40 与 SDK 默认口径一致）。
+        // 采样面（2026-11-02 第三次修正——真机截图反证）：官方 Gallery 同机
+        // 同模型 **NPU 档正常输出**（模型选择器 NPU 徽标 + "Hi there!" 正常），
+        // 其 createConversation 恒传显式 SamplerConfig（litertlm 0.18.1）。
+        // ⇒ 推翻本档此前「NPU 传 null」定谳：NPU 档显式采样并不必然贪心，
+        // 12222 的实际成因 = 本档传 null 引擎默认采样（贪心）。修正 = NPU/GPU
+        // 统一透传 temperature/topP（与 Gallery 对齐）。上游 #2080（Initialize-
+        // Sampler 忽略会话级采样）至少对本版本组合不成立——Gallery 0.18.1
+        // NPU 正常为证；若复测仍 12222，再评估 SDK 版本差异（我们 0.16.0 <
+        // Gallery 0.18.1，届时升 AAR 重验）。
         val sampler = SamplerConfig(
             topK = 40,
             topP = topP.toDouble(),
@@ -270,6 +319,8 @@ class LiteRtLmRunner(private val context: Context) : OnDeviceRunner {
             // GenieX 系默认表 im_end 是 Qwen 模板语义，强加于此系属模板串栈）；
             // 空表直通 = 正常终止路径。
             val stopMatcher = StopSequenceMatcher(stopSequences)
+            // 复读环看门狗（2026-11-02）：与 GenieX 系同款；不计数熔断。
+            val repetitionGuard = RepetitionGuard()
             val latch = CountDownLatch(1)
             var status = 0
             var streamError: Throwable? = null
@@ -293,7 +344,17 @@ class LiteRtLmRunner(private val context: Context) : OnDeviceRunner {
                             lastAt = System.currentTimeMillis()
                             chunkCount++
                             val m = stopMatcher.feed(text)
-                            if (m.release.isNotEmpty()) sink.onChunk(m.release)
+                            if (m.release.isNotEmpty()) {
+                                sink.onChunk(m.release)
+                                // 复读环看门狗：已放行文本陷入短单元连续重复
+                                // → abort（不计数熔断）。
+                                if (repetitionGuard.feed(m.release)) {
+                                    Log.w(TAG, "[DEGRADE] repetition loop detected -> stop " +
+                                        "(totalChars=${repetitionGuard.totalChars})")
+                                    abortRequested = true
+                                    runCatching { conv.cancelProcess() }
+                                }
+                            }
                             if (m.stopped) {
                                 stoppedByStopSequence = true
                                 Log.i(TAG, "stop sequence observed -> stop " +
@@ -369,7 +430,9 @@ class LiteRtLmRunner(private val context: Context) : OnDeviceRunner {
             ) {
                 Log.w(TAG, "[DEGRADE] context overflow -> drop oldest history turn " +
                     "(${history.size} left) and retry")
-                history = history.drop(1)
+                // 头角色修正（单源 ChatMLComposer）：单丢一轮后 assistant
+                // 开头违反 SDK 模板交替 → 零产出（2026-11-02 真机）。
+                history = ChatMLComposer.dropOldestForOverflow(history)
                 continue
             }
             return status

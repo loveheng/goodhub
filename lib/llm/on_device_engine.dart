@@ -83,8 +83,13 @@ class EngineChunk {
 class GenerationConfig {
   const GenerationConfig({
     this.maxTokens = 512,
-    this.temperature = 0.7,
-    this.topP = 0.9,
+    // Gemma3 官方推荐采样（技术报告 T=1.0 / top-p=0.95 / top-k=40，topK 已在
+    // LiteRtLmRunner 对齐）：2026-11-02 真机反证——旧默认 0.7/0.9 下 gemma3-1b
+    // 首问 7 字符陷数字环复读（看门狗截停），同机同模型 Google AI Edge
+    // Gallery（官方 demo，官方推荐值）正常输出 → 低温窄分布低熵陷阱定谳。
+    // 模型级参数：真机验证绿后升格 meta modelProfile.recommendedSampling（另立项）。
+    this.temperature = 1.0,
+    this.topP = 0.95,
     this.stopSequences = const [],
   });
 

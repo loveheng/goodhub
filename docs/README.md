@@ -30,6 +30,7 @@ updated: 2026-10-28
   - [design/on-device-lifecycle-single-source.md](design/on-device-lifecycle-single-source.md) — 端侧引擎生命周期状态单源化（:engine 权威状态机 + 会话票据代次对账 + 入口原子自证 + 资产身份，Expand-Contract 四步，draft）
   - [design/on-device-admission-probe.md](design/on-device-admission-probe.md) — 端侧准入探针与 DispatchProfile 调度画像（导入时静态体检+微基准，合并坏后端记忆，NPU→GPU→云回退链）
   - [design/on-device-npu-runtime-split.md](design/on-device-npu-runtime-split.md) — 端侧推理运行库拆分（GenieX 0.10.0 增配下载：双源+PINS 校验+按 SoC 选库解压+预加载链；LiteRT-LM 内置基线，fallback 链，draft）
+  - [design/on-device-asset-metadata.md](design/on-device-asset-metadata.md) — 端侧模型资产元数据规格（.asset-meta.json 跨语言物理契约：三分区字段/溯源纪律/生命周期/模板可应用性探针/存量迁移）
   - [design/stream-perf.md](design/stream-perf.md) — 流式输出性能优化（P0 流控缓冲 + P1 前缀块缓存；业界四维分层防御在 goodhub 的裁剪落地）
   - [design/window-kernel-split.md](design/window-kernel-split.md) — 从「胖窗口」到「内核 + 多投影」：四内核（Directory/Runtime/Session/Memory）与窗口投影的职责矩阵、三条所有权铁律、分期（未立项 draft）
   - [design/host-gateway-accessibility-memory.md](design/host-gateway-accessibility-memory.md) — Host 网关架构 · 访问性模型 · 记忆 In-band 捎带提取（Provider×Tier 解耦 / 聚合反向代理 / `<workspace_update>`），chatmessage epic 的设计 SSOT

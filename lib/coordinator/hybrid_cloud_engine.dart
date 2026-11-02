@@ -16,6 +16,7 @@ import 'package:flutter/foundation.dart';
 import '../core/errors/cloud_llm_error.dart';
 import '../core/errors/inference_error.dart';
 import '../llm/cloud/cloud_llm.dart';
+import '../llm/cloud/byok_store.dart';
 import '../llm/llm.dart';
 import '../llm/on_device_admission_probe.dart';
 import '../llm/on_device_asset_manager.dart';
@@ -24,6 +25,7 @@ import '../llm/on_device_engine.dart';
 import '../llm/on_device_model_catalog.dart';
 import '../llm/on_device_pending_load.dart';
 import '../llm/on_device_chat_prompt.dart';
+import '../llm/on_device_history_policy_store.dart';
 import 'degradation_controller.dart';
 
 class HybridCloudEngine implements CloudLlmEngine {
@@ -265,12 +267,52 @@ class HybridCloudEngine implements CloudLlmEngine {
     );
   }
 
+  /// 当前生效云端模型的策略偏好 id：生效 profile（用户显式选择）> 列表首位；
+  /// 无任何 profile 返 null（云端无模型 → 无策略面）。读取失败按 null 收口
+  /// （DEGRADE 留痕，不阻断云发送）。
+  Future<String?> _cloudModelPolicyId() async {
+    try {
+      final store = ByokStore();
+      final preferred = await store.preferredProfileId();
+      if (preferred != null) {
+        return await HistoryPolicySelection.readForModel(preferred);
+      }
+      final profiles = await store.load();
+      if (profiles.isEmpty) return null;
+      return await HistoryPolicySelection.readForModel(profiles.first.id);
+    } on Object catch (e) {
+      debugPrint('[DEGRADE] hybrid: 云端历史策略偏好读取失败: $e');
+      return null;
+    }
+  }
+
   Stream<CloudStreamEvent> _cloudSend(
     CloudLlmEngine c,
     CloudChatRequest request, {
     required bool allowDeviceFallback,
     void Function()? onActivity,
   }) async* {
+    // 历史策略接线（2026-11-02）：策略挂模型本身（用户拍板）——按生效
+    // BYOK profile id 取偏好，非默认 ① 时裁剪消息后再发（默认档整体跳过 =
+    // 存量零变化；工具链路内部豁免不裁剪）。
+    final cloudPolicyId = await _cloudModelPolicyId();
+    var effective = request;
+    if (cloudPolicyId != null &&
+        cloudPolicyId != HistoryPolicyIds.dropOldest) {
+      final trimmed = await applyHistoryPolicyToCloudMessages(
+        request.messages,
+        HistoryPolicySelection.resolve(cloudPolicyId),
+        HistoryPolicySelection.kCloudHistoryCharBudget,
+      );
+      if (!identical(trimmed, request.messages)) {
+        effective = CloudChatRequest(
+          messages: trimmed,
+          tools: request.tools,
+          temperature: request.temperature,
+          maxTokens: request.maxTokens,
+        );
+      }
+    }
     try {
       // 流内间隙判定改造（「用其他方式判断」而非固定 30s 死计时）：
       // 旧逻辑以「两事件间静默 > interEventGapTimeout(30s)」判卡流——思考期
@@ -321,7 +363,7 @@ class HybridCloudEngine implements CloudLlmEngine {
         if (!ctrl.isClosed) armWatchdog();
       }
 
-      srcSub = c.send(request, onActivity: noteActivity).listen(
+      srcSub = c.send(effective, onActivity: noteActivity).listen(
         (e) {
           noteActivity();
           if (e is CloudTextDelta || e is CloudToolCallDelta) sawOutput = true;
@@ -432,9 +474,18 @@ class HybridCloudEngine implements CloudLlmEngine {
         // 历史预算按当前选中模型的上下文窗口动态推导（2026-11-02 真机定谳：
         // 全局字符预算对 1280-context bundle 的 ASCII 历史必然溢出）。
         final selected = await OnDeviceModelSelection.read();
-        final promptJson = buildOnDeviceChatPromptJson(
+        // 策略模式接线（2026-11-02）：策略挂模型本身（用户拍板）——按当前
+        // 选中模型的 dirName 取偏好（默认 ① = 旧行为零变化，⓪/②/③ 可切）。
+        // selected 为 null（注册表空，理论不可达——端侧路径前置已判 canDevice）
+        // 回落 'device-default' 键，读侧落默认 ①。
+        final deviceKey = selected?.dirName ?? 'device-default';
+        final devicePolicyId = await HistoryPolicySelection.readForModel(
+            deviceKey,
+            device: true);
+        final promptJson = await buildOnDeviceChatPromptJsonAsync(
           request.messages,
           contextTokens: selected?.contextTokens,
+          historyPolicy: HistoryPolicySelection.resolve(devicePolicyId),
         );
         debugPrint('[HybridEngine] 端侧对话 prompt：promptJsonChars=${promptJson.length}');
         // P1-6（2026-11-01）：流式契约——逐 delta 投递，消除「收满 512 token

@@ -15,9 +15,12 @@
 /// `test/llm/on_device_chat_prompt_test.dart`。
 library;
 
+import 'dart:async';
+
 import 'dart:convert';
 
 import 'cloud/cloud_llm.dart';
+import 'on_device_history_policy.dart';
 
 /// ChatML 控制 token（Qwen 系）。
 ///
@@ -112,14 +115,63 @@ String buildOnDeviceChatPromptJson(
             kContextSystemUserReserveTokens)
           .clamp(200, 1 << 30)
       : kOnDeviceHistoryCharBudget;
-  var start = 0;
-  var total = turns.fold<int>(0, (sum, t) => sum + t.$2.length);
-  while (start < turns.length - 1 && total > budget) {
-    total -= turns[start].$2.length;
-    start++;
-  }
-  for (final (role, content) in turns.sublist(start)) {
+  for (final (role, content)
+      in dropOldestWithinBudget(turns, budget)) { // ① 算法单源（策略模式共享）
     out.add({'role': role, 'content': sanitizeChatMLControlTokens(content)});
   }
   return jsonEncode(out);
+}
+
+/// 异步构造入口（策略模式接线面）：同 [buildOnDeviceChatPromptJson]，历史
+/// 选取改由 [historyPolicy] 承载（默认 ① 滑窗 = 同步入口同源行为）。
+///
+/// 两侧通用、每侧默认不同（2026-11-02 用户拍板）：云端/混合路径钉死默认 ①；
+/// 端侧按模型窗口档位路由（<2k 强制 ①，≥4k 开放 ③ 实验位）。
+Future<String> buildOnDeviceChatPromptJsonAsync(
+  List<CloudChatMessage> messages, {
+  int? contextTokens,
+  OnDeviceHistoryPolicy historyPolicy = const DropOldestHistoryPolicy(),
+}) async {
+  final (systemParts, turns) = splitChatPromptTurns(messages);
+  final out = <Map<String, String>>[];
+  // dropsSystem（2026-11-03 ⓪ 真裸语义）：策略要求连 system 一起丢——
+  // 对照实验与 Gallery 裸问题同形，单变量归因。
+  if (systemParts.isNotEmpty && !historyPolicy.dropsSystem) {
+    out.add({
+      'role': 'system',
+      'content': sanitizeChatMLControlTokens(systemParts.join('\n\n')),
+    });
+  }
+  final int budget = contextTokens != null
+      ? (contextTokens -
+            kContextOutputReserveTokens -
+            kContextSystemUserReserveTokens)
+          .clamp(200, 1 << 30)
+      : kOnDeviceHistoryCharBudget;
+  final selected = await historyPolicy.select(turns, budget);
+  for (final (role, content) in selected) {
+    out.add({'role': role, 'content': sanitizeChatMLControlTokens(content)});
+  }
+  return jsonEncode(out);
+}
+
+/// 消息序列 → (合并后的 system 段, 时序轮次)：同步/异步入口共用的拆分单源。
+(List<String>, List<OnDeviceHistoryTurn>) splitChatPromptTurns(
+    List<CloudChatMessage> messages) {
+  final systemParts = <String>[];
+  final turns = <OnDeviceHistoryTurn>[];
+  for (final m in messages) {
+    switch (m) {
+      case SystemMessage(:final content):
+        if (content.trim().isNotEmpty) systemParts.add(content);
+      case UserMessage(:final content):
+        if (content.trim().isNotEmpty) turns.add(('user', content));
+      case AssistantMessage(:final content):
+        final c = content;
+        if (c != null && c.trim().isNotEmpty) turns.add(('assistant', c));
+      case ToolResultMessage(:final content):
+        if (content.trim().isNotEmpty) turns.add(('user', content));
+    }
+  }
+  return (systemParts, turns);
 }

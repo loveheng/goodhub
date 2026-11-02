@@ -186,12 +186,13 @@ void main() {
         .toList();
     expect(cloud.calls, isEmpty);
     // 2026-10-31 设计修正：prompt = 消息序列 JSON（多轮 ChatML 由 :engine
-    // 模板承载角色；旧单发压平 + 文字标注因复读环退役）。
+    // 模板承载角色；旧单发压平 + 文字标注因复读环退役）。2026-11-03 用户拍板：
+    // 端侧默认档 = ⓪ 真裸——system 包装与历史一并剥离，仅留最新 user 消息
+    //（复读触发器归因；云端默认①不变）。
     final turns =
         (jsonDecode(device.prompts.single) as List).cast<Map<String, dynamic>>();
-    expect(turns.map((m) => m['role']).toList(), ['system', 'user']);
-    expect(turns[0]['content'], 'sys');
-    expect(turns[1]['content'], 'u1');
+    expect(turns.map((m) => m['role']).toList(), ['user']);
+    expect(turns[0]['content'], 'u1');
     expect(events.whereType<CloudTextDelta>().single.text, '端侧产出');
     expect(
       events.whereType<CloudDone>().single.finishReason,
@@ -763,7 +764,7 @@ void main() {
   });
 
   group('端侧多轮输入面与零产出归因（2026-10-30 真机「第二轮没有输出」）', () {
-    test('第二轮（带历史）→ 端侧 prompt 为消息序列 JSON（角色由模板承载）', () async {
+    test('第二轮（带历史）→ 端侧默认⓪真裸：历史与 system 剥离仅留最新 user', () async {
       controller.reportTransportTimeout(); // 降级态 → 走端侧
       device.next = '端侧产出';
       await engine
@@ -778,16 +779,13 @@ void main() {
             ),
           )
           .toList();
-      // 2026-10-31 设计修正：单发压平 + 文字标注因复读环退役——prompt =
-      // messages JSON，assistant 回答以 assistant 角色独立成轮。
+      // 2026-10-31 设计修正：prompt = 消息序列 JSON（多轮 ChatML 由 :engine
+      // 模板承载角色）。2026-11-03 用户拍板：端侧默认档 = ⓪ 真裸——历史回答
+      // 与 system 一并剥离，仅留最新 user 消息（复读触发器归因；云端默认①不变）。
       final turns =
           (jsonDecode(device.prompts.single) as List).cast<Map<String, dynamic>>();
-      expect(turns.map((m) => m['role']).toList(),
-          ['system', 'user', 'assistant', 'user']);
-      expect(turns[1]['content'], 'u1');
-      expect(turns[2]['role'], 'assistant', reason: '历史回答独立成 assistant 轮');
-      expect(turns[2]['content'], 'a1');
-      expect(turns[3]['content'], 'u2');
+      expect(turns.map((m) => m['role']).toList(), ['user']);
+      expect(turns[0]['content'], 'u2');
     });
 
     test('端侧零产出 → 显式上抛并带真因（禁笼统「空产出」）', () async {

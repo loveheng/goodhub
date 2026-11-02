@@ -276,8 +276,103 @@ class OnDeviceAssetManager {
   /// 注册表扫描（身份唯一源，2026-10-31 多模型导入制）：已装模型列表（含
   /// 自由导入 + 内置档位）。注入 [supportDirResolver] 生效（测试面）；失败
   /// 降级为空（不阻断）。设置页据此渲染「已装模型」而非固定目录。
-  Future<List<InstalledModel>> listInstalled() =>
-      ModelRegistry.scan(supportDirResolver: supportDirResolver);
+  /// 扫描前先跑存量 modelProfile 幂等迁移（规格 §7），扫描后回填模板可
+  /// 应用性徽章（规格 §6）。
+  Future<List<InstalledModel>> listInstalled() async {
+    await _migrateMissingProfiles();
+    final scanned =
+        await ModelRegistry.scan(supportDirResolver: supportDirResolver);
+    final support =
+        await (supportDirResolver ?? getApplicationSupportDirectory)();
+    final out = <InstalledModel>[];
+    for (final m in scanned) {
+      final verified = await templateApplicability(
+          Directory('${support.path}/models/${m.dirName}'), m.runtime);
+      out.add(m.withTemplateVerified(verified));
+    }
+    return out;
+  }
+
+  /// 存量模型幂等迁移（规格 on-device-asset-metadata.md §7）：modelProfile
+  /// 块缺失（机制落地前的旧 meta）→ 补探测 → 整文件原子重写。幂等：块
+  /// 在场不再触发；探测失败不写（保块缺席，下轮重试，不阻断读）。version
+  /// 保持 → modelId 稳定（身份仅认 version 前缀），迁移不触发资产变更
+  /// 重装。顺带回填存量下载通道 meta 缺失的结构区字段（runtime/family）。
+  Future<void> _migrateMissingProfiles() async {
+    try {
+      final support =
+          await (supportDirResolver ?? getApplicationSupportDirectory)();
+      final modelsRoot = Directory('${support.path}/models');
+      if (!await modelsRoot.exists()) return;
+      await for (final entity in modelsRoot.list()) {
+        if (entity is! Directory) continue;
+        final name = entity.path.split('/').last;
+        if (name.isEmpty || name.startsWith('.')) continue;
+        await _migrateOneIfMissing(entity);
+      }
+    } catch (e) {
+      debugPrint('[DEGRADE] model-profile migration: $e');
+    }
+  }
+
+  Future<void> _migrateOneIfMissing(Directory dir) async {
+    try {
+      final metaFile = File('${dir.path}/.asset-meta.json');
+      if (!await metaFile.exists()) return;
+      final meta =
+          jsonDecode(await metaFile.readAsString()) as Map<String, dynamic>;
+      if (meta.containsKey('modelProfile')) return;
+      final rawRuntime = meta['runtime'] as String?;
+      final runtime = OnDeviceRuntime.isKnown(rawRuntime)
+          ? rawRuntime!
+          : await _runtimeOfDir(dir);
+      final profile = await _probeModelProfile(dir, runtime);
+      if (profile == null) return; // 探测失败：保块缺席，不写半效迁移
+      meta['runtime'] = runtime;
+      meta['family'] = OnDeviceAssetFamily.familyOf(runtime);
+      meta['modelProfile'] = profile;
+      // 规格 §4：meta 只允许整文件原子重写，禁局部 patch。
+      await SequentialFileWriter(metaFile).write(jsonEncode(meta));
+      debugPrint('[on-device] model-profile migration: '
+          '${dir.path.split('/').last} (runtime=$runtime, profile=$profile)');
+    } catch (e) {
+      debugPrint('[DEGRADE] model-profile migration '
+          '${dir.path.split('/').last}: $e');
+    }
+  }
+
+  /// 模板可应用性静态探针（规格 on-device-asset-metadata.md §6，测试钩子）：
+  /// 判据 = 资产内是否存在可应用的 tokenizer 模板，**不是 meta 字段 null
+  /// 性**——模板优先路径（SDK applyChatTemplate / bundle 原生模板）下，
+  /// family 标注只在手写 fallback 路径起作用。
+  /// - qairt：`tokenizer.json` 在场（applyChatTemplate 内嵌模板载体）；
+  /// - llama_cpp/GGUF：`tokenizer.chat_template` KV 在场且非空；
+  /// - litertlm：模板归 bundle 原生（SDK Conversation 角色映射），静态
+  ///   检查止于布局（至少一个 .litertlm 文件在场）；
+  /// - auto / 未知布局：false（布局未判 = 未验证）。
+  @visibleForTesting
+  static Future<bool> templateApplicability(
+      Directory dir, String runtime) async {
+    switch (runtime) {
+      case OnDeviceRuntime.qairt:
+        return File('${dir.path}/tokenizer.json').exists();
+      case OnDeviceRuntime.litertlm:
+        try {
+          await for (final e in dir.list()) {
+            if (e is File && e.path.toLowerCase().endsWith('.litertlm')) {
+              return true;
+            }
+          }
+        } catch (_) {}
+        return false;
+      case OnDeviceRuntime.llamaCpp:
+        final gguf = await _firstGguf(dir);
+        if (gguf == null) return false;
+        return (await _ggufProbe(gguf)).chatTemplate?.isNotEmpty ?? false;
+      default:
+        return false;
+    }
+  }
 
   // ---- manifest ----
 
@@ -517,13 +612,17 @@ class OnDeviceAssetManager {
 
   Future<void> _writeMeta(Directory dir, _AssetManifest manifest) async {
     final fingerprint = await _currentFingerprint();
-    // 声明式解析元数据（2026-11-02）：下载通道无显式 runtime 标注，按
-    // staging 实盘布局判（genie_config → qairt；.litertlm → litertlm）。
-    final modelProfile = await _probeModelProfile(dir, await _runtimeOfDir(dir));
+    // 下载通道无显式 runtime 标注，按 staging 实盘布局判（genie_config →
+    // qairt；.litertlm → litertlm）。runtime/family 与导入通道同字段集落盘
+    //（规格 on-device-asset-metadata.md §2 结构区——两通道对齐禁漂移）。
+    final runtime = await _runtimeOfDir(dir);
+    final modelProfile = await _probeModelProfile(dir, runtime);
     final meta = {
       'version': manifest.version,
       'installedAt': (now ?? DateTime.now)().toIso8601String(),
       'driverFingerprint': fingerprint,
+      'runtime': runtime,
+      'family': OnDeviceAssetFamily.familyOf(runtime),
       'sizes': {for (final f in manifest.files) f.name: f.size},
       'sha256': {for (final f in manifest.files) f.name: f.sha256},
       'modelProfile': ?modelProfile,
@@ -659,24 +758,23 @@ class OnDeviceAssetManager {
     }
   }
 
-  // ---- modelProfile（声明式解析元数据，2026-11-02 待办）----
+  // ---- modelProfile（声明式解析元数据，规格 on-device-asset-metadata.md）----
 
   /// 导入/安装期声明式解析元数据探测：写入 `.asset-meta.json` 的
   /// `modelProfile` 块，供各 Runner 装载期自治消费（禁中心化 token 级解析，
   /// D-3 纪律——本块只记声明式属性，不是解析逻辑的收口）。
   ///
-  /// 探测策略（保守，无实证不写字段）：
+  /// 探测策略（保守，无实证不写字段，规格 §3 溯源纪律）：
   /// - litertlm：模板归 bundle 原生（Runner 不自绘），只标 contextTokens
-  ///   （Gemma3-1B 官方 bundle 规格单源 [kLitertlmContextTokens]）；
+  ///   （Gemma3-1B 官方 bundle 规格单源 [kLitertlmContextTokens]）；终止靠
+  ///   模型原生 EOS，不写 stopSequences（跨栈模板不引入）；
   /// - qairt：GenieX SDK applyChatTemplate 读资产内嵌模板，手写 fallback
   ///   家族假设 = Qwen/ChatML（ChatMLComposer UNCERTAIN 同源）——显式落盘
-  ///   使假设可查，不再隐式悬空；
+  ///   使假设可查；stopSequences 按家族闭合 token 推导（推导非猜测）；
   /// - GGUF（llama_cpp/auto 布局）：解析头内嵌 `tokenizer.chat_template`
-  ///   KV 映射模板家族，探不出标 `unknown`。
-  ///
-  /// stopSequences 字段留位（catalog/Runner 已支持读）暂不写：家族级默认集
-  /// 的实证来源目前只有 Runner 内建 [StopSequenceMatcher]（GenieX 系
-  /// im_end），无新实证前不落盘（禁猜测性兜底）。
+  ///   KV 映射模板家族，探不出标 `unknown`；contextTokens 读
+  ///   `<arch>.context_length` KV（架构前缀键单源——通用 `context_length`
+  ///   键在真实工件不存在，2026-11-02 真机文件实证）。
   Future<Map<String, dynamic>?> _probeModelProfile(
       Directory dir, String runtime) async {
     final profile = <String, dynamic>{};
@@ -684,8 +782,26 @@ class OnDeviceAssetManager {
       profile['contextTokens'] = kLitertlmContextTokens;
       return profile;
     }
-    final family = await _chatTemplateFamilyOf(dir, runtime);
-    if (family != null) profile['chatTemplateFamily'] = family;
+    if (runtime == OnDeviceRuntime.qairt) {
+      profile['chatTemplateFamily'] = 'qwen_chatml';
+      final stops = stopSequencesForFamily('qwen_chatml');
+      if (stops != null) profile['stopSequences'] = stops;
+      return profile;
+    }
+    // llama_cpp / auto 布局按实盘文件判（防 meta runtime 与布局漂移）。
+    final gguf = await _firstGguf(dir);
+    if (gguf != null) {
+      final probe = await _ggufProbe(gguf);
+      final family = probe.chatTemplate == null
+          ? 'unknown'
+          : chatTemplateFamilyOfTemplate(probe.chatTemplate!);
+      profile['chatTemplateFamily'] = family;
+      final stops = stopSequencesForFamily(family);
+      if (stops != null) profile['stopSequences'] = stops;
+      if (probe.contextLength != null) {
+        profile['contextTokens'] = probe.contextLength;
+      }
+    }
     return profile.isEmpty ? null : profile;
   }
 
@@ -703,18 +819,6 @@ class OnDeviceAssetManager {
     return OnDeviceRuntime.auto;
   }
 
-  /// 布局→模板家族探测：qairt 标 qwen_chatml（家族假设单源）；GGUF 解析内嵌
-  /// 模板；其余布局返回 null（不写字段）。
-  Future<String?> _chatTemplateFamilyOf(Directory dir, String runtime) async {
-    if (runtime == OnDeviceRuntime.qairt) return 'qwen_chatml';
-    // llama_cpp / auto 布局按实盘文件判（防 meta runtime 与布局漂移）。
-    final gguf = await _firstGguf(dir);
-    if (gguf == null) return null;
-    final template = await _ggufChatTemplate(gguf);
-    if (template == null) return 'unknown'; // 探测不出显式标 unknown
-    return _chatTemplateFamily(template);
-  }
-
   /// 模板文本 → 家族名（标记单源映射；无命中 unknown）。
   @visibleForTesting
   static String chatTemplateFamilyOfTemplate(String template) {
@@ -724,10 +828,26 @@ class OnDeviceAssetManager {
     return 'unknown';
   }
 
-  static String _chatTemplateFamily(String template) =>
-      chatTemplateFamilyOfTemplate(template);
+  /// 模板家族 → 闭合 token（stopSequences 推导单源，规格
+  /// on-device-asset-metadata.md §2 声明区）：家族由模板内容标记判定（上方
+  /// 单源映射），闭合 token 是家族固定属性——推导非猜测。unknown / null →
+  /// null（字段缺席，禁猜测值）。
+  /// 字面量用 \u 转义书写，与 Kotlin StopSequenceMatcher.DEFAULT 同值。
+  @visibleForTesting
+  static List<String>? stopSequencesForFamily(String? family) {
+    switch (family) {
+      case 'qwen_chatml':
+        return const ['\u003c|im_end|\u003e'];
+      case 'llama3':
+        return const ['\u003c|eot_id|\u003e'];
+      case 'gemma':
+        return const ['\u003cend_of_turn\u003e'];
+      default:
+        return null;
+    }
+  }
 
-  Future<File?> _firstGguf(Directory dir) async {
+  static Future<File?> _firstGguf(Directory dir) async {
     try {
       await for (final e in dir.list()) {
         if (e is File && e.path.toLowerCase().endsWith('.gguf')) return e;
@@ -736,17 +856,25 @@ class OnDeviceAssetManager {
     return null;
   }
 
-  /// GGUF 头 KV 扫描取 `tokenizer.chat_template`（v3 头格式）。启发式预算：
-  /// 只读前 8MB（tokenizer KV 位于头部前段，实测量级远小于此），解析越界或
-  /// 版本不识别一律返 null（ callers 落 unknown，不阻断导入）。
-  static const int _ggufScanBudgetBytes = 8 * 1024 * 1024;
+  /// GGUF 头 KV 扫描（v2/v3 头格式）。启发式预算：只读头部前段——真实工件
+  /// 实证 Qwen3.5-2B KV 区达 10.9MB（大词表 tokens/merges 数组排在
+  /// chat_template 之前，8MB 预算会提前溢出漏检），取 32MB 覆盖现有量级并
+  /// 留余量；解析越界或版本不识别一律返空探测（调用方落 unknown / 不写
+  /// 字段，不阻断导入）。
+  static const int _ggufScanBudgetBytes = 32 * 1024 * 1024;
   static const int _ggufTypeString = 8;
 
-  /// GGUF 头 KV 扫描取 `tokenizer.chat_template`（测试钩子：单测喂合成头）。
+  /// 测试钩子：单测喂合成头（公开面仅暴露公有类型，私有探测结构不外泄）。
   @visibleForTesting
-  static Future<String?> ggufChatTemplate(File f) => _ggufChatTemplate(f);
+  static Future<String?> ggufChatTemplate(File f) async =>
+      (await _ggufProbe(f)).chatTemplate;
 
-  static Future<String?> _ggufChatTemplate(File f) async {
+  /// 测试钩子：仅取架构上下文窗口。
+  @visibleForTesting
+  static Future<int?> ggufContextLength(File f) async =>
+      (await _ggufProbe(f)).contextLength;
+
+  static Future<_GgufHeaderProbe> _ggufProbe(File f) async {
     RandomAccessFile? raf;
     try {
       raf = await f.open(mode: FileMode.read);
@@ -757,25 +885,50 @@ class OnDeviceAssetManager {
       final n = await raf.readInto(buf);
       final r = ByteData.sublistView(buf, 0, n);
       final rd = _GgufKvReader(r);
-      if (rd.u32() != 0x46554747) return null; // 'GGUF' 小端读回
+      if (rd.u32() != 0x46554747) return const _GgufHeaderProbe(); // 'GGUF' 小端读回
       final version = rd.u32();
-      if (version < 2 || version > 3) return null;
+      if (version < 2 || version > 3) return const _GgufHeaderProbe();
       rd.u64(); // tensor_count
       final kvCount = rd.u64();
-      for (var i = 0; i < kvCount; i++) {
+      String? arch;
+      String? chatTemplate;
+      final contextByArch = <String, int>{};
+      for (var i = 0; i < kvCount && !rd.overflowed; i++) {
         final key = rd.string();
         final type = rd.u32();
         if (type == _ggufTypeString) {
           final value = rd.string();
-          if (key == 'tokenizer.chat_template') return value;
+          if (key == 'general.architecture') {
+            arch ??= value;
+          } else if (key == 'tokenizer.chat_template') {
+            chatTemplate ??= value;
+          }
+        } else if (type == 4 || type == 5) {
+          // UINT32 / INT32：context_length 常见形态（qwen35.context_length
+          // 实证 = type 4）。
+          final v = type == 4 ? rd.u32() : rd.i32();
+          if (key.endsWith('.context_length')) contextByArch[key] = v;
+        } else if (type == 10 || type == 11) {
+          // UINT64 / INT64：仅收 int32 安全域（上下文窗口不会越界）。
+          final v = type == 10 ? rd.u64() : rd.i64();
+          if (key.endsWith('.context_length') && v >= 0 && v <= 0x7FFFFFFF) {
+            contextByArch[key] = v;
+          }
         } else {
           rd.skipValue(type);
         }
-        if (rd.overflowed) return null;
       }
-      return null;
+      // 架构前缀键优先（如 qwen35.context_length）；未命中回落磁盘上唯一
+      // context 键（防御非规范工件）。
+      int? contextLength;
+      if (arch != null) contextLength = contextByArch['$arch.context_length'];
+      contextLength ??= contextByArch.values.isEmpty
+          ? null
+          : contextByArch.values.first;
+      return _GgufHeaderProbe(
+          chatTemplate: chatTemplate, contextLength: contextLength);
     } catch (_) {
-      return null;
+      return const _GgufHeaderProbe();
     } finally {
       try {
         await raf?.close();
@@ -912,6 +1065,17 @@ class OnDeviceAssetManager {
               totalBytes: totalBytes,
               detail: '资产校验失败：${layout.error}'));
           return await _cleanupStaging(staging);
+        }
+        // 模板可应用性黄灯（规格 on-device-asset-metadata.md §6）：不通过 =
+        // 导入侧黄灯警告，不拒收（最终裁定在装载期；不做能力降级）。
+        if (!await templateApplicability(staging, layout.runtime)) {
+          debugPrint('[DEGRADE] import template-applicability: unverified '
+              '(runtime=${layout.runtime})');
+          report(AssetPullProgress(
+              phase: 'file',
+              fileName: entries.first.$2,
+              totalBytes: totalBytes,
+              detail: '模板可应用性未验证（未验证模型，装载效果待真机裁定）'));
         }
         if (totalBytes > _importWarnBytes) {
           debugPrint('[on-device] import size warn: '
@@ -1051,6 +1215,17 @@ class OnDeviceAssetManager {
             totalBytes: totalBytes,
             detail: "资产校验失败：${layout.error}"));
         return await _cleanupStaging(staging);
+      }
+      // 模板可应用性黄灯（规格 on-device-asset-metadata.md §6）：不通过 =
+      // 导入侧黄灯警告，不拒收（最终裁定在装载期；不做能力降级）。
+      if (!await templateApplicability(staging, layout.runtime)) {
+        debugPrint("[DEGRADE] archive import template-applicability: "
+            "unverified (runtime=${layout.runtime})");
+        report(AssetPullProgress(
+            phase: "file",
+            fileName: entries.first.$2,
+            totalBytes: totalBytes,
+            detail: "模板可应用性未验证（未验证模型，装载效果待真机裁定）"));
       }
       if (totalBytes > _importWarnBytes) {
         debugPrint("[on-device] archive import size warn: "
@@ -1195,6 +1370,14 @@ class _DigestSink implements Sink<Digest> {
   void close() {}
 }
 
+/// GGUF 头探测结果（v2/v3）：chat 模板 + 上下文窗口（规格
+/// on-device-asset-metadata.md §2 声明区 contextTokens 的 GGUF 实测源）。
+class _GgufHeaderProbe {
+  const _GgufHeaderProbe({this.chatTemplate, this.contextLength});
+  final String? chatTemplate;
+  final int? contextLength;
+}
+
 /// GGUF 头 KV 只读游标（小端）：越界读置 [overflowed] 并返 0/空串——
 /// 上层按「探测失败」收口（unknown / 不写字段），不抛异常打断导入。
 class _GgufKvReader {
@@ -1221,6 +1404,26 @@ class _GgufKvReader {
       return 0;
     }
     final v = _data.getUint64(_pos, Endian.little);
+    _pos += 8;
+    return v;
+  }
+
+  int i32() {
+    if (_remain < 4) {
+      overflowed = true;
+      return 0;
+    }
+    final v = _data.getInt32(_pos, Endian.little);
+    _pos += 4;
+    return v;
+  }
+
+  int i64() {
+    if (_remain < 8) {
+      overflowed = true;
+      return 0;
+    }
+    final v = _data.getInt64(_pos, Endian.little);
     _pos += 8;
     return v;
   }
