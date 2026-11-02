@@ -18,9 +18,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../app/service_directory.dart';
+import '../../coordinator/tool_catalog.dart';
 import '../../mcp/server_endpoints.dart';
 import '../../mcp/server_probe.dart';
 import '../components/server_endpoint_forms.dart';
+import '../components/server_tools_list.dart';
 import '../tokens/console_tokens.dart';
 
 /// 节点卡探活入口（注入位：测试传假探活，生产落 [ServerProber.probe]）。
@@ -38,6 +40,7 @@ class NodesSection extends StatefulWidget {
   const NodesSection({
     super.key,
     this.endpointStoreOverride,
+    required this.catalog,
     this.probeOverride,
     this.autoProbe = true,
     required this.isDefaultPrivate,
@@ -49,6 +52,10 @@ class NodesSection extends StatefulWidget {
   /// 测试注入位（M4-T5 节点卡）；null = 生产路径（应用支持目录
   /// /mcp_servers.json，与聊天页 ⚙ 设置同一文件）。
   final ServerEndpointStore? endpointStoreOverride;
+
+  /// 工具目录取数收口（生产 = 资源中心页面级 [McpCatalog]；测试传假件）。
+  /// 各节点卡按 serverId（= ep.id）嵌服务工具列表（2026-11-02 拆解归并）。
+  final McpCatalog catalog;
 
   /// 测试注入位（M4-T5 节点卡）；null = 生产路径（[ServerProber] 真探活）。
   final NodeProbeFn? probeOverride;
@@ -92,6 +99,11 @@ class _NodesSectionState extends State<NodesSection>
   var _addingEp = false;
   String? _editingEpId;
   String? _nodesError;
+
+  // —— 工具卡头合并（2026-11-02，与本地插件卡同款）：展开态 + 装载概要
+  // 收口段级（keepAlive 已覆盖跨 tab 切回）——
+  final _expandedIds = <String>{}; // ep.id → 卡头展开中
+  final _toolSummaries = <String, ServerToolsSummary>{}; // ep.id → 概要
 
   @override
   void initState() {
@@ -377,115 +389,194 @@ class _NodesSectionState extends State<NodesSection>
     // 令牌存况以安全存储实际读出为准（JSON hasKey 只是落盘标记）：升级后旧
     // 密文不可解时读出空，此处即「需重新录入」的判定源（2026-10-24 事故口径）。
     final tokenStored = _epKeys[ep.id]?.isNotEmpty ?? false;
+    // 卡头合并（2026-11-02，与本地插件卡同款）：整行卡头 = 展开器。
+    final expanded = _expandedIds.contains(ep.id);
     return Container(
       key: Key('node-item-${ep.id}'),
       margin: const EdgeInsets.symmetric(vertical: 4),
-      padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(t.cardRadius),
         border: Border.all(color: t.hairline),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              _statusDot(t, probing, probe),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Column(
+      clipBehavior: Clip.antiAlias,
+      child: Material(
+        type: MaterialType.transparency,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 卡头 = 展开器：整行可点 + 涟漪反馈；编辑/删除/钉选/开关各自
+            // 消费自身手势，不触发展开。
+            InkWell(
+              onTap: () => setState(() => expanded
+                  ? _expandedIds.remove(ep.id)
+                  : _expandedIds.add(ep.id)),
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      children: [
-                        Flexible(
-                          child: Text(
-                            ep.name,
+                    Padding(
+                      padding: const EdgeInsets.only(top: 3),
+                      child: _statusDot(t, probing, probe),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  ep.name,
+                                  style: TextStyle(
+                                    fontFamily: t.monoFamily,
+                                    fontSize: Fsz.telemetry,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              if (!ep.enabled) ...[
+                                const SizedBox(width: 6),
+                                Text(
+                                  '已卸载',
+                                  style: TextStyle(
+                                    fontSize: Fsz.microSm,
+                                    color: t.terminalMuted,
+                                  ),
+                                ),
+                              ],
+                              // 默认私有 pill（与「已卸载」同款行内态；仅
+                              // eligible 时出现）。
+                              if (eligible &&
+                                  widget.isDefaultPrivate(ep.id)) ...[
+                                const SizedBox(width: 6),
+                                _defaultPill(t),
+                              ],
+                            ],
+                          ),
+                          Text(
+                            '${ep.endpoint}\n'
+                            '端口 ${_portLabel(ep.endpoint)} · ${_metricsLabel(probe)} · '
+                            '${_authLabel(ep, probe, tokenStored)}',
                             style: TextStyle(
                               fontFamily: t.monoFamily,
-                              fontSize: Fsz.telemetry,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        if (!ep.enabled) ...[
-                          const SizedBox(width: 6),
-                          Text(
-                            '已卸载',
-                            style: TextStyle(
-                              fontSize: Fsz.microSm,
+                              fontSize: Fsz.micro,
                               color: t.terminalMuted,
                             ),
                           ),
+                          const SizedBox(height: 2),
+                          // 工具概要并入卡头信息行（与本地插件卡同款）。
+                          Text(
+                            serverToolsMetaText(_toolSummaries[ep.id],
+                                expanded: expanded),
+                            style: TextStyle(
+                                fontSize: Fsz.note, color: t.terminalMuted),
+                          ),
                         ],
-                        // 默认私有 pill（与「已卸载」同款行内态；仅 eligible 时出现）。
-                        if (eligible && widget.isDefaultPrivate(ep.id)) ...[
-                          const SizedBox(width: 6),
-                          _defaultPill(t),
-                        ],
-                      ],
-                    ),
-                    Text(
-                      '${ep.endpoint}\n'
-                      '端口 ${_portLabel(ep.endpoint)} · ${_metricsLabel(probe)} · '
-                      '${_authLabel(ep, probe, tokenStored)}',
-                      style: TextStyle(
-                        fontFamily: t.monoFamily,
-                        fontSize: Fsz.micro,
-                        color: t.terminalMuted,
                       ),
+                    ),
+                    const SizedBox(width: 8),
+                    // 右上角簇：来源标识 → 编辑/删除 → 钉选 → 展开箭头 → 挂载
+                    // 开关（高频破坏性开关保持最右，箭头紧随钉选后）。
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: serverSourcePill(t, '远程'),
+                    ),
+                    // 内联编辑/删除（P1 设置拆分：全生命周期收敛本面板）。
+                    IconButton(
+                      key: Key('node-edit-${ep.id}'),
+                      tooltip: _editingEpId == ep.id ? '收起' : '编辑',
+                      iconSize: 18,
+                      icon: Icon(
+                        _editingEpId == ep.id
+                            ? Icons.close
+                            : Icons.edit_outlined,
+                      ),
+                      onPressed: () => _toggleEdit(ep),
+                    ),
+                    IconButton(
+                      key: Key('node-del-${ep.id}'),
+                      tooltip: '删除',
+                      iconSize: 18,
+                      icon: const Icon(Icons.delete_outline),
+                      onPressed: () => unawaited(_deleteEndpoint(ep)),
+                    ),
+                    // 默认私有服务钉选（方案 A：原独立面板撤销，降级为行内图钉；
+                    // 非破坏性即时写，无确认卡——与原 radio 单选同口径）。
+                    _defaultPinButton(
+                      pinKey: Key('node-default-${ep.id}'),
+                      id: ep.id,
+                      label: ep.name,
+                      eligible: eligible,
+                    ),
+                    serverExpandChevron(t, expanded: expanded),
+                    // 破坏性操作与高频挂载开关之间留间距，防误触卸载成删除。
+                    const SizedBox(width: 6),
+                    // 挂载/卸载开关（微型物理开关语义，Dual-Role 本地总线心智）。
+                    Switch(
+                      key: Key('node-switch-${ep.id}'),
+                      value: ep.enabled,
+                      onChanged: (v) => _toggleMounted(ep, v),
                     ),
                   ],
                 ),
               ),
-              // 内联编辑/删除（P1 设置拆分：全生命周期收敛本面板）。
-              IconButton(
-                key: Key('node-edit-${ep.id}'),
-                tooltip: _editingEpId == ep.id ? '收起' : '编辑',
-                iconSize: 18,
-                icon: Icon(
-                  _editingEpId == ep.id ? Icons.close : Icons.edit_outlined,
-                ),
-                onPressed: () => setState(() {
-                  _editingEpId = _editingEpId == ep.id ? null : ep.id;
-                }),
-              ),
-              IconButton(
-                key: Key('node-del-${ep.id}'),
-                tooltip: '删除',
-                iconSize: 18,
-                icon: const Icon(Icons.delete_outline),
-                onPressed: () => unawaited(_deleteEndpoint(ep)),
-              ),
-              // 默认私有服务钉选（方案 A：原独立面板撤销，降级为行内图钉；
-              // 非破坏性即时写，无确认卡——与原 radio 单选同口径）。
-              _defaultPinButton(
-                pinKey: Key('node-default-${ep.id}'),
-                id: ep.id,
-                label: ep.name,
-                eligible: eligible,
-              ),
-              // 破坏性操作与高频挂载开关之间留间距，防误触卸载成删除。
-              const SizedBox(width: 6),
-              // 挂载/卸载开关（微型物理开关语义，Dual-Role 本地总线心智）。
-              Switch(
-                key: Key('node-switch-${ep.id}'),
-                value: ep.enabled,
-                onChanged: (v) => _toggleMounted(ep, v),
-              ),
-            ],
-          ),
-          if (_editingEpId == ep.id)
-            ServerEndpointEditForm(
-              ep: ep,
-              storedKey: _epKeys[ep.id],
-              onSave: (updated, token) =>
-                  _saveEndpointEdit(ep, updated.endpoint, token),
-              onCancel: () => setState(() => _editingEpId = null),
             ),
-        ],
+            // 展开区：编辑表单（点编辑自动展开，置工具体上方）+ 工具体。
+            AnimatedCrossFade(
+              duration: t.fastDuration,
+              crossFadeState: expanded
+                  ? CrossFadeState.showSecond
+                  : CrossFadeState.showFirst,
+              firstChild: const SizedBox(width: double.infinity),
+              secondChild: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (_editingEpId == ep.id)
+                    ServerEndpointEditForm(
+                      ep: ep,
+                      storedKey: _epKeys[ep.id],
+                      onSave: (updated, token) =>
+                          _saveEndpointEdit(ep, updated.endpoint, token),
+                      onCancel: () => setState(() => _editingEpId = null),
+                    ),
+                  Divider(height: 1, thickness: 1, color: t.hairline),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 8, 12, 10),
+                    child: ServerToolsList(
+                      catalog: widget.catalog,
+                      svc: McpCatalogService(
+                        serverId: ep.id,
+                        label: ep.name,
+                        source: CatalogSource.remoteEndpoint,
+                        remote: ep,
+                      ),
+                      onSummary: (s) => _onToolsSummary(ep.id, s),
+                      errorRowBuilder: widget.errorRowBuilder,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
+  }
+
+  /// 编辑态切换（卡头合并改版：表单移入展开区，点编辑自动展开卡体）。
+  void _toggleEdit(ServerEndpoint ep) {
+    setState(() {
+      _editingEpId = _editingEpId == ep.id ? null : ep.id;
+    });
+    if (_editingEpId != null) _expandedIds.add(ep.id);
+  }
+
+  /// 工具装载概要落表（卡头信息行渲染源；键 = ep.id）。
+  void _onToolsSummary(String key, ServerToolsSummary s) {
+    if (!mounted) return;
+    setState(() => _toolSummaries[key] = s);
   }
 
   /// 在线状态点（在线绿 / 待授权与离线 Rose / 探测中 Cyan / 未探测灰）。

@@ -10,14 +10,14 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:goodhub/coordinator/cow_sync.dart';
 import 'package:goodhub/core/security/secure_key_value.dart';
-import 'package:goodhub/llm/cloud/byok_store.dart';
 import 'package:goodhub/mcp/default_private_server.dart';
 import 'package:goodhub/mcp/server_endpoints.dart';
 import 'package:goodhub/mcp/server_probe.dart';
-import 'package:goodhub/ui/settings_page.dart';
+import 'package:goodhub/ui/components/panel_error_row.dart';
+import 'package:goodhub/ui/sections/nodes_section.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'pin_harness.dart';
 
 void main() {
   late Directory tmp;
@@ -61,20 +61,27 @@ void main() {
   }
 
   Future<void> pumpPanel(WidgetTester tester, {NodeProbeFn? probe}) async {
-    // 大视口：ListView 懒构建只建视口内子项，OnDeviceModelSection 增高后
-    // 本段被推出首屏构建窗 → finder 0 命中假失败（同 byok_panel_test 口径）。
+    // 直泵段（2026-11-02 能力中心拍板：节点卡自设置页迁入资源中心
+    // 「节点与插件」tab——回归网直泵 section，注入位同构）。
+    // 钉选回调经 [_PinHarness] 走真实持久化（读写 SharedPreferences），
+    // 「默认私有钉选」用例与原设置页状态机同语义。
     tester.view.physicalSize = const Size(1080, 6000);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
     await tester.pumpWidget(MaterialApp(
-      home: SettingsPage(
-        // CoW/BYOK 面板同注入假件：其默认装配走平台通道，测试环境不可达，
-        // 失败置 _error 会替换整个 ListView（面板级短路），节点卡无从渲染。
-        autoProbe: false, // 探活断言均走显式「探测全部」点击，自动探活会翻倍计数
-        storeOverride: CowOverridesStore(dir: tmp),
-        byokStoreOverride: ByokStore(secure: secure),
-        endpointStoreOverride: store,
-        probeOverride: probe,
+      home: Scaffold(
+        body: ListView(children: [
+          PinHarness(builder: (isDefaultPrivate, onPinToggle) => NodesSection(
+            endpointStoreOverride: store,
+            catalog: FakeCatalog(),
+            probeOverride: probe,
+            autoProbe: false, // 探活断言均走显式「探测全部」点击，自动探活会翻倍计数
+            isDefaultPrivate: isDefaultPrivate,
+            onPinToggle: onPinToggle,
+            onFlash: (_) {},
+            errorRowBuilder: panelErrorRow,
+          )),
+        ]),
       ),
     ));
     await settleIo(tester);
@@ -289,3 +296,4 @@ void main() {
     expect(find.byTooltip('取消默认私有服务'), findsOneWidget);
   });
 }
+

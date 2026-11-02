@@ -447,4 +447,57 @@ Java_com_zzh_goodhub_GdwNative_dropFileCache(JNIEnv* env, jclass, jstring path) 
     return rc;
 }
 
+// CMA/DMA-BUF 预分配探针（npu-deployment 稿 §4.9，2026-11-02 加载机制 #7）：
+// 装载前以**同量级**尺寸向系统 DMA-BUF 堆真实试分配一次——虚拟内存门禁
+// （ActivityManager availMem）探不到物理页碎片化，长开机后一次性大块 ION
+// 请求会内核级 ENOMEM/深度 Direct Reclaim 整机卡死。命中即装载前放弃端侧
+//（提示重启后重试），不重试、不计熔断（§6.5 口径：环境变更非本端 Bug）。
+//
+// 语义（返回码三分，禁二值化）：
+//   0 = 试分配成功（CMA 可用）——fd 即刻 close（探针即弃，不留句柄）；
+//   1 = 堆不可达（SELinux / 无 dma_heap 节点 / ioctl ENOTTY）= **探针不可用**
+//       ——不判 CMA 不可用（全机型都会被 SELinux 挡 = 误杀全部端侧）；
+//   2 = 堆可达但分配失败（ENOMEM 等）= **CMA 不可用**（真判据）。
+//
+// 头文件说明：NDK 无 <linux/dma-heap.h>，DMA_HEAP_IOCTL_ALLOC 按 uapi 定义
+// 内联（_IOWR('H', 0x0, dma_heap_allocation_data)，v5.6+ uapi 稳定 ABI）。
+JNIEXPORT jint JNICALL
+Java_com_zzh_goodhub_GdwNative_cmaProbe(JNIEnv*, jclass, jlong bytes) {
+    if (bytes <= 0) return 1;
+    // /dev/dma_heap/system：v5.6+ 标准 cma 后备堆（untrusted_app 常被
+    // SELinux 拒，拒 = 探针不可用而非 CMA 不可用，见返回码 1）。
+    int heap = ::open("/dev/dma_heap/system", O_RDWR | O_CLOEXEC);
+    if (heap < 0) return 1;
+    struct DmaHeapAllocData {
+        std::uint64_t len;
+        std::uint32_t fd;
+        std::uint32_t heap_flags;
+    };
+    DmaHeapAllocData data{};
+    data.len = static_cast<std::uint64_t>(bytes);
+    // DMA_HEAP_IOCTL_ALLOC 请求码（uapi 公式 _IOC(RW=3, 'H', 0, sizeof(data)=16)
+    // = (3<<30)|(16<<16)|('H'<<8)|0 = 0xC0144800；宏式在 C++ 下对函数局部
+    // struct 不可用，按内核 uapi 稳定 ABI 手工推导）。
+    constexpr unsigned long kDmaHeapIoctlAlloc = 0xC0144800UL;
+    int rc = ::ioctl(heap, kDmaHeapIoctlAlloc, &data);
+    int probeErrno = errno;
+    if (rc == 0 && data.fd >= 0) {
+        ::close(data.fd);  // 探针即弃：验证可分配性，不持有
+        ::close(heap);
+        return 0;
+    }
+    ::close(heap);
+    // 分配被拒：ENOMEM（碎片化）/ EINTR 重试一次（信号打断非真不可用）。
+    if (probeErrno == EINTR) {
+        data.fd = 0;
+        rc = ::ioctl(heap, kDmaHeapIoctlAlloc, &data);
+        if (rc == 0 && data.fd >= 0) {
+            ::close(data.fd);
+            return 0;
+        }
+        probeErrno = errno;
+    }
+    return 2;
+}
+
 }  // extern "C"

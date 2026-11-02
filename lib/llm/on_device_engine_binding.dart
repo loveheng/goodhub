@@ -29,6 +29,17 @@ class OnDeviceEngineBinding {
   /// 就绪闸：onEngineReady / 死亡事件驱动（S2 正式接线）。
   final EngineReadyGate readyGate = EngineReadyGate();
 
+  /// Hexagon 架构代际（73/75/79/81；null = 非高通/不支持，2026-11-02 三下载点
+  /// 拍板的通道键）：导入面 NPU 包 arch 校验 / 增配通道键的 Dart 侧取用点。
+  Future<int?> hexagonArch() async {
+    try {
+      return await channel.invokeMethod<int>('hexagonArch');
+    } catch (e) {
+      debugPrint('[DEGRADE] hexagonArch: $e');
+      return null; // 未知 = 放行语义（与 deviceFingerprint 同口径）
+    }
+  }
+
   /// 会话票据查询（M1 Expand；设计 §2.2）：一次取回权威状态 + 代次 + 资产身份。
   /// 通道不可达抛 PlatformException 由调用方（影子对账）留痕，不静默造票据。
   ///
@@ -220,6 +231,14 @@ class OnDeviceEngineBinding {
   /// **字节没到 Dart**（计数不动）与**字节到了但解码丢了**（计数在涨）。
   int _dataFrames = 0;
   int _dataBytes = 0;
+
+  /// 每代生成复位帧/字节计数（诊断面）：计数是绑定级累加器，不复位会把
+  /// 上一代的 `frames/bytes` 残留进下一代的 EOS 打点（2026-11-02 真机误导：
+  /// 第二代零产出却打出第一代的 76/245），在 generate 入口复位。
+  void resetDataCounters() {
+    _dataFrames = 0;
+    _dataBytes = 0;
+  }
 
   /// 启动数据面消费 worker：经 MethodChannel 将 NativePort +
   /// `NativeApi.initializeApiDLData` 指针传主进程桥面——Kotlin 侧经 JNI 驱动

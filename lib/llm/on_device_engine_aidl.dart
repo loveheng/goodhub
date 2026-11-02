@@ -146,7 +146,8 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
   /// 触发）。装载跑在后台任务 [_runBackgroundLoad] 里（B-2：中断类失败分钟级
   /// 退避持续重试，**不随请求判死**）；本请求仅有界等待，超时抛**可重试**的
   /// 「装载进行中」（q-1：显式报错不切云）。终态失败如实上抛。
-  Future<EngineStatus> enable({OnDeviceModelOption? model}) async {
+  Future<EngineStatus> enable(
+      {OnDeviceModelOption? model, String? backendHint}) async {
     if (_loadState.value == OnDeviceLoadState.ready) return EngineStatus.ready;
     final target = model ?? await OnDeviceModelSelection.read();
     if (_loadTask != null) {
@@ -159,7 +160,7 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
     }
     final gen = ++_loadGen; // 作废任何旧任务（含目标变更场景）
     _loadTaskModelId = target?.dirName;
-    _loadTask = _runBackgroundLoad(target, gen).whenComplete(() {
+    _loadTask = _runBackgroundLoad(target, gen, backendHint).whenComplete(() {
       if (_loadGen == gen) {
         _loadTask = null;
         _loadTaskModelId = null;
@@ -196,7 +197,8 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
   /// 回升越过普通水位闸 → 无脑重试 = 每 30~90s 撞一次内存墙，LMK 连累其他
   /// 应用被杀（坏公民）。连续 2 次快死（受理后 30s 内中断）后，重试水位抬到
   /// 5GB——等系统真实恢复（用户清后台/大应用退出）才再发起装载。
-  Future<bool> _runBackgroundLoad(OnDeviceModelOption? model, int gen) async {
+  Future<bool> _runBackgroundLoad(
+      OnDeviceModelOption? model, int gen, String? backendHint) async {
     _loadTaskError = null;
     // 装载进行中即对用户可见（Fix3a）：此前**全仓无人写 loading 态**——
     // UI 的「⏳ 端侧模型加载中…」指示器是死代码（永不触发），用户对
@@ -295,7 +297,8 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
       if (gen != _loadGen) return false;
       // 模型装载：loadModel「受理即返回 assetMissing」（AIDL 契约——受理
         // 态轮询见 [_loadAndWaitReady]）。
-        final loaded = await _loadAndWaitReady(target.path, modelId: modelId);
+        final loaded = await _loadAndWaitReady(target.path,
+            modelId: modelId, backendHint: backendHint);
         if (loaded == EngineStatus.reloading) {
           // `:engine` 拒绝同进程重载（单进程单装载纪律：geniex destroy 是否完整
           // 释放 ION/DSP PD 不可实证，同进程复载必死）→ 进程将自杀交 AMS 冷
@@ -393,8 +396,10 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
   /// **不判死**——继续等热回落。M4：probe 走**票据面**（checkSession），
   /// checkStatus 轮询面已退役；票据取不到 = 未知态按装载中继续轮（M4 受理态
   /// loading 继续轮询，assetMissing 回归终态如实上抛）。
-  Future<EngineStatus> _loadAndWaitReady(String modelDir, {String? modelId}) async {
-    final loaded = await loadModel(modelDir, modelId: modelId);
+  Future<EngineStatus> _loadAndWaitReady(String modelDir,
+      {String? modelId, String? backendHint}) async {
+    final loaded =
+        await loadModel(modelDir, modelId: modelId, backendHint: backendHint);
     // 越过「引擎重启装载」阶段（拿到非 reloading 的应答）→ 预期态清零：
     // 其后的失败是真故障（快死棘轮恢复计数）。
     if (loaded != EngineStatus.reloading) _expectRestart = false;
@@ -476,11 +481,14 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
   /// 语义（AMS 会自动重启 :engine 并重连）；其余远端异常 = 终态失败，
   /// **错误码如实入文案**——禁沿用 checkStatus 的 DEGRADE 口径返回
   /// unsupportedDevice（会把通道异常读成「硬件不支持」）。
-  Future<EngineStatus> loadModel(String modelDir, {String? modelId}) async {
+  Future<EngineStatus> loadModel(String modelDir,
+      {String? modelId, String? backendHint}) async {
     try {
       final ordinal = await _channel.invokeMethod<int>('loadModel', {
         'modelDir': modelDir,
         'modelId': ?modelId,
+        // 准入探针后端选择权注入（AIDL 2026-11-02 #8）：null = Runner 自裁。
+        'backendHint': ?backendHint,
       });
       // C5 修正：ordinal 缺失 = 通道异常非「硬件不支持」，禁 ?? 5 静默折算
       // unsupportedDevice 终态（按未知序数收容，走票据对账）。
@@ -508,6 +516,8 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
     if (_active.containsKey(requestId)) {
       throw StateError('generate: requestId $requestId already active');
     }
+    // 每代复位数据面帧/字节计数（绑定级累加器，跨代残留会误导诊断打点）。
+    _binding.resetDataCounters();
     final ctrl = StreamController<EngineChunk>(onCancel: () => cancel(requestId));
     // 解码自愈接线：坏字节（字节流错位）会让 utf8 chunked 解码器进入持续失败
     // 态——一次失败后每个后续字节都抛 FormatException（真机 S2-5 实证 78189 条

@@ -6,33 +6,26 @@ import android.util.Log
 import com.zzh.goodhub.engine.GenieXRuntime.hexagonArch
 import com.zzh.goodhub.engine.GenieXRuntime.markerFile
 import com.zzh.goodhub.engine.GenieXRuntime.runtimeDir
+import com.zzh.goodhub.engine.RuntimeChannel.Pin
 import java.io.File
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
-import java.security.MessageDigest
-import java.util.zip.ZipInputStream
 
 /**
  * GenieX 增配安装面（npu-geniex-runtime 设计稿 §5，P2 拆分）：主进程设置页
  * 触发——下载（镜像列表可配 + 断点续传 + 进度回调）→ AAR 整包校验 → 按
  * 机型解压装载集（逐文件 PINS）→ 写 marker（含驱动指纹，§4.8 对齐）。
  * :engine 装载面 = GenieXRuntime.ensureLoaded（只装不下载）。
+ *
+ * 2026-11-02 泛化：下载/校验/抽取骨架上收 [RuntimeChannel]（库族 × arch 键控，
+ * 三下载点独立共享骨架）；**工件清单化**——版本/URL/逐文件 pins 全部来自
+ * `RuntimeChannel.MANIFEST_URL` 清单 `family = "geniex"` 条目（与 litertlm-npu
+ * 同一清单、同一真相），代码只保留装载集选择（[GenieXRuntime.installSet]）
+ * 与清单-代码钉版一致性校验。
  */
 object GenieXInstaller {
     private const val TAG = "GenieXInstaller"
     const val VERSION = GenieXRuntime.VERSION
-    const val AAR_BYTES = 89_045_966L
-    const val AAR_SHA256 = "3a40def4890fe4991d3547acf8bcfa9f1be491ad7790a1cb5d26bbecb2dde69b"
-
-    /** 默认双源（D3 裁决）；镜像列表可配置化后由 Dart 传入覆盖。 */
-    val DEFAULT_URLS = listOf(
-        "https://repo1.maven.org/maven2/com/qualcomm/qti/geniex-android/$VERSION/geniex-android-$VERSION.aar",
-        "https://maven.aliyun.com/repository/central/com/qualcomm/qti/geniex-android/$VERSION/geniex-android-$VERSION.aar",
-    )
 
     /** size + SHA-256 钉版（context/epics/on-device/geniex-0.10.0-pins.txt 实测）。 */
-    data class Pin(val size: Long, val sha256: String)
     val PINS: Map<String, Pin> = mapOf(
         "libgeniex.so" to Pin(5245112L, "deca3df413ac5c4c1f1db8e9e4beaa9060af8fb48448d3649096f7158bd3c569"),
         "libgeniex-proc.so" to Pin(7174112L, "5fe2bcc8aeefa6c0e0250a77987f4b945b7101c5a382aa4d6d4b739e9c9f5430"),
@@ -70,89 +63,47 @@ object GenieXInstaller {
             Log.i(TAG, "unsupported SoC — install rejected")
             return false
         }
-        val urls = mirrors.ifEmpty { DEFAULT_URLS }
+        // 工件清单化 + **双层依赖**（2026-11-02 用户拍板）：common（跨芯片
+        // 通用件，一次下载跨代际复用）+ 本机代际专属件，两段单源 = RuntimeChannel
+        // 清单（family=geniex）。清单与代码钉版不一致（VERSION 漂移）→ 显式
+        // 拒绝（装载面按 GenieXRuntime.VERSION 校验 marker，错版装上也是死）。
+        val spec = RuntimeChannel.fetchSpec(
+            "geniex", arch, Build.SOC_MODEL.orEmpty(),
+        ) ?: run {
+            Log.i(TAG, "manifest unavailable / no geniex artifact for v$arch — install rejected")
+            return false
+        }
+        if (spec.version != VERSION) {
+            Log.e(TAG, "[DEGRADE] manifest geniex version ${spec.version} ≠ " +
+                "code-pinned $VERSION — install rejected (钉版一致性)")
+            return false
+        }
         return try {
-            val aar = download(context, urls, onProgress) ?: return false
-            extract(context, aar, arch)
+            val rt = runtimeDir(context)
+            // 段① common（跨芯片通用件）：dst 缓存复用（整包 sha256 命中免重下）。
+            val commonZip = RuntimeChannel.download(
+                context,
+                RuntimeChannel.Artifact("geniex", arch, spec.common.fileName,
+                    listOf(spec.common.url), spec.common.totalBytes, spec.common.sha256),
+                dstDir = "geniex-aar", onProgress = onProgress,
+            ) ?: return false
+            RuntimeChannel.extractPinned(commonZip, rt, spec.common.pins)
+            // 段② 本机代际专属件（QNN v 系 + ggml-hexagon）。
+            val archZip = RuntimeChannel.download(
+                context,
+                RuntimeChannel.Artifact("geniex", arch, spec.arch.fileName,
+                    listOf(spec.arch.url), spec.arch.totalBytes, spec.arch.sha256),
+                dstDir = "geniex-aar", onProgress = onProgress,
+            ) ?: return false
+            RuntimeChannel.extractPinned(archZip, rt, spec.arch.pins)
             markerFile(context).writeText("geniex=$VERSION arch=v$arch fp=${Build.FINGERPRINT}\n")
             cleanupOldVersions(context)
-            Log.i(TAG, "installed: arch=v$arch dir=${runtimeDir(context).absolutePath}")
+            Log.i(TAG, "installed: arch=v$arch dir=${rt.absolutePath}")
             true
         } catch (e: Throwable) {
             Log.e(TAG, "[DEGRADE] install: $e")
             false
         }
-    }
-
-    /** 双源断点续传下载（每源 3 次），成功返回 AAR 本地文件。 */
-    private fun download(context: Context, urls: List<String>, onProgress: (Int) -> Unit): File? {
-        val dst = File(context.filesDir, "geniex-aar/geniex-android-$VERSION.aar")
-        dst.parentFile?.mkdirs()
-        for (url in urls) {
-            repeat(3) { attempt ->
-                try {
-                    val partial = File(dst.path + ".part")
-                    // 整包缓存复用：卸载保留的完整 AAR 直接校验取用（免重下）。
-                    if (dst.isFile && dst.length() == AAR_BYTES && sha256(dst) == AAR_SHA256) {
-                        onProgress(100)
-                        return finish(dst, dst)
-                    }
-                    if (partial.isFile && partial.length() == AAR_BYTES) {
-                        if (sha256(partial) == AAR_SHA256) return finish(partial, dst)
-                        partial.delete()
-                    }
-                    val conn = URL(url).openConnection() as HttpURLConnection
-                    conn.connectTimeout = 15_000
-                    conn.readTimeout = 30_000
-                    conn.instanceFollowRedirects = true
-                    if (partial.isFile && partial.length() in 1 until AAR_BYTES) {
-                        conn.setRequestProperty("Range", "bytes=${partial.length()}-")
-                    } else {
-                        partial.delete()
-                    }
-                    conn.inputStream.use { input ->
-                        FileOutputStream(partial, true).use { out ->
-                            val buf = ByteArray(1 shl 16)
-                            while (true) {
-                                val n = input.read(buf)
-                                if (n <= 0) break
-                                out.write(buf, 0, n)
-                                onProgress(((partial.length() * 100) / AAR_BYTES).toInt().coerceIn(0, 100))
-                            }
-                        }
-                    }
-                    if (partial.length() != AAR_BYTES) {
-                        Log.w(TAG, "size mismatch ${partial.length()} ≠ $AAR_BYTES (${url}#$attempt)")
-                        if (partial.length() > AAR_BYTES) partial.delete()
-                        return@repeat
-                    }
-                    if (sha256(partial) != AAR_SHA256) {
-                        Log.w(TAG, "sha256 mismatch (${url}#$attempt)")
-                        partial.delete()
-                        return@repeat
-                    }
-                    return finish(partial, dst)
-                } catch (e: Throwable) {
-                    Log.w(TAG, "download failed (${url}#$attempt): $e")
-                }
-            }
-        }
-        return null
-    }
-
-    private fun finish(partial: File, dst: File): File {
-        if (dst.isFile) dst.delete()
-        partial.renameTo(dst)
-        return dst
-    }
-
-    private fun sha256(f: File): String {
-        val md = MessageDigest.getInstance("SHA-256")
-        f.inputStream().use { input ->
-            val buf = ByteArray(1 shl 16)
-            while (true) { val n = input.read(buf); if (n <= 0) break; md.update(buf, 0, n) }
-        }
-        return md.digest().joinToString("") { "%02x".format(it) }
     }
 
     /**
@@ -175,27 +126,4 @@ object GenieXInstaller {
         }
     }
 
-    /** 按机型从 AAR 解出装载集（逐文件钉版校验）。 */
-    private fun extract(context: Context, aar: File, arch: Int) {
-        val rt = runtimeDir(context)
-        rt.mkdirs()
-        val wanted = GenieXRuntime.installSet
-        var extracted = 0
-        ZipInputStream(aar.inputStream().buffered()).use { zip ->
-            while (true) {
-                val entry = zip.nextEntry ?: break
-                val base = entry.name.substringAfterLast('/')
-                if (!wanted.contains(base)) continue
-                val target = File(rt, base)
-                val pin = PINS.getValue(base)
-                FileOutputStream(target).use { zip.copyTo(it, 1 shl 16) }
-                if (target.length() != pin.size || sha256(target) != pin.sha256) {
-                    throw IllegalStateException("pin mismatch ${target.name}")
-                }
-                extracted++
-                zip.closeEntry()
-            }
-        }
-        if (extracted != wanted.size) throw IllegalStateException("AAR missing entries: got $extracted want ${wanted.size}")
-    }
 }

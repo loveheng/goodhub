@@ -51,8 +51,14 @@ void main() {
     }
   });
 
-  test('正常体积散文件 → 收（meta 登记 displayName，未知布局 runtime=auto）', () async {
+  test('未知布局（纯 bin 散件）→ 拒（族级导入拒绝，2026-11-02）', () async {
     final ok = await sparseFile(tmp, 'weights.bin', 1024 * 1024);
+    final dir = await mgr.importFromPickedFiles([ok.path], target: target);
+    expect(dir, isNull);
+  });
+
+  test('合法族文件 → 收（meta 登记 displayName + runtime/family）', () async {
+    final ok = await sparseFile(tmp, 'gemma3-1b.litertlm', 1024 * 1024);
     final dir = await mgr.importFromPickedFiles([ok.path], target: target);
     expect(dir, isNotNull);
     expect(dir!.path, contains('my-model'));
@@ -61,7 +67,8 @@ void main() {
             as Map<String, dynamic>;
     expect(meta['version'], startsWith('local-import'));
     expect(meta['displayName'], 'My Model');
-    expect(meta['runtime'], OnDeviceRuntime.auto);
+    expect(meta['runtime'], OnDeviceRuntime.litertlm);
+    expect(meta['family'], OnDeviceAssetFamily.litertlm);
   });
 
   test('坏 GGUF（头魔数非 GGUF）→ 拒（结构校验硬闸）', () async {
@@ -71,17 +78,12 @@ void main() {
     expect(dir, isNull);
   });
 
-  test('合法 GGUF 头 → 收（runtime 检测为 llama_cpp）', () async {
+  test('合法 GGUF 头 → 拒（GGUF 通道首发关闸，2026-11-01 三闸）', () async {
     final gguf = File('${tmp.path}/model.gguf');
     await gguf.writeAsBytes(
         [0x47, 0x47, 0x55, 0x46, ...List.filled(60, 0)]); // "GGUF" + padding
     final dir = await mgr.importFromPickedFiles([gguf.path], target: target);
-    expect(dir, isNotNull);
-    final meta =
-        jsonDecode(await File('${dir!.path}/.asset-meta.json').readAsString())
-            as Map<String, dynamic>;
-    expect(meta['runtime'], OnDeviceRuntime.llamaCpp);
-    expect(meta['family'], OnDeviceAssetFamily.geniex); // D-1 族映射单源
+    expect(dir, isNull);
   });
 
   test('.litertlm 资产 → 收（runtime=litertlm，family=litertlm）', () async {

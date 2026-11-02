@@ -9,23 +9,21 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:goodhub/coordinator/cow_sync.dart';
 import 'package:goodhub/core/security/secure_key_value.dart';
 import 'package:goodhub/llm/cloud/byok_store.dart';
 import 'package:goodhub/llm/cloud/cloud_llm.dart';
-import 'package:goodhub/ui/settings_page.dart';
+import 'package:goodhub/ui/components/panel_error_row.dart';
+import 'package:goodhub/ui/sections/byok_section.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   late Directory tempDir;
-  late CowOverridesStore cowStore;
   late InMemorySecureKeyValue secure;
   late ByokStore byokStore;
 
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
     tempDir = await Directory.systemTemp.createTemp('hall_byok_t5');
-    cowStore = CowOverridesStore(dir: tempDir);
     secure = InMemorySecureKeyValue();
     byokStore = ByokStore(secure: secure);
   });
@@ -43,16 +41,21 @@ void main() {
   }
 
   Future<void> pumpHall(WidgetTester tester) async {
-    // 大视口（页面物理高度 ×6）：SettingsPage 的 ListView 懒构建只建视口内
-    // 子项——OnDeviceModelSection 增高（模型选择/白名单行）后 ByokSection 被
-    // 推出首屏构建窗，finder 只匹配已构建 widget → 0 命中假失败。
+    // 直泵段（2026-11-02 能力中心拍板：BYOK 面板自设置页迁入资源中心
+    // 「云端引擎」tab——回归网直泵 section，装配面注入位同构）。
+    // 大视口：段表单较长，目标可能在视口外，scrollTo 逐屏找。
     tester.view.physicalSize = const Size(1080, 6000);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
     await tester.pumpWidget(MaterialApp(
-      home: SettingsPage(
-        storeOverride: cowStore,
-        byokStoreOverride: byokStore,
+      home: Scaffold(
+        body: ListView(children: [
+          ByokSection(
+            store: byokStore,
+            onFlash: (_) {},
+            errorRowBuilder: panelErrorRow,
+          ),
+        ]),
       ),
     ));
     await settleIo(tester);

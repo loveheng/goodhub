@@ -44,8 +44,10 @@ void main() {
   });
 
   test('zip 含嵌套目录 + 点前缀文件 → 压平入库，meta 为 local-import', () async {
+    // 2026-11-02 族级导入拒绝拍板：夹具须含合法族文件（.litertlm），
+    // 纯未知布局 bin 散件已改为导入期拒收。
     final zip = await makeZip(tmp, {
-      'shard-0.bin': List.filled(100, 1),
+      'model.litertlm': List.filled(100, 1),
       'sub/shard-1.bin': List.filled(120, 2),
       'sub/deep/tokenizer.json': List.filled(80, 3),
       '.hidden': List.filled(5, 4), // 点前缀 → 剔除
@@ -54,7 +56,7 @@ void main() {
     expect(target, isNotNull);
     expect(target!.path, contains('fake-test-dir'));
     // 压平：嵌套文件全部提升到目标根。
-    expect(await File('${target.path}/shard-0.bin').exists(), isTrue);
+    expect(await File('${target.path}/model.litertlm').exists(), isTrue);
     expect(await File('${target.path}/shard-1.bin').exists(), isTrue);
     expect(await File('${target.path}/tokenizer.json').exists(), isTrue);
     expect(await File('${target.path}/.hidden').exists(), isFalse);
@@ -104,14 +106,32 @@ void main() {
   });
 
   test('tar 通路 → 同样压平入库', () async {
+    // 2026-11-02 族级导入拒绝拍板：夹具须含合法族文件（.litertlm）。
     final archive = Archive()
-      ..add(ArchiveFile.bytes('shard-0.bin', List.filled(150, 1)))
+      ..add(ArchiveFile.bytes('model.litertlm', List.filled(150, 1)))
       ..add(ArchiveFile.bytes('shard-1.bin', List.filled(150, 2)));
     final tar = '${tmp.path}/model.tar';
     await File(tar).writeAsBytes(TarEncoder().encode(archive));
     final target = await mgr.importFromArchive(tar, target: fakeTarget);
     expect(target, isNotNull);
-    expect(await File('${target!.path}/shard-0.bin').exists(), isTrue);
+    expect(await File('${target!.path}/model.litertlm').exists(), isTrue);
     expect(await File('${target.path}/shard-1.bin').exists(), isTrue);
+  });
+
+  test('未知布局（纯 bin 散件无合法族文件）→ 拒（族级导入拒绝，2026-11-02）',
+      () async {
+    final zip = await makeZip(tmp, {
+      'shard-0.bin': List.filled(100, 1),
+      'shard-1.bin': List.filled(120, 2),
+    });
+    final target = await mgr.importFromArchive(zip, target: fakeTarget);
+    expect(target, isNull);
+    final models = Directory('${tmp.path}/models');
+    if (await models.exists()) {
+      expect(
+        await models.list().any((e) => e.path.contains('.staging-archive')),
+        isFalse,
+      );
+    }
   });
 }

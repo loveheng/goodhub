@@ -41,6 +41,15 @@ String sanitizeChatMLControlTokens(String text) =>
 /// [kPromptInlineBinderLimitChars]）不解锁模型窗口，阶梯截断照常生效。
 const int kOnDeviceHistoryCharBudget = 1200;
 
+/// 历史预算动态推导的 token 预留（[buildOnDeviceChatPromptJson] 传入
+/// `contextTokens` 时启用）：
+/// - 输出预留 512：与 [GenerationConfig.maxTokens] 默认值对齐——上下文窗口
+///   必须同时容纳输入与最大输出；
+/// - 系统+用户预留 256：system 指令 ~64 + 当前 user 轮弹性（ASCII 最坏
+///   1 字符 = 1 token；user 轮不可裁剪，超预留 = SDK 显式硬失败，不静默）。
+const int kContextOutputReserveTokens = 512;
+const int kContextSystemUserReserveTokens = 256;
+
 /// promptJson 走 Binder 事务参数的字符内联上限（F3 传输约束）。
 ///
 /// 超限 → Dart 侧落临时文件、`promptFilePath` 随 Bundle 传短元数据，:engine
@@ -62,7 +71,17 @@ const int kPromptInlineBinderLimitChars = 60000;
 ///
 /// 返回值直接作为 `promptJson` 跨 AIDL 送达 `:engine`，由 ChatMLComposer
 /// 构造多轮交替模板。
-String buildOnDeviceChatPromptJson(List<CloudChatMessage> messages) {
+///
+/// [contextTokens]（模型上下文窗口，[OnDeviceModelOption.contextTokens]）：
+/// 非 null 时历史预算按 `contextTokens - 输出预留 - 系统+用户预留` 动态
+/// 推导（ASCII 最坏 1 字符 = 1 token 的字符口径）；null = 保持全局
+/// [kOnDeviceHistoryCharBudget]（存量 GenieX 系口径）。真机实证
+/// （2026-11-02）：全局 1200 字符对 1280-context bundle 的 ASCII 退化
+/// 历史必然溢出 → SDK 硬失败。
+String buildOnDeviceChatPromptJson(
+  List<CloudChatMessage> messages, {
+  int? contextTokens,
+}) {
   final systemParts = <String>[];
   final turns = <(String, String)>[];
   for (final m in messages) {
@@ -86,9 +105,16 @@ String buildOnDeviceChatPromptJson(List<CloudChatMessage> messages) {
     });
   }
   // 历史预算裁剪（从最早一轮起丢；轮次 = 除 system 外全部消息）。
+  // 预算 = 模型感知动态推导（contextTokens 在场）或全局字符预算（存量口径）。
+  final int budget = contextTokens != null
+      ? (contextTokens -
+            kContextOutputReserveTokens -
+            kContextSystemUserReserveTokens)
+          .clamp(200, 1 << 30)
+      : kOnDeviceHistoryCharBudget;
   var start = 0;
   var total = turns.fold<int>(0, (sum, t) => sum + t.$2.length);
-  while (start < turns.length - 1 && total > kOnDeviceHistoryCharBudget) {
+  while (start < turns.length - 1 && total > budget) {
     total -= turns[start].$2.length;
     start++;
   }

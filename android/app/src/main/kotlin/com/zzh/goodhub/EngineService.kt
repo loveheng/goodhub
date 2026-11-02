@@ -351,7 +351,7 @@ class EngineService : Service() {
             return EngineStatus.assetMissing.ordinal
         }
 
-        override fun loadModel(modelDir: String?, modelId: String?): Int {
+        override fun loadModel(modelDir: String?, modelId: String?, backendHint: String?): Int {
             // S2 正式接线：单飞闸 + 后台线程建 Genie 会话（~2.7s 暖机，不占
             // Binder 线程）。幂等：ready/creating 中重复调用不重建。
             if (modelDir.isNullOrEmpty()) return EngineStatus.unsupportedDevice.ordinal
@@ -363,6 +363,31 @@ class EngineService : Service() {
                 return EngineStatus.unsupportedDevice.ordinal
             }
             if (session.ready) return EngineStatus.ready.ordinal
+            // CMA/DMA-BUF 预分配探针（npu-deployment §4.9，加载机制 #7）：
+            // 虚拟内存门禁探不到物理页碎片化——以模型权重同量级尺寸向系统
+            // DMA-BUF 堆真实试分配一次，命中 ENOMEM 判 CMA 不可用 → 装载前
+            // 放弃端侧（loadError 带真因，主进程收口云端；提示重启后重试）。
+            // 不重试、不计熔断（§6.5：环境变更非本端 Bug）；堆不可达
+            //（SELinux 挡 dma_heap 节点）= 探针不可用 → 放行（禁误杀全机型）。
+            // 探针量级 = 权重体 1/2 上限 768MB（真实权重分片多 buffer，整额
+            // 单 buffer 过严会假阴性）。
+            runCatching {
+                val weightBytes = java.io.File(modelDir).listFiles()
+                    ?.filter { it.isFile }?.maxOfOrNull { it.length() } ?: 0L
+                val probeBytes = minOf(weightBytes / 2, 768L shl 20)
+                if (probeBytes > 0) {
+                    val verdict = GdwNative.cmaProbe(probeBytes)
+                    if (verdict == 2) {
+                        session.loadError = "CMA_UNAVAILABLE: dma-heap alloc " +
+                            "failed (${probeBytes shr 20}MB probe) — 物理页碎片化，重启后重试"
+                        Log.w(TAG, "[DEGRADE] loadModel: ${session.loadError}")
+                        return EngineStatus.unsupportedDevice.ordinal
+                    }
+                    Log.i(TAG, "cma probe: verdict=$verdict probe=${probeBytes shr 20}MB")
+                }
+            }.onFailure { e ->
+                Log.w(TAG, "[DEGRADE] cma probe skipped: $e")
+            }
             // 装载单例纪律执行点：本进程已装载过（loadedOnce）且会话非 ready
             // （驱逐/释放后）——拒绝本进程重建，回**重启装载**信号后干净退出，
             // AMS 冷启动新进程承载复载（Dart 侧按可重试中断处理：短退避重绑，
@@ -424,7 +449,7 @@ class EngineService : Service() {
                     notifyLoadPhase(IOnDeviceEngineListener.LOAD_PHASE_PARSING)
                     notifyLoadPhase(IOnDeviceEngineListener.LOAD_PHASE_ALLOCATING)
                     startLoadStallWatchdog()
-                    session.doLoad(modelDir)
+                    session.doLoad(modelDir, backendHint?.takeIf { it.isNotEmpty() })
                     // G2-1：装载终态落墓碑——成功 FLAG_READY；失败保持
                     // FLAG_LOADING（装载中死亡 = LMK 候选，排除法消费）。
                     if (session.ready) writeTombstoneFlag("FLAG_READY")

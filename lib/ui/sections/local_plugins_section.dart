@@ -13,8 +13,10 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../coordinator/tool_catalog.dart';
 import '../../mcp/local_plugin_discovery.dart';
 import '../../mcp/trusted_plugins.dart';
+import '../components/server_tools_list.dart';
 import '../tokens/console_tokens.dart';
 import '../trust_plugin_dialog.dart';
 
@@ -24,6 +26,7 @@ import '../trust_plugin_dialog.dart';
 class LocalPluginsSection extends StatefulWidget {
   const LocalPluginsSection({
     super.key,
+    required this.catalog,
     required this.scan,
     required this.changes,
     required this.isDefaultPrivate,
@@ -31,6 +34,10 @@ class LocalPluginsSection extends StatefulWidget {
     required this.onFlash,
     required this.errorRowBuilder,
   });
+
+  /// 工具目录取数收口（生产 = 资源中心页面级 [McpCatalog]；测试传假件）。
+  /// 各插件卡按 serverId（= info.serverId）嵌服务工具列表（2026-11-02 拆解归并）。
+  final McpCatalog catalog;
 
   final Future<List<LocalPluginInfo>> Function() scan;
   final Stream<void> changes;
@@ -66,6 +73,11 @@ class _LocalPluginsSectionState extends State<LocalPluginsSection>
   var _trustedPackages = const <String>{}; // 已信任包名（同签名免确认仍显式标）
   StreamSubscription<void>? _changesSub;
   String? _error;
+
+  // —— 工具卡头合并（2026-11-02）：展开态 + 装载概要收口段级（keepAlive 已
+  // 覆盖跨 tab 切回；PageStorage 双保险随 ExpansionTile 退役）——
+  final _expandedIds = <String>{}; // transportId → 卡头展开中
+  final _toolSummaries = <String, ServerToolsSummary>{}; // serverId → 概要
 
   @override
   void initState() {
@@ -222,117 +234,196 @@ class _LocalPluginsSectionState extends State<LocalPluginsSection>
 
   Widget _item(BuildContext context, ConsoleTokens t, LocalPluginInfo p) {
     final trusted = p.sameSignature || _trustedPackages.contains(p.packageName);
+    final expanded = _expandedIds.contains(p.transportId);
+    final sumKey = p.serverId.isNotEmpty ? p.serverId : p.transportId;
     return Container(
       key: Key('local-plugin-${p.transportId}'),
       margin: const EdgeInsets.symmetric(vertical: 4),
-      padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(t.cardRadius),
         border: Border.all(color: t.hairline),
       ),
-      child: Row(
-        children: [
-          // 已发现即接入（Binder 通道存在 = 自动挂载）；会话内是否可调用须由
-          // 上下文菜单锁定私有槽位决定（私有≠免隔离）。绿色点表「已发现」。
-          Container(
-            width: 10,
-            height: 10,
-            decoration: BoxDecoration(color: t.l1Ok, shape: BoxShape.circle),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  p.serverTitle.isNotEmpty ? p.serverTitle : p.serverId,
-                  style: TextStyle(
-                    fontFamily: t.monoFamily,
-                    fontSize: Fsz.telemetry,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-                Text(
-                  '${p.packageName}\n${p.transportId}',
-                  style: TextStyle(
-                    fontFamily: t.monoFamily,
-                    fontSize: Fsz.micro,
-                    color: t.terminalMuted,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Row(
+      clipBehavior: Clip.antiAlias,
+      child: Material(
+        type: MaterialType.transparency,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 卡头 = 展开器（2026-11-02 合并改版，替代卡内独立「工具」
+            // ExpansionTile）：整行可点 + 涟漪反馈；钉选/信任按钮各自消费
+            // 自身手势，不触发展开。
+            InkWell(
+              onTap: () => setState(() => expanded
+                  ? _expandedIds.remove(p.transportId)
+                  : _expandedIds.add(p.transportId)),
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      '已挂载（自动）',
-                      style: TextStyle(
-                        fontSize: Fsz.microSm,
-                        color: t.terminalMuted,
+                    // 已发现即接入（Binder 通道存在 = 自动挂载）；会话内是否可
+                    // 调用须由上下文菜单锁定私有槽位决定（私有≠免隔离）。
+                    Padding(
+                      padding: const EdgeInsets.only(top: 3),
+                      child: Container(
+                        width: 10,
+                        height: 10,
+                        decoration: BoxDecoration(
+                            color: t.l1Ok, shape: BoxShape.circle),
                       ),
                     ),
-                    // 默认私有 pill（方案 A：与节点卡同款行内态）。
-                    if (widget.isDefaultPrivate(p.serverId)) ...[
-                      const SizedBox(width: 8),
-                      _defaultPill(t),
-                    ],
                     const SizedBox(width: 8),
-                    if (p.sameSignature)
-                      Text(
-                        '私有生态 · 自动信任',
-                        style: TextStyle(
-                          fontSize: Fsz.microSm,
-                          color: t.l1Ok,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      )
-                    else if (trusted) ...[
-                      Text(
-                        '已信任',
-                        style: TextStyle(
-                          fontSize: Fsz.microSm,
-                          color: t.l1Ok,
-                          fontWeight: FontWeight.w600,
-                        ),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            p.serverTitle.isNotEmpty ? p.serverTitle : p.serverId,
+                            style: TextStyle(
+                              fontFamily: t.monoFamily,
+                              fontSize: Fsz.telemetry,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          Text(
+                            '${p.packageName}\n${p.transportId}',
+                            style: TextStyle(
+                              fontFamily: t.monoFamily,
+                              fontSize: Fsz.micro,
+                              color: t.terminalMuted,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          // 状态行用 Wrap（卡头合并后标题列被右上角簇收窄，
+                          // Row 定宽会溢出——放不下自动换行）。
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 2,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              Text(
+                                '已挂载（自动）',
+                                style: TextStyle(
+                                  fontSize: Fsz.microSm,
+                                  color: t.terminalMuted,
+                                ),
+                              ),
+                              // 默认私有 pill（方案 A：与节点卡同款行内态）。
+                              if (widget.isDefaultPrivate(p.serverId))
+                                _defaultPill(t),
+                              if (p.sameSignature)
+                                Text(
+                                  '私有生态 · 自动信任',
+                                  style: TextStyle(
+                                    fontSize: Fsz.microSm,
+                                    color: t.l1Ok,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                )
+                              else if (trusted) ...[
+                                Text(
+                                  '已信任',
+                                  style: TextStyle(
+                                    fontSize: Fsz.microSm,
+                                    color: t.l1Ok,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                // P1-8：撤销入口补后果 tooltip（可发现性 = 看得见
+                                // + 看得懂点了会怎样）。
+                                Tooltip(
+                                  message:
+                                      '撤销后下次使用需重新确认信任，PC 网关也不再暴露它',
+                                  child: TextButton(
+                                    key: Key('local-untrust-${p.transportId}'),
+                                    onPressed: () => _untrustPlugin(p),
+                                    child: const Text('撤销'),
+                                  ),
+                                ),
+                              ] else ...[
+                                Text(
+                                  '待信任',
+                                  style: TextStyle(
+                                    fontSize: Fsz.microSm,
+                                    color: t.l2Warn,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                TextButton(
+                                  key: Key('local-trust-${p.transportId}'),
+                                  onPressed: () => _trustPlugin(p),
+                                  child: const Text('信任'),
+                                ),
+                              ],
+                            ],
+                          ),
+                          const SizedBox(height: 2),
+                          // 工具概要并入卡头信息行（共享 x / 共 y 个工具 · 点击
+                          // 展开；加载中/失败/未声明同位呈现）。
+                          Text(
+                            serverToolsMetaText(_toolSummaries[sumKey],
+                                expanded: expanded),
+                            style: TextStyle(
+                                fontSize: Fsz.note, color: t.terminalMuted),
+                          ),
+                        ],
                       ),
-                      const SizedBox(width: 6),
-                      // P1-8：撤销入口补后果 tooltip（可发现性 = 看得见
-                      // + 看得懂点了会怎样）。
-                      Tooltip(
-                        message: '撤销后下次使用需重新确认信任，PC 网关也不再暴露它',
-                        child: TextButton(
-                          key: Key('local-untrust-${p.transportId}'),
-                          onPressed: () => _untrustPlugin(p),
-                          child: const Text('撤销'),
-                        ),
-                      ),
-                    ] else ...[
-                      Text(
-                        '待信任',
-                        style: TextStyle(
-                          fontSize: Fsz.microSm,
-                          color: t.l2Warn,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      TextButton(
-                        key: Key('local-trust-${p.transportId}'),
-                        onPressed: () => _trustPlugin(p),
-                        child: const Text('信任'),
-                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    // 右上角簇：来源标识 → 钉选 → 展开箭头（箭头紧随钉选后，
+                    // 与「展开 = 卡头整体动作」的动线一致）。
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: serverSourcePill(t, '本地'),
+                    ),
+                    if (p.serverId.isNotEmpty) ...[
+                      _pinButton(t, p),
                     ],
+                    serverExpandChevron(t, expanded: expanded),
                   ],
                 ),
-              ],
+              ),
             ),
-          ),
-          // 默认私有服务钉选（方案 A：与节点卡同款图钉；候选 = serverId 非空）。
-          if (p.serverId.isNotEmpty) ...[
-            _pinButton(t, p),
+            // 工具体（随卡头展开收起；折叠也装载——卡头需显示工具计数）。
+            AnimatedCrossFade(
+              duration: t.fastDuration,
+              crossFadeState: expanded
+                  ? CrossFadeState.showSecond
+                  : CrossFadeState.showFirst,
+              firstChild: const SizedBox(width: double.infinity),
+              secondChild: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Divider(height: 1, thickness: 1, color: t.hairline),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 8, 12, 10),
+                    child: ServerToolsList(
+                      catalog: widget.catalog,
+                      svc: McpCatalogService(
+                        serverId: p.serverId,
+                        label:
+                            p.serverTitle.isEmpty ? p.serverId : p.serverTitle,
+                        source: CatalogSource.localPlugin,
+                        local: p,
+                      ),
+                      changes: widget.changes,
+                      onSummary: (s) => _onToolsSummary(sumKey, s),
+                      errorRowBuilder: widget.errorRowBuilder,
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ],
-        ],
+        ),
       ),
     );
+  }
+
+  /// 工具装载概要落表（卡头信息行渲染源；键 = serverId，空则 transportId）。
+  void _onToolsSummary(String key, ServerToolsSummary s) {
+    if (!mounted) return;
+    setState(() => _toolSummaries[key] = s);
   }
 
   /// 「默认私有」pill（L1 就绪语义，与「生效中 / 已信任」同款字形）。

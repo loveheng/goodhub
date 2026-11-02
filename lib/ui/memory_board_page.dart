@@ -136,6 +136,14 @@ class _MemoryBoardPageState extends State<MemoryBoardPage>
         ],
         bottom: TabBar(
           controller: _tabs,
+          // ui-design §3.4：选中 = l2Accent 文字 + 2dp accent 下划线；
+          // 未选中 = terminalMuted；标签遥测轨字号（compact，窄栏不挤）。
+          labelColor: t.l2Accent,
+          unselectedLabelColor: t.terminalMuted,
+          indicatorColor: t.l2Accent,
+          indicatorWeight: 2,
+          labelStyle: const TextStyle(fontSize: Fsz.telemetry),
+          unselectedLabelStyle: const TextStyle(fontSize: Fsz.telemetry),
           tabs: const [
             Tab(text: '记忆条目'),
             Tab(text: '踩坑教训'),

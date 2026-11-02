@@ -60,8 +60,8 @@ class AidlOnDeviceLlmEngineAdapter
   ValueListenable<OnDeviceLoadState> get loadState => _inner.loadState;
 
   @override
-  Future<EngineStatus> enable({OnDeviceModelOption? model}) =>
-      _inner.enable(model: model);
+  Future<EngineStatus> enable({OnDeviceModelOption? model, String? backendHint}) =>
+      _inner.enable(model: model, backendHint: backendHint);
 
   @override
   Future<void> disable() => _inner.disable();

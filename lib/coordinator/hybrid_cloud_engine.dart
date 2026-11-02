@@ -17,7 +17,11 @@ import '../core/errors/cloud_llm_error.dart';
 import '../core/errors/inference_error.dart';
 import '../llm/cloud/cloud_llm.dart';
 import '../llm/llm.dart';
+import '../llm/on_device_admission_probe.dart';
+import '../llm/on_device_asset_manager.dart';
+import '../llm/on_device_dispatch_profile.dart';
 import '../llm/on_device_engine.dart';
+import '../llm/on_device_model_catalog.dart';
 import '../llm/on_device_pending_load.dart';
 import '../llm/on_device_chat_prompt.dart';
 import 'degradation_controller.dart';
@@ -170,7 +174,28 @@ class HybridCloudEngine implements CloudLlmEngine {
     final wantDevice = offline ||
         !controller.shouldUseCloud ||
         preferOnDevice;
+    // DispatchProfile 路由查表（设计稿 §6，2026-11-01 拍板）：装载决策前读
+    // 准入画像——双后端 EXCLUDED/ERROR → 查表即切云，不让 :engine 死一次
+    // 确认坏后端；单坏（NPU.EXCLUDED 且 GPU 未探/健康）→ 放行，降级链自试。
+    var profileExcluded = false;
     if (canDevice && wantDevice) {
+      try {
+        final selectedModel = await OnDeviceModelSelection.read();
+        final profile = selectedModel == null
+            ? null
+            : await OnDeviceAssetManager.instance
+                .readDispatchProfile(selectedModel);
+        if (profile != null && profile.routeTarget() == null) {
+          profileExcluded = true;
+          debugPrint('[DEGRADE] HybridEngine: 准入画像双坏 → 切云 '
+              '(NPU=${profile.backends['NPU']?.reason.name}/'
+              'GPU=${profile.backends['GPU']?.reason.name})');
+        }
+      } catch (e) {
+        debugPrint('[DEGRADE] HybridEngine: admission profile read: $e');
+      }
+    }
+    if (canDevice && wantDevice && !profileExcluded) {
       // 懒加载兜底（用户定调）：首次命中端侧路径才显式加载——bind→就绪→资产→
       // loadModel→数据面 worker，加载过程对用户可见（loadState=loading）。加载
       // 失败显式报错、不走云端（q-1：显式失败不切云）。
@@ -234,7 +259,8 @@ class HybridCloudEngine implements CloudLlmEngine {
     yield* _cloudSend(
       c,
       request,
-      allowDeviceFallback: canDevice,
+      // 画像双坏 → 端侧兜底一并关闸（查表即决策，§6；禁降级链再撞坏后端）。
+      allowDeviceFallback: canDevice && !profileExcluded,
       onActivity: onActivity,
     );
   }
@@ -403,7 +429,13 @@ class HybridCloudEngine implements CloudLlmEngine {
         // 端侧对话 prompt 构造（2026-10-31 设计修正）：消息序列 JSON（多轮
         // ChatML 由 :engine 模板承载角色）——旧「单发压平 + 文字标注」把
         // assistant 回答塞进 user 轮，违背训练分布 → 复读环（真机定谳）。
-        final promptJson = buildOnDeviceChatPromptJson(request.messages);
+        // 历史预算按当前选中模型的上下文窗口动态推导（2026-11-02 真机定谳：
+        // 全局字符预算对 1280-context bundle 的 ASCII 历史必然溢出）。
+        final selected = await OnDeviceModelSelection.read();
+        final promptJson = buildOnDeviceChatPromptJson(
+          request.messages,
+          contextTokens: selected?.contextTokens,
+        );
         debugPrint('[HybridEngine] 端侧对话 prompt：promptJsonChars=${promptJson.length}');
         // P1-6（2026-11-01）：流式契约——逐 delta 投递，消除「收满 512 token
         // 才一次投递」的 30s 无出字缺口。零产出（无事件 close）走下方归因。
@@ -431,11 +463,19 @@ class HybridCloudEngine implements CloudLlmEngine {
           //（真机实证「端侧生成失败（null）：空产出」不可读）。
           final reason = status ?? '端侧引擎就绪';
           final why = aware ?? status ?? '空产出（模型未产出任何内容）';
+          // DispatchProfile 第二写入方（设计稿 §7）：运行时零产出 → 标观测
+          // 后端 EXCLUDED，下轮查表直跳（#4 坏后端记忆并入画像）。
+          await recordRuntimeBackendExcluded(
+              selected, BackendReason.zeroOutput);
           throw InferenceException('端侧生成失败（$reason）：$why');
         }
         ctrl.add(const CloudDone(finishReason: CloudFinishReason.stop));
       } catch (e) {
         if (e is EngineDiedException) {
+          // DispatchProfile 第二写入方（设计稿 §7）：运行时崩溃/死亡 → 标
+          // EXCLUDED，下轮查表直跳（同 #4 坏后端记忆并入画像）。
+          await recordRuntimeBackendExcluded(
+              await OnDeviceModelSelection.read(), BackendReason.crash);
           // on-device S1-5（总纲 §2）：`:engine` 进程死亡/驱动 Panic 无缝切云，
           // 绝不闪退主进程、绝不让用户会话炸错误卡。切云一次直达（端侧已死，
           // 云端再失败只能原样上抛）。同一 ctrl 承载——§10 取消联动（onCancel →

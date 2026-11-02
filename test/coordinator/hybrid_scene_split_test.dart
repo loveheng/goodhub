@@ -153,7 +153,8 @@ class FakeDevice implements OnDeviceLlmEngine, OnDeviceEnableCapable {
       ValueNotifier<OnDeviceLoadState>(OnDeviceLoadState.unloaded);
 
   @override
-  Future<EngineStatus> enable({OnDeviceModelOption? model}) async {
+  Future<EngineStatus> enable(
+          {OnDeviceModelOption? model, String? backendHint}) async {
     enableCalls++;
     final err = enableError;
     if (err != null) throw err;

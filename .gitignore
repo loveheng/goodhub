@@ -50,3 +50,10 @@ updates/
 # QAIRT/Genie 原生库本体不入 git（on-device S2-1：~30MB+/库，构建机按
 # android/app/src/main/jniLibs/arm64-v8a/README.md 流程获取）
 android/app/src/main/jniLibs/**/*.so
+
+# litertlm-npu 原生库（Qualcomm QNN .so）按相同原则不入 git：运行时经
+# RuntimeChannel 从 MANIFEST_URL 动态下载（App 零发版），assets/ 下仅为本地调试副本
+android/app/src/main/assets/litertlm-npu/
+
+# UI 临时截图（覆盖率/联调产物，非源码）
+.ui-shot-*.png

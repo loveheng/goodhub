@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.StatFs
+import com.zzh.goodhub.engine.GenieXRuntime
 import android.util.Log
 import com.zzh.goodhub.engine.GenerationParams
 import com.zzh.goodhub.engine.SessionTicketWire
@@ -38,6 +39,21 @@ object EngineServiceBridge {
     private var channel: MethodChannel? = null
     private var connection: ServiceConnection? = null
     private var engine: IOnDeviceEngineService? = null
+
+    /// 绑定上下文（统一 applicationContext，进程级不变量）。
+    /// ServiceDispatcher 按 (Context, connection) 键控——2026-11-02 真机定谳：
+    /// bind 用 Activity context 时，ColorOS 后台销毁 Activity 重建后 context
+    /// 变化，旧绑定成 zombie 残留（ServiceConnectionLeaked），zombie 持有
+    /// conn 的「connected」态使重绑的 onServiceConnected 永不再来 →
+    /// listener 通道断 → ready 事件丢失 → 装载链死锁（用户侧「长时间
+    /// 加载不出来」）。context 固定为 applicationContext 后配对唯一，
+    /// 泄漏路径恒不成立；FGS 预挂判据看 UID 前台态（与 context 无关），
+    /// 保活语义不变。
+    private var bindContext: Context? = null
+
+    /// 前台态追踪器只注册一次（register 每 Activity 重建调一次——重复注册
+    /// 使 started 计数倍增，前台判据失真）。
+    private var lifecycleRegistered = false
 
     // S3-6 数据面消费 worker（NPU 稿 §6.4 v3.1 UDS 化）状态（主进程单实例）：
     // handle = native worker 句柄（GdwNative.start 返回，0 = 未运行）。
@@ -104,7 +120,10 @@ object EngineServiceBridge {
         // 报通道未挂载）——确认 register 是否被调、宿主是谁。
         Log.i(TAG, "register: host=${activity.javaClass.simpleName}")
         // S3-2：前台态追踪（Application 级注册一次，覆盖全部 Activity）。
-        activity.application.registerActivityLifecycleCallbacks(foregroundTracker)
+        if (!lifecycleRegistered) {
+            activity.application.registerActivityLifecycleCallbacks(foregroundTracker)
+            lifecycleRegistered = true
+        }
         val ch = MethodChannel(messenger, CHANNEL)
         channel = ch
         ch.setMethodCallHandler { call, result ->
@@ -147,18 +166,20 @@ object EngineServiceBridge {
                     if (svc == null) {
                         result.error("not_bound", ":engine not connected", null)
                     } else if (args is Map<*, *>) {
-                        // M2 §2.5：Dart 传 map{modelDir, modelId}（资产身份经
-                        // Dart 资产面单点计算，票据回显承载 I3 对账）。
+                        // M2 §2.5：Dart 传 map{modelDir, modelId, backendHint}
+                        //（资产身份经 Dart 资产面单点计算，票据回显承载 I3 对账；
+                        // backendHint = 准入探针后端选择权注入，空 = Runner 自裁）。
                         result.success(
                             svc.loadModel(
                                 args["modelDir"] as? String,
                                 args["modelId"] as? String,
+                                args["backendHint"] as? String ?: "",
                             )
                         )
                     } else {
                         // 兼容旧字符串形态（纯目录名）。
                         @Suppress("UNCHECKED_CAST")
-                        result.success(svc.loadModel(args as? String, null))
+                        result.success(svc.loadModel(args as? String, null, ""))
                     }
                 }
                 // M1 Expand：会话票据查询（设计 §2.2）——与 checkStatus 并存，
@@ -296,6 +317,9 @@ object EngineServiceBridge {
                     result.success(stat.availableBytes)
                 }
                 "deviceFingerprint" -> result.success(Build.FINGERPRINT)
+                // Hexagon 架构代际（运行库增配通道键，2026-11-02 三下载点拍板）：
+                // SM8550→73 / 8650→75 / 8750→79 / 8850→81；null = 非高通/不支持。
+                "hexagonArch" -> result.success(GenieXRuntime.hexagonArch())
                 // S2-5 熔断验证 diagPanic PATCH 已退役（F5 清账 2026-10-31）。
                 // S3-2 FGS 前台预挂（§6.2 v2.7）：前台态闸在此判定——前台才
                 // 转发 :engine startForeground(dataSync)；已退后台则跳过留痕
@@ -427,12 +451,18 @@ object EngineServiceBridge {
         // Android 按 (Context, connection) 复用 ServiceDispatcher，不产生
         // 第二套回调）。
         if (engine != null) return
-        if (connection != null) {
-            reissueBind(context)
-            return
+        // 绑定上下文统一 applicationContext（见 [bindContext] 注释——zombie
+        // 绑定死锁的根治）。重绑前先按同一上下文解绑历史绑定（防御性：
+        // 旧版本 Activity-context 绑定升级残留时亦能干净回收）。
+        val appCtx = context.applicationContext
+        val conn =
+            connection ?: newServiceConnection().also { connection = it }
+        bindContext?.let {
+            runCatching { it.unbindService(conn) }
+                .onFailure { e -> Log.w(TAG, "[DEGRADE] pre-rebind unbind: $e") }
         }
-        connection = newServiceConnection()
-        reissueBind(context)
+        bindContext = appCtx
+        reissueBind(appCtx)
     }
 
     /// 重绑执行体（Fix2）：对缓存连接重新发起 bindService。
@@ -559,13 +589,25 @@ object EngineServiceBridge {
         // S3-6：解绑前先停数据面消费 worker（fd/映射属 :engine 数据面）。
         stopDataPlane()
         connection?.let {
-            try {
-                context.unbindService(it)
-            } catch (e: IllegalArgumentException) {
-                Log.w(TAG, "unbind without active binding: $e")
+            // 记账分叉修复（2026-11-02 真机定谳）：unbind 必须与 bind 同
+            // 上下文（framework 要求，否则 IAE）；且**仅在解绑成功时清引用**——
+            // 旧代码 IAE 被吞后仍清 connection/engine，框架里绑定变 zombie
+            // 而 bridge 失忆，后续重绑全乱（ServiceConnectionLeaked 死锁链
+            // 第二环）。失败保留引用 → 下次 bind 走同上下文重绑（幂等）。
+            val ok = bindContext?.let { ctx ->
+                try {
+                    ctx.unbindService(it)
+                    true
+                } catch (e: IllegalArgumentException) {
+                    Log.w(TAG, "unbind without active binding: $e")
+                    false
+                }
+            } ?: true
+            if (ok) {
+                connection = null
+                engine = null
+                bindContext = null
             }
-            connection = null
-            engine = null
         }
     }
 }

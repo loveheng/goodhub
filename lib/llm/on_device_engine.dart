@@ -161,7 +161,9 @@ abstract interface class OnDeviceEnableCapable {
 
   /// 显式加载：bind→就绪→资产→loadModel→数据面 worker。幂等（ready 后 no-op）；
   /// 失败抛 [OnDeviceLoadException]（带原因），不静默降级。
-  Future<EngineStatus> enable({OnDeviceModelOption? model});
+  /// backendHint（AIDL 2026-11-02 #8）：准入探针后端选择权注入（'gpu' = 强制
+  /// GPU 档装载）；null = Runner 自裁——业务面禁传（后端选择权归画像查表）。
+  Future<EngineStatus> enable({OnDeviceModelOption? model, String? backendHint});
 
   /// 卸载释放（退回 unloaded，释放权重内存）。
   Future<void> disable();

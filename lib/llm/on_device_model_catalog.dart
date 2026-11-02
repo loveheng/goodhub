@@ -79,6 +79,11 @@ const bool kOnDeviceLlamaCppEnabled =
     bool.fromEnvironment('ON_DEVICE_LLAMACPP', defaultValue: false);
 
 /// 端侧模型描述符（装载目标）。身份锚点 = [dirName]（`models/` 下落盘目录名）。
+///
+/// .litertlm 族上下文窗口默认值（Gemma3-1B 官方 bundle 规格，文件名
+/// `q4_ekv1280` 同证；官方文档 support 表 Context size = 1280）。
+const int kLitertlmContextTokens = 1280;
+
 class OnDeviceModelOption {
   const OnDeviceModelOption({
     required this.id,
@@ -88,6 +93,7 @@ class OnDeviceModelOption {
     this.runtime = OnDeviceRuntime.auto,
     this.totalBytes,
     this.installed = false,
+    this.contextTokens,
   });
 
   /// 由磁盘已装记录合成（导入模型：无下载基址）。
@@ -97,7 +103,8 @@ class OnDeviceModelOption {
         base = '',
         runtime = OnDeviceRuntime.auto,
         totalBytes = null,
-        installed = true;
+        installed = true,
+        contextTokens = null;
 
   final String id;
   final String displayName;
@@ -117,11 +124,20 @@ class OnDeviceModelOption {
   /// 是否已落盘（注册表扫描回填）。
   final bool installed;
 
+  /// 模型上下文窗口（token 上限）——历史预算按此动态推导（[on_device_chat_prompt]
+  /// 的预算裁剪从全局字符预算升级为模型感知）。null = 未标注（保持全局预算，
+  /// 存量 GenieX 系模型口径不变）。真机实证（2026-11-02）：全局 1200 字符
+  /// 预算对 1280-context 的 .litertlm bundle 在 ASCII 最坏情形（1 字符 = 1
+  /// token）必然溢出 → SDK 硬失败（`Input token ids are too long: 1293 >=
+  /// 1280`）。
+  final int? contextTokens;
+
   OnDeviceModelOption copyWith({
     String? displayName,
     String? runtime,
     int? totalBytes,
     bool? installed,
+    int? contextTokens,
   }) =>
       OnDeviceModelOption(
         id: id,
@@ -131,7 +147,51 @@ class OnDeviceModelOption {
         runtime: runtime ?? this.runtime,
         totalBytes: totalBytes ?? this.totalBytes,
         installed: installed ?? this.installed,
+        contextTokens: contextTokens ?? this.contextTokens,
       );
+}
+
+/// 声明式解析元数据（`.asset-meta.json` 的 `modelProfile` 块，2026-11-02）：
+/// 导入/安装期探测落盘，供 Runner 装载期自治消费——禁中心化 token 级解析
+/// （D-3），本类型只承载声明式属性。字段全可空：meta 无块 / 探测失败 =
+/// 消费方按既有内建口径走（禁臆造默认）。
+class OnDeviceModelProfile {
+  const OnDeviceModelProfile({
+    this.chatTemplateFamily,
+    this.stopSequences = const [],
+    this.contextTokens,
+  });
+
+  /// 模板家族（qwen_chatml / llama3 / gemma / unknown）。
+  final String? chatTemplateFamily;
+
+  /// 模型级默认停用词（请求未下发时的回退位；当前写入侧暂不产出）。
+  final List<String> stopSequences;
+
+  /// 模型上下文窗口（token 上限）；与运行时默认值冲突时**本字段优先**
+  /// （导入 meta 是该模型实盘的更近真相）。
+  final int? contextTokens;
+
+  /// meta `modelProfile` map → 类型（防御式：非 Map / 字段类型不符忽略）。
+  static OnDeviceModelProfile? fromMeta(Object? raw) {
+    if (raw is! Map<String, dynamic>) return null;
+    final family = (raw['chatTemplateFamily'] as String?)?.trim();
+    final stops = (raw['stopSequences'] as List?)
+        ?.whereType<String>()
+        .where((s) => s.isNotEmpty)
+        .toList(growable: false);
+    final ctx = (raw['contextTokens'] as num?)?.toInt();
+    if ((family == null || family.isEmpty) &&
+        (stops == null || stops.isEmpty) &&
+        ctx == null) {
+      return null;
+    }
+    return OnDeviceModelProfile(
+      chatTemplateFamily: (family != null && family.isNotEmpty) ? family : null,
+      stopSequences: stops ?? const [],
+      contextTokens: ctx,
+    );
+  }
 }
 
 /// 磁盘注册表条目（`.asset-meta.json` 解析产物）。
@@ -143,6 +203,7 @@ class InstalledModel {
     required this.totalBytes,
     required this.imported,
     this.installedAt,
+    this.modelProfile,
   });
 
   final String dirName;
@@ -152,6 +213,9 @@ class InstalledModel {
   final DateTime? installedAt;
   final bool imported;
 
+  /// 声明式解析元数据（meta 无块 = null）。
+  final OnDeviceModelProfile? modelProfile;
+
   OnDeviceModelOption toOption() => OnDeviceModelOption(
         id: dirName,
         displayName: displayName,
@@ -160,6 +224,15 @@ class InstalledModel {
         runtime: runtime,
         totalBytes: totalBytes,
         installed: true,
+        // 上下文窗口：导入 meta `modelProfile.contextTokens` 优先（扩展位
+        // 兑现，2026-11-02）；无块时按运行时族标注——.litertlm 族（Gemma3-1B
+        // 官方 bundle 规格 1280，文件名 q4_ekv1280 同证）——历史预算据此动态
+        // 推导，防 ASCII 最坏情形溢出（2026-11-02 真机定谳）。GenieX 系维持
+        // 未标注口径（全局字符预算，存量模型不回归）。
+        contextTokens: modelProfile?.contextTokens ??
+            (runtime == OnDeviceRuntime.litertlm
+                ? kLitertlmContextTokens
+                : null),
       );
 }
 
@@ -253,6 +326,7 @@ abstract final class ModelRegistry {
         totalBytes: totalBytes,
         installedAt: installedAt,
         imported: version.startsWith(importedVersionPrefix),
+        modelProfile: OnDeviceModelProfile.fromMeta(meta['modelProfile']),
       );
     } catch (e) {
       debugPrint('[DEGRADE] model-registry meta parse: $e');
@@ -286,8 +360,14 @@ abstract final class OnDeviceModelSelection {
       }
       // 选中目录已不在盘（被删）→ 落默认。
     }
-    // 导入制自然默认：盘上首个已装；否则 null。
-    return installed.isNotEmpty ? installed.first.toOption() : null;
+    // 导入制自然默认：盘上首个已装；**litertlm 族优先**（2026-11-02 默认栈
+    // 拍板：默认 LiteRT-LM，GenieX 系经显式切换入口选用）。
+    if (installed.isEmpty) return null;
+    final preferred = installed.firstWhere(
+      (m) => m.runtime == OnDeviceRuntime.litertlm,
+      orElse: () => installed.first,
+    );
+    return preferred.toOption();
   }
 
   static Future<void> write(String dirName) async {

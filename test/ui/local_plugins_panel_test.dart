@@ -10,21 +10,31 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:goodhub/coordinator/cow_sync.dart';
-import 'package:goodhub/core/security/secure_key_value.dart';
-import 'package:goodhub/llm/cloud/byok_store.dart';
+import 'package:goodhub/coordinator/tool_catalog.dart';
+import 'package:goodhub/core/tool_visibility.dart';
 import 'package:goodhub/mcp/default_private_server.dart';
 import 'package:goodhub/mcp/local_plugin_discovery.dart';
 import 'package:goodhub/mcp/trusted_plugins.dart';
-import 'package:goodhub/mcp/server_endpoints.dart';
-import 'package:goodhub/ui/settings_page.dart';
+import 'package:goodhub/ui/components/panel_error_row.dart';
+import 'package:goodhub/ui/sections/local_plugins_section.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'pin_harness.dart';
+
+/// 回归用假目录：按 serverId 预设工具，不触真实挂载原语。
+class _ToolFakeCatalog extends McpCatalog {
+  _ToolFakeCatalog(this._tools)
+      : super(endpointStore: ({String? supportPath}) async {
+          throw UnsupportedError('假目录不走端点装配');
+        });
+  final Map<String, List<McpCatalogTool>> _tools;
+
+  @override
+  Future<List<McpCatalogTool>> loadServerTools(McpCatalogService s) async =>
+      _tools[s.serverId] ?? const [];
+}
 
 void main() {
   late Directory tmp;
-  late File file;
-  late InMemorySecureKeyValue secure;
-  late ServerEndpointStore store;
 
   final sameSig = LocalPluginInfo(
     serverId: 'priv',
@@ -56,9 +66,6 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     TrustedPlugins.resetForTest();
     tmp = await Directory.systemTemp.createTemp('local_plugins_panel_test');
-    file = File('${tmp.path}/mcp_servers.json');
-    secure = InMemorySecureKeyValue();
-    store = ServerEndpointStore(file: file, secure: secure);
     discovered = [sameSig, thirdParty];
     changesCtrl = StreamController<void>.broadcast();
     scanCalls = 0;
@@ -78,21 +85,25 @@ void main() {
   }
 
   Future<void> pumpPanel(WidgetTester tester) async {
-    // 大视口：ListView 懒构建只建视口内子项，OnDeviceModelSection 增高后
-    // 本段被推出首屏构建窗 → finder 0 命中假失败（同 byok_panel_test 口径）。
+    // 直泵段（2026-11-02 能力中心拍板：本地插件卡自设置页迁入资源中心
+    // 「节点与插件」tab——回归网直泵 section，注入位同构）。
+    // 钉选回调经 [_PinHarness] 走真实持久化（读写 SharedPreferences）。
     tester.view.physicalSize = const Size(1080, 6000);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
     await tester.pumpWidget(MaterialApp(
-      home: SettingsPage(
-        // 其余面板同注入假件：其默认装配走平台通道，测试环境不可达，失败会置
-        // _error 短路整个 ListView（面板级短路），本地插件卡无从渲染。
-        autoProbe: false, // 远端探活断言走显式点击，自动探活会翻倍计数
-        storeOverride: CowOverridesStore(dir: tmp),
-        byokStoreOverride: ByokStore(secure: secure),
-        endpointStoreOverride: store,
-        localScanOverride: fakeScan,
-        localChangesOverride: changesCtrl.stream,
+      home: Scaffold(
+        body: ListView(children: [
+          PinHarness(builder: (isDefaultPrivate, onPinToggle) => LocalPluginsSection(
+            catalog: FakeCatalog(),
+            scan: fakeScan,
+            changes: changesCtrl.stream,
+            isDefaultPrivate: isDefaultPrivate,
+            onPinToggle: onPinToggle,
+            onFlash: (_) {},
+            errorRowBuilder: panelErrorRow,
+          )),
+        ]),
       ),
     ));
     await settleIo(tester);
@@ -265,5 +276,72 @@ void main() {
     await tester.runAsync(() async => stored = await readDefaultPrivateServerId());
     expect(stored, isNull);
     expect(find.text('默认私有'), findsNothing);
+  });
+
+  testWidgets('本地插件卡工具列表可点开展开（2026-11-02 拆解归并回归）', (tester) async {
+    // 自定义假目录：为 priv 插件返回两个工具，验证卡片内「工具」展开项可点开
+    // （曾因 ExpansionTile 误置于 Expanded>Column>Row 致展开区高度被压成 0）。
+    final catalog = _ToolFakeCatalog({
+      'priv': [
+        McpCatalogTool(
+          name: 'echo',
+          description: '',
+          visibility: ToolVisibility.shared,
+          declared: true,
+        ),
+        McpCatalogTool(
+          name: 'p1',
+          description: '',
+          visibility: ToolVisibility.private,
+          declared: true,
+        ),
+      ],
+    });
+    tester.view.physicalSize = const Size(1080, 6000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: ListView(children: [
+          LocalPluginsSection(
+            catalog: catalog,
+            scan: () async => [sameSig],
+            changes: const Stream<void>.empty(),
+            isDefaultPrivate: (_) => false,
+            onPinToggle: (id, label, isDefault) async {},
+            onFlash: (_) {},
+            errorRowBuilder: panelErrorRow,
+          ),
+        ]),
+      ),
+    ));
+    await settleIo(tester);
+
+    // 折叠态：展开区收起（AnimatedCrossFade 的隐藏子树仍在 element 树内、仅
+    // opacity 0 + IgnorePointer，故不能断言 findsNothing——用 crossFadeState）。
+    final crossFade = find.byType(AnimatedCrossFade);
+    expect(
+      tester.widget<AnimatedCrossFade>(crossFade.first).crossFadeState,
+      CrossFadeState.showFirst,
+    );
+    expect(find.textContaining('点击展开'), findsOneWidget);
+    // 卡头 = 展开器（2026-11-02 卡头合并改版）：点卡头任意处（包名文本）展开。
+    await tester.tap(find.textContaining('com.zzh.goodhub.priv'));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<AnimatedCrossFade>(crossFade.first).crossFadeState,
+      CrossFadeState.showSecond,
+      reason: '点卡头后展开',
+    );
+    expect(find.text('echo'), findsOneWidget, reason: '展开后可见工具');
+    expect(find.text('p1'), findsOneWidget, reason: '展开后可见工具');
+    // 工具行渲染在卡头信息行之下（真展开，非叠在头部）。
+    final header = tester.getTopLeft(find.textContaining('com.zzh.goodhub.priv'));
+    final echo = tester.getTopLeft(find.text('echo'));
+    expect(echo.dy, greaterThan(header.dy), reason: '工具行应在卡头之下');
+    // 展开后示意收敛（信息行不再提示「点击展开」）。
+    expect(find.textContaining('点击展开'), findsNothing);
+    // 概要并入卡头信息行：2 个工具中 1 个显式 shared。
+    expect(find.textContaining('共享 1 / 共 2 个工具'), findsOneWidget);
   });
 }

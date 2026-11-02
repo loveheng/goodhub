@@ -68,4 +68,10 @@ object GdwNative {
     /// 边界：仅削**装载后的稳态恢复**，削不平装载瞬态尖峰；外置存储（FUSE）
     /// 文件的缓存由 FUSE 自管，效果可能有限。
     external fun dropFileCache(path: String): Int
+
+    /// CMA/DMA-BUF 预分配探针（npu-deployment §4.9，加载机制 #7）：以同量级
+    /// 尺寸向系统 DMA-BUF 堆真实试分配一次（fd 即弃）。返回码三分：
+    /// 0 = CMA 可用；1 = 堆不可达（SELinux/无节点）= 探针不可用**不判坏**；
+    /// 2 = 堆可达但分配失败 = CMA 不可用（真判据，禁重试禁计熔断）。
+    external fun cmaProbe(bytes: Long): Int
 }

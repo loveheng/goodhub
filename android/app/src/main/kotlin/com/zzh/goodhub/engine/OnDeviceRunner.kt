@@ -48,7 +48,7 @@ interface OnDeviceRunner {
     fun beginLoad(): Boolean
 
     /** 装载（engine-model-load 后台线程执行）；成功 ready=true，失败置 loadError。 */
-    fun doLoad(modelDir: String)
+    fun doLoad(modelDir: String, backendHint: String? = null)
 
     /** 同步生成（阻塞至完成/abort，engine-genie-generate 线程执行）。
      *  返回 0=SUCCESS / 1=ABORTED / 负=ERROR——通用负码：-2=会话未就绪 /

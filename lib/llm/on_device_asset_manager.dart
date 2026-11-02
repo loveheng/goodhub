@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
 import '../core/storage/sequential_file_writer.dart';
+import 'on_device_dispatch_profile.dart';
 import 'on_device_engine_binding.dart';
 import 'on_device_model_catalog.dart';
 
@@ -446,14 +447,86 @@ class OnDeviceAssetManager {
 
   // ---- 落盘元数据与原子替换 ----
 
+  /// 准入画像文件名（DispatchProfile 设计稿 §2）：与 `.asset-meta.json` 同目录，
+  /// 生命周期同源——`markDirty`/`recoverIfDriverChanged` 删目录时随 meta 一并
+  /// 脏删（画像落模型目录内，无独立清理面）。指纹漂移由 [readDispatchProfile]
+  /// 读取时判定（文件内自含指纹，漂移 = 失效并清除）。
+  static const String _admissionFileName = '.admission.json';
+
+  /// 读取准入画像（DispatchProfile 契约 = `on_device_dispatch_profile.dart`）：
+  /// 文件缺失/损坏/指纹漂移（`driverFingerprint` ≠ 当前）→ null 并清脏文件。
+  /// 纯本地读，路由查表零开销（设计稿 §6）。
+  Future<DispatchProfile?> readDispatchProfile(
+      OnDeviceModelOption model) async {
+    final dir = await _dirOfModel(model);
+    if (dir == null) return null;
+    final f = File('${dir.path}/$_admissionFileName');
+    if (!await f.exists()) return null;
+    final profile = DispatchProfile.fromJson(await f.readAsString());
+    if (profile == null) {
+      await _deleteQuietly(f);
+      return null;
+    }
+    final current = await _currentFingerprint();
+    if (current != null && profile.driverFingerprint != current) {
+      // 驱动 OTA → 画像整体失效（§1 键含 FINGERPRINT）：清脏，等重探。
+      await _deleteQuietly(f);
+      return null;
+    }
+    return profile;
+  }
+
+  /// 写入准入画像（两个写入方共用：导入探针 HEALTHY / 运行时坏后端 EXCLUDED）。
+  /// 指纹在写入时点采样——画像有效性锚定本机当次驱动状态。
+  Future<void> writeDispatchProfile(
+    OnDeviceModelOption model,
+    Map<String, BackendProfile> backends, {
+    int? probedAtMs,
+  }) async {
+    final dir = await _dirOfModel(model);
+    if (dir == null) return;
+    final fingerprint = await _currentFingerprint();
+    if (fingerprint == null) {
+      debugPrint('[DEGRADE] admission write skipped (fingerprint unavailable)');
+      return; // 拿不到指纹不写半效画像（读取面靠指纹判定失效）
+    }
+    final profile = DispatchProfile(
+      driverFingerprint: fingerprint,
+      backends: backends,
+      probedAtMs: probedAtMs ?? (now ?? DateTime.now)().millisecondsSinceEpoch,
+    );
+    await SequentialFileWriter(File('${dir.path}/$_admissionFileName'))
+        .write(jsonEncode(profile.toJson()));
+  }
+
+  Future<Directory?> _dirOfModel(OnDeviceModelOption model) async {
+    final dirName = _dirOf(model);
+    if (dirName == null) return null;
+    final support =
+        await (supportDirResolver ?? getApplicationSupportDirectory)();
+    return Directory('${support.path}/models/$dirName');
+  }
+
+  Future<void> _deleteQuietly(File f) async {
+    try {
+      if (await f.exists()) await f.delete();
+    } catch (e) {
+      debugPrint('[DEGRADE] admission file cleanup: $e');
+    }
+  }
+
   Future<void> _writeMeta(Directory dir, _AssetManifest manifest) async {
     final fingerprint = await _currentFingerprint();
+    // 声明式解析元数据（2026-11-02）：下载通道无显式 runtime 标注，按
+    // staging 实盘布局判（genie_config → qairt；.litertlm → litertlm）。
+    final modelProfile = await _probeModelProfile(dir, await _runtimeOfDir(dir));
     final meta = {
       'version': manifest.version,
       'installedAt': (now ?? DateTime.now)().toIso8601String(),
       'driverFingerprint': fingerprint,
       'sizes': {for (final f in manifest.files) f.name: f.size},
       'sha256': {for (final f in manifest.files) f.name: f.sha256},
+      'modelProfile': ?modelProfile,
     };
     // 临时文件 + rename 原子替换（R10 纪律，复用既有写队列）。
     await SequentialFileWriter(File('${dir.path}/.asset-meta.json'))
@@ -540,10 +613,23 @@ class OnDeviceAssetManager {
         // 装载由 Dart 侧 `kOnDeviceLiteRtLmEnabled` 闸裁定（Runner 未集成前
         // fail-fast），导入面只负责识别入册。
         runtime = OnDeviceRuntime.litertlm;
+        // NPU 包 arch 校验（2026-11-02 拍板）：本机 Hexagon 代际未知（非高通/
+        // 不支持）→ 显式留痕「将走 GPU 档」——不拒（GPU 档合法），防无感知
+        // 回落；bundle-SoC 不匹配仍由 doLoad warmup 裁定（bundle 自身语义）。
+        final arch = await OnDeviceEngineBinding().hexagonArch();
+        if (arch == null) {
+          debugPrint('[DEGRADE] asset layout: litertlm imported but '
+              'hexagonArch unknown → NPU 档不可用（GPU 档运行）');
+        }
       } else if (ggufs.isNotEmpty) {
-        runtime = OnDeviceRuntime.llamaCpp;
+        // GGUF 通道按首发节奏关闸（2026-11-01 拍板三闸之一）：归档夹带 GGUF
+        //（无 genie_config）→ 导入期即拒，不进注册表；装载闸兜底仍在。
+        return _AssetLayout(
+            error: 'GGUF 通道按首发节奏关闸（llama.cpp 代码保留未开放）');
       } else {
-        runtime = OnDeviceRuntime.auto;
+        // 族级导入拒绝（2026-11-02 拍板）：未知布局显式拒（联发科包等不支持的
+        // 运行时），非静默 auto——不认识的族不许进注册表踩装载失败。
+        return _AssetLayout(error: '未知模型布局（支持 .litertlm / GenieX bundle）');
       }
       return _AssetLayout(runtime: runtime);
     } catch (e) {
@@ -570,6 +656,130 @@ class OnDeviceAssetManager {
       }
     } catch (_) {
       return false;
+    }
+  }
+
+  // ---- modelProfile（声明式解析元数据，2026-11-02 待办）----
+
+  /// 导入/安装期声明式解析元数据探测：写入 `.asset-meta.json` 的
+  /// `modelProfile` 块，供各 Runner 装载期自治消费（禁中心化 token 级解析，
+  /// D-3 纪律——本块只记声明式属性，不是解析逻辑的收口）。
+  ///
+  /// 探测策略（保守，无实证不写字段）：
+  /// - litertlm：模板归 bundle 原生（Runner 不自绘），只标 contextTokens
+  ///   （Gemma3-1B 官方 bundle 规格单源 [kLitertlmContextTokens]）；
+  /// - qairt：GenieX SDK applyChatTemplate 读资产内嵌模板，手写 fallback
+  ///   家族假设 = Qwen/ChatML（ChatMLComposer UNCERTAIN 同源）——显式落盘
+  ///   使假设可查，不再隐式悬空；
+  /// - GGUF（llama_cpp/auto 布局）：解析头内嵌 `tokenizer.chat_template`
+  ///   KV 映射模板家族，探不出标 `unknown`。
+  ///
+  /// stopSequences 字段留位（catalog/Runner 已支持读）暂不写：家族级默认集
+  /// 的实证来源目前只有 Runner 内建 [StopSequenceMatcher]（GenieX 系
+  /// im_end），无新实证前不落盘（禁猜测性兜底）。
+  Future<Map<String, dynamic>?> _probeModelProfile(
+      Directory dir, String runtime) async {
+    final profile = <String, dynamic>{};
+    if (runtime == OnDeviceRuntime.litertlm) {
+      profile['contextTokens'] = kLitertlmContextTokens;
+      return profile;
+    }
+    final family = await _chatTemplateFamilyOf(dir, runtime);
+    if (family != null) profile['chatTemplateFamily'] = family;
+    return profile.isEmpty ? null : profile;
+  }
+
+  /// 实盘布局 → runtime 粗判（仅 modelProfile 探测用；非装载分派语义）。
+  Future<String> _runtimeOfDir(Directory dir) async {
+    try {
+      await for (final e in dir.list()) {
+        if (e is! File) continue;
+        final name = e.path.split('/').last.toLowerCase();
+        if (name == 'genie_config.json') return OnDeviceRuntime.qairt;
+        if (name.endsWith('.litertlm')) return OnDeviceRuntime.litertlm;
+        if (name.endsWith('.gguf')) return OnDeviceRuntime.llamaCpp;
+      }
+    } catch (_) {}
+    return OnDeviceRuntime.auto;
+  }
+
+  /// 布局→模板家族探测：qairt 标 qwen_chatml（家族假设单源）；GGUF 解析内嵌
+  /// 模板；其余布局返回 null（不写字段）。
+  Future<String?> _chatTemplateFamilyOf(Directory dir, String runtime) async {
+    if (runtime == OnDeviceRuntime.qairt) return 'qwen_chatml';
+    // llama_cpp / auto 布局按实盘文件判（防 meta runtime 与布局漂移）。
+    final gguf = await _firstGguf(dir);
+    if (gguf == null) return null;
+    final template = await _ggufChatTemplate(gguf);
+    if (template == null) return 'unknown'; // 探测不出显式标 unknown
+    return _chatTemplateFamily(template);
+  }
+
+  /// 模板文本 → 家族名（标记单源映射；无命中 unknown）。
+  @visibleForTesting
+  static String chatTemplateFamilyOfTemplate(String template) {
+    if (template.contains('<|im_start|>')) return 'qwen_chatml';
+    if (template.contains('<|start_header_id|>')) return 'llama3';
+    if (template.contains('<start_of_turn>')) return 'gemma';
+    return 'unknown';
+  }
+
+  static String _chatTemplateFamily(String template) =>
+      chatTemplateFamilyOfTemplate(template);
+
+  Future<File?> _firstGguf(Directory dir) async {
+    try {
+      await for (final e in dir.list()) {
+        if (e is File && e.path.toLowerCase().endsWith('.gguf')) return e;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// GGUF 头 KV 扫描取 `tokenizer.chat_template`（v3 头格式）。启发式预算：
+  /// 只读前 8MB（tokenizer KV 位于头部前段，实测量级远小于此），解析越界或
+  /// 版本不识别一律返 null（ callers 落 unknown，不阻断导入）。
+  static const int _ggufScanBudgetBytes = 8 * 1024 * 1024;
+  static const int _ggufTypeString = 8;
+
+  /// GGUF 头 KV 扫描取 `tokenizer.chat_template`（测试钩子：单测喂合成头）。
+  @visibleForTesting
+  static Future<String?> ggufChatTemplate(File f) => _ggufChatTemplate(f);
+
+  static Future<String?> _ggufChatTemplate(File f) async {
+    RandomAccessFile? raf;
+    try {
+      raf = await f.open(mode: FileMode.read);
+      final budget = await f.length() < _ggufScanBudgetBytes
+          ? await f.length()
+          : _ggufScanBudgetBytes;
+      final buf = Uint8List(budget);
+      final n = await raf.readInto(buf);
+      final r = ByteData.sublistView(buf, 0, n);
+      final rd = _GgufKvReader(r);
+      if (rd.u32() != 0x46554747) return null; // 'GGUF' 小端读回
+      final version = rd.u32();
+      if (version < 2 || version > 3) return null;
+      rd.u64(); // tensor_count
+      final kvCount = rd.u64();
+      for (var i = 0; i < kvCount; i++) {
+        final key = rd.string();
+        final type = rd.u32();
+        if (type == _ggufTypeString) {
+          final value = rd.string();
+          if (key == 'tokenizer.chat_template') return value;
+        } else {
+          rd.skipValue(type);
+        }
+        if (rd.overflowed) return null;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    } finally {
+      try {
+        await raf?.close();
+      } catch (_) {}
     }
   }
 
@@ -889,6 +1099,9 @@ class OnDeviceAssetManager {
     for (final (_, name) in entries) {
       sizes[name] = await File('${dir.path}/$name').length();
     }
+    // 声明式解析元数据（2026-11-02）：探测失败/空 = 字段缺席（消费方按
+    // 既有内建口径走，禁臆造默认）。
+    final modelProfile = await _probeModelProfile(dir, runtime);
     final meta = {
       'version': '$_importedVersionPrefix-${(now ?? DateTime.now)().millisecondsSinceEpoch}',
       'installedAt': (now ?? DateTime.now)().toIso8601String(),
@@ -900,6 +1113,7 @@ class OnDeviceAssetManager {
       'runtime': runtime,
       // D-1 资产族（2026-11-01）：backend 维度栈映射，单源 = familyOf(runtime)。
       'family': OnDeviceAssetFamily.familyOf(runtime),
+      'modelProfile': ?modelProfile,
       if (displayName != null && displayName.isNotEmpty)
         'displayName': displayName,
     };
@@ -979,4 +1193,70 @@ class _DigestSink implements Sink<Digest> {
 
   @override
   void close() {}
+}
+
+/// GGUF 头 KV 只读游标（小端）：越界读置 [overflowed] 并返 0/空串——
+/// 上层按「探测失败」收口（unknown / 不写字段），不抛异常打断导入。
+class _GgufKvReader {
+  _GgufKvReader(this._data);
+  final ByteData _data;
+  int _pos = 0;
+  bool overflowed = false;
+
+  int get _remain => _data.lengthInBytes - _pos;
+
+  int u32() {
+    if (_remain < 4) {
+      overflowed = true;
+      return 0;
+    }
+    final v = _data.getUint32(_pos, Endian.little);
+    _pos += 4;
+    return v;
+  }
+
+  int u64() {
+    if (_remain < 8) {
+      overflowed = true;
+      return 0;
+    }
+    final v = _data.getUint64(_pos, Endian.little);
+    _pos += 8;
+    return v;
+  }
+
+  String string() {
+    final len = u64();
+    if (overflowed || len > _remain) {
+      overflowed = true;
+      return '';
+    }
+    final s = utf8.decode(_data.buffer.asUint8List(_data.offsetInBytes + _pos, len),
+        allowMalformed: true);
+    _pos += len;
+    return s;
+  }
+
+  /// 跳过一个非字符串 KV 值（GGUF v2/v3 值类型；ARRAY 逐元素跳）。
+  static const int _tArray = 9;
+  static const int _tString = 8;
+  void skipValue(int type) {
+    switch (type) {
+      case 0: case 1: case 7: _pos += 1;
+      case 2: case 3: _pos += 2;
+      case 4: case 5: case 6: _pos += 4;
+      case 10: case 11: case 12: _pos += 8;
+      case _tString:
+        string();
+      case _tArray:
+        final elemType = u32();
+        final count = u64();
+        for (var i = 0; i < count && !overflowed; i++) {
+          skipValue(elemType);
+        }
+      default:
+        overflowed = true; // 未知类型 = 头格式不识别，终止扫描
+    }
+    if (_pos > _data.lengthInBytes) overflowed = true;
+  }
 }

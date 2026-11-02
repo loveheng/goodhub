@@ -65,6 +65,35 @@ void main() {
     expect(buildOnDeviceChatPromptJson([]), '[]');
   });
 
+  test('contextTokens 动态预算：1280 窗口 → 预算 512（输出 512 + 系统/用户 256 预留）',
+      () {
+    final mid = 'x' * 600; // 超动态预算 512、在全局预算 1200 内
+    final global = turns(buildOnDeviceChatPromptJson([
+      UserMessage(mid),
+      UserMessage('最新问题'),
+    ]));
+    expect(global.any((m) => m['content'] == mid), isTrue,
+        reason: '600 字符 < 全局预算 1200 → 保留（存量口径不变）');
+    final model = turns(buildOnDeviceChatPromptJson([
+      UserMessage(mid),
+      UserMessage('最新问题'),
+    ], contextTokens: 1280));
+    expect(model.any((m) => m['content'] == mid), isFalse,
+        reason: '600 字符 > 动态预算 512 → 最早一轮裁剪（防 1280-context 溢出）');
+    expect(model.last['content'], '最新问题');
+  });
+
+  test('contextTokens 动态预算：窗口极小 → 预算下限 200（clamp）', () {
+    final h = 'y' * 250; // 超下限预算 200
+    final j = turns(buildOnDeviceChatPromptJson([
+      UserMessage(h),
+      UserMessage('Q'),
+    ], contextTokens: 300)); // 300-512-256 < 0 → clamp 200
+    expect(j.any((m) => m['content'] == h), isFalse,
+        reason: '250 字符 > 下限预算 200 → 裁剪');
+    expect(j.last['content'], 'Q');
+  });
+
   test('输出是合法 JSON 数组（跨 AIDL 契约面）', () {
     final j = jsonDecode(buildOnDeviceChatPromptJson([
       UserMessage('你好'),

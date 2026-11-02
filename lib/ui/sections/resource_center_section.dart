@@ -430,9 +430,12 @@ class _ResourceCenterSectionState extends State<ResourceCenterSection>
           children: [
             const Text('资源中心', style: TextStyle(fontSize: Fsz.listPrimary)),
             const Spacer(),
-            Text(
-              '${_entries.length} 项 · 已占用 ${_fmtBytes(_totalBytes)}',
-              style: TextStyle(fontSize: Fsz.telemetry, color: t.terminalMuted),
+            Flexible(
+              child: Text(
+                '${_entries.length} 项 · 已占用 ${_fmtBytes(_totalBytes)}',
+                style: TextStyle(fontSize: Fsz.telemetry, color: t.terminalMuted),
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
             IconButton(
               key: const ValueKey('resource-import'),

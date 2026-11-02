@@ -32,7 +32,12 @@ interface IOnDeviceEngineService {
     // 契约细化（M2 §2.5 I3）：modelId = 资产面单点计算的资产身份
     //（目录名@meta版本摘要）——票据回显此值，主进程据「票据 modelId ≠ 目标
     // modelId」判资产变更重装（换模型/重导入无需事件）。空值退化为目录名。
-    int loadModel(String modelDir, String modelId);
+    // 契约细化（2026-11-02 加载机制 #8）：backendHint = 后端选择权注入
+    //（准入探针「NPU 败再探 GPU」专用——探针先探自裁档，NPU 判坏后强制
+    // GPU 档装载建画像）。空串/null = Runner 自裁（正常路径恒如此，业务
+    // 生成禁传 hint——后端选择权归 Runner 与画像查表，不经业务面横跳）。
+    // 仅 LiteRT-LM 系消费（GenieX 系恒 QAIRT NPU 档，忽略）。
+    int loadModel(String modelDir, String modelId, String backendHint);
 
     // 启动生成。promptJson 语义（2026-10-31 设计修正）= **消息序列 JSON**
     // `[{"role":"system"|"user"|"assistant","content":"..."}]`——:engine 侧

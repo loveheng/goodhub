@@ -60,6 +60,14 @@
         <uses-native-library
             android:name="libcdsprpc.so"
             android:required="false" />
+        <!-- LiteRT-LM GPU 后端（OpenCL）原生库（官方文档要求；required=false
+             保持无对应系统库机型可装）。 -->
+        <uses-native-library
+            android:name="libvndksupport.so"
+            android:required="false" />
+        <uses-native-library
+            android:name="libOpenCL.so"
+            android:required="false" />
         <!-- TC-debug: 该 Oppo/ColorOS 机型的 Impeller(Vulkan) 后端静默不出首帧、
              闪屏不移除→黑屏；回退 Skia/OpenGL 以解锁真机验证。生产构建可按需移除。 -->
         <meta-data

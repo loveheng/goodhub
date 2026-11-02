@@ -8,22 +8,14 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/coordinator/cow_sync.dart';
-import 'package:goodhub/core/security/secure_key_value.dart';
 import 'package:goodhub/core/security/secure_storage_upgrade.dart';
-import 'package:goodhub/llm/cloud/byok_store.dart';
-import 'package:goodhub/mcp/server_endpoints.dart';
 import 'package:goodhub/ui/settings_page.dart';
 
 void main() {
   late Directory tmp;
-  late File file;
-  late ServerEndpointStore store;
 
   setUp(() async {
     tmp = await Directory.systemTemp.createTemp('secure_notice_test');
-    file = File('${tmp.path}/mcp_servers.json');
-    store = ServerEndpointStore(file: file);
-    await store.save(const []);
   });
 
   tearDown(() async {
@@ -41,11 +33,9 @@ void main() {
   Future<void> pumpPage(WidgetTester tester, SecureStorageHealth? health) async {
     await tester.pumpWidget(MaterialApp(
       home: SettingsPage(
-        // 同 server_nodes_panel_test：CoW/BYOK 注入假件免平台通道依赖。
+        // CoW 注入假件免平台通道依赖（BYOK/节点段已迁资源中心四 tab——
+        // 2026-11-02 能力中心拍板，设置页不再装配，注入面随之收缩）。
         storeOverride: CowOverridesStore(dir: tmp),
-        byokStoreOverride: ByokStore(secure: InMemorySecureKeyValue()),
-        endpointStoreOverride: store,
-        autoProbe: false,
         secureHealthOverride:
             health == null ? null : () async => health,
       ),

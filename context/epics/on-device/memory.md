@@ -73,4 +73,4 @@ last-merge: none
 
 ## 断点
 
-- [断点] 多栈构型真机验证预检（2026-11-01）：代码轮收口 + 预检轮修两处存量缺陷（tombstone @JvmStatic JNI 符号 = G2 轮起 stack 路径从未生效 / 增配块 initState 接线 = P2 轮起块从未渲染），已提交；真机环境就位（Ace 6 debug 包 + GenieX 增配 v0.10.0 arch=v79 → NPU 档判据就绪）；**下一步 = .litertlm 资产（受阻于用户 HF per-repo 授权——zhok 账号需在 litert-community/Gemma3-1B-IT 页面点同意，用户稍后处理）**——授权后：经代理（192.168.1.93:2080 已打通 HF 200）重下 → adb push /sdcard/Download → App UI SAF 导入（run-as 该设备不可用 = SELinux targetSdk 36）→ 装载→生成→停用词→降级链 + D-4 基准探针（NPU/GPU 同口径，对照 llama_cpp+GPU 39 tok/s，仅归档）；UNCERTAIN U1~U5 + dispatch 库疑点已登记；其余外部依赖触发（换版实战 checklist / v73/75/81 真机 / S2-3 short-repeat 复核）仍挂起
+- [断点] 下一步：下一步：modelProfile 待办已完成待真机合验（与探针二段/首问 222222 同批）——导入含 GGUF（llama_cpp 通道放开后）或 qairt/litertlm 模型 → 查 .asset-meta.json modelProfile 块 + GenieSession 日志 family/stopSequences/contextTokens；主线原断点不变：运行库体系重梳装机 + goodshare §4 增补条粘贴

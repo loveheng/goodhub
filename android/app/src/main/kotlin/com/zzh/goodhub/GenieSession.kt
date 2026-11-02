@@ -102,6 +102,12 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
     /** query 期间收集到的运行时错误（负状态码归因）。 */
     @Volatile private var lastStreamError: Throwable? = null
 
+    /// 声明式解析元数据（`.asset-meta.json` 的 modelProfile 块，2026-11-02）：
+    /// [doLoad] 装载期从自有 modelDir 读取（AIDL 不动——模型静态属性走磁盘
+    /// meta 单源）。null = meta 无块 / 解析失败，消费点按既有内建口径走。
+    @Volatile var modelProfile: com.zzh.goodhub.engine.ModelProfile? = null
+        private set
+
     // ---- SDK 初始化（进程级一次）----
 
     private val sdkInitLock = Any()
@@ -160,10 +166,17 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
      * 会话创建（**阻塞数秒**——调用方必须置于后台线程）。前置：已获
      * [beginLoad]；finally 统一清除 creating 闸（异常不卡死后续装载）。
      */
-    override fun doLoad(modelDir: String) {
+    override fun doLoad(modelDir: String, backendHint: String?) {
         try {
             if (ready) return
             loadError = null
+            // 声明式解析元数据（2026-11-02）：装载期从自有 modelDir 读取，
+            // 每次装载刷新（换模型即换 profile）。缺失/解析失败 = null 不阻断。
+            modelProfile = com.zzh.goodhub.engine.ModelProfile.read(modelDir)
+            modelProfile?.let {
+                Log.i(TAG, "modelProfile: family=${it.chatTemplateFamily} " +
+                    "stopSequences=${it.stopSequences.size} contextTokens=${it.contextTokens}")
+            }
             if (!ensureSdkInit()) {
                 loadError = "GenieXSdk init failed: ${sdkInitFailed ?: "unknown"}"
                 Log.e(TAG, "[DEGRADE] $loadError")
@@ -332,7 +345,10 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
         // 管线把 prompt 当已模板化文本，raw/自绘近似模板喂入 = 退化输出，
         // 复读环真根因）。失败逐级 fallback：ChatMLComposer 手写多轮 → 旧
         // 单轮包装。enableThinking=false（Instruct 行为）+ addGenerationPrompt=true。
-        // UNCERTAIN: 资产家族假设 = Qwen/ChatML（目录当前仅 Qwen 资产）。
+        // 家族假设显式化（2026-11-02 modelProfile）：手写 fallback 的家族假设
+        // = Qwen/ChatML——装载期读取的 modelProfile.chatTemplateFamily 若为
+        // 已知他族（llama3/gemma），SDK 模板失败后的手写 fallback 对该模型是
+        // OOD 输入，显式告警（不静默）。
         val chatPrompt = run {
             val msgs = com.zzh.goodhub.engine.ChatMLComposer.parseMessages(prompt)
             if (msgs != null) {
@@ -344,6 +360,16 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
                 }.getOrNull()
             } else null
         } ?: com.zzh.goodhub.engine.ChatMLComposer.compose(prompt)
+            .also { composed ->
+                if (composed != null) {
+                    when (modelProfile?.chatTemplateFamily) {
+                        null, "unknown", "qwen_chatml" -> Unit
+                        else -> Log.w(TAG, "[DEGRADE] ChatML fallback template vs " +
+                            "model family=${modelProfile?.chatTemplateFamily} " +
+                            "（手写模板为 Qwen 假设，对该家族为 OOD——优先排查 applyChatTemplate）")
+                    }
+                }
+            }
             ?: run {
                 val safePrompt = sanitizeChatMLControlTokens(prompt)
                 "<|im_start|>user\n$safePrompt<|im_end|>\n<|im_start|>assistant\n"
@@ -354,12 +380,16 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
         val sanitizer = StreamTextSanitizer()
         // D-3：跨帧停用词匹配（防 stop 序列被切在 chunk 边界）；匹配在
         // sanitizer 输出后进行——终止边界 = 用户可见文本边界。
-        // 空表回退默认表（D-3 裁决：GenieX 系默认表 = im_end，对齐既有截断
-        // 语义）——AIDL 侧缺省下发为空表（Dart GenerationConfig 默认 const
-        // []，生产路径无赋值点），不回退则默认表恒死码、Qwen 模板防御线
-        // 失守（多栈构型轮 2026-11-01 移除默认参数时暴露的 D-3 轮潜伏缺口）。
+        // 空表回退：模型级声明式默认（.asset-meta.json modelProfile.stopSequences，
+        // 2026-11-02）优先，其次内建默认表（D-3 裁决：GenieX 系默认表 = im_end，
+        // 对齐既有截断语义）——AIDL 侧缺省下发为空表（Dart GenerationConfig
+        // 默认 const []，生产路径无赋值点），不回退则默认表恒死码、Qwen 模板
+        // 防御线失守（多栈构型轮 2026-11-01 移除默认参数时暴露的 D-3 轮潜伏缺口）。
         val stopMatcher = StopSequenceMatcher(
-            stopSequences.ifEmpty { StopSequenceMatcher.DEFAULT }
+            stopSequences.ifEmpty {
+                modelProfile?.stopSequences?.ifEmpty { null }
+                    ?: StopSequenceMatcher.DEFAULT
+            }
         )
         val flow = w.generateStreamFlow(
             chatPrompt,

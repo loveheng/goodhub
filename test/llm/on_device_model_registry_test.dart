@@ -69,4 +69,57 @@ void main() {
     );
     expect(installed, isEmpty);
   });
+
+  test('readMeta：modelProfile 块解析 + toOption contextTokens 覆盖优先', () async {
+    final dir = Directory('${support.path}/models/profiled-model');
+    await dir.create(recursive: true);
+    await File('${dir.path}/.asset-meta.json').writeAsString(jsonEncode({
+      'version': 'local-import-1',
+      'runtime': 'litertlm',
+      'sizes': {'m.litertlm': 3},
+      'totalBytes': 3,
+      'modelProfile': {
+        'chatTemplateFamily': 'gemma',
+        'stopSequences': ['<end_of_turn>'],
+        'contextTokens': 2048,
+      },
+    }));
+
+    final m = await ModelRegistry.readMeta(dir, 'profiled-model');
+    expect(m, isNotNull);
+    expect(m!.modelProfile, isNotNull);
+    expect(m.modelProfile!.chatTemplateFamily, 'gemma');
+    expect(m.modelProfile!.stopSequences, ['<end_of_turn>']);
+    // 导入 meta 的 contextTokens 优先于运行时族默认（kLitertlmContextTokens=1280）。
+    expect(m.toOption().contextTokens, 2048);
+  });
+
+  test('readMeta：无 modelProfile 块 / 空块 → profile 为 null（消费方走内建口径）',
+      () async {
+    final dir = Directory('${support.path}/models/plain-model');
+    await dir.create(recursive: true);
+    await File('${dir.path}/.asset-meta.json').writeAsString(jsonEncode({
+      'version': 'local-import-1',
+      'runtime': 'litertlm',
+      'sizes': {'m.litertlm': 3},
+    }));
+
+    final m = await ModelRegistry.readMeta(dir, 'plain-model');
+    expect(m, isNotNull);
+    expect(m!.modelProfile, isNull);
+    // 无块回退运行时族默认（.litertlm = 1280），不回归。
+    expect(m.toOption().contextTokens, kLitertlmContextTokens);
+
+    final empty = Directory('${support.path}/models/empty-profile-model');
+    await empty.create(recursive: true);
+    await File('${empty.path}/.asset-meta.json').writeAsString(jsonEncode({
+      'version': 'local-import-1',
+      'runtime': 'litertlm',
+      'sizes': {},
+      'modelProfile': <String, dynamic>{},
+    }));
+    final m2 = await ModelRegistry.readMeta(empty, 'empty-profile-model');
+    expect(m2, isNotNull);
+    expect(m2!.modelProfile, isNull, reason: '空块等价无块（禁臆造默认）');
+  });
 }

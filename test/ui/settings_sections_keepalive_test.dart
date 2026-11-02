@@ -34,6 +34,7 @@ import 'package:goodhub/ui/sections/nodes_section.dart';
 import 'package:goodhub/ui/sections/on_device_model_section.dart';
 import 'package:goodhub/ui/sections/user_prompts_section.dart';
 import 'package:goodhub/ui/tokens/console_tokens.dart';
+import 'pin_harness.dart';
 
 void main() {
   late Directory tempDir;
@@ -75,6 +76,7 @@ void main() {
               ),
               NodesSection(
                 autoProbe: false,
+                catalog: FakeCatalog(),
                 endpointStoreOverride: ServerEndpointStore(
                   file: File('${tempDir.path}/mcp_servers.json'),
                   secure: InMemorySecureKeyValue(),
@@ -85,6 +87,7 @@ void main() {
                 errorRowBuilder: errorRow,
               ),
               LocalPluginsSection(
+                catalog: FakeCatalog(),
                 scan: () async => const <LocalPluginInfo>[],
                 changes: const Stream<void>.empty(),
                 isDefaultPrivate: (_) => false,
