@@ -73,4 +73,4 @@ last-merge: none
 
 ## 断点
 
-- [断点] KV-Cache 复用实证已收口（a36960e 后续轮：bench cache probe 档 + Ace 6 真机数据，TTFT 随输入线性 = 每请求全量重 prefill 无跨请求复用 [Fact]，维持 §2.5 ADR 不做前缀稳定裁剪，收益量化 GPU 档 ~0.6s/Ktok·轮）；未提交改动面已清（a36960e + 本轮 cache probe 提交）——下一步：GGUF header 解析 spike（域内待办在案）或等新指令
+- [断点] KV-Cache 复用实证 + GGUF header 解析 spike 双双收口（KV：每请求全量重 prefill 无复用 [Fact]，维持 §2.5 ADR；GGUF：S0 成立 [Fact]——纯 Dart 解析器 lib/llm/on_device_gguf_header.dart 真样本读出 contextLength/chatTemplate/量化参数，KV 区 16MB 上限实证校准）。下一步：元数据管线立项（S0>S1>S2 来源分级 + DispatchProfile 冒烟校验，扩展 on-device-asset-metadata.md）或等新指令
