@@ -804,9 +804,10 @@ class OnDeviceAssetManager {
   /// D-3 纪律——本块只记声明式属性，不是解析逻辑的收口）。
   ///
   /// 探测策略（保守，无实证不写字段，规格 §3 溯源纪律）：
-  /// - litertlm：模板归 bundle 原生（Runner 不自绘），只标 contextTokens
-  ///   （Gemma3-1B 官方 bundle 规格单源 [kLitertlmContextTokens]）；终止靠
-  ///   模型原生 EOS，不写 stopSequences（跨栈模板不引入）；
+  /// - litertlm：模板归 bundle 原生（Runner 不自绘），contextTokens /
+  ///   recommendedSampling 走 per-bundle 规格表（assets/model-specs.json，
+  ///   无命中行 = 字段缺席）；终止靠模型原生 EOS，不写 stopSequences
+  ///   （跨栈模板不引入）；
   /// - qairt：GenieX SDK applyChatTemplate 读资产内嵌模板，手写 fallback
   ///   家族假设 = Qwen/ChatML（ChatMLComposer UNCERTAIN 同源）——显式落盘
   ///   使假设可查；stopSequences 按家族闭合 token 推导（推导非猜测）；

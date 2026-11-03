@@ -283,7 +283,10 @@ class LiteRtLmRunner(private val context: Context) : OnDeviceRunner {
         // 统一透传 temperature/topP（与 Gallery 对齐）。上游 #2080（Initialize-
         // Sampler 忽略会话级采样）至少对本版本组合不成立——Gallery 0.18.1
         // NPU 正常为证；若复测仍 12222，再评估 SDK 版本差异（我们 0.16.0 <
-        // Gallery 0.18.1，届时升 AAR 重验）。
+        // Gallery 0.18.1，届时升 AAR 重验）。topK=40 出处钉（2026-11-03 通用
+        // 实现纪律核查）：litertlm 栈级常数（Gallery 同值对齐），非 per-model
+        // 规格——需按模型分档时走 assets/model-specs.json 规格表字段下发，
+        // 禁扩代码绑定。
         val sampler = SamplerConfig(
             topK = 40,
             topP = topP.toDouble(),

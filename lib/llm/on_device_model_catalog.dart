@@ -80,9 +80,11 @@ const bool kOnDeviceLlamaCppEnabled =
 
 /// 端侧模型描述符（装载目标）。身份锚点 = [dirName]（`models/` 下落盘目录名）。
 ///
-/// .litertlm 族上下文窗口默认值（Gemma3-1B 官方 bundle 规格，文件名
-/// `q4_ekv1280` 同证；官方文档 support 表 Context size = 1280）。
-const int kLitertlmContextTokens = 1280;
+/// litertlm 族**不再设统一窗口默认**（2026-11-03 治理）：原
+/// `kLitertlmContextTokens = 1280` 实为 Gemma3-1B 一家的规格冒充族默认，
+/// 第二款 litertlm bundle（如 Qwen）会被错标——窗口规格归 per-bundle
+/// 规格表（`assets/model-specs.json`，导入期回填 meta）；无命中行 =
+/// contextTokens 未标注，历史预算走全局字符预算既有口径。
 
 class OnDeviceModelOption {
   const OnDeviceModelOption({
@@ -288,15 +290,11 @@ class InstalledModel {
         runtime: runtime,
         totalBytes: totalBytes,
         installed: true,
-        // 上下文窗口：导入 meta `modelProfile.contextTokens` 优先（扩展位
-        // 兑现，2026-11-02）；无块时按运行时族标注——.litertlm 族（Gemma3-1B
-        // 官方 bundle 规格 1280，文件名 q4_ekv1280 同证）——历史预算据此动态
-        // 推导，防 ASCII 最坏情形溢出（2026-11-02 真机定谳）。GenieX 系维持
-        // 未标注口径（全局字符预算，存量模型不回归）。
-        contextTokens: modelProfile?.contextTokens ??
-            (runtime == OnDeviceRuntime.litertlm
-                ? kLitertlmContextTokens
-                : null),
+        // 上下文窗口：导入 meta `modelProfile.contextTokens` 单源（per-bundle
+        // 规格表导入期回填，§3.5）；未标注 = null，历史预算走全局字符预算
+        // 既有口径——**禁在目录层造家族级窗口默认**（原 kLitertlmContextTokens
+        // 实为 Gemma3-1B 单模型规格冒充族默认，2026-11-03 治理删除）。
+        contextTokens: modelProfile?.contextTokens,
         // 推荐采样：S1 策展声明透出（下发链，§3.5）；无块 = null 走内建默认。
         recommendedSampling: modelProfile?.recommendedSampling,
       );

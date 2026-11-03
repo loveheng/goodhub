@@ -92,9 +92,12 @@ data class GenerationParams(
         const val KEY_FOREGROUND = "foreground"
         const val KEY_PROMPT_FILE_PATH = "promptFilePath"
 
+        // 双端缺省单源（2026-11-03 对齐）：与 Dart 侧 GenerationConfig 内建默认
+        // 同值——此前 0.7/0.9 与 Dart 1.0/0.95 漂移，任一侧漏传即落回低温窄
+        // 分布（12222 复读事故同款陷阱）。改 Dart 缺省须同步改这里。
         const val DEFAULT_MAX_TOKENS = 512
-        const val DEFAULT_TEMPERATURE = 0.7
-        const val DEFAULT_TOP_P = 0.9
+        const val DEFAULT_TEMPERATURE = 1.0
+        const val DEFAULT_TOP_P = 0.95
 
         /** :engine 入向：Bundle → 参数（缺省值单源同上，禁缝外重抄默认值）。 */
         fun fromBundle(b: Bundle?): GenerationParams = GenerationParams(

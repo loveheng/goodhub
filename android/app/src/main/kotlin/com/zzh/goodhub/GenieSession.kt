@@ -439,6 +439,10 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
         // 复读环看门狗（2026-11-02）：已放行文本尾部复读检测（2B 级小模型
         // 低熵陷阱：数字环 / 句级环）；repetitionPenalty 1.05 只缓解不消除。
         // 命中 = abort（不计数熔断——复读是模型质量问题，非设备缺陷）。
+        // repetitionPenalty=1.05 出处钉（2026-11-03 通用实现纪律核查）：
+        // GenieX 栈级解码卫生常数（真机调参，2026-10-30 采样接线轮），非
+        // per-model 规格——若未来需按模型分档，走 assets/model-specs.json
+        // 规格表字段下发（S1 链已有透出位），禁在代码里扩模型绑定。
         val repetitionGuard = RepetitionGuard()
         val flow = w.generateStreamFlow(
             chatPrompt,

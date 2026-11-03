@@ -107,8 +107,11 @@ void main() {
     final m = await ModelRegistry.readMeta(dir, 'plain-model');
     expect(m, isNotNull);
     expect(m!.modelProfile, isNull);
-    // 无块回退运行时族默认（.litertlm = 1280），不回归。
-    expect(m.toOption().contextTokens, kLitertlmContextTokens);
+    // 无块 → 未标注（contextTokens=null，走全局字符预算既有口径）——
+    // 目录层**禁家族级窗口默认**（原 kLitertlmContextTokens 实为
+    // Gemma3-1B 单模型规格冒充族默认，2026-11-03 治理删除，规格归
+    // assets/model-specs.json per-bundle 表）。
+    expect(m.toOption().contextTokens, isNull);
 
     final empty = Directory('${support.path}/models/empty-profile-model');
     await empty.create(recursive: true);
