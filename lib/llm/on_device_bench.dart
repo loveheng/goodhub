@@ -46,6 +46,13 @@ const String kOnDeviceBenchModelDir =
 const bool kOnDeviceBenchGpuPass =
     bool.fromEnvironment('ON_DEVICE_BENCH_GPU_PASS', defaultValue: true);
 
+/// KV-Cache 复用实证（2026-11-03）：true = 追加 TTFT-历史长度对照扫（cache
+/// probe）。判据：同问题在 64/192/384/640 tok 历史下 TTFT 线性增长 = 每请求
+/// 全量重 prefill（LiteRtLmRunner 每请求新建 Conversation，SDK 回调面无
+/// token 计数无法直读缓存命中——本对照是唯一可观测面）；平坦 = 有前缀缓存。
+const bool kOnDeviceBenchCacheProbe =
+    bool.fromEnvironment('ON_DEVICE_BENCH_CACHE_PROBE', defaultValue: false);
+
 class OnDeviceBench {
   OnDeviceBench._();
 
@@ -134,6 +141,21 @@ class OnDeviceBench {
     await _case(
         tag, 'long~${longChars ~/ 2}ctx', '请用一句话总结上文背景资料的用途。', longPad);
     await _case(tag, 'short-repeat', shortPrompt, shortPad);
+    if (kOnDeviceBenchCacheProbe) await _cacheProbeCases(tag, contextTokens);
+  }
+
+  /// KV-Cache 复用实证扫：同问题、历史 padding 按 64/192/384/640 tok 阶梯
+  /// 放大，TTFT 曲线定谳「每请求全量重 prefill vs 前缀缓存」（判据见
+  /// [kOnDeviceBenchCacheProbe] 注）。输入预算与长场景同口径（输出 512 +
+  /// 系统开销 ~100 预留），窗口外档位自动裁掉。
+  static Future<void> _cacheProbeCases(String tag, int? contextTokens) async {
+    const question = '请用一句话介绍骁龙 8 Elite 的 NPU。';
+    final budgetTokens =
+        contextTokens == null ? 640 : ((contextTokens - 612).clamp(64, 640));
+    for (final tok in const [64, 192, 384, 640]) {
+      if (tok > budgetTokens) break;
+      await _case(tag, 'cache~${tok}tok', question, _pad((tok * 1.3).round()));
+    }
   }
 
   /// 显式装载 [dir] 并轮询就绪（[kOnDeviceBenchModelDir] 诊断开关用）。

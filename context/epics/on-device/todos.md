@@ -5,8 +5,7 @@ epic: on-device
 ---
 
 # on-device · 域内待办
-- [ ] [2026-11-03] (测试) GGUF header 解析 spike：百行级 KV 解析器验证不加载权重可读 context_length/chat_template/量化参数（定元数据管线 S0 来源可行性）(层:L2)(重:轻) (src: ai)
-- [ ] [2026-11-03] (测试) KV-Cache 复用实证实验：同会话第 2 轮 TTFT vs 冷启动同 prompt 对照，确认 Genie session 内是否自动增量 prefill；顺带给 :engine 数据面加 prefillTokens/cachedTokens 回传（结果定 KV 方案层级：仅保温 / 需前缀稳定化）(层:L0)(重:轻) (src: ai)
+- [ ] [2026-11-03] (测试) GGUF header 解析 spike：百行级 KV 解析器验证不加载权重可读 context_length/chat_template/量化参数（定元数据管线 S0 来源可行性；前一条同文条目系误流转回收重挂）(层:L2)(重:轻) (src: ai)
 - [ ] [2026-11-03] (功能) (候) TTS/STT 语音输入与朗读（竞品 Layla/MLC Chat 有；依附引擎侧能力成熟后一并评估）(重:重) (src: ai)
 - [ ] [2026-11-03] (功能) 按模型绑定的 chat template / 会话预设机制（Qwen/Gemma 模板差异大，换模型即换模板是端侧刚需；竞品按 HF 元数据自动选）(层:L3)(重:中) (src: ai)
 - [ ] [2026-11-03] (功能) 端侧 RAG 基座：端侧 embedding 模型 + 本地检索，与资源中心 $ref 句柄注入整合（竞品 Layla/本地知识库类已有，goodhub 全空位）(层:L2)(重:重) (src: ai)

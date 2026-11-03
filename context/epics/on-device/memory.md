@@ -73,4 +73,4 @@ last-merge: none
 
 ## 断点
 
-- [断点] 下一步：A1~C2 裁决依据已写入台账（六项全带不做原因+触发条件，与 IRIDIS 残留同款触发器型口径）——下一步：等新指令；未提交改动面累计五轮+台账（bench/P1-5/评审#4/D1/文档/台账），强烈建议先提交
+- [断点] KV-Cache 复用实证已收口（a36960e 后续轮：bench cache probe 档 + Ace 6 真机数据，TTFT 随输入线性 = 每请求全量重 prefill 无跨请求复用 [Fact]，维持 §2.5 ADR 不做前缀稳定裁剪，收益量化 GPU 档 ~0.6s/Ktok·轮）；未提交改动面已清（a36960e + 本轮 cache probe 提交）——下一步：GGUF header 解析 spike（域内待办在案）或等新指令

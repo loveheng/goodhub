@@ -467,3 +467,6 @@ last-merge: none
 - [2026-11-03] [验证]: flutter analyze 0 issue + test/mcp/connection_health_test.dart 9 全绿 + docs-lint OK
 - [2026-11-03] [变更]: A1~C2 待裁决项补写「现在不做的原因」（2026-11-03 用户拍板按盘点落账）：A1 导入制已覆盖首发、双轨徒增维护面（触发=需免 SAF OTA 分发）；A2 OOM 连坐已多轮降级、防线在位（触发=真机网关连带死亡）；A3 硬前置缺位+Android 首发未收官（纯留位）；B1 码面在位纯验证、随下次真机轮顺带；C1 小模型遮蔽质量不可靠+无真实案例驱动（触发=真实受损案例）；C2 触发条件未到（未接多模态，等 M3+）
 - [2026-11-03] [验证]: 未执行: 台账轮无代码变更：A1~C2 六项裁决依据写入台账
+- [2026-11-03] [变更]: KV-Cache 复用实证实验落地（on_device_bench.dart cache probe 档，--dart-define=ON_DEVICE_BENCH_CACHE_PROBE=true，默认关）：同问题 + 历史 padding 64/192/384/640 tok 阶梯，TTFT 曲线定谳「每请求全量重 prefill vs 前缀缓存」。可观测面结论先行：LiteRtLmRunner 每请求新建 Conversation（initialMessages 全量灌历史，finally close）+ SDK 回调面无 token 计数（generatedTokens=-1 存量口径）——prefillTokens/cachedTokens 直读不可行，TTFT-长度对照为唯一可观测面
+- [2026-11-03] [验证]: 真机数据（Ace 6）：GPU 段（gemma3-1b-it-int4 通用 bundle）TTFT 159/216/290/483ms ≈ 0.56ms/tok 线性；NPU 段 TTFT 1720/2585/3348/6713ms ≈ 8ms/tok 线性（本机注册模型 = 通用 bundle，tok/s 58~60 与 generic 档画像吻合——DispatchProfile 陷阱档已知限制在案，不影响本实验判据）。[Fact] 两段均随输入长度线性增长 = 每请求全量重 prefill，无跨请求前缀复用（若 SDK 有前缀缓存，TTFT 应随历史长度平坦）
+- [2026-11-03] [变更]: KV 方案层级定谳（todo「KV-Cache 复用实证实验」收口）：无复用可保温，「session 保温」无对象——维持 context-stepped-pruning §2.5 ADR「端侧不做前缀稳定裁剪」，本轮为该 ADR 补上 [Fact] 实证依据。收益量化：GPU 档 1K tok 历史增 TTFT ~0.6s/轮、generic 档 ~8s/轮——阶梯截断/硬截断压历史长度即天然控制该成本。重评触发 = SDK 暴露会话级复用接口 或 AnchorAndRecent 真机切换后长历史实测劣化

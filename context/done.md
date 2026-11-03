@@ -174,3 +174,4 @@ format: v2
 - [2026-10-28] 门禁：flutter analyze 0 issue；arch-guard OK；drift-guard OK；docs-lint OK；全量 flutter test → 1300/1300 全绿 (域: arch-review-2026-10)
 - [2026-10-28] #27 孤立件收编裁决（arch-review-2026-10）：选 B 保留待接线——`lib/mcp/tool_router.dart` 钉为「海关过滤规则独立镜像 + 单测面」，本文件头声明「非生产调用面」，决策已落 coding-standards §1.1 规则 7 / §5.6（SA-Q6 拍板「不删不引」）；不并回 coordinator（待插件 SDK 发 annotations 后按 #9 补强，启用三项前置见规约）。无代码改动，纯裁决归档 (域: arch-review-2026-10)
 - [2026-11-02] 模型导入/准入时在 .asset-meta.json 增补声明式 modelProfile 块（chatTemplateFamily / stopSequences 默认集 / contextLength / runtimeVersion；GGUF 探测不出标 unknown）——供各 Runner 解析自治消费，禁中心化 token 级解析（D-3）；单源扩展既有 meta 写入点，不开平行元数据文件 (src: 用户) (src: ai) (域: on-device)
+- [2026-11-03] KV-Cache 复用实证实验：同会话第 2 轮 TTFT vs 冷启动同 prompt 对照，确认 Genie session 内是否自动增量 prefill；顺带给 :engine 数据面加 prefillTokens/cachedTokens 回传（结果定 KV 方案层级：仅保温 / 需前缀稳定化）(层:L0)(重:轻) (src: ai) (域: on-device)
