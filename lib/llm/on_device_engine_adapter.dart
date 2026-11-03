@@ -75,12 +75,21 @@ class AidlOnDeviceLlmEngineAdapter
     String? system,
     int maxTokens = 512,
     LlmResponseFormat? responseFormat,
+    double? temperature,
+    double? topP,
   }) {
     final requestId = 'aidl-${DateTime.now().microsecondsSinceEpoch}';
     _currentRequestId = requestId;
     // prompt = 消息序列 JSON（2026-10-31 设计修正），system 已在消息序列内
     //（由 :engine 侧 ChatML 构造 system 轮）——旧 system 拼接退役。
     final fullPrompt = prompt;
+    // 采样覆盖（S1 下发链 2026-11-03）：null = GenerationConfig 内建默认。
+    final defaults = const GenerationConfig();
+    final config = GenerationConfig(
+      maxTokens: maxTokens,
+      temperature: temperature ?? defaults.temperature,
+      topP: topP ?? defaults.topP,
+    );
     // 双层控制器：内层 _inner 流的取消须同步联动 cancelActive（onCancel 里
     // 退订内层订阅触发 _inner 的 onCancel → cancel(requestId)），外层订阅者
     // 取消 = 内层退订 = 生成终止（流生命周期自动绑定，杜绝孤儿生成空跑）。
@@ -96,7 +105,7 @@ class AidlOnDeviceLlmEngineAdapter
     sub = _inner.generate(
       requestId: requestId,
       prompt: fullPrompt,
-      config: GenerationConfig(maxTokens: maxTokens),
+      config: config,
     ).listen(
       (chunk) {
         if (chunk.deltaText.isEmpty) return;

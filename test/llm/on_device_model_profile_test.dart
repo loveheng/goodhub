@@ -284,4 +284,49 @@ void main() {
       expect(await metaFile.readAsString(), before);
     });
   });
+
+  group('recommendedSampling S1 下发链（§3.5）', () {
+    test('meta 解析：temperature/topP 透传，缺字段各自独立容忍', () {
+      final p = OnDeviceModelProfile.fromMeta({
+        'recommendedSampling': {'temperature': 1.0, 'topP': 0.95},
+      });
+      expect(p!.recommendedSampling!.temperature, 1.0);
+      expect(p.recommendedSampling!.topP, 0.95);
+
+      final partial = OnDeviceModelProfile.fromMeta({
+        'recommendedSampling': {'temperature': 0.9},
+      });
+      expect(partial!.recommendedSampling!.temperature, 0.9);
+      expect(partial.recommendedSampling!.topP, isNull);
+
+      // 全空采样块 + 无其他字段 → 整块判 null（禁臆造默认，全空块=无块）。
+      expect(
+          OnDeviceModelProfile.fromMeta({
+            'recommendedSampling': <String, dynamic>{},
+          }),
+          isNull);
+    });
+
+    test('无 recommendedSampling 键 → null（走引擎内建默认）', () {
+      final p = OnDeviceModelProfile.fromMeta({'contextTokens': 1280});
+      expect(p!.recommendedSampling, isNull);
+    });
+
+    test('toOption 透出：modelProfile 预设 → OnDeviceModelOption 同源', () {
+      const profile = OnDeviceModelProfile(
+        contextTokens: 1280,
+        recommendedSampling: OnDeviceSamplingPreset(temperature: 1.0),
+      );
+      final opt = InstalledModel(
+        dirName: 'm',
+        displayName: 'm',
+        runtime: 'litertlm',
+        totalBytes: 1,
+        imported: true,
+        modelProfile: profile,
+      ).toOption();
+      expect(opt.recommendedSampling!.temperature, 1.0);
+      expect(opt.recommendedSampling!.topP, isNull);
+    });
+  });
 }

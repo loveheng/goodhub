@@ -94,6 +94,7 @@ class OnDeviceModelOption {
     this.totalBytes,
     this.installed = false,
     this.contextTokens,
+    this.recommendedSampling,
   });
 
   /// 由磁盘已装记录合成（导入模型：无下载基址）。
@@ -104,7 +105,8 @@ class OnDeviceModelOption {
         runtime = OnDeviceRuntime.auto,
         totalBytes = null,
         installed = true,
-        contextTokens = null;
+        contextTokens = null,
+        recommendedSampling = null;
 
   final String id;
   final String displayName;
@@ -138,6 +140,7 @@ class OnDeviceModelOption {
     int? totalBytes,
     bool? installed,
     int? contextTokens,
+    OnDeviceSamplingPreset? recommendedSampling,
   }) =>
       OnDeviceModelOption(
         id: id,
@@ -148,7 +151,12 @@ class OnDeviceModelOption {
         totalBytes: totalBytes ?? this.totalBytes,
         installed: installed ?? this.installed,
         contextTokens: contextTokens ?? this.contextTokens,
+        recommendedSampling: recommendedSampling ?? this.recommendedSampling,
       );
+
+  /// 推荐采样（S1 下发链透出，`modelProfile.recommendedSampling` 同源）；
+  /// null = 缺席，发送链走引擎内建默认。
+  final OnDeviceSamplingPreset? recommendedSampling;
 }
 
 /// 声明式解析元数据（`.asset-meta.json` 的 `modelProfile` 块，2026-11-02）：
@@ -160,6 +168,7 @@ class OnDeviceModelProfile {
     this.chatTemplateFamily,
     this.stopSequences = const [],
     this.contextTokens,
+    this.recommendedSampling,
   });
 
   /// 模板家族（qwen_chatml / llama3 / gemma / unknown）。
@@ -172,6 +181,11 @@ class OnDeviceModelProfile {
   /// （导入 meta 是该模型实盘的更近真相）。
   final int? contextTokens;
 
+  /// 推荐采样（S1 策展声明，on-device-asset-metadata.md §3.5）：GGUF 头无
+  /// 此字段（S0 探不出），数据来自提供方文档/规格声明——litertlm Gemma3-1B
+  /// bundle = 官方 Gallery 值；null = 缺席，消费方走引擎内建默认（禁猜值）。
+  final OnDeviceSamplingPreset? recommendedSampling;
+
   /// meta `modelProfile` map → 类型（防御式：非 Map / 字段类型不符忽略）。
   static OnDeviceModelProfile? fromMeta(Object? raw) {
     if (raw is! Map<String, dynamic>) return null;
@@ -181,17 +195,49 @@ class OnDeviceModelProfile {
         .where((s) => s.isNotEmpty)
         .toList(growable: false);
     final ctx = (raw['contextTokens'] as num?)?.toInt();
+    final samplingRaw = raw['recommendedSampling'];
+    final sampling = samplingRaw is Map<String, dynamic>
+        ? OnDeviceSamplingPreset.fromMeta(samplingRaw)
+        : null;
     if ((family == null || family.isEmpty) &&
         (stops == null || stops.isEmpty) &&
-        ctx == null) {
+        ctx == null &&
+        sampling == null) {
       return null;
     }
     return OnDeviceModelProfile(
       chatTemplateFamily: (family != null && family.isNotEmpty) ? family : null,
       stopSequences: stops ?? const [],
       contextTokens: ctx,
+      recommendedSampling: sampling,
     );
   }
+}
+
+/// 推荐采样预设（S1 策展声明，元数据管线 §3.5）：请求级采样覆盖的数据面。
+/// 值域纪律同 meta：非 null 字段才下发，缺温度/缺 topP 各自独立（禁整包
+/// 臆造）。
+class OnDeviceSamplingPreset {
+  const OnDeviceSamplingPreset({this.temperature, this.topP});
+
+  /// 推荐温度；null = 不覆盖（引擎内建默认）。
+  final double? temperature;
+
+  /// 推荐 top-p；null = 不覆盖。
+  final double? topP;
+
+  /// meta map → 类型（防御式：字段缺失/类型不符逐字段独立容忍）。
+  static OnDeviceSamplingPreset? fromMeta(Map<String, dynamic> raw) {
+    final t = (raw['temperature'] as num?)?.toDouble();
+    final p = (raw['topP'] as num?)?.toDouble();
+    if (t == null && p == null) return null;
+    return OnDeviceSamplingPreset(temperature: t, topP: p);
+  }
+
+  Map<String, dynamic> toMeta() => {
+        if (temperature != null) 'temperature': temperature,
+        if (topP != null) 'topP': topP,
+      };
 }
 
 /// 磁盘注册表条目（`.asset-meta.json` 解析产物）。
@@ -251,6 +297,8 @@ class InstalledModel {
             (runtime == OnDeviceRuntime.litertlm
                 ? kLitertlmContextTokens
                 : null),
+        // 推荐采样：S1 策展声明透出（下发链，§3.5）；无块 = null 走内建默认。
+        recommendedSampling: modelProfile?.recommendedSampling,
       );
 }
 

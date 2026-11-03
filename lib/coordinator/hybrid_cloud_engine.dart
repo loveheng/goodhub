@@ -523,10 +523,15 @@ class HybridCloudEngine implements CloudLlmEngine {
         }
         // P1-6（2026-11-01）：流式契约——逐 delta 投递，消除「收满 512 token
         // 才一次投递」的 30s 无出字缺口。零产出（无事件 close）走下方归因。
+        // S1 采样下发链（2026-11-03）：meta recommendedSampling 在场则请求级
+        // 覆盖引擎内建默认（§3.5 单字段单源，null 字段不覆盖）。
+        final sampling = selected?.recommendedSampling;
         var sawOutput = false;
         await for (final delta in device.generateStream(
           promptJson,
           maxTokens: request.maxTokens ?? 512,
+          temperature: sampling?.temperature,
+          topP: sampling?.topP,
         )) {
           sawOutput = true;
           ctrl.add(CloudTextDelta(delta));

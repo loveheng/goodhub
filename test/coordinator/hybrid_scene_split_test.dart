@@ -185,6 +185,8 @@ class FakeDevice implements OnDeviceLlmEngine, OnDeviceEnableCapable {
     String? system,
     int maxTokens = 512,
     LlmResponseFormat? responseFormat,
+    double? temperature,
+    double? topP,
   }) async* {
     final text = next;
     if (text != null && text.isNotEmpty) yield text;

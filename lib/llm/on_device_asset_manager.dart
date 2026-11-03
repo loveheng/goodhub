@@ -782,6 +782,11 @@ class OnDeviceAssetManager {
     final profile = <String, dynamic>{};
     if (runtime == OnDeviceRuntime.litertlm) {
       profile['contextTokens'] = kLitertlmContextTokens;
+      // S1 策展声明（§3.5）：Gemma3 官方推荐采样（Gallery demo 同值；0.7/0.9
+      // 旧默认下真机数字环退化反证，2026-11-02）。规格声明绑定本 bundle，
+      // 第二款 litertlm bundle 引入时泛化 per-bundle 规格表（禁跨 bundle 复用）。
+      profile['recommendedSampling'] =
+          const OnDeviceSamplingPreset(temperature: 1.0, topP: 0.95).toMeta();
       return profile;
     }
     if (runtime == OnDeviceRuntime.qairt) {

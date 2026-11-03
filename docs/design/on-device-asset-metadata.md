@@ -87,7 +87,7 @@ updated: 2026-11-03
 
 - **值域纪律不变**：任何一级探不出 → 字段缺席或显式 `unknown`，禁写猜测值；S0 探测失败不阻断导入（§1 meta 是增强面非门禁）。
 - **context_length 回落语义**（S0 内部）：架构前缀键（`<arch>.context_length`）优先；缺失回落**唯一** context 键；多键冲突不猜（null）。
-- **推荐采样（S1 扩展位）**：`modelProfile.recommendedSampling` 归 S1（提供方文档声明），S0 无此字段——随采样下发链立项接入，不在本契约抢先立法。
+- **推荐采样（S1，2026-11-03 落地）**：`modelProfile.recommendedSampling {temperature, topP}`（提供方文档声明）——litertlm Gemma3-1B bundle = 官方 Gallery 值 1.0/0.95（0.7/0.9 旧默认真机数字环退化反证）；消费链 = 目录 `OnDeviceModelOption.recommendedSampling` → `_deviceSend` 请求级覆盖引擎内建默认（null 字段不覆盖，缺块走内建默认）；GGUF 头无此字段（S0 恒缺席），Qwen 系待策展数据不猜值。
 
 ## 4. 生命周期
 

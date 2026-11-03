@@ -65,11 +65,15 @@ abstract class OnDeviceLlmEngine {
   ///
   /// [system] 为任务指令（摘要/关键词等由调用方组装）；[maxTokens] 限制输出长度；
   /// [responseFormat] 传约束解码规格（缺省 = 无约束；约束失败与普通失败同口径降级）。
+  /// [temperature]/[topP] = 请求级采样覆盖（元数据管线 S1 下发链，2026-11-03）：
+  /// null = 引擎内建默认（GenerationConfig 口径，不猜值）。
   Stream<String> generateStream(
     String prompt, {
     String? system,
     int maxTokens = 512,
     LlmResponseFormat? responseFormat,
+    double? temperature,
+    double? topP,
   });
 
   /// 取消当前在途生成（§10 Abort 级联①步：终止本地 LLM Generator）。
@@ -156,6 +160,8 @@ class ChannelLlmEngine implements OnDeviceLlmEngine {
     String? system,
     int maxTokens = 512,
     LlmResponseFormat? responseFormat,
+    double? temperature,
+    double? topP,
   }) async* {
     try {
       final r = await channel.invokeMethod<String>('generate', {
@@ -273,6 +279,8 @@ class UnavailableLlmEngine implements OnDeviceLlmEngine {
     String? system,
     int maxTokens = 512,
     LlmResponseFormat? responseFormat,
+    double? temperature,
+    double? topP,
   }) => const Stream.empty();
 
   @override

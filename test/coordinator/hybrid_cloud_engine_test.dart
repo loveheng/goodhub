@@ -73,6 +73,8 @@ class FakeDeviceEngine implements OnDeviceLlmEngine, OnDeviceFailureReasonAware 
     String? system,
     int maxTokens = 512,
     LlmResponseFormat? responseFormat,
+    double? temperature,
+    double? topP,
   }) async* {
     prompts.add(system == null ? prompt : '$system|$prompt');
     formats.add(responseFormat);
