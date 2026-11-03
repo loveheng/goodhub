@@ -27,7 +27,7 @@ value = {
 
 - **键含 `Build.FINGERPRINT`**：驱动 OTA 后指纹漂移 → 画像整体失效，复用 `asset_manager.recoverIfDriverChanged` 一并脏删重探。
 - **双 verdict 同体**：真实 dispatch policy 需要 `Primary`/`Fallback`，故 NPU 与 GPU 必须同时承载，禁止只写单条 `{"backend":"GPU"}`。
-- **reason 取值**：`TIMEOUT` / `OP_NOT_SUPPORTED` / `ZERO_OUTPUT` / `CRASH` / `DRIVER_INCOMPATIBLE`；由 `:engine` 墓碑排除法补充归因。
+- **reason 取值**：`TIMEOUT` / `OP_NOT_SUPPORTED` / `ZERO_OUTPUT` / `CRASH` / `DRIVER_INCOMPATIBLE` / `REPETITION`（冒烟复读环，2026-11-03 扩表）；由 `:engine` 墓碑排除法补充归因。
 
 ## 2. 存储落点
 
@@ -56,7 +56,8 @@ value = {
 ### 4.1 生产探针 vs Spike 探针
 
 - **Spike 阶段**：1-token 仅验证管道通，允许硬编码单条画像。
-- **生产准入探针**：须 `max_tokens≥8`（或跑至 ~50 token）作二级校验——首字通过但 mid-sequence 才暴露的 Softmax 溢出 / FastRPC 超时，1-token 会假绿。
+- **生产准入探针**：maxTokens=32（或跑至 ~50 token）作二级校验——首字通过但 mid-sequence 才暴露的 Softmax 溢出 / FastRPC 超时，1-token 会假绿。
+- **冒烟第二校验（2026-11-03 落地）**：内容承载型中文短问（非裸 "hi"，抓模板配错面）+ 复读环判定（尾部短单元重复 run≥4 且覆盖 ≥12 字符 → `EXCLUDED`/`REPETITION`）——「慢而活着」的陷阱档在 verdict 层拦截，路由查表不放大坑。判据纯函数住探针件，会话侧复读防护归 Runner `RepetitionGuard`（职责分离）。
 
 ## 5. 状态机落位
 

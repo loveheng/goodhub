@@ -73,4 +73,4 @@ last-merge: none
 
 ## 断点
 
-- [断点] KV-Cache 复用实证 + GGUF header 解析 spike 双双收口（KV：每请求全量重 prefill 无复用 [Fact]，维持 §2.5 ADR；GGUF：S0 成立 [Fact]——纯 Dart 解析器 lib/llm/on_device_gguf_header.dart 真样本读出 contextLength/chatTemplate/量化参数，KV 区 16MB 上限实证校准）。下一步：元数据管线立项（S0>S1>S2 来源分级 + DispatchProfile 冒烟校验，扩展 on-device-asset-metadata.md）或等新指令
+- [断点] 元数据管线 S0 单源化已收口（e382e8a：_ggufProbe 委托公共解析器、私有 KV 游标副本删除、contextLength 回落语义对齐、KV 上限统一 32MB；§3.5 来源分级 S0>S1>S2 立法同轮）。两前置实验 + S0 接线三连收口——下一步：元数据管线 S1/S2 消费深化（recommendedSampling 下发链、DispatchProfile 冒烟校验接入）或等新指令

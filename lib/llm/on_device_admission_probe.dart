@@ -35,7 +35,7 @@ class AdmissionProbe {
     required this.onDeviceProbe,
     required this.assetManager,
     this.hardTimeout = const Duration(seconds: 10),
-    this.probeMaxTokens = 8,
+    this.probeMaxTokens = 32,
     this.now,
   });
 
@@ -55,13 +55,40 @@ class AdmissionProbe {
   final Future<DeviceProbe?> Function() onDeviceProbe;
   final OnDeviceAssetManager assetManager;
   final Duration hardTimeout;
+
+  /// 冒烟生成上限（§4.1 生产探针：≥8 抓 mid-sequence 假绿，32 留复读环
+  /// 判定余量——退化输出需跑出 12+ 字符重复尾才定谳）。
   final int probeMaxTokens;
   final DateTime Function()? now;
 
-  /// 探针输入（§4：固定极简输入；§4.1 生产探针 maxTokens≥8 抓 mid-sequence
-  /// Softmax 溢出 / FastRPC 超时，1-token 会假绿）。
+  /// 探针输入（§4.1 生产探针升格 2026-11-03）：内容承载型中文短问——比
+  /// 裸 "hi" 更抓模板配错面（模板错 → 复读/退化形态输出，12222 真机事故
+  /// 同源），同 messages JSON 契约走 SDK 模板路径；maxTokens 默认 32 抓
+  /// mid-sequence Softmax 溢出 / FastRPC 超时（1-token 会假绿）。
   static const String probePromptJson =
-      '[{"role":"user","content":"hi"}]';
+      '[{"role":"user","content":"请用一句话介绍你自己。"}]';
+
+  /// 复读环判定（冒烟第二校验，纯函数）：尾部短单元（1~8 字符）连续重复
+  /// run ≥ 4 且覆盖 ≥ 12 字符 → 判复读环。启发式口径：正常一句话输出不会
+  /// 以 12+ 字符的严格重复结尾；「12222」式退化（真机事故形态）必命中。
+  /// 只作探针 verdict 判据，不进会话链路（会话侧复读防护归 Runner
+  /// RepetitionGuard，职责分离）。
+  @visibleForTesting
+  static bool looksLikeRepetitionLoop(String out) {
+    if (out.length < 12) return false;
+    for (var unit = 1; unit <= 8; unit++) {
+      if (out.length < unit * 4) continue;
+      final last = out.substring(out.length - unit);
+      var run = 0;
+      var i = out.length;
+      while (i >= unit && out.substring(i - unit, i) == last) {
+        run++;
+        i -= unit;
+      }
+      if (run >= 4 && run * unit >= 12) return true;
+    }
+    return false;
+  }
 
   /// 已有有效画像 → 原样返回（跳过重探）；否则执行探针。任何探针失败都不
   /// 抛出（编排层背景任务，失败留 [DEGRADE] 并返回 null——无画像 = 未知后端，
@@ -150,7 +177,7 @@ class AdmissionProbe {
     final sw = Stopwatch()..start();
     var sawAny = false;
     int? ttftMs;
-    var charsOut = 0;
+    final out = StringBuffer();
     try {
       await onGenerate(probePromptJson, maxTokens: probeMaxTokens)
           .timeout(hardTimeout)
@@ -158,7 +185,7 @@ class AdmissionProbe {
         if (delta.isEmpty) return;
         sawAny = true;
         ttftMs ??= sw.elapsedMilliseconds;
-        charsOut += delta.length;
+        out.write(delta);
       });
     } catch (e) {
       final reason = e is TimeoutException
@@ -168,9 +195,17 @@ class AdmissionProbe {
       return BackendProfile(verdict: BackendVerdict.excluded, reason: reason);
     }
     // 有效性校验（§4.3）：token 必须可反解且非空——排除「成功就绪但首字 0」。
-    if (!sawAny || charsOut == 0) {
+    if (!sawAny || out.isEmpty) {
       return const BackendProfile(
           verdict: BackendVerdict.excluded, reason: BackendReason.zeroOutput);
+    }
+    // 冒烟第二校验（§4.1）：复读环 = 配置/模板退化形态——「慢而活着」的
+    // 陷阱档在 verdict 层拦截，路由查表才不放大坑。
+    if (looksLikeRepetitionLoop(out.toString())) {
+      debugPrint('[DEGRADE] admission probe smoke: repetition loop '
+          '(${out.length} chars)');
+      return const BackendProfile(
+          verdict: BackendVerdict.excluded, reason: BackendReason.repetition);
     }
     return BackendProfile(
       verdict: BackendVerdict.healthy,

@@ -20,7 +20,8 @@ enum BackendReason {
   opNotSupported,
   zeroOutput,
   crash,
-  driverIncompatible;
+  driverIncompatible,
+  repetition;
 
   static BackendReason fromName(String? name) => BackendReason.values
       .firstWhere((e) => e.name == name, orElse: () => BackendReason.none);

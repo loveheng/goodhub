@@ -75,6 +75,34 @@ void main() {
     expect(p!.backends['GPU']!.verdict, BackendVerdict.healthy);
   });
 
+  test('冒烟通过：正常出字 → HEALTHY + ttft', () async {
+    final p = await probe(
+      onGenerate: (_, {required maxTokens}) => Stream.fromIterable(
+        const ['我是', '一个端侧', '助手，', '运行在', '你的手机上。'],
+      ),
+    ).probe(model());
+    expect(p!.backends['NPU']!.verdict, BackendVerdict.healthy);
+    expect(p.backends['NPU']!.ttftMs, isNotNull);
+  });
+
+  test('冒烟复读环 → EXCLUDED repetition（§4.1 冒烟第二校验）', () async {
+    final p = await probe(
+      onGenerate: (_, {required maxTokens}) => Stream.fromIterable(
+        const ['12', '1212', '12121212', '1212121212121212'],
+      ),
+    ).probe(model());
+    expect(p!.backends['NPU']!.verdict, BackendVerdict.excluded);
+    expect(p.backends['NPU']!.reason, BackendReason.repetition);
+  });
+
+  test('复读环判定边界：正常句尾不误判（判据纯函数钉）', () {
+    expect(AdmissionProbe.looksLikeRepetitionLoop('12222'), isFalse);
+    expect(
+        AdmissionProbe.looksLikeRepetitionLoop('这是一个正常的回答。'), isFalse);
+    expect(AdmissionProbe.looksLikeRepetitionLoop('12' * 20), isTrue);
+    expect(AdmissionProbe.looksLikeRepetitionLoop('2' * 20), isTrue);
+  });
+
   test('零产出（空 delta）→ EXCLUDED zeroOutput（§4.3 有效性校验）', () async {
     final p = await probe(
       onGenerate: (_, {required maxTokens}) => Stream.fromIterable(const ['', '']),

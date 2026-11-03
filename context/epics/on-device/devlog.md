@@ -476,3 +476,5 @@ last-merge: none
 - [2026-11-03] [变更]: 元数据管线 S0 接线落地（on-device-asset-metadata.md §3.5 来源分级 S0>S1>S2 立法同轮）——单源化收敛：OnDeviceAssetManager._ggufProbe 委托公共解析器 on_device_gguf_header.dart，删除私有 _GgufKvReader/_GgufHeaderProbe 解析副本（~100 行重复实现，双解析器是漂移温床）；探测失败返 null 不打断导入语义保持，三消费点（导入 meta 写入 / 存量迁移 / 模板可应用性探针）同件收口
 - [2026-11-03] [变更]: 解析器 contextLength 回落语义对齐旧通道（架构前缀键优先 → 唯一 context 键回落；多键冲突不猜返 null，旧通道「取首值」行为废弃——禁猜测值口径升级）；KV 区上限单源统一 32MB（真样本实证 10.9MB + 大词表余量）
 - [2026-11-03] [验证]: flutter analyze 0 issue + 相关测试 40 全绿（gguf_header 合成钉 / model_profile / asset_manager / import×2，回落语义差异首测抓红后对齐）+ 全量门禁 arch-guard/drift-guard/1545 tests all passed + docs-lint OK
+- [2026-11-03] [变更]: 准入探针冒烟校验落地（设计稿 §4.1 生产探针条款兑现，S2 先行拍板）：探针输入从裸 "hi" 升格为内容承载型中文短问（抓模板配错面）+ probeMaxTokens 8→32（mid-sequence 假绿拦截 + 复读判定余量）+ 复读环判据纯函数 looksLikeRepetitionLoop（尾部短单元 run≥4 且覆盖≥12 字符）——命中标 EXCLUDED/REPETITION（reason 词表扩表设计稿 §1 同轮）。「慢而活着」陷阱档在 verdict 层拦截，路由查表不放大坑；会话侧复读防护仍归 Runner RepetitionGuard（职责分离）
+- [2026-11-03] [验证]: 探针测试 12 全绿（新增冒烟通过/复读环/判据边界三钉，12222 短串不误判钉住启发式口径）+ 全量门禁 arch-guard/drift-guard/1548 tests all passed + docs-lint OK
