@@ -123,4 +123,64 @@ void main() {
       });
     });
   });
+
+  group('D1 生命周期韧性（后台暂停 / 回前台立即探活）', () {
+    test('pause 摘定时器：暂停期间不探活；resume 立即探活 + 重启周期', () {
+      FakeAsync().run((fake) {
+        var probes = 0;
+        final h = ConnectionHealth(_http(), ping: () async => probes++);
+        h.start();
+        fake.flushMicrotasks();
+        expect(probes, 1); // start 首探
+        fake.elapse(const Duration(seconds: 15));
+        expect(probes, 2); // 周期 tick
+        h.pause();
+        fake.elapse(const Duration(seconds: 45));
+        expect(probes, 2); // 暂停期零探活（D16 电量纪律）
+        h.resume();
+        fake.flushMicrotasks();
+        expect(probes, 3); // resume 立即探活（不等下个周期）
+        fake.elapse(const Duration(seconds: 15));
+        expect(probes, 4); // 周期心跳已续跑
+        h.stop();
+      });
+    });
+
+    test('stop 释放的连接不越权重启：resume 在 stop 后为 no-op', () {
+      FakeAsync().run((fake) {
+        var probes = 0;
+        final h = ConnectionHealth(_http(), ping: () async => probes++);
+        h.start();
+        fake.flushMicrotasks();
+        expect(probes, 1);
+        h.stop();
+        h.resume(); // 已退册/停摆，禁复活
+        fake.flushMicrotasks();
+        fake.elapse(const Duration(seconds: 30));
+        expect(probes, 1); // 零新增探活
+      });
+    });
+
+    test('注册表联动：pauseAll/resumeAll 触达全部在册心跳（stop 连接已退册）', () {
+      FakeAsync().run((fake) {
+        var probesA = 0;
+        var probesB = 0;
+        final a = ConnectionHealth(_http(), ping: () async => probesA++);
+        final b = ConnectionHealth(_http(), ping: () async => probesB++);
+        a.start();
+        b.start();
+        fake.flushMicrotasks();
+        expect(probesA + probesB, 2);
+        ConnectionHealth.pauseAll();
+        fake.elapse(const Duration(seconds: 30));
+        expect(probesA + probesB, 2); // 全体暂停零探活
+        b.stop(); // 退册
+        ConnectionHealth.resumeAll();
+        fake.flushMicrotasks();
+        expect(probesA, 2); // a 复活并立即探活
+        expect(probesB, 1); // b 已 stop，不复活
+        a.stop();
+      });
+    });
+  });
 }

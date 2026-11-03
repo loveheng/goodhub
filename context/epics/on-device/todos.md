@@ -5,17 +5,29 @@ epic: on-device
 ---
 
 # on-device · 域内待办
-- [ ] [2026-11-01] (风险) UDS 数据面断线自愈重建时借鉴 IRIDIS「KV 失败对齐纪律」：任何失败/中断后强制 KV 状态与会话记录重新对齐再重试，防脏 KV 静默污染后续生成 (src: ai) (src: ai)
-- [ ] [2026-11-01] (优化) 温控中间降级档评估：IRIDIS 式 currentThermalStatus 动态减线程+绑核热生效（llama_set_n_threads / sched_setaffinity），作为 Thermal→全量切云前的缓冲档；注意与「热降频绝不分流矩阵运算到 CPU」禁令的边界 (src: ai) (src: ai)
-- [ ] [2026-11-01] (功能) capability 转发层多调用方并发预留请求归属：:engine 数据面协议借鉴 IRIDIS GenOwner 归属制取消（A 入口停止不杀 B 入口生成），落到 UDS 成帧协议或 AIDL 层评估 (src: ai) (src: ai)
-- [ ] [2026-11-01] (功能) GenieX 落位时照抄 IRIDIS 踩坑清单：运行库按需下载 + 按 Hexagon 代际裁剪库文件（GenieXLibs：51 库→≤20，82MB 大幅瘦身，goodhub :engine AAR 同法）+ geniex_get_error_message→结构化错误码映射（含 QAIRT 上下文编译期固定/Parameter not supported 等真坑）+ 错误信息保留原始异常链不吞 (src: ai) (src: ai)
-- [ ] [2026-11-01] (功能) 上下文治理落地：按 draft §4 落 steppedWindow 纯函数 + agent_loop 挂钩，摘要块位置纪律（System 后独立 UserMessage + frozenBase）照搬；kTickTokenBudget token 突发兜底从 §5 后续演进提为同期实现 (src: ai, 用户) (src: ai)
-- [ ] [2026-11-01] (文档) 修订 context-stepped-pruning.md：补「端侧不做前缀稳定裁剪」裁决 ADR（Genie 前缀复用不可控+无计费压力，阶梯降频已覆盖）并把 draft 翻 active（待 GPU Spike KV 数据）；采纳用户拍板「云端逻辑精简版」而非 IRIDIS 式 (src: ai, 用户) (src: ai)
+- [ ] [2026-11-03] (测试) GGUF header 解析 spike：百行级 KV 解析器验证不加载权重可读 context_length/chat_template/量化参数（定元数据管线 S0 来源可行性）(层:L2)(重:轻) (src: ai)
+- [ ] [2026-11-03] (测试) KV-Cache 复用实证实验：同会话第 2 轮 TTFT vs 冷启动同 prompt 对照，确认 Genie session 内是否自动增量 prefill；顺带给 :engine 数据面加 prefillTokens/cachedTokens 回传（结果定 KV 方案层级：仅保温 / 需前缀稳定化）(层:L0)(重:轻) (src: ai)
+- [ ] [2026-11-03] (功能) (候) TTS/STT 语音输入与朗读（竞品 Layla/MLC Chat 有；依附引擎侧能力成熟后一并评估）(重:重) (src: ai)
+- [ ] [2026-11-03] (功能) 按模型绑定的 chat template / 会话预设机制（Qwen/Gemma 模板差异大，换模型即换模板是端侧刚需；竞品按 HF 元数据自动选）(层:L3)(重:中) (src: ai)
+- [ ] [2026-11-03] (功能) 端侧 RAG 基座：端侧 embedding 模型 + 本地检索，与资源中心 $ref 句柄注入整合（竞品 Layla/本地知识库类已有，goodhub 全空位）(层:L2)(重:重) (src: ai)
+- [ ] [2026-11-03] (优化) 端侧运行时性能统计透出 UI：tok/s、TTFT、上下文占用（on_device_bench 数据已有，缺消费面）(层:L4)(重:轻) (src: ai)
+- [ ] [2026-11-03] (功能) 端侧采样参数下发链：meta modelProfile.recommendedSampling 落地并下发 GenerationConfig（当前硬编码 Gemma3 推荐值 1.0/0.95，真机反证采样值敏感）(层:L3)(重:轻) (src: ai)
+- [ ] [2026-11-03] (功能) 复活端侧模型管理链：本地 GGUF 导入 + 远程下载 + 量化版本选择（archive/local_model/ 已归档零接线，用户自带模型入口缺失，所有开源竞品的入门口）(层:L3)(重:重) (src: ai)
+## IRIDIS 借鉴轮残留（2026-11-03 盘点降级：前提漂移，全触发器型，不排期）
+
+- [ ] (触发: 真机出现「中断/取消后输出污染」证据) KV 失败对齐纪律——三个注入源已堵（SPSC 回退态竞态 P2-10 / 驱逐死亡反向同步 P0-3/P0-15 / 每请求 reset+坏后端记账），KV 复用系 Genie 黑盒（S2-5 零收益），攻击面大幅收窄 (src: ai, 2026-11-03 盘点)
+- [ ] (触发: llama.cpp 重开发布) 温控中间降级档——动态减线程仅 llama.cpp 管线可行（已首发关闸）；litertlm/geniex 无线程控制面（S3-1 边界留痕），现有 SEVERE 全切云+迟滞已是上限 (src: ai, 2026-11-03 盘点)
+- [ ] (触发: P2 多调用方并发立项) GenOwner 请求归属——现架构单执行槽+service_busy 驳回（S3-3 策略 B），「A 停止不杀 B」问题不存在，勿提前建机制 (src: ai, 2026-11-03 盘点)
+- [ ] (触发: 真机踩到未映射的 geniex 错误码) geniex_get_error_message 结构化映射逐个补——库裁剪瘦身已被清单化+RuntimeChannel 按代际分发结构性消化（geniex-v79 仅 9.7MB），错误大头已被 cmaProbe+G2 死因指纹覆盖 (src: ai, 2026-11-03 盘点)
+- [x] [2026-11-01] (功能) 上下文治理落地：按 draft §4 落 steppedWindow 纯函数 + agent_loop 挂钩，摘要块位置纪律（System 后独立 UserMessage + frozenBase）照搬；kTickTokenBudget token 突发兜底从 §5 后续演进提为同期实现 (src: ai, 用户) (src: ai)
+> 已收口（2026-11-03 盘点实证，代码面零缺口）：steppedWindow §4 User 回退修正（context_governor:88-92）、_withArchiveSummary §2.2 位置纪律（agent_loop:575）、§2.1/§2.3 阶梯与 DEGRADE 降级、§6.4 kTickTokenBudget 突发兜底（memory_governor:62 + chat_run_orchestrator:135 接线）全部在位。
+- [x] [2026-11-01] (文档) 修订 context-stepped-pruning.md：补「端侧不做前缀稳定裁剪」裁决 ADR（Genie 前缀复用不可控+无计费压力，阶梯降频已覆盖）并把 draft 翻 active（待 GPU Spike KV 数据）；采纳用户拍板「云端逻辑精简版」而非 IRIDIS 式 (src: ai, 用户) (src: ai)
+> 已收口（2026-11-03）：§2.5 裁决 ADR 落稿（三依据：端侧零计费+前缀复用黑盒收益坍塌 S2-5 实测 / 阶梯降频已覆盖+D-4 NPU 档 TTFT 102~142ms / 复杂度不对称），draft → active；docs-lint OK + coordinator 507 全绿。
 - [ ] [2026-10-31] (风险) [long] [Decision] G1 已关闭（ADR 终裁 2026-10-31）：QAIRT SDK 不装/私有方法不探测 → 维持现状为终态（SDK 文本回调+StreamTextSanitizer+Dart identity 直通）；唯一后续通道 = 向 geniex-android/Qualcomm 登记上游 issue（detokenize 单字节解码拆散 UTF-8 多字节字符，期望输出侧 token-id 或修复边界）；SDK 未来暴露 token-id 或修复 → 重开 G1 评估 (src: 用户) (src: ai)
-- [ ] [2026-10-31] (修复) [评审#6] 原语流取消传导：OnDeviceCapabilityService._generateWithSlotWait 消费方取消后未调 cancel(requestId)——在途生成跑满 maxTokens 占单执行槽挤占前台 2s 窗口；修法=await-for onCancel 联动引擎 cancel 通道；随原语对外导出（Step2/P2）立项评估 (src: ai) (src: ai)
-> 引擎层取消通道已就位（`StreamController(onCancel: () => cancel(requestId))`，`on_device_engine_aidl.dart:485`）；`_generateWithSlotWait` 经 `await for` 消费该流，取消可向上传导。残差：是否真传导到消费方（AgentLoop/mcp_runtime 切实 cancel 上层 Future）未验证，devlog 未记录收口 → 保留待验证。
-- [ ] [2026-10-31] (修复) [评审#4] F2 比对旁路收口：:engine 侧 loadedModelId 为空时 modelId 失配检查整体跳过（静默放行）——按「身份锚点缺失应留痕或拒绝」精神收口（实际难达：modelId 空值已退化目录名）；随真机轮评估 (src: ai) (src: ai)
-> F2 已落地（devlog 312）但 `EngineService.kt:402` 比对仍以 `loadedModelId.isNotEmpty()` 为前提——空值（modelId 退化目录名）时整体跳过静默放行，正是本评审点。属已知难达项，保留 open。
+- [x] [2026-10-31] (修复) [评审#6] 原语流取消传导：OnDeviceCapabilityService._generateWithSlotWait 消费方取消后未调 cancel(requestId)——在途生成跑满 maxTokens 占单执行槽挤占前台 2s 窗口；修法=await-for onCancel 联动引擎 cancel 通道；随原语对外导出（Step2/P2）立项评估 (src: ai) (src: ai)
+> 已收口（2026-11-03 代码走查验证）：引擎层 cancel 通道（StreamController.onCancel→cancel(requestId)，aidl:485）与 _generateWithSlotWait await-for 消费机制正确在位；生产消费方（OnDeviceResultSummarizer.call / agent_loop 两处）全为 plain await，无 timeout/订阅取消/放弃在途路径——评审场景现网不可达。风险面=complete() 为 Future<String> 无取消入口，仅在 Step2/P2 原语对外导出后出现，改码触发器=届时导出立项（complete() 增取消句柄或改返回 Stream）。
+- [x] [2026-10-31] (修复) [评审#4] F2 比对旁路收口：:engine 侧 loadedModelId 为空时 modelId 失配检查整体跳过（静默放行）——按「身份锚点缺失应留痕或拒绝」精神收口（实际难达：modelId 空值已退化目录名）；随真机轮评估 (src: ai) (src: ai)
+> 已收口（2026-11-03 零星小改轮，留痕口径）：EngineService startGenerate 比对块补 [DEGRADE] 留痕——loadedModelId 空（dirName 退化存量合法形态）跳过比对时打观察面日志，禁静默；硬拒会打死既有会话故拒绝不可行。:app:compileDebugKotlin 绿。
 - [x] [2026-10-31] (优化) [F5 余项·D2] 序数编译期门禁评估：双端锚定钉（test/llm/on_device_engine_status_test.dart ↔ EngineStatusOrdinalTest.kt，已含 7/8/9 锚）即当前门禁；schema SSOT+双向生成脚本需走 agent-toolbox spec 登记制，工具化收益待第三次加态时再评（届时触发） (src: ai) (src: ai)
 > 双端锚定钉已就位（devlog 313：EngineStatusOrdinalTest exit 0，序数 9 unknownNeedReconcile 同轮锚定）。schema SSOT+双向生成脚本按原 todo 递延（待第三次加态触发），非阻塞。
 - [x] [2026-10-31] (测试) [F6] 混沌矩阵真机回归（kill×rebind×evict×reload×资产替换）扩矩阵：新增 modelId 失配重装用例 + 装载停滞 LOAD_STALLED 用例；验收=§6 验收 1 全组合零漂移；前置=F2/F4 (src: 用户) (src: ai)
@@ -83,10 +95,10 @@ epic: on-device
 ### P1（机制缺口 / 特定场景功能降级）
 
 - [x] [2026-10-30] (风险) (重:重) **P1-4 路由无前台/后台维度 + `paused→release` 主动击杀在途**（已修：路线 B 一次收口两半 —— ① FGS 改「绑定即挂」使后台任务期间 :engine 受前台提权保护，免 OEM 冻结 / mem-pressure 回收；② 退后台钩子移除 release，权重回收完全交 `:engine` 侧 TTL（空闲 5min）+ 内存预算护栏）：`HybridCloudEngine.send` 判据仅 offline/降级冷却/偏好/工具面，不含前后台；`main.dart` paused/hidden/detached 无条件 `release()`（不看在途、不看 FGS）→ 交互式生成中息屏必被 abort 空产出；后台任务×端侧组合无 FGS 且被 trim 击杀；FGS 预挂与 paused→release 语义相反无仲裁 | 红线：有在途生成或 FGS 挂着时禁止 release（走 `releaseIfIdle`）；与 P0-1/P0-3 成组收口 | 落点 `lib/coordinator/hybrid_cloud_engine.dart` + `lib/main.dart` + `lib/llm/on_device_engine_aidl.dart` (src: ai, 机制审计)
-- [ ] [2026-11-01] (风险) (重:中) **P1-5 端侧路径输入零预算（设计已定稿 2026-11-01，机制落地挂 draft）**：`_deviceSend` 把 system + 全部历史（含 tool result）压平单发，输入侧无 token 预检；`n_ctx` 编译期固定，超窗 SDK 行为未实证 | **设计定稿（2026-11-01）**：① 预算来源 = 资产面声明（asset-meta 携带 n_ctx），运行时无读取通道（G1 已关闭不可用），未知时保守默认并 UNCERTAIN 标注；② 超窗处置 = **拒绝优先**——预检超窗显式报错切云（产出优先），**不在设备路径发明第二套截断**，阶梯截断（高低水位+端侧摘要归档）是上下文治理唯一机制，归 context-stepped-pruning.md draft 落地时统一接入；③ 预检位置 = `_deviceSend` 入口、`buildOnDeviceChatPromptJson` 之后 `generateStream` 之前；④ 超窗 SDK 行为（尾部截断 vs 报错）UNCERTAIN，观测钩子与 P2-12 同批真机执行 | 红线：机制未定稿前禁写截断代码；拒绝路径须复用「可自愈 vs 终态」口径 | 落点 `lib/coordinator/hybrid_cloud_engine.dart` (src: ai, 机制审计)
+- [x] [2026-11-01] (风险) (重:中) **P1-5 端侧路径输入零预算（已落地 2026-11-03）**：`_deviceSend` 把 system + 全部历史（含 tool result）压平单发，输入侧无 token 预检；`n_ctx` 编译期固定，超窗 SDK 行为未实证 | **设计定稿（2026-11-01）**：① 预算来源 = 资产面声明（asset-meta 携带 n_ctx），运行时无读取通道（G1 已关闭不可用），未知时保守默认并 UNCERTAIN 标注；② 超窗处置 = **拒绝优先**——预检超窗显式报错切云（产出优先），**不在设备路径发明第二套截断**，阶梯截断（高低水位+端侧摘要归档）是上下文治理唯一机制，归 context-stepped-pruning.md draft 落地时统一接入；③ 预检位置 = `_deviceSend` 入口、`buildOnDeviceChatPromptJson` 之后 `generateStream` 之前；④ 超窗 SDK 行为（尾部截断 vs 报错）UNCERTAIN，观测钩子与 P2-12 同批真机执行 | 红线：机制未定稿前禁写截断代码；拒绝路径须复用「可自愈 vs 终态」口径 | 落点 `lib/coordinator/hybrid_cloud_engine.dart` (src: ai, 机制审计)
 - [x] [2026-10-30] (功能) (重:重) **P1-6 端侧流式在 hybrid 层被截成单发聚合**（已修 2026-11-01：Expand-Contract 三步单轮收口——`OnDeviceLlmEngine` 契约 `Future<String?> generate` → `Stream<String> generateStream`（零产出=无事件 close、失败经流错误穿透、取消=退订联动 cancelActive），AIDL 适配器真流式覆写（双层控制器），hybrid `_deviceSend` 逐 delta 投递 `CloudTextDelta`，零产出归因/切云/取消链路全保留；archive 探针页与测试桩同步迁移，旧 generate 物理删除；flutter analyze 0 issue + 1468 测试全绿）：契约 await 收满全文才一次投递 → 512 token×~60ms≈30s 无出字 | 红线：纯装配层缺口，引擎侧零改动（成立：AIDL 引擎 `Stream<EngineChunk>` 原样消费） | 落点 `lib/llm/llm.dart` + `lib/llm/on_device_engine_adapter.dart` + `lib/coordinator/hybrid_cloud_engine.dart` (src: ai, 机制审计)
 - [x] [2026-10-30] (风险) (重:中) **P1-7 `waitReady` 3s 超时判终态失败**（已修 2026-11-01：装载(:217)与生成(:548)两处硬编码 3s → 共享常量 `kWaitReadyTimeout=10s`（与 binding 默认窗口对齐防双源，覆盖冷启动实测 3~8s）；超时口径本就 retryable/交会话闸门走装载链或切云非终态，注释钉死；test/llm 192 项全绿，无测试钉 3s）：弱机冷启动 3~8s 常态 > 3s → 新装首请求「未就绪」空转 | 红线：可自愈等待与终态失败分口径（守住了：超时归 retryable） | 落点 `lib/llm/on_device_engine_aidl.dart` (src: ai, 机制审计)
-- [ ] [2026-10-30] (风险) (重:中) **P1-8 停用词/采样参数三层「存在但失效」**：AIDL 注释已诚实标注（temperature/topP 过渡期取资产默认、stopTokenIds 归 S3），但 Dart `GenerationConfig` 注释不标失效；`EngineService.startGenerate` 只读 maxTokens/foreground；`GenieSession.query` 不传采样参数；detokenizer 纯字节重组无 stop-sequence 事后扫描补偿 | 红线：单发提取语义最依赖终止边界，失效=过度生成（NPU 空烧 + 输出边界漂移 + 提取解析可能破）；契约「看起来生效」与实际背离须在三层各标一行 | 落点 `IOnDeviceEngineService.aidl` + `EngineService.kt` + `GenieSession.kt` + `lib/llm/on_device_engine.dart` (src: ai, 机制审计)
+- [x] [2026-10-30] (风险) (重:中) **P1-8 停用词/采样参数三层「存在但失效」**（已消化，盘点收口 2026-11-03 零星小改轮）：AIDL 注释已诚实标注（temperature/topP 过渡期取资产默认、stopTokenIds 归 S3），但 Dart `GenerationConfig` 注释不标失效；`EngineService.startGenerate` 只读 maxTokens/foreground；`GenieSession.query` 不传采样参数；detokenizer 纯字节重组无 stop-sequence 事后扫描补偿 | 红线：单发提取语义最依赖终止边界，失效=过度生成（NPU 空烧 + 输出边界漂移 + 提取解析可能破）；契约「看起来生效」与实际背离须在三层各标一行 | 落点 `IOnDeviceEngineService.aidl` + `EngineService.kt` + `GenieSession.kt` + `lib/llm/on_device_engine.dart` (src: ai, 机制审计)
 
 ### P2（机制脆弱 / 文档-实现不一致）
 
@@ -126,7 +138,8 @@ epic: on-device
 - [ ] [2026-11-01] (功能) (重:中) ~~QAIRT 运行库单源化~~ **[SSOT 修正 2026-11-02 → 三下载点独立]**：GenieX 增配（GenieXRuntime 4 件套）与 LiteRT-LM QNN dispatch 共享一份 `libQnnHtp*` runtime 依赖，统一 `nativeLibraryDir`/`setQairtRuntimePath` 指向，防双份捆绑符号冲突 (src: 用户拍板 2026-11-01)
 > **[SSOT 修正 2026-11-02 用户拍板：推翻单源化]** 基座同源（两栈都吃 QNN/HTP v 系列）但**实例不共用**——两栈各自的 split/AAR 与模型版本自洽配对，混用 QNN 版本会产生跨栈版本耦合（一栈升级打碎另一栈 context 二进制），故障归因无法夹逼。运行库分发终态 = **三个下载点独立、功能不降级**：① GenieX 增配 AAR（`hexagonArch()` 键，现状不动）② LiteRT-LM NPU split（`split_qualcomm_npu_runtime_v{arch}`，**解绑 v79 硬编码**——`NPU_VARIANT` 常量退役、assets 内置降级为首发机快捷路径、键复用 `GenieXRuntime.hexagonArch()` 单源勿再写 SoC 映射）③ 联发科 NeuroPilot（留位）。**另出 v79 合集包**（首发机 Ace 6 一键路径：GenieX v79 + LiteRT-LM NPU v79 单工件）。
 - [ ] [2026-11-02] (功能) (重:中) **运行库增配通道泛化 + v79 合集包**：把 `GenieXInstaller` 下载骨架（双镜像 + sha256 pin + arch 抽取 + 旧版清理 + `recoverIfDriverChanged` 驱动指纹失效脏删重探）泛化为按「库族 × hexagonArch()」键控的通用增配通道，承载 GenieX AAR 与 LiteRT-LM NPU split 两个注册工件；v79 合集包 = 通道上的预组合工件（首发机零拼装）；`LiteRtLmRunner.NPU_VARIANT` 解绑（arch 键注入，非 v79 静默回落 GPU 的无感知降级改为显式提示）。与 DispatchProfile 准入探针轮合并施工（共享注册表结构与 arch 键） (src: 用户拍板 2026-11-02)
-- [ ] [2026-11-01] (功能) (重:重) (层:真机) **LiteRT-LM GPU/NPU 基准探针（D-4 能力对照）**：同口径真机基准（TTFT/TPOT/内存/发热），对照 llama_cpp+GPU 39 tok/s 基线；**llama.cpp 永久保留不删除**（2026-11-01 用户修订），基准数据仅归档作能力对照，不触发分支删除 (src: 用户拍板 2026-11-01)
+- [x] [2026-11-01] (功能) (重:重) (层:真机) **LiteRT-LM GPU/NPU 基准探针（D-4 能力对照）**：同口径真机基准（TTFT/TPOT/内存/发热），对照 llama_cpp+GPU 39 tok/s 基线；**llama.cpp 永久保留不删除**（2026-11-01 用户修订），基准数据仅归档作能力对照，不触发分支删除 (src: 用户拍板 2026-11-01)
+> 已收口（2026-11-03 真机实测，Ace 6，数据归档 devlog 同日）：bench 双段改造（注册表装载 + backendHint GPU 段 + ctx 感知 padding + messages JSON 契约修复）后三档对照齐——① NPU 档（sm8750 专用 bundle）TTFT 102~142ms / TPOT 2.6~3.9ms ≈ 259~378 tok/s（6.6~9.7× 基线）② GPU 档（通用 bundle 强制 gpu）TTFT 284~572ms / TPOT 9.1~12.2ms ≈ 82~110 tok/s（2.1~2.8×）③ generic 档（通用 bundle auto，TF_LITE_AUX 缺失非 NPU 加速）TTFT 3337~7536ms ≈ 53~64 tok/s（陷阱档，TTFT 恶化 6~13 倍）。内存 :engine PSS 854MB（GPU bundle 驻留）/ 热 GPU ~52°C 良性。附带真发现：sm8750 NPU 专用 bundle 无 GPU 张量（backendHint gpu 必失败）——通用 litertlm bundle 应路由 GPU 档，观测后端画像天然覆盖无需新机制；陷阱档探针排除验证为可选后续。
 - [x] [2026-11-01] (功能) (重:重) **首发节奏关闸（llama.cpp 先不放出，从 LiteRT-LM 起步）**：llama.cpp 通路代码保留但用户面不暴露——GGUF 导入入口、分发推荐、设置面关闸（feature flag/编译保留，代码与已实证能力不删）；首发资产路线 = 仅 `.litertlm` 族（LiteRT-LM 栈）；重评触发 = LiteRT-LM 首发稳定 + GGUF 资产链就绪，届时新 ADR 立项放开 (src: 用户拍板 2026-11-01)
 > 已落地（devlog 同日）：编译期开关 `kOnDeviceLlamaCppEnabled`（`ON_DEVICE_LLAMACPP` 默认 false）+ 三闸（导入 UI 拒收 GGUF 直选 / `_select` 拒选 llama_cpp 模型 / `enable()` 装载闸兜底非 retryable 终态报错）；analyze 0 issue + test/llm 200 全绿。
 - [x] [2026-11-01] (功能) (重:中) **资产路由 backend 维度（D-1 落地）**：`asset-meta`/分发推荐层加资产族（gguf/litertlm）→ 栈映射；`.litertlm` 按 SoC 分发（官方 NPU 目录现仅 Gemma3-1B，SM8550/8650/8750 + MT6989/6991，ctx 1280）；**首发仅接 `.litertlm` 分支**（GGUF 分支在码未启用） (src: 用户拍板 2026-11-01)
@@ -138,13 +151,14 @@ epic: on-device
 
 ## 待裁决（需产品/架构拍板优先级）
 
-- [ ] A1 端侧模型管理链复活拍板（archive/local_model 已归档零接线，需翻转裁决）
-- [ ] A2 G6 网关独立进程化（防端侧模型 OOM 拖垮 PC 远程网关；thirdconnect §9.5/§10.5）
-- [ ] A3 iOS 端侧引擎适配（MLX/Core ML 适配位；双端策略 §133-145，前置 macOS/Apple 账号）
-- [ ] B1 端侧摘要器 `$ref` 注水真机实证（m3 头注 / host-gateway §3.5）
-- [ ] C1 端侧 PII 模型层（非结构化 PII；架构 §219 T7+）
-- [ ] C2 多模态 PII 检测模型（FC2，触发=M3+ 多模态接入）
-- [ ] D1 移动端生命周期与重连韧性钩子（host-gateway §10.1）
+- [x] [2026-11-03] (风险) (重:中) **DispatchProfile 陷阱档处置（#4 验证产出，2026-11-03 用户拍板=C+排队）**：通用 litertlm bundle 的 generic compiler 路径被画像记为 `GPU healthy`（票据 runtime 无 npu 标记，backendKey 不可分），探针无 TTFT 阈值，业务路径可走进 TTFT 3~7s 陷阱档；运行时记账只抓崩溃/零产出，慢而活着永不排除。**裁决=C 接受现状登记已知限制**（首发资产=NPU 专用 bundle，通用 bundle 非首发面）+ 真闭环修复（B：Runner 精细 runtime 三态 + 业务装载按画像选后端 + ai-dev-spec 契约同轮）并入「原语对外导出/装载后端选择权」立项批次（与评审#6 改码触发器同批） (src: ai, D-4 后续验证)
+- [ ] A1 端侧模型管理链复活拍板（archive/local_model 已归档零接线，需翻转裁决）——**现在不做（2026-11-03 盘点）**：现「导入制 + 资源中心」已覆盖首发全部场景，下载式分发与导入制双轨徒增维护面；触发 = 用户规模上来需要免 SAF 的在线 OTA 分发
+- [ ] A2 G6 网关独立进程化（防端侧模型 OOM 拖垮 PC 远程网关；thirdconnect §9.5/§10.5）——**现在不做（2026-11-03 盘点）**：OOM 连坐风险已多轮降级（权重走 mmap/ION 不入 PSS、TTL+内存护栏+FGS 提权防线在位）；触发 = 真机实测出现网关连带死亡
+- [ ] A3 iOS 端侧引擎适配（MLX/Core ML 适配位；双端策略 §133-145，前置 macOS/Apple 账号）——**现在不做（2026-11-03 盘点）**：硬前置缺位（无 macOS/Apple 开发者账号）且 Android 首发未收官；纯留位，不排期
+- [ ] B1 端侧摘要器 `$ref` 注水真机实证（m3 头注 / host-gateway §3.5）——**现在不单独立项（2026-11-03 盘点）**：机制码面在位、纯验证性质——随下次真机轮顺带实证，零开发成本
+- [ ] C1 端侧 PII 模型层（非结构化 PII；架构 §219 T7+）——**现在不做（2026-11-03 盘点）**：小模型遮蔽质量不可靠（误拦高频=宁拦不放语义放大伤害），且无真实用户案例驱动；触发 = 真实受损案例或产品重定位
+- [ ] C2 多模态 PII 检测模型（FC2，触发=M3+ 多模态接入）——**现在不做（2026-11-03 盘点）**：触发条件本身未到（goodhub 未接多模态）；等 M3+ 多模态接入再立项
+- [x] D1 移动端生命周期与重连韧性钩子（**已落地 2026-11-03**，host-gateway §10.1）：main.dart 生命周期沿 + ConnectionHealth.pauseAll/resumeAll（后台摘心跳定时器 D16 电量纪律 / resumed 立即探活压 SSE 假死窗口到 0，offline→reconnect 既有状态机承接）；「unreachable 降级仅 Public」不建显式机制（breaker 收敛 isError 已覆盖语义）；测试钉 3 例 + 文档回填 G8/§10.1；analyze 0 issue + health 套件 9 全绿
 
 ## 已锁定（机制已落地，仅跟踪）
 
@@ -163,4 +177,5 @@ epic: on-device
 - [ ] (演进参考: IRIDIS 对比) Dart 侧熔断器演进 armed/disarm + exit-reason 状态机：装载前写 armed 标记，重启时 `getHistoricalProcessExitReasons`（REASON_CRASH_NATIVE/CRASH/SIGNALED/ANR）判定真崩溃才记坏，精确替代 onServiceDisconnected 启发式区分「真崩溃 vs LMK 处决」（对照 IRIDIS BackendCrashMemory，2026-11-02）
 - [ ] (观测性) 熔断 trip / 资产卸载的 reason 随下次动作一起打日志（装载 log 带上次 trip 原因）——对照 IRIDIS「卸载 reason 随下次 load 打 logcat」实践（2026-11-02）
 - [ ] (已知限制: 用户拍板 2026-11-02 接受) Gemma3-1B-it-q4-ekv1280（LiteRT-LM 栈，1280 ctx）长指令场景（~2000 字符 prompt = 长 system 指令 + 提问）复读环严重：真机受控实验首问 7 字符即环、第二轮 523 字符环（均被 RepetitionGuard 截停，无误伤），无价值产出；定谳 = 模型能力边界（Q4-1B + 长指令），非架构 bug/非上下文污染/非云端路径；复评触发 = 用户换模型族（如 Qwen3.5-2B GenieX 栈）或产品重定位端侧质量要求；采样参数未调（temp 0.7/topP 0.9 为 Dart 默认）
-- [ ] (观测性: 2026-11-02 真机对账) 复读环 abort 路径 stopMatcher pending 尾巴未 flush（EOS bytesIn=699 vs charsOut=521，~78 字节差）——核 stop-sequence 路径是否同语义（abort 后不再放出）还是缺陷；结论二选一：补 flush 或注释说明有意设计
+- [x] (观测性: 2026-11-02 真机对账) 复读环 abort 路径 stopMatcher pending 尾巴未 flush（EOS bytesIn=699 vs charsOut=521，~78 字节差）——核 stop-sequence 路径是否同语义（abort 后不再放出）还是缺陷；结论二选一：补 flush 或注释说明有意设计
+> 已收口（2026-11-03）：判定=有意设计非缺陷——abort 滞留尾巴=跨帧防切断缓冲+复读环/抢占残留，Completed/onDone 才终态冲刷，abort 放出反而交付取消后残余；~78 字节差主体是 UTF-8 多字节展开。处置=GenieSession Token 分支 abort 早退处补语义注释（LiteRtLmRunner:386 已有），:app:compileDebugKotlin 绿。

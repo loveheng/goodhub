@@ -14,8 +14,11 @@ library;
 
 import 'package:flutter/foundation.dart';
 
+import 'cloud/cloud_llm.dart';
+import 'on_device_chat_prompt.dart';
 import 'on_device_engine.dart';
 import 'on_device_engine_aidl.dart';
+import 'on_device_model_catalog.dart';
 
 /// 吞吐测量门（启动引导 ready 后自动跑一轮）。
 ///
@@ -36,8 +39,18 @@ const bool kOnDeviceBenchOnReady =
 const String kOnDeviceBenchModelDir =
     String.fromEnvironment('ON_DEVICE_BENCH_MODEL_DIR');
 
+/// D-4 双段对照（2026-11-03）：true = NPU 段后追加 `backendHint:'gpu'` 强制
+/// GPU 段（backendHint 为探针面专用通道，bench 属诊断面同规则；:engine 禁
+/// 同进程重载——段间经生产同款 disable→enable 重载链，进程冷启动自愈）。
+/// false = 仅单段（Runner 自裁），存量行为。
+const bool kOnDeviceBenchGpuPass =
+    bool.fromEnvironment('ON_DEVICE_BENCH_GPU_PASS', defaultValue: true);
+
 class OnDeviceBench {
   OnDeviceBench._();
+
+  /// 当前测量模型的上下文窗口（prompt 拼装预算裁剪用；explicit 模式 = null）。
+  static int? _caseContextTokens;
 
   static const int _maxTokens = 128;
   static const int _paddingCharsShort = 380; // ≈256 tok
@@ -47,21 +60,80 @@ class OnDeviceBench {
       '以下是与任务无关的背景资料，用于对齐预填充长度，请忽略其内容。' *
       ((chars / 30).ceil());
 
-  /// 跑一轮两场景测量；结果经 debugPrint 结构化输出（logcat 留痕）。
-  ///
-  /// case=short-repeat：同 session 内**逐字重发** short 场景 prompt——Genie
-  /// 前缀复用（GenieX 拍板红利③，NPU 稿 §2.4）生效时第二轮 Prefill 命中
-  /// KV 缓存，TTFT 应显著低于首轮；对照差值即前缀复用收益观测（S2-3 收口
-  /// 时的遗留观测项）。
+  /// D-4 双段测量：pass1 = Runner 自裁（NPU 优先）→ disable → pass2 =
+  /// backendHint 'gpu' 强制 GPU 档。结果经 debugPrint 结构化输出（logcat
+  /// 留痕，tok/s 直接对照 llama_cpp+GPU ~39 tok/s 归档基线）；内存/发热
+  /// 由 adb 侧外部采集（dumpsys），不进本测量。
   static Future<void> run() async {
+    debugPrint('[on-device-bench] baseline: llama_cpp+GPU ~39 tok/s (archived)');
     if (kOnDeviceBenchModelDir.isNotEmpty) {
       await _loadExplicitModelDir(kOnDeviceBenchModelDir);
+      await _runCases('explicit', null);
+      return;
     }
+    final model = await OnDeviceModelSelection.read();
+    if (model == null) {
+      debugPrint('[DEGRADE] on-device-bench: no registered model, skip');
+      return;
+    }
+    debugPrint('[on-device-bench] model=${model.dirName} '
+        'ctx=${model.contextTokens ?? '?'}');
+    _caseContextTokens = model.contextTokens;
+    if (await _enableModel(model, null, 'pass1')) {
+      await _runCases('pass=NPU', model.contextTokens);
+    }
+    if (!kOnDeviceBenchGpuPass) return;
+    await sharedOnDeviceEngine.disable();
+    if (await _enableModel(model, 'gpu', 'pass2')) {
+      await _runCases('pass=GPU', model.contextTokens);
+    }
+  }
+
+  /// 装载 [model]（backendHint：null = Runner 自裁 / 'gpu' = 强制 GPU 档）
+  /// 并轮询就绪；enable 有界等待返回「装载中」时（含段间冷启动重载窗口）
+  /// 继续票据面轮询，150s 覆盖冷启动重载。
+  static Future<bool> _enableModel(
+      OnDeviceModelOption model, String? backendHint, String tag) async {
+    try {
+      final st = await sharedOnDeviceEngine
+          .enable(model: model, backendHint: backendHint);
+      debugPrint('[on-device-bench] $tag enable(${backendHint ?? 'auto'}) '
+          '-> ${st.name}');
+      if (st == EngineStatus.unsupportedDevice) return false;
+    } on OnDeviceLoadException catch (e) {
+      debugPrint('[on-device-bench] $tag enable FAILED: ${e.reason} '
+          '(continue polling; load chain retries in background)');
+    }
+    for (var i = 0; i < 150; i++) {
+      final s = await sharedOnDeviceEngine.authoritativeStatus();
+      if (s == EngineStatus.ready) {
+        debugPrint('[on-device-bench] $tag ready after ~${i}s');
+        return true;
+      }
+      if (s == EngineStatus.unsupportedDevice ||
+          s == EngineStatus.assetMissing) {
+        debugPrint('[on-device-bench] $tag terminal: ${s?.name}');
+        return false;
+      }
+      await Future.delayed(const Duration(seconds: 1));
+    }
+    debugPrint('[DEGRADE] on-device-bench: $tag not ready after 150s');
+    return false;
+  }
+
+  /// 两场景测量（ctx 感知：[contextTokens] 在场时长场景 padding 收窄到
+  /// 窗口内——输出 512 + 系统开销 ~100 预留，中文 ≈1.3 字/token 折算）。
+  static Future<void> _runCases(String tag, int? contextTokens) async {
     const shortPrompt = '请用一句话介绍骁龙 8 Elite 的 NPU。';
     final shortPad = _pad(_paddingCharsShort);
-    await _case('short~256ctx', shortPrompt, shortPad);
-    await _case('long~2Kctx', '请用一句话总结上文背景资料的用途。', _pad(_paddingCharsLong));
-    await _case('short-repeat', shortPrompt, shortPad);
+    final longChars = contextTokens == null
+        ? _paddingCharsLong
+        : (((contextTokens - 612) * 1.3).round()).clamp(200, _paddingCharsLong);
+    final longPad = _pad(longChars);
+    await _case(tag, 'short~256ctx', shortPrompt, shortPad);
+    await _case(
+        tag, 'long~${longChars ~/ 2}ctx', '请用一句话总结上文背景资料的用途。', longPad);
+    await _case(tag, 'short-repeat', shortPrompt, shortPad);
   }
 
   /// 显式装载 [dir] 并轮询就绪（[kOnDeviceBenchModelDir] 诊断开关用）。
@@ -99,8 +171,14 @@ class OnDeviceBench {
     debugPrint('[DEGRADE] on-device-bench: model not ready after 90s');
   }
 
-  static Future<void> _case(String name, String question, String padding) async {
-    final prompt = '$padding\n\n$question';
+  static Future<void> _case(
+      String tag, String name, String question, String padding) async {
+    // LiteRtLmRunner 契约 = messages JSON（生产链同构；真机实证 2026-11-03：
+    // 裸字符串 prompt 会被 Runner 以 invalid prompt shape 拒绝 status=-3）。
+    final prompt = buildOnDeviceChatPromptJson(
+      [UserMessage('$padding\n\n$question')],
+      contextTokens: _caseContextTokens,
+    );
     final sw = Stopwatch()..start();
     Duration? ttft;
     var chars = 0;
@@ -119,18 +197,21 @@ class OnDeviceBench {
       // DRAIN 诊断档：:engine 侧 sink 不投递，本侧收不到任何块（ttft 为 null）
       // ——不是失败，:engine 的 bench 行仍带 tpot/numGenerated，取数在 logcat。
       if (ttft == null) {
-        debugPrint('[on-device-bench] case=$name DRAIN: no chunk delivered '
-            '(see EngineService bench line for tpot)');
+        debugPrint('[on-device-bench] $tag case=$name DRAIN: no chunk '
+            'delivered (see EngineService bench line for tpot)');
         return;
       }
       final decodeSpan = total - ttft;
       final tpotMs =
           chunks > 1 ? decodeSpan.inMicroseconds / 1000 / (chunks - 1) : 0.0;
-      debugPrint('[on-device-bench] case=$name ttft=${ttft.inMilliseconds}ms '
+      final tokPerSec =
+          tpotMs > 0 ? (1000 / tpotMs).toStringAsFixed(1) : '?';
+      debugPrint('[on-device-bench] $tag case=$name ttft=${ttft.inMilliseconds}ms '
           'total=${total.inMilliseconds}ms decodeSpan=${decodeSpan.inMilliseconds}ms '
-          'chunks=$chunks chars=$chars tpot~${tpotMs.toStringAsFixed(1)}ms/chunk');
+          'chunks=$chunks chars=$chars tpot~${tpotMs.toStringAsFixed(1)}ms/chunk '
+          'tok/s~$tokPerSec');
     } catch (e) {
-      debugPrint('[on-device-bench] case=$name FAILED: $e');
+      debugPrint('[on-device-bench] $tag case=$name FAILED: $e');
     }
   }
 }

@@ -29,7 +29,9 @@ class ConnectionHealth {
     this.maxConsecutiveFailures = 2,
     this.ping,
     this.isAlive,
-  });
+  }) {
+    _live.add(this); // D1 生命周期注册表入册（[stop] 退册）
+  }
 
   final McpClient client;
 
@@ -65,6 +67,32 @@ class ConnectionHealth {
   Timer? _timer;
   var _failures = 0;
 
+  /// 周期心跳在跑标志（[start] 置位 / [stop] 清零）——区分「后台暂停」与
+  /// 「从未启动/已停止」：[resume] 只复活前者，不越权重启已 stop 的连接。
+  var _periodicOn = false;
+
+  /// 存活心跳注册表（D1 生命周期韧性）：构造入册、[stop] 退册——
+  /// [pauseAll]/[resumeAll] 由 App 生命周期沿调用（连接持有方分散在
+  /// gateway/chat 两处装配，逐持有方接线过重，注册表收敛）。
+  static final Set<ConnectionHealth> _live = {};
+
+  /// App 退后台：摘掉全部周期心跳定时器（D16 电量纪律——Android paused 下
+  /// Timer 不保证冻结，显式暂停替代侥幸）。状态机与 [start] 资格保留，
+  /// 恢复前台 [resumeAll] 原样续跑。
+  static void pauseAll() {
+    for (final h in List.of(_live)) {
+      h.pause();
+    }
+  }
+
+  /// App 回前台：立即探活（不等下个周期——后台冻结后首探测延迟可达一个
+  /// 完整 interval，SSE 假死感知窗口压到 0）+ 重启周期心跳。
+  static void resumeAll() {
+    for (final h in List.of(_live)) {
+      h.resume();
+    }
+  }
+
   void _emit(ConnectionState next) {
     if (next == _state) return;
     _state = next;
@@ -83,6 +111,7 @@ class ConnectionHealth {
     if (_timer != null) return;
     _tick(); // 立即首探，不等首个周期
     _timer = Timer.periodic(interval, (_) => _tick());
+    _periodicOn = true;
   }
 
   Future<void> _tick() async {
@@ -118,5 +147,24 @@ class ConnectionHealth {
     _timer?.cancel();
     _timer = null;
     _failures = 0;
+    _periodicOn = false;
+    _live.remove(this); // D1 注册表退册（连接已释放，禁再被生命周期沿触达）
+  }
+
+  /// App 退后台（D1）：仅摘定时器——状态机、失败计数与 [start] 资格保留，
+  /// [resume] 原样续跑。非轮询连接 / 未启动心跳 = no-op。
+  void pause() {
+    if (_timer == null) return;
+    _timer!.cancel();
+    _timer = null;
+  }
+
+  /// App 回前台（D1）：立即探活（SSE 假死感知窗口压到 0，不等下个周期）
+  /// + 重启周期心跳。仅复活「曾被 [start] 启动且当前处于暂停」的心跳——
+  /// 已 [stop] 释放的连接不越权重启。
+  void resume() {
+    if (!_periodicOn || _timer != null) return;
+    _tick();
+    _timer = Timer.periodic(interval, (_) => _tick());
   }
 }

@@ -488,6 +488,39 @@ class HybridCloudEngine implements CloudLlmEngine {
           historyPolicy: HistoryPolicySelection.resolve(devicePolicyId),
         );
         debugPrint('[HybridEngine] 端侧对话 prompt：promptJsonChars=${promptJson.length}');
+        // P1-5 输入零预算预检（机制审计，设计定稿 2026-11-01）：**拒绝优先**——
+        // 预检超窗显式报错切云（产出优先），设备路径禁第二套截断（阶梯截断 =
+        // 上下文治理唯一机制，归 stepped-pruning draft）。预算来源 = 资产面
+        // 声明 contextTokens（modelProfile 单源）；未标注（GenieX 系）跳过
+        // 预检——其历史字符预算机制（kOnDeviceHistoryCharBudget）在场兜底，
+        // 硬编码默认窗口会误拒正常多轮对话。
+        // UNCERTAIN: 超窗时 SDK 行为（尾部截断 vs 硬失败）未实证——GenieX 系
+        // 无预检沿用现状；litertlm 系走拒绝路径不触 SDK（观测钩子归真机批次）。
+        final ctxTokens = selected?.contextTokens;
+        if (ctxTokens != null) {
+          var contentChars = 0;
+          for (final m in request.messages) {
+            contentChars += switch (m) {
+              SystemMessage(:final content) => content.length,
+              UserMessage(:final content) => content.length,
+              AssistantMessage(:final content) => content?.length ?? 0,
+              _ => 0,
+            };
+          }
+          final outputReserve = request.maxTokens ?? 512;
+          // 字符口径 = ASCII 最坏 1 字符 1 token（与 prompt builder 预算同
+          // 口径；中文实际 ~1.3~1.5 字/token，估算只偏保守不漏拒）。+64 =
+          // JSON 序列化脚手架开销。builder 已把历史裁到 ctx-768 内（单轮
+          // 超 builder 预算的当前轮是唯一溢出源，正是本预检的目标）。
+          if (onDeviceInputOverflows(
+            contentChars: contentChars,
+            outputReserve: outputReserve,
+            windowTokens: ctxTokens,
+          )) {
+            throw OnDeviceContextOverflowException(
+                ctxTokens, contentChars + outputReserve + 64);
+          }
+        }
         // P1-6（2026-11-01）：流式契约——逐 delta 投递，消除「收满 512 token
         // 才一次投递」的 30s 无出字缺口。零产出（无事件 close）走下方归因。
         var sawOutput = false;
@@ -522,7 +555,28 @@ class HybridCloudEngine implements CloudLlmEngine {
         }
         ctrl.add(const CloudDone(finishReason: CloudFinishReason.stop));
       } catch (e) {
-        if (e is EngineDiedException) {
+        if (e is OnDeviceContextOverflowException) {
+          // P1-5 拒绝路径（设计 ②「拒绝优先」）：超窗 = 可自愈（换云端产出），
+          // 非终态失败——显式报错并切云（产出优先）；不进运行时坏后端记账
+          // （超窗是请求形状问题，非设备/后端缺陷）。
+          debugPrint('[HybridEngine] 端侧输入超窗（~${e.estimateTokens}/'
+              '${e.windowTokens} tokens）→ 拒绝并切云');
+          final c = cloud;
+          if (c == null) {
+            ctrl.addError(InferenceException(
+                '输入超出端侧模型上下文窗口（约 ${e.windowTokens} tokens）且未配置'
+                '云端兜底——请缩短当前输入，或配置云端模型后自动切换'));
+          } else {
+            try {
+              await for (final ev
+                  in _cloudSend(c, request, allowDeviceFallback: false)) {
+                ctrl.add(ev);
+              }
+            } catch (cloudError) {
+              ctrl.addError(cloudError);
+            }
+          }
+        } else if (e is EngineDiedException) {
           // DispatchProfile 第二写入方（设计稿 §7）：运行时崩溃/死亡 → 标
           // EXCLUDED，下轮查表直跳（同 #4 坏后端记忆并入画像）。
           await recordRuntimeBackendExcluded(
@@ -573,4 +627,28 @@ String engineInterruptReason(EngineDiedException e) {
   if (r.contains('busy')) return '引擎正忙（上一轮尚未让出算力）';
   if (r.contains('session') || r.contains('loading')) return '端侧会话未就绪';
   return '引擎中断';
+}
+
+/// P1-5 预检判据（纯函数，测试钉用）：内容字符数（ASCII 最坏 1 字 1 token
+/// 口径，与 prompt builder 预算同口径）+ 输出预留 + JSON 脚手架开销 64，
+/// 超窗口 = 拒绝。
+bool onDeviceInputOverflows({
+  required int contentChars,
+  required int outputReserve,
+  required int windowTokens,
+}) =>
+    contentChars + outputReserve + 64 > windowTokens;
+
+/// P1-5 端侧输入超窗拒绝（机制审计，设计定稿 2026-11-01）：预检超窗即抛，
+/// 拒绝优先——设备路径禁第二套截断，拒绝沿切云保产出。携带窗口与估算值
+/// 供日志/文案归因。
+class OnDeviceContextOverflowException implements Exception {
+  OnDeviceContextOverflowException(this.windowTokens, this.estimateTokens);
+
+  final int windowTokens;
+  final int estimateTokens;
+
+  @override
+  String toString() =>
+      '端侧输入超窗: ~$estimateTokens tokens > window $windowTokens';
 }

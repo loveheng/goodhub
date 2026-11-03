@@ -16,6 +16,7 @@ import 'llm/on_device_bench.dart';
 import 'llm/on_device_engine_aidl.dart';
 import 'llm/geniex_runtime_binding.dart';
 import 'llm/on_device_asset_manager.dart';
+import 'mcp/connection_health.dart';
 import 'llm/on_device_model_catalog.dart';
 import 'sandbox/memory_store.dart';
 import 'ui/chat_page.dart';
@@ -84,10 +85,19 @@ class _GoodHubAppState extends State<GoodHubApp> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     switch (state) {
       case AppLifecycleState.resumed:
+        // D1 生命周期韧性（host-gateway §10.1）：回前台立即探活全部远端
+        // MCP 连接（后台冻结后首探测延迟可达一个完整心跳周期，SSE 假死
+        // 感知窗口压到 0）+ 重启周期心跳；offline→reconnect 链由既有
+        // 状态机承接。
+        ConnectionHealth.resumeAll();
         _warmEngine();
       case AppLifecycleState.paused:
       case AppLifecycleState.hidden:
       case AppLifecycleState.detached:
+        // D1：退后台摘掉全部周期心跳定时器（D16 电量纪律——Android paused
+        // 下 Timer 不保证冻结，显式暂停替代侥幸）；状态机与重启资格保留，
+        // resumed 经 resumeAll 原样续跑。
+        ConnectionHealth.pauseAll();
         // **退后台不再主动释放端侧权重**（路线 B 裁决 2026-10-30）。
         //
         // 旧行为 = 无条件 `release()`（释放 `:engine` 权重内存），与「端侧必须

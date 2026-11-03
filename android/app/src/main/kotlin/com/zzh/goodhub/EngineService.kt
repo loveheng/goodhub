@@ -490,6 +490,13 @@ class EngineService : Service() {
             // F2（2026-10-31 ADR）：资产身份（I3）同入口原子比对——票据 modelId
             // ≠ 装载 modelId = 资产变更（删除/重导入/换模型）→ 专属分码驱动
             // 主进程作废镜像重装，不再靠 epoch 偶发错位兜底（§2.5 兑现的另一半）。
+            // 评审#4 收口（2026-11-03）：loadedModelId 空（modelId 退化目录名的
+            // 存量装载）时比对整体跳过——禁静默，留痕留观察面；拒绝不可行
+            // （空值是合法存量形态，硬拒会打死既有会话）。
+            if (!expectModelId.isNullOrEmpty() && loadedModelId.isEmpty()) {
+                Log.w(TAG, "[DEGRADE] F2 model anchor missing: loadedModelId " +
+                    "empty (dirName-degraded load), mismatch check skipped")
+            }
             if (!expectModelId.isNullOrEmpty() &&
                 loadedModelId.isNotEmpty() && expectModelId != loadedModelId) {
                 throw UnsupportedOperationException(

@@ -463,6 +463,10 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
             flow.collect { result ->
                 when (result) {
                     is LlmStreamResult.Token -> {
+                        // abort 后不再放出（有意设计，2026-11-03 观测项收口）：
+                        // 滞留尾巴 = 跨帧防切断缓冲（maxStop-1 字符）+ 复读环/
+                        // 抢占残留——Completed 分支才 flush（见 :516 终态冲刷），
+                        // abort 放出反而交付取消后的残余内容。
                         if (abortRequested) return@collect
                         // stopWords 已随 qairt 兼容性移除（见 GenerationConfig
                         // 注），EOS 停止由管线内置；停用词残留在 sanitizer 输出

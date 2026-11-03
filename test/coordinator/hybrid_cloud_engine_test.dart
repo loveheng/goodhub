@@ -803,5 +803,27 @@ void main() {
         ),
       );
     });
+
+    test('P1-5 预检判据钉：窗口内不拒、单轮超窗拒绝（字符口径）', () {
+      // litertlm 窗口 1280：builder 常规裁剪后内容 ~512 字符 + 输出 512 +
+      // 脚手架 64 = 1088 ≤ 1280 → 不拒（不误伤正常多轮）。
+      expect(
+        onDeviceInputOverflows(
+            contentChars: 512, outputReserve: 512, windowTokens: 1280),
+        isFalse,
+      );
+      // 单轮超 builder 预算（唯一溢出源）：内容 1200 + 512 + 64 > 1280 → 拒。
+      expect(
+        onDeviceInputOverflows(
+            contentChars: 1200, outputReserve: 512, windowTokens: 1280),
+        isTrue,
+      );
+      // 输出预留挤占窗口：内容 700 + maxTokens 1024 + 64 > 1280 → 拒。
+      expect(
+        onDeviceInputOverflows(
+            contentChars: 700, outputReserve: 1024, windowTokens: 1280),
+        isTrue,
+      );
+    });
   });
 }

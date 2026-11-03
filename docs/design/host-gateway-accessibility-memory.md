@@ -227,7 +227,7 @@ Host 由两个正交平面构成（代码已隐含但未显式化）：
 - **G5 工具 Schema 键序归一（P0 缓存杀手）**：`CloudToolSchema` 缺规范 `toJson`，且 MCP 返回的 `parametersSchema` 键序不可控；须在 Dart 层实现递归字典序排序，否则前缀缓存命中率为 0。详见 §8.2 改动点 3。
 - **G6 FSM 生命周期与取消回滚（P0 数据安全）**：用户 Stop / 网络中断时 `pendingBuffer` / `jsonBuffer` 残留致下一轮脏解析；须在 `_aborted` 挂接 `fsm.discard()`。详见 §9.2。
 - **G7 输入端特异性标签转义（P1 防注入）**：用户输入中 `<workspace_update` 转义为 `&lt;workspace_update`；输出统一升级为带静态版本号 `<workspace_update_v1>`。详见 §9.3。
-- **G8 移动端前后台生命周期探针（P1 稳定性）**：缺 `WidgetsBindingObserver` 钩子；App `resumed` 须主动 ping 探针 + 失效静默重连防 SSE 假死。详见 §10.1。
+- **G8 移动端前后台生命周期探针（P1 稳定性）**：已落地（2026-11-03 D1）——`main.dart` 生命周期沿 + `ConnectionHealth.pauseAll/resumeAll`（后台摘心跳定时器 / resumed 立即探活压 SSE 假死窗口到 0，offline→reconnect 由既有状态机承接）。详见 §10.1。
 
 ### 3.6 长对话 Token 控制（留状态快照，非日志）
 
@@ -510,10 +510,8 @@ UI 须给用户「确定感与纠错权」：右侧栏 / 抽屉展示已沉淀�
 
 ### 10.1 移动端生命周期与重连韧性（Lifecycle & Reconnect）
 
-- **现状缺口**：全仓无任何 `AppLifecycleState` / `WidgetsBindingObserver` 钩子（`chat_page.dart` 仅用 `WidgetsBinding.instance` 做滚屏回调）；网关层无 ping-on-resume、半开 SSE 探测、unreachable 降级。
-- **本该有的机制**：
-  1. **生命周期钩子**：监听 `WidgetsBindingObserver`；App 压入后台（`paused` / `inactive`）优雅暂停心跳；恢复前台（`resumed`）时网关主动发轻量 `ping`，失败在 ~200ms 内静默重连。
-  2. **优雅降级与熔断**：活跃私有 MCP 不可达 → 标记 `unreachable`，向用户返回可重试提示，并暂时降级为仅运行 Public 工具，不卡死主对话。
+- **现状（2026-11-03 D1 落地后）**：生命周期沿 = `main.dart`（resumed → `ConnectionHealth.resumeAll` 立即探活 + 端侧预热；paused/hidden/detached → `ConnectionHealth.pauseAll` 摘心跳定时器，端侧权重回收仍交 `:engine` TTL+护栏）；远端 HTTP 连接心跳/状态机/自动重连 = `ConnectionHealth` + `McpConnection`（offline→重握手+订阅重放，D18 断连处置）；Binder 连接靠 `DeathRecipient` 事件感知（D16 不轮询）。
+- **落地口径（2026-11-03）**：§10.1 第 1/2 条按下表机制落地；「unreachable 降级仅 Public 工具」**不建显式机制**——不可达工具经 `ToolRouter` 熔断（`_executeWithBreaker`）收敛为 isError ToolResult，主对话不卡死，Public 工具天然可用，语义已覆盖。
 - **归属**：网关连接管理层（与 §9.1 投影脱敏、§7 缓存同属基础设施韧性），当前阶段优先补。
 
 ### 10.2 并行 Tool 编排与聚合容错（Parallel Orchestration）
