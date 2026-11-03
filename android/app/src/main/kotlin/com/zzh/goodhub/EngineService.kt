@@ -95,7 +95,8 @@ class EngineService : Service() {
     /// M2 接资产面指纹）。装载受理即回填，驱逐不空（票据 status 已表达失效）。
     private var loadedModelId: String = ""
 
-    /// S3-3 单执行槽（§6.6）：策略 B 驳回 + 前台抢占的原子判定面。
+    /// S3-3 单执行槽（§6.6）：策略 B 驳回 + 前台协作式打断的原子判定面
+    /// （打断术语 S14e 订正：协作式非抢占式，窗口耗尽 = 打断未生效）。
     private val slot = com.zzh.goodhub.engine.EngineSlot()
 
     /// S3-2 FGS 挂载（**路线 B 裁决 2026-10-30**；同锚见 [EngineServiceBridge]）。
@@ -513,10 +514,12 @@ class EngineService : Service() {
                     "SESSION_EPOCH_MISMATCH: session not ready (loadModel first; " +
                         "loadError=${session.loadError})")
             }
-            // S3-3 单执行槽 + 策略 B（§6.6）：epoch 闸之后原子抢占判定——后台忙
-            // 即驳（切云，不排队）；前台忙则 abort 在途（§6.3 token 粒度中断）
-            // + 有界等待让槽（绝不驳回用户；前台语义由主进程 Bridge 依
-            // Activity 前台态注入）。
+            // S3-3 单执行槽 + 策略 B（§6.6）：epoch 闸之后原子授予判定——后台忙
+            // 即驳（切云，不排队）；前台忙则发起**协作式打断**（§6.3 token 粒度
+            // 中断）+ 有界等待让槽（前台语义由主进程 Bridge 依 Activity 前台态
+            // 注入）。S14e（K11）：打断是协作式不是抢占式——窗口耗尽 = 打断
+            // 未生效，不得假设算力已腾出，按策略性降级切云完成本轮，不得重启
+            // 引擎腾算力。
             val foreground = generationParams?.getBoolean("foreground", false) ?: false
             // 受理打点（诊断面，2026-10-30 真机实证「第二轮没有输出」）：
             // 「第二轮请求是否真的到达 :engine」是第一分叉点——未到达即主进程
@@ -529,11 +532,15 @@ class EngineService : Service() {
                     throw ServiceBusyException(
                         "${ServiceBusyException.MESSAGE_PREFIX}: engine busy " +
                             "(strategy B, background denied; requestId=$requestId)")
-                com.zzh.goodhub.engine.EngineSlot.AcquireResult.DENIED_TIMEOUT ->
+                com.zzh.goodhub.engine.EngineSlot.AcquireResult
+                    .DENIED_INTERRUPT_NOT_EFFECTIVE ->
                     throw ServiceBusyException(
-                        "${ServiceBusyException.MESSAGE_PREFIX}: preempt wait timeout " +
-                            "(${com.zzh.goodhub.engine.EngineSlot.DEFAULT_PREEMPT_WAIT_MS}ms), " +
-                            "routed to cloud (requestId=$requestId)")
+                        "${ServiceBusyException.MESSAGE_PREFIX}: " +
+                            "${ServiceBusyException.INTERRUPT_NOT_EFFECTIVE_MARK} " +
+                            "(协作式打断等待窗口耗尽 " +
+                            "${com.zzh.goodhub.engine.EngineSlot.DEFAULT_INTERRUPT_WAIT_MS}ms；" +
+                            "打断未生效——不得假设算力已腾出；按策略性降级切云，" +
+                            "不得重启引擎腾算力; requestId=$requestId)")
             }
             val dp = dataPlane ?: run {
                 slot.release(requestId)
@@ -710,7 +717,7 @@ class EngineService : Service() {
                     runCatching { dp.writer.writeEos() }
                     runCatching { cb?.onGenerateFinished(requestId, 1) }
                 } finally {
-                    // S3-3：槽释放（仅槽主生效；抢占方 CAS 等待即刻放行）。
+                    // S3-3：槽释放（仅槽主生效；打断方 CAS 等待即刻放行）。
                     slot.release(requestId)
                     // S3-2：**FGS 不在此卸载** —— 生成收尾 ≠ 释放权重，
                     // 撤通知会让随后 idle 窗口裸奔落入 OEM 冻结射程。仅把文案

@@ -61,8 +61,8 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
     @Volatile override var ready: Boolean = false
         private set
 
-    // S3-3 起「生成在途」判据单源化至 engine/EngineSlot（策略 B + 抢占语义），
-    // 本类不再承载 busy 位（双源易漂移）。
+    // S3-3 起「生成在途」判据单源化至 engine/EngineSlot（策略 B + 协作式打断
+    // 语义，S14e 术语订正），本类不再承载 busy 位（双源易漂移）。
 
     /// loadModel 单飞闸（[beginLoad] synchronized 置位，[doLoad] finally 清除）。
     @Volatile override var creating: Boolean = false
@@ -469,7 +469,7 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
                     is LlmStreamResult.Token -> {
                         // abort 后不再放出（有意设计，2026-11-03 观测项收口）：
                         // 滞留尾巴 = 跨帧防切断缓冲（maxStop-1 字符）+ 复读环/
-                        // 抢占残留——Completed 分支才 flush（见 :516 终态冲刷），
+                        // 协作式打断残留——Completed 分支才 flush（见 :516 终态冲刷），
                         // abort 放出反而交付取消后的残余内容。
                         if (abortRequested) return@collect
                         // stopWords 已随 qairt 兼容性移除（见 GenerationConfig
@@ -559,11 +559,11 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
      * 中断在途生成（§6.3）。
      *
      * **非阻塞 + 有界**：stopStream 走 `runBlocking` 会在调用线程同步等待 SDK
-     * 返回——调用方含 Binder 线程池（cancelGenerate）与抢占路径（startGenerate
-     * 同线程）→ SDK 一旦卡住即 Binder 线程池停摆（全部 AIDL 分派阻塞 = 全局
-     * 「无响应」，P2-13 登记面）。故：中断信号在后台线程发出，调用方**有界**
-     * 等待（≤[waitMs]）——既保证信号尽快送达（抢占让槽的前提），又不占死
-     * 调用线程。
+     * 返回——调用方含 Binder 线程池（cancelGenerate）与协作式打断路径
+     * （startGenerate 同线程）→ SDK 一旦卡住即 Binder 线程池停摆（全部 AIDL
+     * 分派阻塞 = 全局「无响应」，P2-13 登记面）。故：中断信号在后台线程发出，
+     * 调用方**有界**等待（≤[waitMs]）——既保证信号尽快送达（协作式打断让槽
+     * 的前提），又不占死调用线程。
      */
     override fun abort() {
         abortInternal(ABORT_WAIT_MS)

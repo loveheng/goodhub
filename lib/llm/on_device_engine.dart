@@ -7,7 +7,16 @@
 ///
 /// 调度纪律（§2 v2.6）：`busy` 与 `ready` 严禁任何 TTL 缓存，必须随查随废；
 /// 业务分流决策绝不依赖 `checkStatus()` 的 `busy`——直接调 `generate()`，
-/// 由 `:engine` 内部 Mutex 原子抢占，冲突抛 `ServiceBusyException` 切云。
+/// 由 `:engine` 内部单执行槽**原子授予**（CAS），冲突抛 `ServiceBusyException`
+/// 切云。
+///
+/// **打断语义（S14e，K11，术语订正）**：前台请求让槽走的是**协作式打断**，
+/// **不是抢占式抢占**——底层推理算子阻塞且不可切分，中断只在生成循环的
+/// 检查点生效；打断等待窗口有界，**等待耗尽不得假设打断已生效**（在途生成
+/// 可能仍在跑、算力仍被占），须按策略性降级处置（切云或显式上浮等待），
+/// **不得以重启引擎进程的方式强行腾出算力**（重启即冷装载 = 秒级装载 +
+/// 前台卡顿）。旧表述「抢占」易被读成「可强制抢占」，故本仓统一改称
+/// 「协作式打断」（引擎侧单执行槽的 CAS 授予另称「原子授予」，两者勿混）。
 library;
 
 import 'package:flutter/foundation.dart';
@@ -16,7 +25,7 @@ import 'on_device_model_catalog.dart';
 /// 端侧引擎结构化状态（序数 = AIDL int，禁调序）。
 enum EngineStatus {
   ready,              // 0 就绪可用
-  busy,               // 1 执行中，支持抢占 / 策略 B 驳回
+  busy,               // 1 执行中，支持协作式打断（非抢占式）/ 策略 B 驳回
   assetMissing,       // 2 资产缺失（M4 起回归终态语义：真·未导入/校验不过）
   insufficientMemory, // 3 当前可用 RAM 低于门禁
   circuitBroken,      // 4 处于熔断保护期（引擎故障，需熔断器/人工介入）
@@ -203,4 +212,13 @@ abstract interface class OnDeviceEngine {
 
   /// 主动回收 → COLD-EVICTED（§4.1）。
   Future<void> release();
+}
+
+/// 端侧供给面双接口（W1-S08）：引擎控制面（[OnDeviceEngine]）+ 显式装载面
+/// （[OnDeviceEnableCapable]，loadState/enable/disable）的合取形状——注册
+/// 中心（service_directory）以此类型对外供给，UI 层禁直连具体实现件。
+abstract interface class OnDeviceSupplyFace
+    implements OnDeviceEngine, OnDeviceEnableCapable {
+  /// 前台服务绑定态查询（FGS 防冻结护栏读数；W1-S09 收口自具体类）。
+  Future<bool> isForeground();
 }

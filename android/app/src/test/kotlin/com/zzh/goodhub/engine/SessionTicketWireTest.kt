@@ -87,9 +87,11 @@ class SessionTicketWireTest {
         val fromArgs = GenerationParams.fromArgs(emptyMap<Object, Object>(), foreground = false)
         val fromBundle = GenerationParams.fromBundle(null)
         assertEquals(fromArgs, fromBundle)
-        assertEquals(0.9, fromBundle.topP, 0.0)
-        assertEquals(512, fromBundle.maxTokens)
-        assertEquals(0.7, fromBundle.temperature, 0.0)
+        // 缺省值直引单源常量（2026-11-03 双端对齐：与 Dart GenerationConfig 同值
+        // 1.0 / 0.95）——断言写常量名，常量漂移即本钉红，禁再写裸字面量。
+        assertEquals(GenerationParams.DEFAULT_TEMPERATURE, fromBundle.temperature, 0.0)
+        assertEquals(GenerationParams.DEFAULT_TOP_P, fromBundle.topP, 0.0)
+        assertEquals(GenerationParams.DEFAULT_MAX_TOKENS, fromBundle.maxTokens)
         assertEquals(emptyList<String>(), fromBundle.stopSequences)
     }
 }

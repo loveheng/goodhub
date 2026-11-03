@@ -4,7 +4,12 @@
 ///   类单发提取）时才可走端侧；带工具请求永远走云端；
 /// - **判据触发**：云端失败/超时，当次请求立即端侧兜底（产出优先），并计入
 ///   控制器供后续请求路由；端侧也不可用时原样上抛（禁静默吞——调用方产出可观测 note）；
-/// - **抢占语义（§2）**：云端恢复不抢占进行中推理——路由只发生在请求起点，天然满足；
+/// - **打断语义（S14e，K11，术语订正）**：云端恢复不干扰进行中推理——路由只
+///   发生在请求起点，天然满足。端侧槽冲突走**协作式打断**（非抢占）：打断
+///   只在生成循环检查点生效，等待窗口耗尽**不得假设打断已生效**，按策略性
+///   降级处置（切云或显式上浮等待），**不得以重启引擎腾算力**（重启即冷装载
+///   = 秒级装载 + 前台卡顿；仓内既有认知：打断等待可能被停止流调用吃掉，
+///   见 lessons.md engine-stream 行）；
 /// - **取消**：cancel 订阅即级联取消（§10 Abort 级联①步）——云端断流取消底层请求，
 ///   端侧经 StreamController onCancel 立即调 cancelActive 终止原生生成。
 library;
@@ -15,18 +20,25 @@ import 'package:flutter/foundation.dart';
 
 import '../core/errors/cloud_llm_error.dart';
 import '../core/errors/inference_error.dart';
+import '../core/tokens.dart' show estimateTokens;
 import '../llm/cloud/cloud_llm.dart';
 import '../llm/cloud/byok_store.dart';
 import '../llm/llm.dart';
 import '../llm/on_device_admission_probe.dart';
 import '../llm/on_device_asset_manager.dart';
 import '../llm/on_device_dispatch_profile.dart';
+import '../llm/on_device_engine_binding.dart';
 import '../llm/on_device_engine.dart';
 import '../llm/on_device_model_catalog.dart';
 import '../llm/on_device_pending_load.dart';
 import '../llm/on_device_chat_prompt.dart';
 import '../llm/on_device_history_policy_store.dart';
+import 'capability_router.dart';
 import 'degradation_controller.dart';
+
+// P1-5 预检判据纯函数已迁 `capability_router.dart` 单源（S14c，禁双式
+// 漂移）；此处 re-export 保持既有 import 面与测试钉兼容。
+export 'capability_router.dart' show onDeviceInputOverflows;
 
 class HybridCloudEngine implements CloudLlmEngine {
   HybridCloudEngine({
@@ -38,6 +50,8 @@ class HybridCloudEngine implements CloudLlmEngine {
     this.deviceToolPolicy,
     this.preferOnDevice = false,
     this.isForegroundProbe,
+    this.availMemProbe,
+    this.quotaChecker,
   }) : _enableCapable = onDevice is OnDeviceEnableCapable
             ? onDevice as OnDeviceEnableCapable
             : null;
@@ -83,6 +97,18 @@ class HybridCloudEngine implements CloudLlmEngine {
   /// 避免 1.5B 弱模型在未选时默认降质。
   final bool preferOnDevice;
 
+  /// 整机可用内存探针（S14d，注入；null = 不判交运行时护栏链兜底）：
+  /// 返回 availMem bytes。判定链内存地板段值源——地板常量单源 =
+  /// `MemoryGuardEvaluator.kt` ABSOLUTE_FLOOR_BYTES（1GB），探针异常按
+  /// null（取证不可达不判）收口，禁把探针故障读成内存紧张。
+  final Future<int?> Function()? availMemProbe;
+
+  /// 调用方配额判定（S14d，注入；null = 无配额面不判——聊天路径 owner/
+  /// 后台任务无按身份配额，外部 App 通道 W5 接线时注入）：返回 true =
+  /// 该调用方配额已超限。配额实例由装配方持有（复用 `SamplingQuota`
+  /// 滑窗形态，不新建限流器），判定链只消费结论。
+  final bool Function()? quotaChecker;
+
   /// 断网探测（无探测位 = 视作在线）。
   ///
   /// 探测异常按**在线**处理的方向取舍（P2-1 评估后保留）：失败朝向「更丰富的
@@ -100,6 +126,16 @@ class HybridCloudEngine implements CloudLlmEngine {
       return false;
     }
   }
+
+  /// 排除位守卫（S14e，K10）：本步声明 `localOnly`（禁止云端）时，**任何
+  /// 把请求内容送往云端的路径都必须关闸**——端侧运行时失败（引擎死亡 /
+  /// 输入超窗 / 装载失败）的原语义是「切云保产出」，但切云即违反声明
+  /// （该步数据出境）。
+  ///
+  /// 红线：排除位只在路由落空处拦、运行时留漏口 = 声明形同虚设——两处口径
+  /// 必须一致。判定单一入口 = 本函数（禁各处散判 `requirement?.localOnly`）。
+  bool _cloudForbidden(CloudChatRequest request) =>
+      request.requirement?.localOnly == true;
 
   /// 前台态判定（场景 A/B/C 用）：探针缺省或异常 → 视为后台（保守：宁暂存
   /// 等前台，不误切云外发数据）。
@@ -158,31 +194,151 @@ class HybridCloudEngine implements CloudLlmEngine {
     if (!gate.pass) {
       debugPrint('[HybridEngine] [advisory] 门禁不达标（不拦截）：${gate.reason}');
     }
-    final toolFaceOk = request.tools.isEmpty ||
-        (deviceToolPolicy?.call(request.tools) ?? false);
-    final canDevice = toolFaceOk && onDevice != null;
+    // S14 判据改造（task-capability W2，设计稿 §5.1）：从「有没有工具」的
+    // 间接推断改为读能力需求声明——未显式声明时按请求形状推导（等价旧
+    // toolFaceOk 判据，零行为变化），显式 requirement 优先。落空分类红线：
+    // declarationSide=true = 声明自身可满足性（编排问题）；false = 端侧当前
+    // 状态（资源问题）——两类落空的文案与降级路径不得混淆。
+    final requirement = request.requirement ??
+        deriveChatRequirement(request.tools, deviceToolPolicy);
+    final deviceCold =
+        _enableCapable?.loadState.value != OnDeviceLoadState.ready;
+    // S14b 主体属性：前台探针上移（场景 C 复用同一探测值）——探针缺省/异常
+    // 按后台保守处理（既有口径）；外部 App 调用面（externalApp）待 W5 供给
+    // 面导出接线，聊天路径主体恒为宿主前台交互 / 宿主后台任务二值。
+    final wantDevice = offline || !controller.shouldUseCloud || preferOnDevice;
+    final canDeviceCandidate = onDevice != null;
+    final foreground = canDeviceCandidate && wantDevice
+        ? await _isForeground()
+        : false;
+    final subject = foreground
+        ? CallerSubject.hostForeground
+        : CallerSubject.hostBackground;
+    // S14c 窗口值源：选中模型查表上移单次读取（窗口段 / 画像段 / 驻留取证
+    // 三处复用，不新增第二套读取）。窗口 = modelProfile.contextTokens（
+    // model-specs.json per-bundle 声明；未标注族 = null 未知不拦）。
+    final selectedModel = canDeviceCandidate && wantDevice
+        ? await OnDeviceModelSelection.read()
+        : null;
+    // S14c 输入估算：tokens.dart 字符级上界口径（estimateTokens = length）
+    // 逐 message 求和——与 _deviceSend 预检循环同口径同源（禁两套估法）。
+    int? inputEstimateTokens;
+    if (selectedModel != null) {
+      var chars = 0;
+      for (final m in request.messages) {
+        chars += switch (m) {
+          SystemMessage(:final content) => estimateTokens(content),
+          UserMessage(:final content) => estimateTokens(content),
+          AssistantMessage(:final content) => content == null
+              ? 0
+              : estimateTokens(content),
+          _ => 0,
+        };
+      }
+      inputEstimateTokens = chars;
+    }
+    // S14b 驻留资产匹配度取证（K19）：仅端侧已就绪时查票据——冷态下无驻留
+    // 可言，换驻留禁令不适用（交互级冷态走时效段 D3 档）。票据 modelId 与
+    // 装载入参同源（modelIdOf = dirName@digest），前缀比对目标 dirName；
+    // 票据不可达（3s 超时）= 未知不判，交装载链路对账。
+    bool? residentMatched;
+    if (onDevice != null && !deviceCold && selectedModel != null) {
+      try {
+        final ticket = await OnDeviceEngineBinding().fetchSessionTicket();
+        final resident = ticket?.modelId ?? '';
+        if (resident.isNotEmpty) {
+          final dir = selectedModel.dirName;
+          residentMatched = resident == dir || resident.startsWith('$dir@');
+        }
+      } catch (e) {
+        debugPrint('[DEGRADE] hybrid resident-match probe: $e');
+      }
+    }
+    // S14d 动态准入取证：availMem（探针异常 = null 不判，禁把探针故障读成
+    // 内存紧张）与调用方配额结论（无配额面不判——聊天路径 owner/后台任务
+    // 无按身份配额，外部 App 通道 W5 注入 SamplingQuota 形态判定）。
+    int? availMemBytes;
+    if (onDevice != null && availMemProbe != null) {
+      try {
+        availMemBytes = await availMemProbe!();
+      } catch (e) {
+        debugPrint('[DEGRADE] hybrid availMem probe: $e');
+      }
+    }
+    final quotaExceeded =
+        onDevice != null && (quotaChecker?.call() ?? false);
+    final verdict = evaluateDeviceRoute(
+      requirement: requirement,
+      deviceMounted: onDevice != null,
+      deviceCold: deviceCold,
+      // 窗口段值源已接（S14c）：windowTokens/输入估算双未知不拦；画像段
+      // 保持下方既有查表门禁（零行为变化）。
+      windowTokens: selectedModel?.contextTokens,
+      profileExcluded: false,
+      offline: offline,
+      subject: subject,
+      residentMatched: residentMatched,
+      inputEstimateTokens: inputEstimateTokens,
+      outputReserve: request.maxTokens ?? 512,
+      availMemBytes: availMemBytes,
+      quotaExceeded: quotaExceeded,
+    );
+    // 理由码随判定落库（D3 残余，S14b）：[ROUTE] 结构化行 = 路由判定的
+    // 可观测载体（logcat 可 grep），理由码/段位/主体/驻留匹配全量在行。
+    debugPrint('[ROUTE] ${verdict.deviceAllowed ? 'ALLOW' : 'BLOCK'}'
+        ' stage=${verdict.blockedAt?.name ?? '-'}'
+        ' declSide=${verdict.declarationSide}'
+        ' governance=${verdict.governanceViolation}'
+        ' localOnly=${verdict.localOnlyViolation}'
+        ' exclude=${requirement.localOnly}'
+        ' subject=${subject.name}'
+        ' residentMatched=${residentMatched?.toString() ?? 'unknown'}'
+        ' cold=$deviceCold offline=$offline'
+        ' availMem=${availMemBytes?.toString() ?? 'unknown'}'
+        '${verdict.reason.isEmpty ? '' : ' reason=${verdict.reason}'}');
+    // 排除位违规（S14e，K10）：声明 `localOnly`（禁止云端）时，**凡处置本应是
+    // 「分流云端」的落空**一律快速失败不切云（切云即违反声明 = 该步数据出境）。
+    // 覆盖两类落空：声明不可满足（localOnly + 端侧承载缺位）与端侧当前状态不可用
+    // （窗口/时效/就绪/画像/内存地板）。落空段位只影响归因，处置同口径。
+    // 治理违规（配额超限）另走 [QuotaExceededException]（K9 两端口径，不叠加）。
+    if (verdict.localOnlyViolation) {
+      throw LocalOnlyViolationException(
+        '本轮请求无法完成：${verdict.reason}',
+        stage: verdict.blockedAt,
+      );
+    }
+    // 治理违规（S14d，K9：配额超限）= 快速失败**不切云**——类型化异常，
+    // 与资源故障类落空（分流云端保产出）分属两端口径。
+    if (verdict.governanceViolation) {
+      throw QuotaExceededException(subject.name);
+    }
+    var canDevice = verdict.deviceAllowed && onDevice != null;
+    // D3：离线 + 交互级 + 冷态 = 装载等待（OFFLINE_COLD_LOAD_WAIT）——云端
+    // 不可达时分流必失败，不拦，交既有就绪段装载分支（场景 B/C）；装载等待
+    // 的取消语义（放弃本轮等待）随 S14b/D3 残余项落地。
+    if (!verdict.deviceAllowed &&
+        verdict.blockedAt == DeviceRouteStage.latency &&
+        offline) {
+      canDevice = true;
+    }
+    // S14e 排除位收口单通道 = 上方 verdict.localOnlyViolation 分支
+    // （LocalOnlyViolationException，覆盖声明不可满足类与端侧状态类全部
+    // 落空段）；D3 离线装载等待特例已在判定链内豁免（localOnly 不禁端侧，
+    // 等待装载是唯一可完成路径，合法）。此处不得再有第二 localOnly 处置
+    // 分支（禁双通道漂移）。
     String? deviceSkipReason;
     if (!canDevice && onDevice != null) {
-      // 可观测性（S2 收口）：无云端兜底且端侧被挡时，把挡点随错误透出。
-      // 门禁已 advisory 化，不再构成挡点——只剩工具面判据。
-      final skips = <String>[
-        if (!toolFaceOk) '工具面含云端编排工具（判据不放行）',
-        if (onDevice == null) '端侧引擎未挂载',
-      ];
-      deviceSkipReason = skips.join('；');
-      debugPrint('[HybridEngine] 端侧跳过：$deviceSkipReason');
+      deviceSkipReason = verdict.reason;
+      debugPrint(
+          '[HybridEngine] 端侧跳过（${verdict.declarationSide ? '声明侧' : '端侧状态侧'}）：$deviceSkipReason');
     }
-    // 走端侧触发：① 自动（断网 / 云端降级冷却）② 用户偏好优先（云端健康也走）。
-    final wantDevice = offline ||
-        !controller.shouldUseCloud ||
-        preferOnDevice;
     // DispatchProfile 路由查表（设计稿 §6，2026-11-01 拍板）：装载决策前读
     // 准入画像——双后端 EXCLUDED/ERROR → 查表即切云，不让 :engine 死一次
     // 确认坏后端；单坏（NPU.EXCLUDED 且 GPU 未探/健康）→ 放行，降级链自试。
     var profileExcluded = false;
     if (canDevice && wantDevice) {
       try {
-        final selectedModel = await OnDeviceModelSelection.read();
+        // selectedModel 已在窗口值源处单次读取（S14c 上移），此处复用。
         final profile = selectedModel == null
             ? null
             : await OnDeviceAssetManager.instance
@@ -197,6 +353,14 @@ class HybridCloudEngine implements CloudLlmEngine {
         debugPrint('[DEGRADE] HybridEngine: admission profile read: $e');
       }
     }
+    // S14e 排除位守卫：准入画像双坏的处置是切云（坏后端记忆，下轮查表直跳）——
+    // 本步声明禁止云端时不得切云，快速失败（切云即违反声明 = 数据出境）。
+    if (profileExcluded && requirement.localOnly) {
+      throw LocalOnlyViolationException(
+        '本轮请求无法完成：端侧当前状态：准入画像双坏（全后端 EXCLUDED/ERROR）',
+        stage: DeviceRouteStage.admissionProfile,
+      );
+    }
     if (canDevice && wantDevice && !profileExcluded) {
       // 懒加载兜底（用户定调）：首次命中端侧路径才显式加载——bind→就绪→资产→
       // loadModel→数据面 worker，加载过程对用户可见（loadState=loading）。加载
@@ -210,7 +374,7 @@ class HybridCloudEngine implements CloudLlmEngine {
         //    PendingForegroundLoad 标记（TTL 30min）暂存退出，等下次前台；
         //  C 未加载冷启动 + **前台**用户发起 → 加载态 + 90s 超时保护 →
         //    终态失败显式报错；可自愈类（进程被杀/热降级）按需降级云端。
-        final foreground = await _isForeground();
+        //    foreground 探测已上移至主体推导处（S14b），此处复用同一值。
         if (!foreground) {
           await OnDevicePendingLoad.mark();
           debugPrint('[HybridEngine] 场景B：后台冷装载 → 暂存等前台（不切云）');
@@ -218,6 +382,15 @@ class HybridCloudEngine implements CloudLlmEngine {
               '端侧模型将在你回到前台时自动加载（后台加载已暂存）');
         }
         try {
+          // D3 残余取消语义（S14b 钉死，裁决 = memory D3）：调用方在装载
+          // 等待期取消本轮 = **放弃本轮等待**，绝不中止装载——单进程单装载
+          // 纪律下中止装载即进程自杀重启。机制依据：enable() 的 Future 不
+          // 随流退订取消（async* 生成器 await 检查点语义），且无任何取消
+          // 路径调 disable()——装载在后台继续完成，下一轮命中即秒级复用；
+          // 本轮在 await 返回前已死（无产出投递）= 等待已放弃。已知边界：
+          // 放弃的即时性受 Dart await 检查点限制（不能中断 enable 本身，
+          // 禁中止装载优先于即时退出），退订信号先于装载完成到达时本轮在
+          // 装载完成后立即静默退出。理由码落痕 = 上方 [ROUTE] 行。
           await cap.enable();
         } on OnDeviceLoadException catch (e) {
           // 终态失败（资产缺失 / 设备不支持 / 内存不足）→ q-1 显式报错**不**
@@ -230,6 +403,12 @@ class HybridCloudEngine implements CloudLlmEngine {
           final recoverable = e.degraded || e.retryable;
           if (!recoverable) {
             throw InferenceException('端侧加载失败：${e.reason}');
+          }
+          // 排除位守卫（S14e）：可自愈类原语义 = 切云完成本轮（产出优先）；
+          // 本步声明禁止云端 → 显式失败不切云（数据不出境）。
+          if (_cloudForbidden(request)) {
+            throw InferenceException(
+                '端侧加载失败：${e.reason}（本步声明禁止云端，不切云）');
           }
           final c = cloud;
           if (c == null) {
@@ -310,6 +489,7 @@ class HybridCloudEngine implements CloudLlmEngine {
           tools: request.tools,
           temperature: request.temperature,
           maxTokens: request.maxTokens,
+          requirement: request.requirement,
         );
       }
     }
@@ -567,7 +747,13 @@ class HybridCloudEngine implements CloudLlmEngine {
           debugPrint('[HybridEngine] 端侧输入超窗（~${e.estimateTokens}/'
               '${e.windowTokens} tokens）→ 拒绝并切云');
           final c = cloud;
-          if (c == null) {
+          if (_cloudForbidden(request)) {
+            // 排除位守卫（S14e）：拒绝优先 = 切云保产出；本步声明禁止云端
+            // → 显式失败不切云（超窗数据不出境）。
+            ctrl.addError(InferenceException(
+                '输入超出端侧模型上下文窗口（约 ${e.windowTokens} tokens），'
+                '且本步声明禁止云端（不切云）——请缩短当前输入后重试'));
+          } else if (c == null) {
             ctrl.addError(InferenceException(
                 '输入超出端侧模型上下文窗口（约 ${e.windowTokens} tokens）且未配置'
                 '云端兜底——请缩短当前输入，或配置云端模型后自动切换'));
@@ -591,7 +777,14 @@ class HybridCloudEngine implements CloudLlmEngine {
           // 云端再失败只能原样上抛）。同一 ctrl 承载——§10 取消联动（onCancel →
           // device.cancelActive）保持原直连链不变；无云可切时原样上抛。
           final c = cloud;
-          if (c == null) {
+          if (_cloudForbidden(request)) {
+            // 排除位守卫（S14e）：引擎死亡原语义 = 无缝切云（保产出）；本步
+            // 声明禁止云端 → 显式失败不切云（数据不出境）。
+            debugPrint('[HybridEngine] :engine 死亡且本步禁止云端 → 显式失败');
+            ctrl.addError(InferenceException(
+                '端侧已中断且本步声明禁止云端（不切云）——可稍后重试，或改用'
+                '不禁止云端的步骤声明'));
+          } else if (c == null) {
             // 云端缺席：EngineDiedException 是内部切云信号，非用户文案——
             // 裸抛会把 'EngineDiedException: ...' 直接上墙（2026-10-31 真机
             // 热闸事故第二症状）。翻译成白话：端侧已中断 + 无兜底的出路提示。
@@ -629,20 +822,16 @@ class HybridCloudEngine implements CloudLlmEngine {
 /// 归类。温控已摘除（2026-10-31 裁决），thermal 分支随之退役。
 String engineInterruptReason(EngineDiedException e) {
   final r = e.reason.toLowerCase();
+  // S14e（K11）：协作式打断未生效 = 等待窗口耗尽且在途生成可能仍在跑，
+  // 算力仍被占——不得表述为「已腾出/已打断」。
+  if (r.contains('interrupt_not_effective') ||
+      r.contains('interrupt not effective')) {
+    return '端侧算力正被占用，协作式打断未生效（算力尚未让出）';
+  }
   if (r.contains('busy')) return '引擎正忙（上一轮尚未让出算力）';
   if (r.contains('session') || r.contains('loading')) return '端侧会话未就绪';
   return '引擎中断';
 }
-
-/// P1-5 预检判据（纯函数，测试钉用）：内容字符数（ASCII 最坏 1 字 1 token
-/// 口径，与 prompt builder 预算同口径）+ 输出预留 + JSON 脚手架开销 64，
-/// 超窗口 = 拒绝。
-bool onDeviceInputOverflows({
-  required int contentChars,
-  required int outputReserve,
-  required int windowTokens,
-}) =>
-    contentChars + outputReserve + 64 > windowTokens;
 
 /// P1-5 端侧输入超窗拒绝（机制审计，设计定稿 2026-11-01）：预检超窗即抛，
 /// 拒绝优先——设备路径禁第二套截断，拒绝沿切云保产出。携带窗口与估算值

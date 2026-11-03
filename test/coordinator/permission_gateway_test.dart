@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/coordinator/agent_loop.dart';
 import 'package:goodhub/coordinator/permission_gateway.dart';
+import 'package:goodhub/core/actor.dart';
 import 'package:goodhub/llm/cloud/cloud_llm.dart';
 
 class RecordingExecutor implements ToolExecutor {
@@ -105,6 +106,66 @@ void main() {
       expect(r.isError, isFalse);
       expect(notices.single.toolName, 'list_items');
       expect(notices.single.viaSessionGrant, isFalse);
+    });
+  });
+
+  group('S05 跨 App 写默认 L2（外部主体未声明 hints 必进确认层）', () {
+    late ScriptedDelegate delegate;
+
+    setUp(() {
+      delegate = ScriptedDelegate();
+    });
+
+    PermissionGateway buildFor(Actor? actor) {
+      final g = PermissionGateway(
+        inner: inner,
+        delegate: delegate,
+        actor: actor,
+      );
+      g.loadCatalog([schema('update_item')]); // 未声明 hints
+      return g;
+    }
+
+    test('验收钉：外部 App 主体 + 未声明 hints → 弹确认卡（不静默放行）', () async {
+      final g = buildFor(const Actor.external('binder:com.example.app'));
+      delegate.decisions.add(const GateDecision(approved: true));
+      final r = await g.execute(call('update_item'));
+      expect(delegate.confirmations, hasLength(1), reason: '跨 App 主体写操作必进确认层');
+      expect(inner.executed.single.name, 'update_item');
+      expect(r.content, 'ok:update_item');
+    });
+
+    test('外部 App 主体 + 显式 readOnlyHint:true → 仍 L1 静默（打标面跨主体通用）', () async {
+      final g = PermissionGateway(
+        inner: inner,
+        delegate: delegate,
+        actor: const Actor.external('gateway'),
+      );
+      g.loadCatalog([schema('list_items', annotations: const {'readOnlyHint': true})]);
+      final r = await g.execute(call('list_items'));
+      expect(delegate.confirmations, isEmpty);
+      expect(r.content, 'ok:list_items');
+    });
+
+    test('owner 主体行为零变化：未声明 hints → L1 静默放行', () async {
+      final g = buildFor(Actor.owner);
+      final r = await g.execute(call('update_item'));
+      expect(delegate.confirmations, isEmpty, reason: '宿主 owner 维持 2026-10-21 缺省');
+      expect(r.content, 'ok:update_item');
+    });
+
+    test('外部 App 主体 + 无确认界面 → fail-closed 拒绝（绝不静默执行写）', () async {
+      final g = PermissionGateway(
+        inner: inner,
+        delegate: null,
+        actor: const Actor.external('binder:com.example.app'),
+      );
+      g.loadCatalog([schema('update_item')]);
+      final r = await g.execute(call('update_item'));
+      expect(inner.executed, isEmpty, reason: '无人值守 L2 一律拒绝');
+      // §12 契约：拒绝≠系统错误 → user_rejected 包裹且 isError=false。
+      expect(r.content, contains('user_rejected'));
+      expect(r.isError, isFalse);
     });
   });
 

@@ -8,8 +8,10 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * 单执行槽单测（on-device S3-3，NPU 稿 §6.6 / 总纲 §2 v2.6）：
- * 空闲授予、后台忙驳回、前台抢占让槽、抢占超时兜底、槽主释放语义。
+ * 单执行槽单测（on-device S3-3，NPU 稿 §6.6 / 总纲 §2 v2.6；**打断术语于
+ * task-capability S14e 订正**）：
+ * 空闲授予、后台忙驳回、前台协作式打断让槽、打断等待窗口耗尽（打断未生效）
+ * 兜底、槽主释放语义。
  */
 class EngineSlotTest {
 
@@ -22,43 +24,45 @@ class EngineSlotTest {
     }
 
     @Test
-    fun `忙时后台请求立即驳回（策略 B，不触发抢占不排队）`() {
+    fun `忙时后台请求立即驳回（策略 B，不触发打断不排队）`() {
         val slot = EngineSlot()
         slot.tryAcquire("r1", true) {}
-        var preempted = false
-        val r = slot.tryAcquire("r2-summarizer", foreground = false) { preempted = true }
+        var interrupted = false
+        val r = slot.tryAcquire("r2-summarizer", foreground = false) { interrupted = true }
         assertEquals(EngineSlot.AcquireResult.DENIED_BUSY, r)
-        assertFalse(preempted) // 后台驳回不中断在途请求
+        assertFalse(interrupted) // 后台驳回不中断在途请求
         assertEquals("r1", slot.owner) // 槽主不变
         assertTrue(slot.isBusy)
     }
 
     @Test
-    fun `忙时前台请求抢占：preempt 触发，槽释放后授予新请求`() {
-        val slot = EngineSlot(preemptWaitMs = 2000, pollMs = 1)
+    fun `忙时前台请求协作式打断：回调触发，槽释放后授予新请求`() {
+        val slot = EngineSlot(interruptWaitMs = 2000, pollMs = 1)
         slot.tryAcquire("r-old", true) {}
-        val preempted = CountDownLatch(1)
+        val interrupted = CountDownLatch(1)
         // 模拟在途请求收到 abort 后的快速收尾（另一线程 release）。
         Thread {
-            preempted.await(1, TimeUnit.SECONDS)
+            interrupted.await(1, TimeUnit.SECONDS)
             slot.release("r-old")
         }.start()
         val r = slot.tryAcquire("r-new", foreground = true) {
-            preempted.countDown()
+            interrupted.countDown()
         }
         assertEquals(EngineSlot.AcquireResult.GRANTED, r)
         assertEquals("r-new", slot.owner)
     }
 
     @Test
-    fun `忙时前台请求抢占超时兜底驳回（不静默挂死）`() {
-        val slot = EngineSlot(preemptWaitMs = 30, pollMs = 1)
+    fun `打断等待窗口耗尽即打断未生效（不得假设算力已腾出，不静默挂死）`() {
+        val slot = EngineSlot(interruptWaitMs = 30, pollMs = 1)
         slot.tryAcquire("r-stuck", true) {}
-        var preempted = false
-        val r = slot.tryAcquire("r-new", foreground = true) { preempted = true }
-        assertEquals(EngineSlot.AcquireResult.DENIED_TIMEOUT, r)
-        assertTrue(preempted) // 抢占回调仍已发出（在途方收到中断信号）
+        var interrupted = false
+        val r = slot.tryAcquire("r-new", foreground = true) { interrupted = true }
+        assertEquals(EngineSlot.AcquireResult.DENIED_INTERRUPT_NOT_EFFECTIVE, r)
+        assertTrue(interrupted) // 打断回调已发出（在途方收到中断信号）——但未生效
+        // 打断未生效 = 在途生成可能仍在跑：槽仍被占、槽主不变（新请求未获授予）。
         assertTrue(slot.isBusy)
+        assertEquals("r-stuck", slot.owner)
     }
 
     @Test

@@ -9,6 +9,13 @@ import 'on_device_engine.dart';
 import 'on_device_ready_gate.dart';
 import 'on_device_session_ticket.dart';
 
+/// 数据面帧类型（§6.1 v3.1 TLV，S02 常量单源）：与 C++ 侧
+/// `engine_data_worker.cpp` 的 `kTypeToken=0x0001` / `kTypeEos=0x000F`、
+/// Kotlin 侧 `SocketTokenWriter.FrameType` 三端同一字面量；Dart 消费点
+/// 禁再写裸字面量（drift-registry CONST 行机械护栏）。
+const int kDataPlaneFrameTokenChunk = 0x0001;
+const int kDataPlaneFrameEos = 0x000F;
+
 /// 端侧引擎绑定面（on-device epic S1-1 骨架，S2 正式接线扩展）。
 ///
 /// Dart 侧对 `:engine` 独立进程的生命周期入口：经 MethodChannel
@@ -289,11 +296,11 @@ class OnDeviceEngineBinding {
       if (message is List && message.length >= 2) {
         final type = message[0] as int?;
         final payload = message[1] as Uint8List?;
-        if (type == 0x0001 || type == 0x000F) {
+        if (type == kDataPlaneFrameTokenChunk || type == kDataPlaneFrameEos) {
           // 数据面帧计数（诊断面，2026-10-30 真机实证「第二轮没有输出」）：
           // 首帧/EOS 各留一条——「字节没到 Dart」与「字节到了但解码丢了」在
           // 这两个计数上一眼可分（帧数不动 = 数据面没产字节）。
-          if (type == 0x0001) {
+          if (type == kDataPlaneFrameTokenChunk) {
             _dataFrames++;
             _dataBytes += payload?.length ?? 0;
             if (_dataFrames == 1) {

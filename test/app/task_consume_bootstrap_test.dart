@@ -7,6 +7,8 @@ import 'package:goodhub/app/task_consume_bootstrap.dart';
 import 'package:goodhub/llm/cloud/cloud_llm.dart';
 import 'package:goodhub/mcp/local_plugin_discovery.dart';
 import 'package:goodhub/mcp/mcp_client.dart';
+import 'package:goodhub/mcp/trusted_plugins.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class _FakeSource implements LocalPluginSource {
   _FakeSource(this.locals);
@@ -55,11 +57,26 @@ void main() {
   // （生产环境由 runApp 保证；纯 Dart 单测须显式初始化）。
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  // S04：未注入 trustGate 的用例会走生产默认 TrustedPlugins 单例（读
+  // SharedPreferences）——mock 空白名单 + 每用例重置进程级单例缓存防串数据。
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+    TrustedPlugins.resetForTest();
+  });
+
   const goodshare = LocalPluginInfo(
     serverId: 'goodshare',
     serverTitle: 'goodshare',
     packageName: kGoodsharePackage,
     serviceClassName: 'com.zzh.goodshare.McpBinderService',
+    sameSignature: true, // 同签名私有生态：零弹窗自动信任（生产实况）
+  );
+  const untrustedThirdParty = LocalPluginInfo(
+    serverId: 'goodshare',
+    serverTitle: 'goodshare',
+    packageName: kGoodsharePackage,
+    serviceClassName: 'com.zzh.goodshare.McpBinderService',
+    sameSignature: false, // 第三方异签名：须白名单命中（S04 验收钉夹具）
   );
   const other = LocalPluginInfo(
     serverId: 'todo',
@@ -83,6 +100,18 @@ void main() {
     final bs = TaskConsumeBootstrap(discovery: source);
     expect(await bs.start(engine: _FakeEngine()), isNull);
     expect(source.createdCount, 0);
+    bs.dispose();
+  });
+
+  test('S04 验收钉：未信任第三方插件经任务路径不挂载（拒建连接）', () async {
+    final source = _FakeSource([untrustedThirdParty]);
+    final bs = TaskConsumeBootstrap(
+      discovery: source,
+      trustGate: _DenyAllGate(), // 白名单未命中（第三方异签名未确认）
+    );
+    expect(await bs.start(engine: _FakeEngine()), isNull,
+        reason: '未信任插件不得经任务路径挂载');
+    expect(source.createdCount, 0, reason: '信任校验须先于 createClient');
     bs.dispose();
   });
 
@@ -114,6 +143,12 @@ void main() {
     expect(bs.isHostBusy?.call(), isTrue, reason: '闭包读最新值');
     bs.dispose();
   });
+}
+
+/// 全拒信任闸（S04 验收钉夹具）：模拟白名单未命中的第三方异签名插件。
+class _DenyAllGate implements PluginTrustGate {
+  @override
+  bool isTrusted(String packageName, {String signatureSha256 = ''}) => false;
 }
 
 class _ThrowingSource implements LocalPluginSource {

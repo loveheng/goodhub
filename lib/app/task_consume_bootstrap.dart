@@ -23,6 +23,7 @@ import '../llm/cloud/cloud_llm.dart';
 import '../mcp/goodshare_task_api.dart';
 import '../mcp/local_plugin_discovery.dart';
 import '../mcp/mcp_client.dart';
+import '../mcp/trusted_plugins.dart';
 import '../task/task_consume_ledger.dart';
 import '../task/task_consume_loop.dart';
 import '../task/task_loop_service.dart';
@@ -34,12 +35,18 @@ const kGoodsharePackage = 'com.zzh.goodshare';
 class TaskConsumeBootstrap {
   TaskConsumeBootstrap({
     LocalPluginSource? discovery,
+    this.trustGate,
     this.ledger,
     this.onEvent,
   }) : _discovery = discovery ?? localPluginDiscovery;
 
   /// 插件来源（装配期消费面，可注入假件——`LocalPluginSource` 正是为此引入）。
   final LocalPluginSource _discovery;
+
+  /// 信任闸（W1-S04：任务路径与聊天页/网关装配同受信任白名单约束，判定
+  /// 经 S03 单一入口 [localPluginTrustSatisfied]）。null = 生产默认读
+  /// `TrustedPlugins` 单例；单测注入假件避免 SharedPreferences 依赖。
+  final PluginTrustGate? trustGate;
 
   /// 对账账本（null = 不记账）。生产由 `main` 装配 `underSupportDir` 实例，
   /// 与设置页对账分区共享同一对象（跨会话持久化，重启不清零）。**可变**：
@@ -84,6 +91,15 @@ class TaskConsumeBootstrap {
         return null;
       }
       _serverId = info.packageName; // 对账按服务划分的键
+      // W1-S04：任务路径此前直接 scan→createClient 未查信任白名单——未信任
+      // 第三方插件可经任务路径挂载，绕开聊天页/网关装配的信任闸门。现与两处
+      // 装配同受约束，判定经 S03 单一入口（未信任 = 拒挂载，DEGRADE 留痕）。
+      final gate = trustGate ?? await TrustedPlugins.instance;
+      if (!localPluginTrustSatisfied(info, gate)) {
+        debugPrint('[DEGRADE] task-consume: 未信任的本地插件 '
+            '${info.packageName}，拒绝经任务路径挂载（请先在聊天页/设置信任）');
+        return null;
+      }
       final client = _discovery.createClient(info);
       _client = client;
       final resolvedEngine = engine ?? await assembleDefaultHybridEngine();

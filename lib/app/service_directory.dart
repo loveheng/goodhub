@@ -24,6 +24,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../coordinator/cow_sync.dart';
 import '../coordinator/user_prompt_store.dart';
 import '../llm/cloud/byok_store.dart';
+import '../llm/on_device_engine.dart';
+import '../llm/on_device_engine_aidl.dart' show sharedOnDeviceEngine;
 import '../mcp/server_endpoints.dart';
 import '../resources/resource_store.dart';
 import '../sandbox/workspace_state_store.dart';
@@ -46,6 +48,16 @@ Future<ServerEndpointStore> serverEndpointStore({String? supportPath}) async {
 
 /// 资源中心内核（应用级单实例；跨会话持久，随进程存亡）。
 ResourceStore? _resourceStore;
+
+/// 端侧供给面条目（W1-S08，`on-device-capability.md` §2「纳入注册中心、UI
+/// 零直连」立法）：UI / 装配层取端侧引擎一律经 [onDeviceEngine]，禁再 import
+/// `on_device_engine_aidl.dart` 直连具体实现件（实现件更换 = 改本文件一行）。
+OnDeviceSupplyFace? onDeviceEngineOverride;
+
+/// 端侧供给面取用：缺省回落实现件单例（进程级唯一，loadedOnce 单装载纪律
+/// 归实现件自管；本目录只做取用点收口，不改生命周期语义）。
+OnDeviceSupplyFace get onDeviceEngine =>
+    onDeviceEngineOverride ?? sharedOnDeviceEngine;
 
 /// 测试注入位（非空时 [resourceStore] 恒返回之，免平台插件依赖）。
 ResourceStore? resourceStoreOverride;

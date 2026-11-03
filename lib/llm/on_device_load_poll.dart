@@ -1,4 +1,5 @@
 import 'on_device_engine.dart';
+import 'on_device_status_class.dart';
 
 /// 端侧模型装载「受理态 → 就绪」轮询状态机（on-device S3-1 修订；M4 口径）。
 ///
@@ -54,7 +55,9 @@ Future<EngineStatus> pollLoadReady({
       continue;
     }
     thermalActive = false;
-    if (status != EngineStatus.loading) break; // 终态（含 assetMissing）如实上抛
+    if (onDeviceStatusClass(status) != OnDeviceStatusClass.inProgress) {
+      break; // 终态/可重试中断如实上抛（三分类单源见 on_device_status_class.dart）
+    }
   }
   if (thermalActive) {
     throw const OnDeviceLoadException(

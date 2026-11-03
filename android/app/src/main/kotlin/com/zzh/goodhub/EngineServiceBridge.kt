@@ -203,9 +203,10 @@ object EngineServiceBridge {
                         result.error("not_bound", ":engine not connected", null)
                     } else {
                         try {
-                            // S3-3 抢占语义（§6.6）：前台态由主进程判定注入
-                            //（Activity started 计数）——前台=可抢占让槽
-                            //（绝不驳回用户），后台=忙即 ServiceBusy 驳回切云。
+                            // S3-3 单执行槽语义（§6.6；打断术语 S14e 订正）：前台态
+                            // 由主进程判定注入（Activity started 计数）——前台=可请求
+                            // 协作式打断让槽（打断非抢占式；窗口耗尽按策略性降级切云），
+                            // 后台=忙即 ServiceBusy 驳回切云。
                             // Bundle 缝收口：Map→参数→Bundle 均经 GenerationParams
                             //（缺省值/键名单源，禁缝外手工逐键）。
                             val params = GenerationParams.fromArgs(
@@ -222,8 +223,8 @@ object EngineServiceBridge {
                             )
                             result.success(null)
                         } catch (e: Exception) {
-                            // S3-3：service_busy（策略 B 驳回/抢占超时）单独分码，
-                            // Dart 侧识别后快速失败切云；AIDL RuntimeException
+                            // S3-3：service_busy（策略 B 驳回 / 协作式打断未生效）
+                            // 单独分码，Dart 侧识别后快速失败切云；AIDL RuntimeException
                             // 类型不保真，以 message 前缀机器判别。M3（设计 §2.2）：
                             // SESSION_EPOCH_MISMATCH / SESSION_LOADING 单独分码——
                             // 主进程作废镜像走装载后重试，不再当 start_rejected

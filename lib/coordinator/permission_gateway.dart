@@ -19,6 +19,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
+import '../core/actor.dart';
 import '../llm/cloud/cloud_llm.dart';
 import 'agent_loop.dart';
 import 'tool_router.dart' show parsePrefixedToolName;
@@ -89,6 +90,7 @@ class PermissionGateway implements ToolExecutor {
     this.delegate,
     this.onNotice,
     this.planGrants,
+    this.actor,
   });
 
   /// 被装饰的真实执行环（McpToolFace）。
@@ -98,6 +100,11 @@ class PermissionGateway implements ToolExecutor {
 
   /// 计划授权源（编排 B1；null = 无计划授权，全部走既有 L1/L2 裁决）。
   final PlanGrantSource? planGrants;
+
+  /// 调用主体（W1-S05；null = 宿主 owner 语义）。跨 App 主体（[Actor.external]）
+  /// 的「未声明 hints → L1 静默放行」缺省**不适用**——该缺省是宿主自有生态
+  /// 的信任推定；外部 App 未打标服务的写操作必进确认层（[effectiveLevel]）。
+  final Actor? actor;
 
   /// tools/list annotations 目录（[loadCatalog] 全量刷新，§8 缓存失效语义）。
   final Map<String, Map<String, Object?>?> _annotations = {};
@@ -160,9 +167,25 @@ class PermissionGateway implements ToolExecutor {
     return GatewayLevel.l1ReadOnly;
   }
 
+  /// 主体感知的有效裁决（W1-S05，execute 消费面）：
+  /// 跨 App 主体（[Actor.external]）不适用「未声明 hints → L1 静默放行」
+  /// 缺省——该缺省是宿主自有生态的信任推定，外部 App 场景下未打标服务的
+  /// 写操作必进确认层；显式 `readOnlyHint: true` 仍 L1（打标面跨主体通用）。
+  GatewayLevel effectiveLevel(String toolName, Map<String, Object?>? annotations) {
+    final level = classify(toolName, annotations);
+    final isCrossApp = actor != null && actor != Actor.owner;
+    if (!isCrossApp) return level;
+    final hint = annotations?['readOnlyHint'];
+    final explicitReadOnly = hint is bool && hint;
+    if (level == GatewayLevel.l1ReadOnly && !explicitReadOnly) {
+      return GatewayLevel.l2Write; // 未声明 hints：跨 App 主体必进确认层
+    }
+    return level;
+  }
+
   @override
   Future<ToolExecutionResult> execute(AssembledToolCall call) async {
-    final level = classify(call.name, _annotations[call.name]);
+    final level = effectiveLevel(call.name, _annotations[call.name]);
     if (level == GatewayLevel.l1ReadOnly) {
       onNotice?.call(ToolNotice(toolName: call.name, viaSessionGrant: false));
       return inner.execute(call);

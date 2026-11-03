@@ -6,17 +6,20 @@ import 'package:goodhub/llm/on_device_engine.dart';
 import 'package:goodhub/llm/on_device_engine_aidl.dart';
 import 'package:goodhub/llm/on_device_engine_binding.dart';
 
-/// S3-3 并发原子抢占 Dart 侧分流验证（NPU 稿 §6.6 / 总纲 §2 v2.6）。
+/// S3-3 单执行槽 Dart 侧分流验证（NPU 稿 §6.6 / 总纲 §2 v2.6；**打断术语于
+/// task-capability S14e 订正**）。
 ///
 /// 经 Mock MethodChannel 模拟 `:engine` 拒绝受理，验证错误码 → 切云通道
 /// 分流：
-///  1. `service_busy`（策略 B 驳回/抢占超时）→ EngineDiedException 快速失败，
-///     混合引擎捕获即无缝切云；不进熔断口径（无 breaker.report）；
+///  1. `service_busy`（策略 B 驳回 / **协作式打断未生效**）→ EngineDiedException
+///     快速失败，混合引擎捕获即无缝切云；不进熔断口径（无 breaker.report）；
+///     两个子情形按消息标记 `interrupt_not_effective` 区分（S14e：等待窗口耗尽
+///     只说明打断未生效，**不得假设算力已腾出**）；
 ///  2. `start_rejected`（数据面未建等）→ 维持 StateError 语义（非切云信号）。
 ///
-/// 抢占判定本体（单槽 CAS/等待让槽）为 Kotlin 纯逻辑件 EngineSlot，JVM
-/// 单测在 EngineSlotTest 承载；前台态判定在主进程 Bridge（Activity 计数），
-/// 均不进入本文件射程。
+/// 单执行槽判定本体（原子授予 CAS / 协作式打断与等待让槽）为 Kotlin 纯逻辑件
+/// EngineSlot，JVM 单测在 EngineSlotTest 承载；前台态判定在主进程 Bridge
+/// （Activity 计数），均不进入本文件射程。
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -45,6 +48,7 @@ void main() {
     required String requestId,
     required String errorCode,
     required Matcher errorMatcher,
+    String errorMessage = 'mock rejection',
   }) async {
     final bound = Completer<void>();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -59,7 +63,7 @@ void main() {
         return {'instanceId': 'inst-test', 'seq': 1, 'status': 0};
       }
       if (call.method == 'startGenerate') {
-        throw PlatformException(code: errorCode, message: 'mock rejection');
+        throw PlatformException(code: errorCode, message: errorMessage);
       }
       return null;
     });
@@ -87,6 +91,24 @@ void main() {
       requestId: 'r-busy',
       errorCode: 'service_busy',
       errorMatcher: isA<EngineDiedException>(),
+    );
+  });
+
+  test('service_busy + interrupt_not_effective → 打断未生效独立可辨（S14e：'
+      '不得假设算力已腾出）', () async {
+    await runGenerate(
+      requestId: 'r-interrupt-not-effective',
+      errorCode: 'service_busy',
+      errorMessage: 'service_busy: interrupt_not_effective '
+          '(协作式打断等待窗口耗尽 1500ms；打断未生效)',
+      errorMatcher: isA<EngineDiedException>().having(
+        (e) => e.reason,
+        'reason',
+        allOf(
+          contains('interrupt not effective'),
+          contains('算力仍被占'),
+        ),
+      ),
     );
   });
 

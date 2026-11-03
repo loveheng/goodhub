@@ -30,7 +30,6 @@ import 'package:flutter/services.dart' show PlatformException;
 import 'cloud/cloud_llm.dart';
 import 'on_device_chat_prompt.dart';
 import 'on_device_engine.dart';
-import 'on_device_engine_aidl.dart';
 
 /// 降级策略（三档，类型化禁止隐式）。
 enum PrimitiveFallbackPolicy {
@@ -108,7 +107,7 @@ class AidlOnDeviceCapabilityService implements OnDeviceCapabilityService {
   AidlOnDeviceCapabilityService(this._engine,
       {this.cloudFallback, this.inputFilter});
 
-  final AidlOnDeviceEngine _engine;
+  final OnDeviceSupplyFace _engine;
 
   /// degradeToCloud 的云端兜底函数（装配注入；null 时该档落 truncate）。
   final Future<String> Function(

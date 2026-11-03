@@ -59,7 +59,7 @@ data class GenerationParams(
     val temperature: Double,
     val topP: Double,
     val stopSequences: List<String>,
-    /** 前台态由主进程判定注入（S3-3 抢占语义 §6.6）。 */
+    /** 前台态由主进程判定注入（S3-3 单执行槽语义 §6.6；打断术语 S14e 订正）。 */
     val foreground: Boolean,
     /** F3 大载荷通道（2026-10-31 ADR）：超内联上限的 promptJson 落临时文件，
      * 此处携路径（Binder 只传短元数据——§8 载荷上限立法）。:engine 读取后

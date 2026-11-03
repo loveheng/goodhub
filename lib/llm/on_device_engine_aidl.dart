@@ -14,6 +14,7 @@ import 'on_device_death_cause.dart';
 import 'on_device_detokenizer.dart';
 import 'on_device_engine.dart';
 import 'on_device_engine_binding.dart';
+import 'on_device_status_class.dart';
 import 'on_device_load_poll.dart';
 import 'on_device_mem_gate.dart';
 import 'on_device_session_gate.dart';
@@ -73,7 +74,10 @@ OnDeviceLoadException _loadFailureOf(String? code) =>
 /// 会话闸门走装载链或切云），绝不判终态失败。
 const Duration kWaitReadyTimeout = Duration(seconds: 10);
 
-class AidlOnDeviceEngine implements OnDeviceEngine {
+// W1-S08：显式声明三面实现（引擎控制面 + 显式装载面 + 供给面合取形状）——
+// 注册中心以 OnDeviceSupplyFace 对外供给（此前 loadState 面是结构鸭子，未入型）。
+class AidlOnDeviceEngine
+    implements OnDeviceEngine, OnDeviceEnableCapable, OnDeviceSupplyFace {
   AidlOnDeviceEngine({
     OnDeviceEngineBinding? binding,
     EngineCircuitBreaker? breaker,
@@ -111,6 +115,7 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
       ValueNotifier<OnDeviceLoadState>(OnDeviceLoadState.unloaded);
 
   /// 加载状态可观察面（[OnDeviceEnableCapable]）。
+  @override
   ValueListenable<OnDeviceLoadState> get loadState => _loadState;
 
   /// B-2 长时后台装载任务：运行中非 null；收口（ready/failed）经 whenComplete
@@ -146,6 +151,7 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
   /// 触发）。装载跑在后台任务 [_runBackgroundLoad] 里（B-2：中断类失败分钟级
   /// 退避持续重试，**不随请求判死**）；本请求仅有界等待，超时抛**可重试**的
   /// 「装载进行中」（q-1：显式报错不切云）。终态失败如实上抛。
+  @override
   Future<EngineStatus> enable(
       {OnDeviceModelOption? model, String? backendHint}) async {
     if (_loadState.value == OnDeviceLoadState.ready) return EngineStatus.ready;
@@ -299,20 +305,18 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
         // 态轮询见 [_loadAndWaitReady]）。
         final loaded = await _loadAndWaitReady(target.path,
             modelId: modelId, backendHint: backendHint);
-        if (loaded == EngineStatus.reloading) {
-          // `:engine` 拒绝同进程重载（单进程单装载纪律：geniex destroy 是否完整
-          // 释放 ION/DSP PD 不可实证，同进程复载必死）→ 进程将自杀交 AMS 冷
-          // 启动新进程装载。**这是可重试中断，不是终态「模型未导入」**——
-          // 此前复用 assetMissing 终态序数，把「空闲回收后重载」报成「请重新
-          // 导入模型」（补救方向完全误导），且该轮直接判死不再重试 → 端侧
-          // 事实上永久失效。
-          throw const OnDeviceLoadException(
-            '端侧引擎重启装载中（请稍候）',
+        // 失败归属改读三分类单源（on_device_status_class.dart）：reloading /
+        // thermalCutoff = 可重试中断（前者 expectRestart 走冷启动重试，快死
+        // 棘轮不计）；其余非 success = 终态如实上抛，禁重试掩盖。
+        final loadedClass = onDeviceStatusClass(loaded);
+        if (loadedClass == OnDeviceStatusClass.retryable) {
+          throw OnDeviceLoadException(
+            engineStatusFailureReason(loaded),
             retryable: true,
-            expectRestart: true,
+            expectRestart: loaded == EngineStatus.reloading,
           );
         }
-        if (loaded != EngineStatus.ready && loaded != EngineStatus.busy) {
+        if (loadedClass == OnDeviceStatusClass.terminal) {
           // 终态失败文案白话化（禁把内部枚举名抛给用户——真机曾见
           // 「模型装载失败（circuitBroken）」，用户看不懂也无从行动）。
           throw OnDeviceLoadException(engineStatusFailureReason(loaded));
@@ -422,6 +426,7 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
 
   /// 卸载释放：停数据面 worker + 释放 :engine 权重内存，退回 unloaded（释放
   /// ~1.9GB 权重驻留，端侧重新回到「未启用」态）。
+  @override
   Future<void> disable() async {
     try {
       _loadGen++; // 作废在途后台装载任务（B-2 代次沿）：收口前检查即静默退出
@@ -455,6 +460,7 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
 
   /// 前台态判定（场景 A/B/C 切云语义拆分）：透传桥面 Activity started 计数；
   /// 探测失败按**后台**保守处理（场景 B 不切云、暂存等前台）。
+  @override
   Future<bool> isForeground() => _binding.isForeground();
 
   @override
@@ -685,13 +691,24 @@ class AidlOnDeviceEngine implements OnDeviceEngine {
       } on PlatformException catch (e) {
         _active.remove(requestId);
         if (e.code == 'service_busy') {
-          // S3-3 策略 B（§6.6）：槽被占且不可授予（后台忙驳回/前台抢占超时）
-          // → 快速失败，混合引擎捕获即无缝切云（§6.6「冲突时原子抛
-          // ServiceBusyException，上层捕获瞬间切云」）。busy 是瞬时槽占用
-          // 非引擎故障——EngineDiedException 在此仅作切云信号复用，无任何
-          // breaker.report 调用，不进熔断口径。
-          ctrl.addError(
-              const EngineDiedException('service busy (strategy B) → cloud fallback'));
+          // S3-3 策略 B（§6.6）：槽被占且不可授予（后台忙驳回 / 前台协作式
+          // 打断等待窗口耗尽）→ 快速失败，混合引擎捕获即无缝切云（§6.6
+          // 「冲突时原子抛 ServiceBusyException，上层捕获瞬间切云」）。busy
+          // 是瞬时槽占用非引擎故障——EngineDiedException 在此仅作切云信号
+          // 复用，无任何 breaker.report 调用，不进熔断口径。
+          //
+          // S14e 打断语义（K11，术语订正）：打断是**协作式**不是抢占式——
+          // 底层算子阻塞不可切分，中断只在生成循环检查点生效。等待窗口
+          // 耗尽 = **打断未生效**（在途生成可能仍在跑、算力仍被占），**不得
+          // 假设已腾出**；处置按策略性降级（切云），**不得以重启引擎腾算力**
+          // （重启即冷装载 = 秒级装载 + 前台卡顿）。两个子情形按消息分码：
+          // interrupt_not_effective = 打断未生效；其余 = 槽忙驳回。
+          final interruptNotEffective =
+              (e.message ?? '').contains('interrupt_not_effective');
+          ctrl.addError(EngineDiedException(interruptNotEffective
+              ? 'interrupt not effective (协作式打断等待窗口耗尽，算力仍被占)'
+                  ' → cloud fallback'
+              : 'service busy (strategy B) → cloud fallback'));
         } else if (e.code == 'session_epoch_mismatch' ||
             e.code == 'session_model_mismatch' ||
             e.code == 'session_loading') {

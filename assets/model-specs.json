@@ -6,7 +6,22 @@
       "runtime": "litertlm",
       "artifactPattern": "gemma3-1b",
       "contextTokens": 1280,
-      "recommendedSampling": { "temperature": 1.0, "topP": 0.95 }
+      "recommendedSampling": { "temperature": 1.0, "topP": 0.95 },
+      "taskAffinity": {
+        "qa": "degraded",
+        "classify": "unusable",
+        "extract": "degraded",
+        "rewrite": "usable",
+        "code": "usable",
+        "multiTurn": "unusable",
+        "summarize": "usable",
+        "longDocQa": "usable"
+      },
+      "taskAffinityCaveats": {
+        "code": "结构合格≠语义可用（bench 机械判据盲区：判 fun/reverse/括号结构令牌，不查编译正确性）",
+        "qa": "长体量产出冗长（181 字 vs 限 120），降级档"
+      },
+      "taskAffinitySource": "bench-archive S11 2026-11-03 OnePlus PLQ110 (Ace 6/sun) gemma3-1b 两轮独立采样 18/18 一致"
     }
   ]
 }

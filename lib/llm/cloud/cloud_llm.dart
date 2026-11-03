@@ -11,6 +11,7 @@
 /// - 取消 = 调用方 cancel 流订阅（§10 Abort 级联①步的云端路径，T2 接线）。
 library;
 
+import '../../core/capability_requirement.dart';
 import '../../core/tool_visibility.dart';
 
 /// BYOK 协议族。openaiCompatible 一套覆盖 OpenAI / DeepSeek / Qwen
@@ -194,6 +195,7 @@ class CloudChatRequest {
     this.tools = const [],
     this.temperature,
     this.maxTokens,
+    this.requirement,
   });
 
   final List<CloudChatMessage> messages;
@@ -202,6 +204,11 @@ class CloudChatRequest {
 
   /// 输出上限 token。OpenAI 可省略；Anthropic 必填（客户端兜协议缺省）。
   final int? maxTokens;
+
+  /// 能力需求声明（task-capability W2 · S14，Expand 加性可空）：显式声明
+  /// 优先参与路由判定链；null = 未声明，路由侧按请求形状推导（零行为
+  /// 变化）。声明缺省值保守侧的语义见 `lib/core/capability_requirement.dart`。
+  final CapabilityRequirement? requirement;
 }
 
 /// 流式事件：正文 token 与 tool_calls 分离（architecture §2）。

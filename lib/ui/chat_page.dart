@@ -35,7 +35,6 @@ import '../coordinator/task_plan.dart' show PlanAggregateRecord;
 import '../llm/cloud/cloud_llm.dart';
 import '../llm/on_device_pending_load.dart';
 import '../llm/on_device_engine.dart';
-import '../llm/on_device_engine_aidl.dart';
 
 
 import '../mcp/connection_manager.dart';
@@ -183,10 +182,10 @@ class _ChatPageState extends State<ChatPage>
     taskConsumeBootstrap.isHostBusy = () => _status.running;
     // 端侧显式加载指示：首次命中端侧路径时引擎进入 loading，轨道显式呈现
     // 「端侧模型加载中…」，加载完成/失败自动撤下（失败另有请求级错误卡）。
-    sharedOnDeviceEngine.loadState.addListener(_onOnDeviceLoadStateChanged);
+    onDeviceEngine.loadState.addListener(_onOnDeviceLoadStateChanged);
     // 端侧状态芯片初始快照（Fix3）：打开页面时引擎可能已就绪/装载中——
     // 监听器只在「变化」时触发，初始态必须显式取样否则芯片首帧缺失。
-    final onDeviceNow = sharedOnDeviceEngine.loadState.value;
+    final onDeviceNow = onDeviceEngine.loadState.value;
     _lastOnDeviceState = onDeviceNow;
     _onDeviceActivated = onDeviceNow == OnDeviceLoadState.ready ||
         onDeviceNow == OnDeviceLoadState.loading;
@@ -217,7 +216,7 @@ class _ChatPageState extends State<ChatPage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    sharedOnDeviceEngine.loadState.removeListener(_onOnDeviceLoadStateChanged);
+    onDeviceEngine.loadState.removeListener(_onOnDeviceLoadStateChanged);
     taskConsumeBootstrap.isHostBusy = null; // 解绑运行态端口（防悬空引用）
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
@@ -245,7 +244,7 @@ class _ChatPageState extends State<ChatPage>
 
   void _onOnDeviceLoadStateChanged() {
     if (!mounted) return;
-    final state = sharedOnDeviceEngine.loadState.value;
+    final state = onDeviceEngine.loadState.value;
     final prev = _lastOnDeviceState;
     _lastOnDeviceState = state;
     if (state == OnDeviceLoadState.loading || state == OnDeviceLoadState.ready) {
@@ -960,22 +959,18 @@ class _ChatPageState extends State<ChatPage>
       final mountedLocals = <LocalPluginInfo>[];
       for (final info in locals) {
         if (info.serverId.isEmpty) continue;
-        // §1.2.6 信任闸门：同签名私有生态零弹窗自动信任；第三方首次需信任卡片确认，
-        // 确认后持久化入白名单，后续会话自动信任。
-        if (!info.sameSignature) {
-          final trusted = await TrustedPlugins.instance;
-          if (!trusted.isTrusted(
-            info.packageName,
-            signatureSha256: info.signatureSha256, // F13：挂载期复核签名指纹
-          )) {
-            if (!mounted) continue;
-            final ok = await showTrustCard(context, info);
-            if (!ok) {
-              _add(
-                TrackNote('⚠ 未信任本地插件 ${info.serverTitle}，已跳过挂载', danger: true, category: TrackNoticeCategory.fact),
-              );
-              continue;
-            }
+        // §1.2.6 信任闸门（W1-S03：判定收口单一入口 localPluginTrustSatisfied）：
+        // 同签名私有生态零弹窗自动信任；第三方首次需信任卡片确认，确认后
+        // 持久化入白名单，后续会话自动信任。
+        final trusted = await TrustedPlugins.instance;
+        if (!localPluginTrustSatisfied(info, trusted)) {
+          if (!mounted) continue;
+          final ok = await showTrustCard(context, info);
+          if (!ok) {
+            _add(
+              TrackNote('⚠ 未信任本地插件 ${info.serverTitle}，已跳过挂载', danger: true, category: TrackNoticeCategory.fact),
+            );
+            continue;
           }
         }
         mountedLocals.add(info);
@@ -1363,11 +1358,11 @@ class _ChatPageState extends State<ChatPage>
             // 状态（就绪 / 重载中 / 已释放 / 不可用），会话内激活过才出现。
             // ListenableBuilder 挂 loadState 自管重建（不改 setState 心跳）。
             ListenableBuilder(
-              listenable: sharedOnDeviceEngine.loadState,
+              listenable: onDeviceEngine.loadState,
               builder: (context, _) {
                 if (!_onDeviceActivated) return const SizedBox.shrink();
                 return _OnDeviceStateChip(
-                  state: sharedOnDeviceEngine.loadState.value,
+                  state: onDeviceEngine.loadState.value,
                 );
               },
             ),

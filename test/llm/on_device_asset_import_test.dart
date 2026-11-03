@@ -154,6 +154,50 @@ void main() {
           {'temperature': 1.0, 'topP': 0.95});
     });
 
+    test('S12 taskAffinity 命中 → 整块透传进 modelProfile（含 caveat/source）',
+        () async {
+      const affinitySpec = '''
+{
+  "schemaVersion": 1,
+  "bundles": [
+    {
+      "id": "litertlm-gemma3-1b",
+      "runtime": "litertlm",
+      "artifactPattern": "gemma3-1b",
+      "taskAffinity": { "qa": "degraded", "classify": "unusable" },
+      "taskAffinityCaveats": { "qa": "长体量产出冗长" },
+      "taskAffinitySource": "bench-archive S11"
+    }
+  ]
+}
+''';
+      final meta = await importLitertlm('gemma3-1b-it-q4.litertlm', affinitySpec);
+      final profile = meta['modelProfile'] as Map<String, dynamic>;
+      expect(profile['taskAffinity'], {'qa': 'degraded', 'classify': 'unusable'});
+      expect(profile['taskAffinityCaveats'], {'qa': '长体量产出冗长'});
+      expect(profile['taskAffinitySource'], 'bench-archive S11');
+    });
+
+    test('S12 taskAffinity 畸形（非对象）→ 字段缺席不猜值', () async {
+      const badSpec = '''
+{
+  "schemaVersion": 1,
+  "bundles": [
+    {
+      "id": "litertlm-gemma3-1b",
+      "runtime": "litertlm",
+      "artifactPattern": "gemma3-1b",
+      "taskAffinity": "usable"
+    }
+  ]
+}
+''';
+      final meta = await importLitertlm('gemma3-1b-it-q4.litertlm', badSpec);
+      final profile = meta['modelProfile'] as Map<String, dynamic>?;
+      expect(profile?['taskAffinity'], isNull);
+      expect(profile?['taskAffinityCaveats'], isNull);
+    });
+
     test('无命中行 → S1 字段缺席（S2 内建缺省归目录层，不在此猜值）', () async {
       final meta = await importLitertlm('qwen-unknown.litertlm', specJson);
       final profile = meta['modelProfile'] as Map<String, dynamic>?;

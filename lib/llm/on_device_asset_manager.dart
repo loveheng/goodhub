@@ -305,7 +305,7 @@ class OnDeviceAssetManager {
       final target =
           Directory('${support.path}/models/${_dirOf(model)}');
       if (!await target.exists()) return false;
-      return await File('${target.path}/.asset-meta.json').exists();
+      return await File('${target.path}/${ModelRegistry.metaFileName}').exists();
     } catch (_) {
       return false;
     }
@@ -355,7 +355,7 @@ class OnDeviceAssetManager {
 
   Future<void> _migrateOneIfMissing(Directory dir) async {
     try {
-      final metaFile = File('${dir.path}/.asset-meta.json');
+      final metaFile = File('${dir.path}/${ModelRegistry.metaFileName}');
       if (!await metaFile.exists()) return;
       final meta =
           jsonDecode(await metaFile.readAsString()) as Map<String, dynamic>;
@@ -447,7 +447,7 @@ class OnDeviceAssetManager {
   Future<bool> _verifyInstalled(Directory target, _AssetManifest manifest) async {
     try {
       if (!await target.exists()) return false;
-      final metaFile = File('${target.path}/.asset-meta.json');
+      final metaFile = File('${target.path}/${ModelRegistry.metaFileName}');
       if (!await metaFile.exists()) return false;
       final meta = jsonDecode(await metaFile.readAsString()) as Map<String, dynamic>;
       if (meta['version'] != manifest.version) return false;
@@ -467,7 +467,7 @@ class OnDeviceAssetManager {
 
   Future<bool> _driverFingerprintDrifted(Directory target) async {
     try {
-      final metaFile = File('${target.path}/.asset-meta.json');
+      final metaFile = File('${target.path}/${ModelRegistry.metaFileName}');
       if (!await metaFile.exists()) return false; // 无 meta 视为未知，不判漂移
       final meta = jsonDecode(await metaFile.readAsString()) as Map<String, dynamic>;
       final recorded = meta['driverFingerprint'] as String?;
@@ -667,7 +667,7 @@ class OnDeviceAssetManager {
       'modelProfile': ?modelProfile,
     };
     // 临时文件 + rename 原子替换（R10 纪律，复用既有写队列）。
-    await SequentialFileWriter(File('${dir.path}/.asset-meta.json'))
+    await SequentialFileWriter(File('${dir.path}/${ModelRegistry.metaFileName}'))
         .write(jsonEncode(meta));
   }
 
@@ -694,7 +694,7 @@ class OnDeviceAssetManager {
   Future<Directory?> _installedFallback(Directory target) async {
     try {
       if (await File('${target.path}/.size-verified').exists() ||
-          await File('${target.path}/.asset-meta.json').exists()) {
+          await File('${target.path}/${ModelRegistry.metaFileName}').exists()) {
         return target;
       }
     } catch (_) {}
@@ -832,6 +832,19 @@ class OnDeviceAssetManager {
         if (sampling is Map<String, dynamic>) {
           profile['recommendedSampling'] = sampling;
         }
+        // S12 任务亲和性（task-capability W2）：整块透传不解释——档位语义
+        // （usable/degraded/unusable）与 caveat 文本的消费归 S14 判据，
+        // 加载面只做声明数据搬运，无命中行/字段缺席照旧不猜值。
+        final affinity = spec['taskAffinity'];
+        if (affinity is Map<String, dynamic>) {
+          profile['taskAffinity'] = affinity;
+          final caveats = spec['taskAffinityCaveats'];
+          if (caveats is Map<String, dynamic>) {
+            profile['taskAffinityCaveats'] = caveats;
+          }
+          final source = spec['taskAffinitySource'];
+          if (source is String) profile['taskAffinitySource'] = source;
+        }
       }
       return profile.isEmpty ? null : profile;
     }
@@ -950,7 +963,7 @@ class OnDeviceAssetManager {
   /// 的廉价口径）。
   Future<bool> _isImportedVerified(Directory target) async {
     try {
-      final metaFile = File('${target.path}/.asset-meta.json');
+      final metaFile = File('${target.path}/${ModelRegistry.metaFileName}');
       if (!await metaFile.exists()) {
         debugPrint('[DEGRADE] imported-asset verify: meta 缺失 (${target.path})');
         return false;
@@ -1301,7 +1314,7 @@ class OnDeviceAssetManager {
       if (displayName != null && displayName.isNotEmpty)
         'displayName': displayName,
     };
-    await SequentialFileWriter(File('${dir.path}/.asset-meta.json'))
+    await SequentialFileWriter(File('${dir.path}/${ModelRegistry.metaFileName}'))
         .write(jsonEncode(meta));
   }
 

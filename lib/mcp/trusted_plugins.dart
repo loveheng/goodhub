@@ -9,6 +9,8 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'local_plugin_discovery.dart' show LocalPluginInfo;
+
 /// 信任白名单（持久化于 SharedPreferences）。
 /// 插件信任闸门——**装配期的只读面**（2026-10-17 P0-B 引入）。
 ///
@@ -110,4 +112,16 @@ class TrustedPlugins implements PluginTrustGate {
 
   /// 全量白名单（包名 → 元数据）。
   Map<String, Object?> all() => _map();
+}
+
+/// 本地插件挂载信任判定的**单一入口**（task-capability W1-S03 红线：判定
+/// 逻辑仅此处一处，消费方禁再内联 `sameSignature` / `isTrusted` 组合）。
+///
+/// 口径：同签名私有生态零弹窗自动信任；第三方须白名单命中且签名指纹复核
+/// 一致（F13，签名不匹配 = 不信任走信任卡）。所有挂载路径（聊天页装配 /
+/// 网关装配 / 任务消费引导）一律先经本函数——S04 任务路径漏查信任校验即
+/// 散落判定的实例。
+bool localPluginTrustSatisfied(LocalPluginInfo info, PluginTrustGate gate) {
+  if (info.sameSignature) return true;
+  return gate.isTrusted(info.packageName, signatureSha256: info.signatureSha256);
 }

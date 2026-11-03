@@ -2,8 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:goodhub/coordinator/capability_router.dart';
 import 'package:goodhub/coordinator/degradation_controller.dart';
 import 'package:goodhub/coordinator/hybrid_cloud_engine.dart';
+import 'package:goodhub/core/capability_requirement.dart';
 import 'package:goodhub/core/errors/cloud_llm_error.dart';
 import 'package:goodhub/core/errors/inference_error.dart';
 import 'package:goodhub/llm/cloud/cloud_llm.dart';
@@ -273,6 +275,47 @@ void main() {
       e.send(noTools).toList(),
       throwsA(isA<CloudHttpException>()),
     );
+  });
+
+  test('S14e localOnly + 端侧落空 → 快速失败不切云（K10 排除位）', () async {
+    final e = HybridCloudEngine(
+      controller: controller,
+      cloud: cloud,
+      onDevice: null, // 端侧未挂载 = 状态类落空
+    );
+    cloud.script.add(() => Stream.value(const CloudTextDelta('cloud'))); // 若切云会被此脚本暴露
+    final req = const CloudChatRequest(
+      messages: [UserMessage('u')],
+      requirement: CapabilityRequirement(needsTools: false, localOnly: true),
+    );
+    Object? caught;
+    try {
+      await e.send(req).toList();
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught, isA<LocalOnlyViolationException>(),
+        reason: 'S14e 单通道 = LocalOnlyViolationException（快速失败不切云）');
+    expect(cloud.calls, isEmpty, reason: 'localOnly 声明禁云端——静默切云即违规');
+  });
+
+  test('S14e localOnly + 离线 + 端侧未挂载 → 同样显式失败（云端也不可达）',
+      () async {
+    final e = HybridCloudEngine(
+      controller: controller,
+      cloud: cloud,
+      onDevice: null,
+      isOfflineProbe: () async => true,
+    );
+    final req = const CloudChatRequest(
+      messages: [UserMessage('u')],
+      requirement: CapabilityRequirement(needsTools: false, localOnly: true),
+    );
+    await expectLater(
+      e.send(req).toList(),
+      throwsA(isA<InferenceException>()),
+    );
+    expect(cloud.calls, isEmpty);
   });
 
   test('云端未配置且端侧在 → 端侧路径；两者皆无 → InferenceException', () async {
@@ -827,5 +870,196 @@ void main() {
         isTrue,
       );
     });
+  });
+
+  group('S14e 排除位 localOnly（K10：落空快速失败不切云）', () {
+    /// 排除位声明（端侧可服务——needsTools=false，否则声明段先拦）。
+    const localOnlyReq = CapabilityRequirement(needsTools: false, localOnly: true);
+
+    test('端侧不可用 + 排除位 → LocalOnlyViolationException（云端零调用）',
+        () async {
+      cloud.script.add(() => textStream('云端产出'));
+      final e = HybridCloudEngine(
+        controller: controller,
+        cloud: cloud,
+        onDevice: null, // 端侧未挂载 → 就绪段落空
+      );
+      await expectLater(
+        e.send(const CloudChatRequest(
+          messages: [UserMessage('u')],
+          requirement: localOnlyReq,
+        )).toList(),
+        throwsA(isA<LocalOnlyViolationException>()),
+      );
+      expect(cloud.calls, isEmpty, reason: '排除位 = 禁止云端，落空不得切云');
+    });
+
+    test('交互级冷态 + 排除位 → LocalOnlyViolationException（不切云）', () async {
+      cloud.script.add(() => textStream('云端产出'));
+      final e = HybridCloudEngine(
+        controller: controller,
+        cloud: cloud,
+        onDevice: device,
+      );
+      await expectLater(
+        e.send(const CloudChatRequest(
+          messages: [UserMessage('u')],
+          requirement: CapabilityRequirement(
+            needsTools: false,
+            localOnly: true,
+            latencyClass: LatencyClass.interactive,
+          ),
+        )).toList(),
+        throwsA(isA<LocalOnlyViolationException>()),
+      );
+      expect(cloud.calls, isEmpty);
+    });
+
+    test('端侧运行时死亡 + 排除位 → 显式失败不切云（云端零调用）', () async {
+      controller.reportTransportTimeout(); // 降级态 → 主入口走端侧
+      device.dieOnGenerate = true;
+      cloud.script.add(() => textStream('云端产出'));
+      await expectLater(
+        engine
+            .send(const CloudChatRequest(
+              messages: [UserMessage('u')],
+              requirement: localOnlyReq,
+            ))
+            .toList(),
+        throwsA(
+          isA<InferenceException>()
+              .having((e) => e.message, 'message', contains('禁止云端')),
+        ),
+      );
+      expect(cloud.calls, isEmpty,
+          reason: '排除位守卫须覆盖运行时失败路径（引擎死亡原语义是切云）');
+    });
+
+    test('端侧可服务 + 排除位 → 端侧产出（云端零调用）', () async {
+      controller.reportTransportTimeout(); // 降级态 → 主入口走端侧
+      device.next = '端侧产出';
+      final events = await engine
+          .send(const CloudChatRequest(
+            messages: [UserMessage('u')],
+            requirement: localOnlyReq,
+          ))
+          .toList();
+      expect(events.whereType<CloudTextDelta>().single.text, '端侧产出');
+      expect(cloud.calls, isEmpty);
+    });
+
+    test('无排除位 + 端侧不可用 → 仍切云（存量零行为变化）', () async {
+      cloud.script.add(() => textStream('云端产出'));
+      final e = HybridCloudEngine(
+        controller: controller,
+        cloud: cloud,
+        onDevice: null,
+      );
+      final events = await e.send(noTools).toList();
+      expect(events.whereType<CloudTextDelta>().single.text, '云端产出');
+      expect(cloud.calls, hasLength(1));
+    });
+  });
+
+  group('S14e 打断语义（K11：协作式打断非抢占式）', () {
+    test('打断未生效 → 白话不得表述为「已腾出算力」', () {
+      final reason = engineInterruptReason(const EngineDiedException(
+          'interrupt not effective (协作式打断等待窗口耗尽，算力仍被占) '
+          '→ cloud fallback'));
+      expect(reason, contains('协作式打断未生效'));
+      expect(reason, contains('尚未让出'));
+    });
+
+    test('槽忙驳回 → 引擎正忙（既有口径不变）', () {
+      expect(
+        engineInterruptReason(const EngineDiedException(
+            'service busy (strategy B) → cloud fallback')),
+        contains('引擎正忙'),
+      );
+    });
+  });
+
+  group('S15 判据优先级与缺省回归（W2 收口：声明>用户偏好>画像>冷却态）', () {
+    test('声明不可满足（needsTools=true）不被用户偏好拉回端侧 → 云端照走',
+        () async {
+      final pref = HybridCloudEngine(
+        controller: controller,
+        cloud: cloud,
+        onDevice: device,
+        preferOnDevice: true, // 偏好端侧
+      );
+      cloud.script.add(() => Stream.value(const CloudTextDelta('c')));
+      // 带服务端工具 + 无 deviceToolPolicy 注入 = 严格 isEmpty → needsTools=true
+      // = 声明不可端侧。偏好不得覆盖声明（S15 红线）。
+      final events = await pref.send(withServerTool).toList();
+      expect(events.whereType<CloudTextDelta>().single.text, 'c');
+      expect(device.prompts, isEmpty, reason: '声明不可满足 → 偏好不生效');
+      expect(cloud.calls, hasLength(1));
+    });
+
+    test('声明可满足时用户偏好生效 → 端侧路径', () async {
+      final pref = HybridCloudEngine(
+        controller: controller,
+        cloud: cloud,
+        onDevice: device,
+        preferOnDevice: true,
+      );
+      device.next = 'd';
+      final events = await pref.send(noTools).toList();
+      expect(events.whereType<CloudTextDelta>().single.text, 'd');
+      expect(cloud.calls, isEmpty, reason: '云端健康也走端侧（偏好语义）');
+    });
+
+    test('声明不可满足 + localOnly + 用户偏好 → 显式失败（偏好不得覆盖声明）',
+        () async {
+      final pref = HybridCloudEngine(
+        controller: controller,
+        cloud: cloud,
+        onDevice: null,
+        preferOnDevice: true,
+      );
+      cloud.script.add(() => Stream.value(const CloudTextDelta('cloud')));
+      const req = CloudChatRequest(
+        messages: [UserMessage('u')],
+        requirement: CapabilityRequirement(needsTools: true, localOnly: true),
+      );
+      Object? caught;
+      try {
+        await pref.send(req).toList();
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught, isA<LocalOnlyViolationException>(),
+          reason: '声明不可满足 = 显式失败，不被偏好覆盖也不切云');
+      expect(cloud.calls, isEmpty);
+    });
+
+    test('降级链冷却态不覆盖声明：冷却期 + needsTools=true → 云端照走',
+        () async {
+      // 连续两次 5xx 进入冷却（shouldUseCloud=false → wantDevice=true），
+      // 但声明不可端侧 → 端侧照旧被声明挡住，云端继续承接。
+      controller
+        ..reportServerError(500)
+        ..reportServerError(500);
+      expect(controller.shouldUseCloud, isFalse, reason: '前置：已入冷却态');
+      cloud.script.add(() => Stream.value(const CloudTextDelta('c')));
+      final events = await engine.send(withServerTool).toList();
+      expect(events.whereType<CloudTextDelta>().single.text, 'c');
+      expect(device.prompts, isEmpty, reason: '冷却态（wantDevice）不覆盖声明');
+    });
+
+    test('缺省零变化：无声明请求在健康态走云端（推导声明等价旧判据）', () async {
+      cloud.script.add(() => Stream.value(const CloudTextDelta('c')));
+      final events = await engine.send(noTools).toList();
+      expect(events.whereType<CloudTextDelta>().single.text, 'c');
+      expect(cloud.calls, hasLength(1));
+      expect(device.prompts, isEmpty);
+    });
+
+    // 画像 > 偏好（准入画像双坏查表即切云，压过 preferOnDevice）由 send()
+    // 内「canDevice && wantDevice && !profileExcluded」查表门禁顺序保证
+    // （profileExcluded 为独立于 wantDevice 的第三门禁）；OnDeviceAssetManager
+    // 为进程单例静态读取，单测面不 mock——该优先级钉由真机场次回归承接
+    // （ DispatchProfile 双坏已在 S14 判定链 admissionProfile 段单独回归）。
   });
 }

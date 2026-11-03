@@ -4,7 +4,6 @@ import 'package:flutter/foundation.dart';
 
 import 'llm.dart';
 import 'on_device_engine.dart';
-import 'on_device_engine_aidl.dart';
 import 'on_device_model_catalog.dart';
 
 /// 适配件：把总纲 §2 的 [OnDeviceEngine] 挂进既有 `HybridCloudEngine` 的
@@ -21,7 +20,7 @@ class AidlOnDeviceLlmEngineAdapter
     implements OnDeviceLlmEngine, OnDeviceEnableCapable, OnDeviceFailureReasonAware {
   AidlOnDeviceLlmEngineAdapter(this._inner);
 
-  final AidlOnDeviceEngine _inner;
+  final OnDeviceSupplyFace _inner;
   String? _currentRequestId;
 
   /// 最近一次生成的失败原因（零产出归因面，2026-10-30 真机实证「第二轮没有

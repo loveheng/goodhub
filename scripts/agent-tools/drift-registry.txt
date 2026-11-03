@@ -29,6 +29,25 @@ BANNED|$/cancelRequest|lib,docs,test|取消通知草案名；现行 notification
 CONST|kMcpProtocolVersion|2025-06-18|lib/mcp/server_capabilities.dart
 # 网关默认端口：2026-10-23 收敛双声明（gateway_server + gateway_controller 各写一份 8766）。
 CONST|kGatewayDefaultPort|8766|lib/gateway/gateway_server.dart
+# —— task-capability W1-S02 端侧常量登记（2026-11-03）——
+# .asset-meta.json 文件名：Dart 单源 = ModelRegistry.metaFileName（on_device_model_catalog.dart）；镜像 = Kotlin
+# ModelProfile.kt:31 裸字面量（Kotlin 不在扫描面，人工对齐；on_device-asset-metadata.md §3）。
+CONST|metaFileName|.asset-meta.json|lib/llm/on_device_model_catalog.dart
+# 数据面帧类型：Dart 单源 = on_device_engine_binding.dart 文件级常量；镜像 = C++
+# engine_data_worker.cpp kTypeToken/kTypeEos + Kotlin SocketTokenWriter.FrameType（§6.1 v3.1）。
+CONST|kDataPlaneFrameTokenChunk|0x0001|lib/llm/on_device_engine_binding.dart
+CONST|kDataPlaneFrameEos|0x000F|lib/llm/on_device_engine_binding.dart
+# 端侧采样缺省（GenerationConfig / 供给面原语缺省档；采样规格本体住 assets/model-specs.json，
+# 此处只锁 Dart 缺省字面量防再复制）。
+CONST|GenerationConfig.topP 缺省|topP = 0.95|lib/llm/on_device_engine.dart
+CONST|CapabilityRequest 采样缺省|temperature = 0.3,|lib/llm/on_device_capability.dart
+CONST|CapabilityRequest.topP 缺省|topP = 0.9,|lib/llm/on_device_capability.dart
+# 前台保活促升阈值：Dart 单源 = kFgsPromoteMinTokens；镜像 = Kotlin EngineService.kt
+# FGS_PROMOTE_MIN_MAX_TOKENS（Kotlin 不在扫描面，人工对齐）。
+CONST|kFgsPromoteMinTokens|kFgsPromoteMinTokens = 256|lib/llm/on_device_engine_aidl.dart
+# 内存绝对地板（1GB）无 Dart 代码副本：单源在 Kotlin MemoryGuardEvaluator
+# .ABSOLUTE_FLOOR_BYTES（GenieSession/LiteRtLmRunner 复用；EngineService LOAD_ABORT_AVAIL_MEM_BYTES
+# 为同值副本，Kotlin 不在扫描面，人工对齐）——故无 CONST 行，留注释见证。
 
 # —— D3 OVERSIZE：体量登记（行数级）——
 # lib/ 超 800 行的件必须登记在超标清单（docs/project/index.md「存量超标清单」节，
