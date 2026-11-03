@@ -1,6 +1,6 @@
 ---
 status: draft
-updated: 2026-11-02
+updated: 2026-11-03
 ---
 
 # 端侧模型资产元数据规格（.asset-meta.json）
@@ -74,6 +74,20 @@ updated: 2026-11-02
 - **推导必须确定性**：推导规则（如闭合 token 提取）是纯函数，同工件恒同结果。
 - **规格声明绑定特定工件**：仅对已知工件有效（Gemma3-1B bundle）；第二款 litertlm bundle 引入时泛化为 per-bundle 规格表（数据非代码，每行 = 一个已知工件的规格声明）。
 - **推荐采样参数不进本契约**：GGUF 头无官方推荐采样字段，"按家族预设白名单"属封闭表反模式；按模型采样 preset 归多模型扩展阶段、请求层可覆盖消费（溯源类 = 提供方文档声明）。
+
+## 3.5 来源分级（S0 > S1 > S2）
+
+单字段单源，高优先级来源在场时覆盖低级；多级同时在场且值冲突 = 资产异常（写导入黄灯，禁静默择一）。
+
+| 级 | 来源 | 载体 | 覆盖字段 | 探测实现 |
+|---|---|---|---|---|
+| S0 | 资产内嵌 | GGUF 头 KV | contextTokens / chatTemplateFamily（模板内容映射）/ stopSequences（家族闭合 token） | `on_device_gguf_header.dart` 单源解析器（v2/v3、12 类 KV、32MB KV 区上限、零权重加载）——`OnDeviceAssetManager._ggufProbe` 委托消费，无私有副本 |
+| S1 | 策展声明 | `.asset-meta.json` 声明区 | S0 探不出的字段（litertlm bundle 规格常量 contextTokens 等） | 写方按溯源纪律落盘 |
+| S2 | 内建缺省 | 消费方代码 | 最后防线（目录层 litertlm 族 1280 回落等既有口径） | 既有内建口径不变 |
+
+- **值域纪律不变**：任何一级探不出 → 字段缺席或显式 `unknown`，禁写猜测值；S0 探测失败不阻断导入（§1 meta 是增强面非门禁）。
+- **context_length 回落语义**（S0 内部）：架构前缀键（`<arch>.context_length`）优先；缺失回落**唯一** context 键；多键冲突不猜（null）。
+- **推荐采样（S1 扩展位）**：`modelProfile.recommendedSampling` 归 S1（提供方文档声明），S0 无此字段——随采样下发链立项接入，不在本契约抢先立法。
 
 ## 4. 生命周期
 

@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 import '../core/storage/sequential_file_writer.dart';
 import 'on_device_dispatch_profile.dart';
 import 'on_device_engine_binding.dart';
+import 'on_device_gguf_header.dart';
 import 'on_device_model_catalog.dart';
 
 /// 端侧模型资产 OTA 正式分发通道（on-device S2-2，接替 S2-1 冒烟直下载
@@ -368,7 +369,8 @@ class OnDeviceAssetManager {
       case OnDeviceRuntime.llamaCpp:
         final gguf = await _firstGguf(dir);
         if (gguf == null) return false;
-        return (await _ggufProbe(gguf)).chatTemplate?.isNotEmpty ?? false;
+        final tpl = (await _ggufProbe(gguf))?[GgufKeys.chatTemplate] as String?;
+        return tpl?.isNotEmpty ?? false;
       default:
         return false;
     }
@@ -792,14 +794,16 @@ class OnDeviceAssetManager {
     final gguf = await _firstGguf(dir);
     if (gguf != null) {
       final probe = await _ggufProbe(gguf);
-      final family = probe.chatTemplate == null
+      final chatTemplate = probe?[GgufKeys.chatTemplate] as String?;
+      final family = chatTemplate == null
           ? 'unknown'
-          : chatTemplateFamilyOfTemplate(probe.chatTemplate!);
+          : chatTemplateFamilyOfTemplate(chatTemplate);
       profile['chatTemplateFamily'] = family;
       final stops = stopSequencesForFamily(family);
       if (stops != null) profile['stopSequences'] = stops;
-      if (probe.contextLength != null) {
-        profile['contextTokens'] = probe.contextLength;
+      final ctx = probe?.contextLength;
+      if (ctx != null) {
+        profile['contextTokens'] = ctx;
       }
     }
     return profile.isEmpty ? null : profile;
@@ -856,85 +860,27 @@ class OnDeviceAssetManager {
     return null;
   }
 
-  /// GGUF 头 KV 扫描（v2/v3 头格式）。启发式预算：只读头部前段——真实工件
-  /// 实证 Qwen3.5-2B KV 区达 10.9MB（大词表 tokens/merges 数组排在
-  /// chat_template 之前，8MB 预算会提前溢出漏检），取 32MB 覆盖现有量级并
-  /// 留余量；解析越界或版本不识别一律返空探测（调用方落 unknown / 不写
-  /// 字段，不阻断导入）。
-  static const int _ggufScanBudgetBytes = 32 * 1024 * 1024;
-  static const int _ggufTypeString = 8;
+  /// GGUF 头探测：委托单源解析器 `on_device_gguf_header.dart`（2026-11-03
+  /// 收敛——本类原私有 _GgufKvReader 副本已删，双解析器是漂移温床）。探测
+  /// 失败（magic/版本/结构非法/超预算）返 null，调用方落 unknown / 不写
+  /// 字段，不抛异常打断导入。
+  static Future<GgufHeader?> _ggufProbe(File f) async {
+    try {
+      return await Future(() => readGgufHeader(f));
+    } on Object {
+      return null;
+    }
+  }
 
-  /// 测试钩子：单测喂合成头（公开面仅暴露公有类型，私有探测结构不外泄）。
+  /// 测试钩子：单测喂合成头取 chat_template（公有面只暴露标量结果）。
   @visibleForTesting
   static Future<String?> ggufChatTemplate(File f) async =>
-      (await _ggufProbe(f)).chatTemplate;
+      (await _ggufProbe(f))?[GgufKeys.chatTemplate] as String?;
 
   /// 测试钩子：仅取架构上下文窗口。
   @visibleForTesting
   static Future<int?> ggufContextLength(File f) async =>
-      (await _ggufProbe(f)).contextLength;
-
-  static Future<_GgufHeaderProbe> _ggufProbe(File f) async {
-    RandomAccessFile? raf;
-    try {
-      raf = await f.open(mode: FileMode.read);
-      final budget = await f.length() < _ggufScanBudgetBytes
-          ? await f.length()
-          : _ggufScanBudgetBytes;
-      final buf = Uint8List(budget);
-      final n = await raf.readInto(buf);
-      final r = ByteData.sublistView(buf, 0, n);
-      final rd = _GgufKvReader(r);
-      if (rd.u32() != 0x46554747) return const _GgufHeaderProbe(); // 'GGUF' 小端读回
-      final version = rd.u32();
-      if (version < 2 || version > 3) return const _GgufHeaderProbe();
-      rd.u64(); // tensor_count
-      final kvCount = rd.u64();
-      String? arch;
-      String? chatTemplate;
-      final contextByArch = <String, int>{};
-      for (var i = 0; i < kvCount && !rd.overflowed; i++) {
-        final key = rd.string();
-        final type = rd.u32();
-        if (type == _ggufTypeString) {
-          final value = rd.string();
-          if (key == 'general.architecture') {
-            arch ??= value;
-          } else if (key == 'tokenizer.chat_template') {
-            chatTemplate ??= value;
-          }
-        } else if (type == 4 || type == 5) {
-          // UINT32 / INT32：context_length 常见形态（qwen35.context_length
-          // 实证 = type 4）。
-          final v = type == 4 ? rd.u32() : rd.i32();
-          if (key.endsWith('.context_length')) contextByArch[key] = v;
-        } else if (type == 10 || type == 11) {
-          // UINT64 / INT64：仅收 int32 安全域（上下文窗口不会越界）。
-          final v = type == 10 ? rd.u64() : rd.i64();
-          if (key.endsWith('.context_length') && v >= 0 && v <= 0x7FFFFFFF) {
-            contextByArch[key] = v;
-          }
-        } else {
-          rd.skipValue(type);
-        }
-      }
-      // 架构前缀键优先（如 qwen35.context_length）；未命中回落磁盘上唯一
-      // context 键（防御非规范工件）。
-      int? contextLength;
-      if (arch != null) contextLength = contextByArch['$arch.context_length'];
-      contextLength ??= contextByArch.values.isEmpty
-          ? null
-          : contextByArch.values.first;
-      return _GgufHeaderProbe(
-          chatTemplate: chatTemplate, contextLength: contextLength);
-    } catch (_) {
-      return const _GgufHeaderProbe();
-    } finally {
-      try {
-        await raf?.close();
-      } catch (_) {}
-    }
-  }
+      (await _ggufProbe(f))?.contextLength;
 
   /// 在盘导入资产校验：meta 版本带导入前缀 + meta 记录的每个文件在场且
   /// 尺寸全对。sha256 不重算（导入源完整性由用户侧保证，同 [_verifyInstalled]
@@ -1368,98 +1314,4 @@ class _DigestSink implements Sink<Digest> {
 
   @override
   void close() {}
-}
-
-/// GGUF 头探测结果（v2/v3）：chat 模板 + 上下文窗口（规格
-/// on-device-asset-metadata.md §2 声明区 contextTokens 的 GGUF 实测源）。
-class _GgufHeaderProbe {
-  const _GgufHeaderProbe({this.chatTemplate, this.contextLength});
-  final String? chatTemplate;
-  final int? contextLength;
-}
-
-/// GGUF 头 KV 只读游标（小端）：越界读置 [overflowed] 并返 0/空串——
-/// 上层按「探测失败」收口（unknown / 不写字段），不抛异常打断导入。
-class _GgufKvReader {
-  _GgufKvReader(this._data);
-  final ByteData _data;
-  int _pos = 0;
-  bool overflowed = false;
-
-  int get _remain => _data.lengthInBytes - _pos;
-
-  int u32() {
-    if (_remain < 4) {
-      overflowed = true;
-      return 0;
-    }
-    final v = _data.getUint32(_pos, Endian.little);
-    _pos += 4;
-    return v;
-  }
-
-  int u64() {
-    if (_remain < 8) {
-      overflowed = true;
-      return 0;
-    }
-    final v = _data.getUint64(_pos, Endian.little);
-    _pos += 8;
-    return v;
-  }
-
-  int i32() {
-    if (_remain < 4) {
-      overflowed = true;
-      return 0;
-    }
-    final v = _data.getInt32(_pos, Endian.little);
-    _pos += 4;
-    return v;
-  }
-
-  int i64() {
-    if (_remain < 8) {
-      overflowed = true;
-      return 0;
-    }
-    final v = _data.getInt64(_pos, Endian.little);
-    _pos += 8;
-    return v;
-  }
-
-  String string() {
-    final len = u64();
-    if (overflowed || len > _remain) {
-      overflowed = true;
-      return '';
-    }
-    final s = utf8.decode(_data.buffer.asUint8List(_data.offsetInBytes + _pos, len),
-        allowMalformed: true);
-    _pos += len;
-    return s;
-  }
-
-  /// 跳过一个非字符串 KV 值（GGUF v2/v3 值类型；ARRAY 逐元素跳）。
-  static const int _tArray = 9;
-  static const int _tString = 8;
-  void skipValue(int type) {
-    switch (type) {
-      case 0: case 1: case 7: _pos += 1;
-      case 2: case 3: _pos += 2;
-      case 4: case 5: case 6: _pos += 4;
-      case 10: case 11: case 12: _pos += 8;
-      case _tString:
-        string();
-      case _tArray:
-        final elemType = u32();
-        final count = u64();
-        for (var i = 0; i < count && !overflowed; i++) {
-          skipValue(elemType);
-        }
-      default:
-        overflowed = true; // 未知类型 = 头格式不识别，终止扫描
-    }
-    if (_pos > _data.lengthInBytes) overflowed = true;
-  }
 }

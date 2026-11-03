@@ -21,10 +21,11 @@ import 'dart:typed_data';
 /// "GGUF" 小端 u32。
 const int _kGgufMagic = 0x46554747;
 
-/// KV 区读取上限（防畸形文件读穿张量区；2026-11-03 真样本实证：Qwen3.5-2B
-/// KV 区 10.9MB，tokenizer tokens/merges/token_type 三数组占 ~10.5MB——
-/// 8MB 档会误拒正常模型，16MB 覆盖主流 2B 级）。
-const int kGgufHeaderMaxBytes = 16 * 1024 * 1024;
+/// KV 区读取上限（防畸形文件读穿张量区）。2026-11-03 真样本实证：Qwen3.5-2B
+/// KV 区 10.9MB（tokenizer tokens/merges/token_type 三数组占 ~10.5MB）——
+/// 8MB 档会误拒正常模型；32MB 覆盖现有量级并留大词表余量（与导入探测
+/// 通道历史预算同值，单源纪律：两通道共用本件后只此一档）。
+const int kGgufHeaderMaxBytes = 32 * 1024 * 1024;
 
 /// 元数据键（架构信息 / 窗口 / 模板 / 量化），消费方按这些键取 S0 值。
 abstract final class GgufKeys {
@@ -60,16 +61,23 @@ class GgufHeader {
   /// 便捷取值：键不存在返回 null（unknown 判定归消费方，禁静默兜底值）。
   Object? operator [](String key) => metadata[key];
 
-  /// 窗口 token 数：按 `{arch}.context_length` 键探查（架构名从
-  /// `general.architecture` 派生），无架构键时退裸 `context_length`。
+  /// 窗口 token 数：`{arch}.context_length` 架构前缀键优先（架构名从
+  /// `general.architecture` 派生）；未命中回落**唯一** context 键或裸
+  /// `context_length`（防御非规范工件——旧导入探测通道同语义，单源化
+  /// 保留）。多键冲突不猜（返回 null，禁取首值冒充）。
   int? get contextLength {
     final arch = metadata[GgufKeys.architecture];
     if (arch is String) {
       final v = metadata['$arch.context_length'];
       if (v is num) return v.toInt();
     }
-    final v = metadata['context_length'];
-    return v is num ? v.toInt() : null;
+    final candidates = <int>[];
+    for (final e in metadata.entries) {
+      if (!e.key.endsWith('.context_length')) continue;
+      final v = e.value;
+      if (v is num) candidates.add(v.toInt());
+    }
+    return candidates.length == 1 ? candidates.single : null;
   }
 }
 
