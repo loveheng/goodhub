@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:archive/archive_io.dart' show extractFileToDisk;
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
@@ -42,10 +43,11 @@ class OnDeviceAssetManager {
     this.freeBytesProvider,
     this.fingerprintProvider,
     this.supportDirResolver,
+    this.modelSpecsSource,
     this.now,
   });
 
-  /// 测试注入构造：基址/磁盘余量/驱动指纹/support 根目录全部可注入，
+  /// 测试注入构造：基址/磁盘余量/驱动指纹/support 根目录/规格表源全部可注入，
   /// 单测以本地 HttpServer + 临时目录全链路跑通，不触平台通道。
   @visibleForTesting
   OnDeviceAssetManager.forTest({
@@ -53,12 +55,14 @@ class OnDeviceAssetManager {
     Future<int?> Function()? freeBytesProvider,
     Future<String?> Function()? fingerprintProvider,
     Future<Directory> Function()? supportDirResolver,
+    Future<String> Function()? modelSpecsSource,
     DateTime Function()? now,
   }) : this._(
           baseUrlOverride: baseUrlOverride,
           freeBytesProvider: freeBytesProvider,
           fingerprintProvider: fingerprintProvider,
           supportDirResolver: supportDirResolver,
+          modelSpecsSource: modelSpecsSource,
           now: now,
         );
 
@@ -125,6 +129,39 @@ class OnDeviceAssetManager {
   final Future<String?> Function()? fingerprintProvider;
   final Future<Directory> Function()? supportDirResolver;
   final DateTime Function()? now;
+
+  /// per-bundle 规格表源（S1 策展声明数据面，2026-11-03 用户拍板「通用实现
+  /// 禁止在代码里绑定具体模型」）：默认读打包资产 `assets/model-specs.json`，
+  /// 测试注入覆盖。文件 schema：`{bundles: [{id, runtime, artifactPattern,
+  /// contextTokens?, recommendedSampling?}]}`——模型适配数据住配置文件，
+  /// 代码只留通用匹配逻辑；读失败/畸形 → 空表（S1 字段缺席，增强面非门禁）。
+  final Future<String> Function()? modelSpecsSource;
+
+  /// 规格表加载 + 按 bundle 文件名匹配（大小写不敏感 contains）。[artifact]
+  /// = 目录内首个 bundle 工件文件名；无命中/表不可读 → null（字段缺席）。
+  Future<Map<String, dynamic>?> _matchBundleSpec(
+      String runtime, String? artifact) async {
+    if (artifact == null || artifact.isEmpty) return null;
+    try {
+      final raw = await (modelSpecsSource ??
+          () => rootBundle.loadString('assets/model-specs.json'))();
+      final parsed = jsonDecode(raw) as Map<String, dynamic>;
+      final bundles = parsed['bundles'];
+      if (bundles is! List) return null;
+      final lower = artifact.toLowerCase();
+      for (final row in bundles) {
+        if (row is! Map<String, dynamic>) continue;
+        if (row['runtime'] != runtime) continue;
+        final pattern = (row['artifactPattern'] as String?)?.toLowerCase();
+        if (pattern == null || !lower.contains(pattern)) continue;
+        return row;
+      }
+      return null;
+    } catch (e) {
+      debugPrint('[DEGRADE] model-specs load: $e');
+      return null;
+    }
+  }
 
   /// 装配入口（main.dart 启动引导 / 冒烟诊断 / 设置页共用）：已装（导入 meta
   /// 在场且尺寸全对）即返回；否则对带 [model.base] 的目标走 manifest 下载
@@ -781,13 +818,21 @@ class OnDeviceAssetManager {
       Directory dir, String runtime) async {
     final profile = <String, dynamic>{};
     if (runtime == OnDeviceRuntime.litertlm) {
-      profile['contextTokens'] = kLitertlmContextTokens;
-      // S1 策展声明（§3.5）：Gemma3 官方推荐采样（Gallery demo 同值；0.7/0.9
-      // 旧默认下真机数字环退化反证，2026-11-02）。规格声明绑定本 bundle，
-      // 第二款 litertlm bundle 引入时泛化 per-bundle 规格表（禁跨 bundle 复用）。
-      profile['recommendedSampling'] =
-          const OnDeviceSamplingPreset(temperature: 1.0, topP: 0.95).toMeta();
-      return profile;
+      // S1 策展声明（§3.5）走 per-bundle 规格表（assets/model-specs.json，
+      // 数据非代码——2026-11-03 用户拍板「通用实现禁止在代码里绑定具体模型」）：
+      // 按 bundle 工件名匹配行，命中才写 contextTokens/recommendedSampling；
+      // 无命中行 → 字段缺席（S2 内建缺省归目录层消费口径，不在此猜值）。
+      final spec = await _matchBundleSpec(
+          runtime, (await _firstLitertlm(dir))?.split('/').last);
+      if (spec != null) {
+        final ctx = (spec['contextTokens'] as num?)?.toInt();
+        if (ctx != null) profile['contextTokens'] = ctx;
+        final sampling = spec['recommendedSampling'];
+        if (sampling is Map<String, dynamic>) {
+          profile['recommendedSampling'] = sampling;
+        }
+      }
+      return profile.isEmpty ? null : profile;
     }
     if (runtime == OnDeviceRuntime.qairt) {
       profile['chatTemplateFamily'] = 'qwen_chatml';
@@ -860,6 +905,18 @@ class OnDeviceAssetManager {
     try {
       await for (final e in dir.list()) {
         if (e is File && e.path.toLowerCase().endsWith('.gguf')) return e;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// 目录内首个 .litertlm bundle 工件路径（规格表匹配用，取文件名部分）。
+  static Future<String?> _firstLitertlm(Directory dir) async {
+    try {
+      await for (final e in dir.list()) {
+        if (e is File && e.path.toLowerCase().endsWith('.litertlm')) {
+          return e.path;
+        }
       }
     } catch (_) {}
     return null;

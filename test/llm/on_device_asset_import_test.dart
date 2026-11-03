@@ -107,4 +107,66 @@ void main() {
     expect(OnDeviceAssetFamily.familyOf(OnDeviceRuntime.auto),
         OnDeviceAssetFamily.unknown);
   });
+
+  group('per-bundle 规格表匹配（S1 数据住配置文件，代码零绑定）', () {
+    const specJson = '''
+{
+  "schemaVersion": 1,
+  "bundles": [
+    {
+      "id": "litertlm-gemma3-1b",
+      "runtime": "litertlm",
+      "artifactPattern": "gemma3-1b",
+      "contextTokens": 1280,
+      "recommendedSampling": { "temperature": 1.0, "topP": 0.95 }
+    }
+  ]
+}
+''';
+
+    Future<Map<String, dynamic>> importLitertlm(
+        String fileName, String spec) async {
+      final tmp2 = await Directory.systemTemp.createTemp('gh_spec');
+      final m = OnDeviceAssetManager.forTest(
+        supportDirResolver: () async => tmp2,
+        freeBytesProvider: () async => 20 * 1024 * 1024 * 1024,
+        fingerprintProvider: () async => 'fp-test',
+        modelSpecsSource: () async => spec,
+      );
+      final f = await sparseFile(tmp2, fileName, 1024 * 1024);
+      final dir =
+          await m.importFromPickedFiles([f.path], target: target);
+      expect(dir, isNotNull);
+      final meta = jsonDecode(
+              await File('${dir!.path}/.asset-meta.json').readAsString())
+          as Map<String, dynamic>;
+      await tmp2.delete(recursive: true);
+      return meta;
+    }
+
+    test('artifactPattern 命中 → 规格行回填 contextTokens/recommendedSampling',
+        () async {
+      final meta =
+          await importLitertlm('gemma3-1b-it-q4.litertlm', specJson);
+      final profile = meta['modelProfile'] as Map<String, dynamic>;
+      expect(profile['contextTokens'], 1280);
+      expect(profile['recommendedSampling'],
+          {'temperature': 1.0, 'topP': 0.95});
+    });
+
+    test('无命中行 → S1 字段缺席（S2 内建缺省归目录层，不在此猜值）', () async {
+      final meta = await importLitertlm('qwen-unknown.litertlm', specJson);
+      final profile = meta['modelProfile'] as Map<String, dynamic>?;
+      expect(profile?['contextTokens'], isNull);
+      expect(profile?['recommendedSampling'], isNull);
+    });
+
+    test('规格表不可读/畸形 → 空表降级（增强面非门禁，不阻断导入）', () async {
+      final meta =
+          await importLitertlm('gemma3-1b.litertlm', '{ not-json');
+      expect(meta['runtime'], OnDeviceRuntime.litertlm);
+      final profile = meta['modelProfile'] as Map<String, dynamic>?;
+      expect(profile?['recommendedSampling'], isNull);
+    });
+  });
 }

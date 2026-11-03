@@ -73,4 +73,4 @@ last-merge: none
 
 ## 断点
 
-- [断点] 元数据管线 S0 单源化已收口（e382e8a：_ggufProbe 委托公共解析器、私有 KV 游标副本删除、contextLength 回落语义对齐、KV 上限统一 32MB；§3.5 来源分级 S0>S1>S2 立法同轮）。两前置实验 + S0 接线三连收口——下一步：元数据管线 S1/S2 消费深化（recommendedSampling 下发链、DispatchProfile 冒烟校验接入）或等新指令
+- [断点] 元数据管线 S0/S1/S2 三连收口（S0 单源化 e382e8a / S2 探针冒烟校验 3cd19f8 / S1 recommendedSampling 下发链 67bc5fb，门禁全绿）——下一步：Qwen 系策展采样数据待真机验证补 S1 声明、模型管理链（域内待办最重项）或等新指令

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "bundles": [
+    {
+      "id": "litertlm-gemma3-1b",
+      "runtime": "litertlm",
+      "artifactPattern": "gemma3-1b",
+      "contextTokens": 1280,
+      "recommendedSampling": { "temperature": 1.0, "topP": 0.95 }
+    }
+  ]
+}
