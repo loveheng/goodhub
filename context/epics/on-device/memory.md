@@ -18,6 +18,7 @@ last-merge: none
 - [挂载] docs/design/on-device-capability.md（端侧能力公共服务设计，draft，本 epic 主设计稿：芯片分发/双后端/分期）
 - [挂载] docs/design/on-device-npu-deployment.md（端侧 NPU 最大化部署系统方案，draft，本 epic 引擎深度设计：协同分工/量化适配/内存带宽/热调度/端到端评估）
 - [挂载] docs/product/architecture.md（端侧引擎职责 / 内存冷启动 / 双端策略 / N7 PII 围栏）
+- [横切·task-capability W3 升格（2026-11-04）] 端侧算力供给面服务形态 = `OnDeviceCapabilityService` 统一入口（`complete` 唯一推理入口无状态/幂等 + `completeStream` 流式取消随退订下沉 + `availability()`/`loadExplicit()` 可用性查询与幂等显式装载 + `PrimitiveSuspension` 挂起态契约）；约束解码规格经 `GenerationConfig.responseFormat` 双端承载（键面 = `SessionTicketWire.kt`，跨仓立法源 goodshare `ai-app-split.md` §3.11 已修订）；语义注入走 `supply/` Skill 命名空间（宿主内置，端侧资产零模板）——SSOT = `on-device-task-capability.md` §4.1/§5.1，本条为挂载锚（防双源，只指不抄）
 - [挂载] docs/product/future-considerations.md（FC2 端侧 PII 检测模型）
 
 ## 定位（域界）

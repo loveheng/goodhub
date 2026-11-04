@@ -116,6 +116,7 @@ updated: 2026-11-01
 
 - 公共服务内核 + 后端工厂 + 能力探测 + 与云端搭配（提取/分类/摘要/约束解码 + 断网兜底）。
 - **仅 App 内 AgentLoop 消费；不对外导出**。
+- **能力供给面收口（task-capability W3 升格，2026-11-04）**：算力供给经 `OnDeviceCapabilityService` 统一入口——`complete` 唯一推理入口（无状态/幂等）+ `completeStream` 流式（取消随退订下沉）+ `availability()`/`loadExplicit()` 可用性查询与幂等显式装载 + `PrimitiveSuspension` 挂起态契约 + 约束解码规格 `GenerationConfig.responseFormat` 双端承载（键面 = `SessionTicketWire.kt` GenerationParams，跨仓立法源 goodshare `ai-app-split.md` §3.11 已同轮修订）；语义注入走 `supply/` Skill 命名空间（宿主内置语义，端侧资产零模板）。
 - **P1-A（首发）**：骁龙 8G3/8 Elite + QNN + `:engine` 独立进程 + 云端降级，拉通 Dart 全链路闭环（详见 §0 分期）。
 - **P1-B（跟进）**：联发科 NeuroPilot，依赖企业资质/ROM 验证专项（见 R1），与 P1-A 解耦。
 - **强制验收（P1 阻塞项）**：① `:engine` 独立进程架构；② NPU 不可用/异常时直接收口 `HybridCloudEngine` 纯云端（**无端侧 LLM CPU 兜底**）；③ 引擎进程崩溃/OOM 仅触发 `EngineDiedException`，主进程零闪退；④ **两级熔断保护**（L1 5min≥2 次→进程内切云冷启自愈、L2 当天累计 2 次→持久化锁 24h，`isAvailable=false`，详见 NPU 稿 §6.5）；⑤ **单执行槽 + 策略 B 驳回**（并发 `generate` 不导致 KV 覆盖/驱动 Panic，前台连发 `cancel` 快速中断不驳回用户，详见 NPU 稿 §6.6）；⑥ **存储落地合规**（filesDir 非 cacheDir + ≥5GB 空间门禁 + 原子替换，详见 NPU 稿 §4.5/§4.7）。

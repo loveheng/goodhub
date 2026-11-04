@@ -58,11 +58,42 @@ void main() {
 
     test('builtinSkills 全过预算 + scope 分布齐 + \$ref 正文不被 Dart 插值吞', () {
       final r = SkillRegistry()..registerAll(builtinSkills());
-      expect(r.globals().length, 2);
+      expect(r.globals().length, 3, reason: 'ref/task + supply/summarize（S17）');
       expect(r.forServer('goodshare').length, 1);
       expect(r.onDemand().length, 1);
       expect(r.byName('ref-pipeline')!.content, contains(r'$ref:'),
           reason: '正文里的 \$ref 字面量必须完整（防插值事故）');
+    });
+
+    test('S17 语义外注：supply/ 命名空间经注册表可解析（通道可用性锚）', () {
+      final r = SkillRegistry()..registerAll(builtinSkills());
+      final s = r.byName('supply/summarize');
+      expect(s, isNotNull, reason: '供给面语义按名可解析（buildBaseSkillRegistry '
+          '装配 builtin 全集，cow/user 同机制注入）');
+      expect(s!.scope, SkillScope.global,
+          reason: '供给面语义常驻注入面（预算硬闸管辖内）');
+      // 与 OnDeviceResultSummarizer._system 同源文本（S17c 迁移前双源回归锚）。
+      expect(s.content, contains('工具结果摘要器'));
+      expect(s.content, contains('不添加解释'));
+    });
+
+    test('S17c 解析失败显式失败：缺条目抛 StateError（禁静默回退硬编码）', () {
+      final r = SkillRegistry(); // 空 registry = 语义外注通道坏
+      expect(
+        () => resolveSupplyInstruction(r, kSupplySummarizeSkillName),
+        throwsA(isA<StateError>()),
+        reason: '语义外注是唯一来源——静默回退硬编码 = 双源复活 + 内置调用'
+            '分支残留（S17c 红线），装配点不得捕获吞掉',
+      );
+    });
+
+    test('S17c 常量单源：kSupplySummarizeSkillName 与 builtin 条目一致', () {
+      final r = SkillRegistry()..registerAll(builtinSkills());
+      expect(
+        resolveSupplyInstruction(r, kSupplySummarizeSkillName),
+        r.byName('supply/summarize')!.content,
+        reason: '消费面与注册面走同一名字常量（禁字符串双源漂移）',
+      );
     });
 
     test('appScoped() 跨 server 全集投影（记忆看板「MCP 服务 Prompt」总览用）', () {

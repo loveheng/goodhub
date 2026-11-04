@@ -318,10 +318,15 @@ void main() {
     );
     // 目录按 name 字典序稳定化（管道出口），故用 containsAll 而非顺序断言
     final singleNames = single.toolsList().map((e) => e['name']).toList();
-    expect(singleNames, containsAll(
-        ['get_host_status', GatewayHandler.kGatewaySelectPrivate]));
-    expect(singleNames, hasLength(2),
-        reason: 'single 只暴露目标服务 + 唯一出口工具，无公共面泄漏');
+    expect(singleNames, containsAll([
+      'get_host_status',
+      GatewayHandler.kGatewaySelectPrivate,
+      // W5 端侧供给面导出：on_device_complete 属 host 公共面成员，
+      // single 投影随 Allowlist 扩项自然纳入（导出面已过登记三关）。
+      'on_device_complete',
+    ]));
+    expect(singleNames, hasLength(3),
+        reason: 'single 暴露目标服务 + 唯一出口工具 + 端侧供给面导出项（W5）');
     final singleCall = await single.toolsCall(
       name: 'get_host_status',
       arguments: const <String, Object?>{},

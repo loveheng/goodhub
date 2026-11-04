@@ -166,6 +166,24 @@ class SkillRegistry {
 
 /// 官方预置最小集（builtin）。内容是模型侧行为知识：$ref 传递纪律直接配合
 /// T3/T4 注水机制；拾贝数据面配合 goodshare instructions（Tier 1）。
+
+/// 供给面语义条目名（S17c 消费迁移；与 [builtinSkills] 的 `supply/` 条目
+/// 单源——禁字符串双源漂移）。
+const String kSupplySummarizeSkillName = 'supply/summarize';
+
+/// 按名解析供给面语义（S17c：消费方经此取 instruction，禁再硬编码语义文本）。
+///
+/// **显式失败红线**：解析不到（条目缺失/被预算闸拒绝）抛 [StateError]——
+/// 语义外注是唯一来源，静默回退硬编码文本 = 双源复活 + 内置调用分支残留
+/// （S17c 红线），调用方（Summarizer 装配点）不得捕获吞掉。
+String resolveSupplyInstruction(SkillRegistry registry, String name) {
+  final s = registry.byName(name);
+  if (s == null) {
+    throw StateError('供给面语义条目缺失: $name（语义外注通道坏，显式失败）');
+  }
+  return s.content;
+}
+
 List<Skill> builtinSkills() => const [
       Skill(
         name: 'ref-pipeline',
@@ -203,5 +221,20 @@ List<Skill> builtinSkills() => const [
         content: '逐条读取用户最近的收集条目（分页 list_items → get_item），'
             '输出归档建议清单：条目 id、建议（保留/归档/待办/删除）、一句理由。'
             '不执行写操作，仅输出建议。',
+      ),
+      // —— supply/ 语义命名空间（W3-S17 语义外注首条）——
+      // 宿主供给面消费语义按 `supply/<语义名>` 落 builtin：语义住宿主 App
+      // 代码（随 App 发版），**不进端侧资产**（D2=a 红线：端侧不内置任务
+      // 模板中心；语义外注 = instruction 参数或本表，不新造注入通道）。
+      // 内容与 OnDeviceResultSummarizer._system（context_governor.dart）同
+      // 源文本——S17c 消费迁移时切换到按名解析并删除双源，迁移前此条是
+      // 「语义外注通道可用性」的回归锚（真机分类指令长度实测随 S17c 场次）。
+      Skill(
+        name: 'supply/summarize',
+        scope: SkillScope.global,
+        description: '端侧供给面·工具结果摘要语义：要点压缩，保留数值/状态/结论/错误。',
+        source: SkillSource.builtin,
+        content: '你是工具结果摘要器。把给定工具结果压缩为要点，'
+            '保留关键数值、状态、结论与错误信息，不添加解释、前言或代码块包裹。',
       ),
     ];

@@ -20,6 +20,7 @@
 library;
 
 import 'package:flutter/foundation.dart';
+import 'llm.dart';
 import 'on_device_model_catalog.dart';
 
 /// 端侧引擎结构化状态（序数 = AIDL int，禁调序）。
@@ -100,12 +101,20 @@ class GenerationConfig {
     this.temperature = 1.0,
     this.topP = 0.95,
     this.stopSequences = const [],
+    // S17b（task-capability，D4 前提）：约束解码规格随生成参数下发（D2=a
+    // 供给面契约承载项）——null = 无约束（存量调用零变化）。Runner 侧自治
+    // 匹配（token 级解析禁中心化，D-3 纪律）；K15 红线：结构化场景禁截断
+    // 降级档，解码失败须带同一份规格回退云端。
+    this.responseFormat,
   });
 
   final int maxTokens;
   final double temperature;
   final double topP;
   final List<String> stopSequences;
+
+  /// 约束解码规格（json = JSON Schema 文本 / regex = 正则模式）。
+  final LlmResponseFormat? responseFormat;
 }
 
 /// `:engine` 进程死亡/致命事件（总纲 §2）：驱动 Panic、算子越界 abort、

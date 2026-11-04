@@ -45,6 +45,8 @@ import '../core/notice_category.dart';
 import '../llm/cloud/cloud_llm.dart'
     show CloudChatMessage, CloudLlmEngine, CloudToolSchema;
 import '../mcp/connection_manager.dart';
+import '../mcp/transport/binder_transport.dart' show BinderTransport;
+import 'dart:async' show unawaited;
 import '../mcp/local_plugin_discovery.dart';
 import '../mcp/mcp_client.dart';
 import '../mcp/sampling.dart' show SamplingQuota;
@@ -59,6 +61,8 @@ import '../sandbox/memory_store.dart';
 import '../sandbox/workspace_state_store.dart';
 import 'resource_attachment_binder.dart' show ResourceAttachment, bindResourceAttachments;
 import 'reverse_wiring.dart';
+import 'caller_death_interrupt.dart';
+import 'supply_quota.dart';
 
 // ---------------------------------------------------------------------------
 // T1 · SessionContext —— 纯不可变快照（§8.1-4：不含配额）
@@ -726,12 +730,23 @@ class McpRuntime {
     final effectiveQuota = quota ?? SamplingQuota();
     if (caps.sampling) {
       // §S2 二期：sampling 接线唯一实现（网关同款共享件，消装配第二副本）。
+      // W5 跨 App 转发端侧算力（Binder 路径）：插件（同机 App）经私有反向
+      // method host/onDeviceComplete 用宿主端侧算力——与 sampling 反向请求
+      // （云端引擎）并存不互替；K22 配额 + 降级语义由导出执行器单源承载。
+      // 装配降级：供给面缺省 null = 不挂分派（ Binder 路径无端侧转发，
+      // sampling 照常）。
+      // W5 反向死亡代理桥接：Binder 死亡信封（binderDied）→ 注册表协作式
+      // 打断该插件名下在途端侧执行（新增链路，不复用 _failInFlight 语义）。
+      BinderTransport.onCallerDeath =
+          (callerKey) => unawaited(callerDeathInterruptSingleton?.notifyDeath(callerKey));
       wireSampling(
         faces: faces,
         engine: effectiveEngine,
         quota: effectiveQuota,
         onSamplingBegin: onSamplingBegin,
         onSamplingEnd: onSamplingEnd,
+        onDeviceCapability: AidlOnDeviceCapabilityService(sharedOnDeviceEngine),
+        supplyQuota: SupplyQuota(),
       );
     }
     // —— T6：elicitation 反向请求（server→宿主结构化提问）；双条件：profile 允许
@@ -771,9 +786,12 @@ class McpRuntime {
       // F1 生产链摘要器接线（2026-10-31）：>1000T 工具结果回填前走端侧原语
       // 摘要；端侧未就绪/失败 failFast → SummarizeException → agent_loop E1
       // 兜底（保留原文 + [DEGRADE]），原语不触发 2GB 装载（懒加载边界）。
+      // S17c 语义外注：instruction 经 SkillRegistry 按名解析（解析失败 =
+      // 装配期显式失败，不回退硬编码——语义外注是唯一来源）。
       summarizer: OnDeviceResultSummarizer(
-          AidlOnDeviceCapabilityService(sharedOnDeviceEngine))
-          .call,
+        AidlOnDeviceCapabilityService(sharedOnDeviceEngine),
+        instruction: resolveSupplyInstruction(skills, kSupplySummarizeSkillName),
+      ).call,
       refServerId: router.serverIds.isNotEmpty
           ? router.serverIds.first
           : 'goodshare',

@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/coordinator/context_governor.dart';
 import 'package:goodhub/llm/cloud/cloud_llm.dart';
 import 'package:goodhub/llm/on_device_capability.dart';
+import 'package:goodhub/llm/on_device_engine.dart';
 
 class _FakeCapability implements OnDeviceCapabilityService {
   _FakeCapability(this.output);
@@ -9,6 +10,24 @@ class _FakeCapability implements OnDeviceCapabilityService {
   final String? output;
   String? lastInstruction;
   String? lastInput;
+
+  @override
+  Future<OnDeviceCapabilityAvailability> availability() async =>
+      OnDeviceCapabilityAvailability.ready;
+
+  @override
+  Future<void> loadExplicit() async {}
+
+  @override
+  Stream<EngineChunk> completeStream({
+    required String instruction,
+    required String input,
+    OnDevicePrimitiveConfig config = const OnDevicePrimitiveConfig(),
+    String? traceId,
+  }) {
+    final out = output;
+    return Stream.value(EngineChunk(deltaText: out ?? ''));
+  }
 
   @override
   Future<String> complete({
@@ -91,20 +110,26 @@ void main() {
 
   test('端侧摘要器：产出裁空白透传，instruction/input 组装正确', () async {
     final cap = _FakeCapability(' 要点摘要 ');
-    final s = OnDeviceResultSummarizer(cap);
+    // S17c 语义外注：instruction 由装配方解析传入（测试用同源文本模拟
+    // resolveSupplyInstruction 的产物），断言其原样透传至原语。
+    const injected = '你是工具结果摘要器。把给定工具结果压缩为要点，'
+        '保留关键数值、状态、结论与错误信息，不添加解释、前言或代码块包裹。';
+    final s = OnDeviceResultSummarizer(cap, instruction: injected);
     expect(await s.call('原始结果'), '要点摘要');
     expect(cap.lastInput, '原始结果');
-    expect(cap.lastInstruction, contains('摘要'));
-    expect(cap.lastInstruction, contains('工具结果摘要器'));
+    expect(cap.lastInstruction, injected,
+        reason: '外注语义原样透传（不再有内置 _system 双源）');
   });
 
   test('端侧摘要器：原语失败 / 空产出翻译为 SummarizeException（禁静默放行）', () async {
     await expectLater(
-      OnDeviceResultSummarizer(_FakeCapability(null)).call('原文'),
+      OnDeviceResultSummarizer(_FakeCapability(null), instruction: 'i')
+          .call('原文'),
       throwsA(isA<SummarizeException>()),
     );
     await expectLater(
-      OnDeviceResultSummarizer(_FakeCapability('  ')).call('原文'),
+      OnDeviceResultSummarizer(_FakeCapability('  '), instruction: 'i')
+          .call('原文'),
       throwsA(isA<SummarizeException>()),
     );
   });

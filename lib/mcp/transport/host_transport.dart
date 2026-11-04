@@ -113,6 +113,22 @@ final List<HostExportEntry> kHostExportAllowlist = <HostExportEntry>[
     // 零隐私只读事实：宿主本人与配对 PC 均可读（§S6 主体矩阵首条声明）。
     allowedActors: <Actor>{Actor.owner, Actor.external('gateway')},
   ),
+  // 端侧供给面导出（task-capability W5，2026-11-04）：`on_device_complete`
+  // ——宿主端侧算力对外（PC 经聚合网关）轻量单发推理。登记三关：
+  // ① 产品价值 = PC 可用端侧算力做离线/低延迟轻量提取（非空操作）；
+  // ② 隐私 = input 经宿主端侧本地推理，PII 入口过滤装配后 fail-closed
+  //    （OnDeviceCapabilityService.inputFilter）；本机不外传模型权重；
+  // ③ 降级语义显式可知（执行器 content 声明：失败不兜底云端，调用方自处）。
+  // schema 与描述由 `HostOnDeviceToolExecutor` 单点拥有（禁双源漂移）。
+  // readOnlyHint: true = 幂等无副作用（K20 单轮自足，重复调用只是重新推理）。
+  // 主体 = 宿主本人与配对网关；调用方配额（W5 后续条目）经注入位生效。
+  HostExportEntry(
+    name: 'on_device_complete',
+    annotations: <String, Object?>{'readOnlyHint': true},
+    visibility: ToolVisibility.shared,
+    tags: <String>['core'],
+    allowedActors: <Actor>{Actor.owner, Actor.external('gateway')},
+  ),
 ];
 
 /// 控制面原语黑名单：宿主 JIT 元工具，**合成 `tools/list` 前强制剔除、

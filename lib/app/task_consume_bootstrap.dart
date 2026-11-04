@@ -27,6 +27,7 @@ import '../mcp/trusted_plugins.dart';
 import '../task/task_consume_ledger.dart';
 import '../task/task_consume_loop.dart';
 import '../task/task_loop_service.dart';
+import '../task/task_source.dart';
 
 /// goodshare 本地插件包名（跨仓常量，与 ai-app-split.md §3.12.3 唤醒包名同族）。
 const kGoodsharePackage = 'com.zzh.goodshare';
@@ -104,7 +105,7 @@ class TaskConsumeBootstrap {
       _client = client;
       final resolvedEngine = engine ?? await assembleDefaultHybridEngine();
       final service = TaskLoopService(
-        api: GoodshareTaskApi(client),
+        api: GoodshareTaskSource(GoodshareTaskApi(client)),
         inference: HybridTaskInference(engine: resolvedEngine),
       );
       service.onEvent = _onLoopEvent; // 对账记账（细粒度：claimed/applied/failed）

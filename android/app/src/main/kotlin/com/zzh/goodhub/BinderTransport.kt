@@ -273,6 +273,37 @@ object BinderTransportBridge {
         }
     }
 
+    /// 调用方死亡事件推送（**新增链路**，W5 调用方进程死亡联动打断）：
+    /// 平台侧为**调用方链路**注册的独立死亡代理触发时推此事件，驱动宿主
+    /// 协作式打断该调用方名下在途的端侧执行（K17）。
+    ///
+    /// 与 [dispatchTransportError] 的死亡信封是**两条独立链路、互不替代**：
+    /// - 既有链路（`binderDied` → `onTransportError`）：收敛**宿主 client 在途
+    ///   请求**（宿主作客户端感知对端死亡）；
+    /// - 本链路（`callerDeathRecipient` → `onCallerDied`）：驱动**反向路径**的
+    ///   算力打断（宿主作算力提供方时感知调用方死亡）。
+    ///
+    /// 红线：既有方向的死亡代理**不覆盖**反向路径，须新增链路而非复用既有
+    /// 字段/回调（设计稿 §6「调用方进程死亡须联动打断算力」）。
+    ///
+    /// [callerKey] = 调用方身份键（目标插件包名，物理主键 §9.3）——必须与
+    /// Dart 侧在途执行注册的 callerKey 同源，否则死亡通知匹配不上（漏打断
+    /// = 孤儿算力空跑）。
+    private fun dispatchCallerDied(tid: String, callerKey: String) {
+        mainHandler.post {
+            runCatching {
+                methodChannel.invokeMethod(
+                    "onCallerDied",
+                    mapOf(
+                        "transportId" to tid,
+                        "callerKey" to callerKey,
+                    ),
+                    eventAck,
+                )
+            }.onFailure { Log.w(TAG, "dispatchCallerDied failed: $it") }
+        }
+    }
+
     private class HostTransport(
         val context: Context,
         val id: String,
@@ -291,6 +322,20 @@ object BinderTransportBridge {
         private data class PendingCall(val body: String, val future: CompletableFuture<String>)
 
         private val deathRecipient = IBinder.DeathRecipient { markDead() }
+
+        /// 反向路径调用方死亡代理（W5 调用方进程死亡联动打断，**新增链路**）：
+        /// 宿主在反向请求链路（宿主作算力提供方、同机插件 App 作调用方）上为
+        /// 调用方进程注册的独立死亡代理。
+        ///
+        /// 与 [deathRecipient] 是**两条独立链路、语义不同、互不替代**：
+        /// - [deathRecipient] → [markDead]：宿主 client 在途请求收敛（既有方向
+        ///   的死亡代理，宿主作客户端感知对端死亡）；
+        /// - 本代理 → [pushCallerDied]：驱动宿主打断该调用方名下在途的端侧执行
+        ///   （反向路径，K17）。
+        ///
+        /// 红线：既有方向的死亡代理不覆盖反向路径——须新增链路而非复用既有
+        /// 字段/回调。此处独立注册独立 recipient，物理上不复用既有状态机。
+        private val callerDeathRecipient = IBinder.DeathRecipient { pushCallerDied() }
 
         private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -328,6 +373,21 @@ object BinderTransportBridge {
             }
         }
 
+        /// 推送调用方死亡事件（**新增链路**，W5 调用方进程死亡联动打断）：
+        /// 独立死亡代理 [callerDeathRecipient] 触发 → 通知 Dart 打断该调用方
+        /// 名下在途的端侧执行（宿主侧协作式打断 + 作废本次调用，K17）。
+        ///
+        /// **不复用既有死亡信封**（`onTransportError`）：既有链路的终态是
+        /// 「宿主 client 在途请求失败」，与「宿主在途算力执行被打断」是两种
+        /// 语义，分派到不同消费面。
+        private fun pushCallerDied() {
+            val tid = id
+            val callerKey = packageName
+            eventExecutor.execute {
+                dispatchCallerDied(tid, callerKey)
+            }
+        }
+
         fun startBind() {
             synchronized(lock) {
                 if (state == State.READY || state == State.CONNECTING) return
@@ -339,6 +399,11 @@ object BinderTransportBridge {
                     val ch = IMcpChannel.Stub.asInterface(rawBinder)
                     try {
                         rawBinder?.linkToDeath(deathRecipient, 0)
+                        // 新增链路（K17 调用方进程死亡联动打断）：为反向请求链路
+                        // 的调用方进程注册**独立**死亡代理——既有 recipient 服务
+                        // 「宿主 client 在途收敛」，本 recipient 服务「宿主在途
+                        // 端侧执行打断」，两条链路互不替代。
+                        rawBinder?.linkToDeath(callerDeathRecipient, 0)
                     } catch (_: Throwable) {
                     }
                     synchronized(lock) {

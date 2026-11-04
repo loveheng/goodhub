@@ -661,7 +661,13 @@ class EngineService : Service() {
                     // 同步生成：Genie 经回调流式投块（native → JNI → 本 sink），
                     // 本线程阻塞至完成/abort。返回 0=SUCCESS / 1=WARNING_ABORTED
                     //（cancel 生效）/ 负值=ERROR_*。
-                    val status = session.query(effectivePrompt, maxTokens, sink, temperature, topP, gp.stopSequences)
+                    // S17b（D4 前提）：约束解码规格经 GenerationParams 单源随调
+                    // 透传（Runner 自治匹配；GenieX 管线不支持 = -5 显式归因，
+                    // 上层带同一份规格回退云端，K15 禁截断降级档）。
+                    val status = session.query(
+                        effectivePrompt, maxTokens, sink, temperature, topP, gp.stopSequences,
+                        gp.responseFormatType, gp.responseFormatValue,
+                    )
                     val cancelled = session.abortRequested || status == 1 || sink.ipcDeadlock
                     // 收尾打点（诊断面）：本轮写侧累计字节 + chunk 数 + 状态码
                     // ——「第二轮零产出」三值对账：bytes=0 即模型侧零产出（会话

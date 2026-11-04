@@ -5,11 +5,29 @@ import 'package:goodhub/core/errors/inference_error.dart';
 import 'package:goodhub/mcp/goodshare_task_api.dart';
 import 'package:goodhub/task/task_inference.dart';
 import 'package:goodhub/task/task_loop_service.dart';
+import 'package:goodhub/task/task_source.dart';
+import 'package:goodhub/core/errors/mcp_error.dart';
 
-class FakeApi implements GoodshareTaskApi {
+class FakeApi implements TaskSource {
+  @override
+  String get serverId => 'com.zzh.goodshare';
+
+  /// Release 计数（W4-A：close 释放认领钉用）。
+  int releaseCount = 0;
+  bool releaseResult = true;
+
+  @override
+  Future<bool> release(String taskId) async {
+    releaseCount++;
+    return releaseResult;
+  }
+
   FakeApi({required this.claimResult});
 
   ClaimedTask claimResult;
+
+  /// claim 异常注入位（W4 协议违约场景：parse 违约抛 McpProtocolException）。
+  Object? claimError;
   int closeCount = 0;
   int touchCount = 0;
   Object? touchError;
@@ -20,7 +38,11 @@ class FakeApi implements GoodshareTaskApi {
   void close() {} // P1-D：幂等释放通道（计数未用于断言，占位满足契约）
 
   @override
-  Future<ClaimedTask> claim() async => claimResult;
+  Future<ClaimedTask> claim() async {
+    final e = claimError;
+    if (e != null) throw e;
+    return claimResult;
+  }
 
   @override
   Future<void> touch(String taskId) async {
@@ -159,5 +181,36 @@ void main() {
     expect(api.applied.single.note, contains('not_found 收尾'));
     expect(inf.tasks, isEmpty);
     expect(events.whereType<NotFoundClosed>(), isNotEmpty);
+  });
+
+  group('W4 验收钉·协议版本容错', () {
+    test('带锚协议违约：单次立即回写不兼容终态，不重试不卡死循环', () async {
+      final api = FakeApi(claimResult: ClaimedTask.idle)
+        ..claimError = const McpProtocolException(
+            'claim payload violates contract §3.2',
+            taskId: 't1', itemId: 'i1');
+      final service = TaskLoopService(api: api, inference: FakeInference());
+      // 返回 true = 本步已处置（终态收尾），循环继续下一条（不卡死）。
+      expect(await service.runOnce(), isTrue);
+      expect(api.applied, hasLength(1));
+      expect(api.applied.first.taskId, 't1');
+      expect(api.applied.first.note, contains('协议不兼容收尾'));
+      // runOnce 正常返回（异常未上抛）——连续失败熔断不被坏任务污染。
+    });
+
+    test('无锚协议违约：上抛（兜底=超时回收，LoopFailed 通告）', () async {
+      final api = FakeApi(claimResult: ClaimedTask.idle)
+        ..claimError = const McpProtocolException('claim result is not an object');
+      final service = TaskLoopService(api: api, inference: FakeInference());
+      Object? caught;
+      try {
+        await service.runOnce();
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught, isA<McpProtocolException>());
+      expect(api.applied, isEmpty, reason: '无回写锚——无法定位任务，兜底超时回收');
+      service.close();
+    });
   });
 }

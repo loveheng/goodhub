@@ -21,8 +21,16 @@ class McpRpcException extends McpException {
 }
 
 /// 响应形状不符合契约（缺字段/类型不符）——契约违规立即暴露，禁猜测性兜底。
+///
+/// W4 验收钉·协议版本容错：[taskId]/[itemId] 为 claim 载荷违约时尽力提取
+/// 的回写锚（非空 = 消费循环可对该任务**单次立即**回写不兼容终态，禁重试
+/// 防坏任务卡死循环；null = 无锚，兜底仍为超时回收）。
 class McpProtocolException extends McpException {
-  const McpProtocolException(super.message);
+  const McpProtocolException(super.message, {this.taskId, this.itemId});
+
+  /// claim 载荷违约时尽力提取的任务锚（无法提取则 null）。
+  final String? taskId;
+  final String? itemId;
 }
 
 /// 步数墙超限（M1.5；原 turn_wall 内定义，sealed 边界收敛至此）。

@@ -21,9 +21,12 @@ import 'package:path_provider/path_provider.dart';
 
 import '../app/service_directory.dart';
 import '../coordinator/host_tool_invoker.dart';
+import '../coordinator/supply_quota.dart';
 import '../coordinator/hybrid_assembly.dart';
 import '../coordinator/mcp_runtime.dart';
 import '../coordinator/mcp_tool_face.dart';
+import '../llm/on_device_capability.dart' show AidlOnDeviceCapabilityService;
+import '../llm/on_device_engine_aidl.dart' show sharedOnDeviceEngine;
 import '../mcp/local_plugin_discovery.dart';
 import '../mcp/mcp_client.dart';
 import '../mcp/server_endpoints.dart';
@@ -183,6 +186,15 @@ class GatewayController {
       memoryStore: opsLog,
       resourceStoreResolver: () async => resourceStore(),
       appVersion: await appVersion(),
+      // W5 端侧供给面导出：生产装配挂 `on_device_complete`（sharedOnDeviceEngine
+      // 经 W3 门面 AidlOnDeviceCapabilityService 包装；装配层降级——引擎不可用
+      // 照常装配，仅少一类端侧推理工具）。
+      onDeviceCapability:
+          AidlOnDeviceCapabilityService(sharedOnDeviceEngine),
+      // W5 调用方配额：导出面裁决（频次=SamplingQuota 复用形态 20 次/60min
+      // 默认池 + 并发上限 2；K22 事务语义——并发退出即释放、频次实际产出才
+      // 计、被动切云不扣）。缺省共享池 host-export；per-caller 精细化接线跟进。
+      supplyQuota: SupplyQuota(),
     );
     return (invoke: port.invoke, schemaOf: port.schemaOf);
   }
@@ -383,6 +395,12 @@ class GatewayController {
         engine: await assembleDefaultHybridEngine(),
         quota: SamplingQuota(),
         excludedServerIds: const <String>{kHostServerId},
+        // W5 跨 App 转发端侧算力（Binder 路径双路可达之一）：与 McpRuntime
+        // 装配同款接线（共享件消第二副本）；降级语义与 K22 配额由导出执行器
+        // 单源承载。
+        onDeviceCapability:
+            AidlOnDeviceCapabilityService(sharedOnDeviceEngine),
+        supplyQuota: SupplyQuota(),
       );
     } on Object catch (e) {
       debugPrint('[DEGRADE] gateway: sampling wiring skipped: $e');

@@ -59,6 +59,24 @@ class SamplingQuota {
     return null;
   }
 
+  /// 只读预检（W5 调用方配额）：与 [tryConsume] 同一窗口/容量判定，但**不
+  /// 消耗额度**——频次消耗点归「实际产出」（countOutput→tryConsume），受理
+  /// 段失败不计（K22）。禁在产出路径用它替代 tryConsume（预检+消耗分离，
+  /// 双消耗即重复扣）。
+  Duration? peek(String serverKey, DateTime now, {String? pool}) {
+    final pooled = pool != null && pool.isNotEmpty && caps.containsKey(pool);
+    final key = pooled ? '$serverKey:$pool' : serverKey;
+    final cap = pooled ? caps[pool]! : maxPerWindow;
+    final hits = _hits[key];
+    if (hits == null) return null;
+    final live = hits.where((t) => now.difference(t) <= window).toList();
+    if (live.length >= cap) {
+      final retry = window - now.difference(live.first);
+      return retry.isNegative ? Duration.zero : retry;
+    }
+    return null;
+  }
+
   /// 命中记录快照（epoch 毫秒；超窗条目就地清出，防快照无限增长）——
   /// ConversationArchive 落盘消费（archive-memory-claim 步 1，防杀进程刷新额度）。
   Map<String, List<int>> snapshotHits(DateTime now) => {

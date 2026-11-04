@@ -392,7 +392,10 @@ class DebugRunOrchestrator {
         blockDelegate: cfg.block,
         summarizer: cfg.summarizeResults
             ? OnDeviceResultSummarizer(
-                AidlOnDeviceCapabilityService(sharedOnDeviceEngine)).call
+                AidlOnDeviceCapabilityService(sharedOnDeviceEngine),
+                instruction: resolveSupplyInstruction(
+                    skills, kSupplySummarizeSkillName),
+              ).call
             : null,
         // M3-T3 put 端：摘要化成功路径原文落池、宿主注升级 $ref 句柄——
         // 与 HydratingExecutor 读端同一池（Session 粒度，finally 即焚 §9）。

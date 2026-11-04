@@ -124,22 +124,26 @@ class SummarizeException implements Exception {
 /// [SummarizeException]）——调用方（agent_loop）按 E1 统一兜底，
 /// 本类不做降级决策。不预检引擎可用性：failFast 异常翻译已覆盖不可用路径。
 class OnDeviceResultSummarizer {
-  OnDeviceResultSummarizer(this._primitive);
+  /// [instruction] = 供给面语义（S17c 语义外注：装配方经
+  /// `resolveSupplyInstruction(registry, kSupplySummarizeSkillName)` 从
+  /// SkillRegistry 按名解析传入——本类**不再内置语义文本**（红线：不得
+  /// 残留内置调用分支/硬编码回退；解析失败在装配点显式失败）。
+  OnDeviceResultSummarizer(this._primitive, {required this.instruction});
 
   final OnDeviceCapabilityService _primitive;
+
+  /// 摘要语义（外注，来源 = SkillRegistry `supply/summarize`）。
+  final String instruction;
 
   /// 摘要输出上限（端侧产出体量界；T7 调参）。
   static const int summaryMaxTokens = 256;
 
   static const _config = OnDevicePrimitiveConfig(maxTokens: summaryMaxTokens);
 
-  static const _system = '你是工具结果摘要器。把给定工具结果压缩为要点，'
-      '保留关键数值、状态、结论与错误信息，不添加解释、前言或代码块包裹。';
-
   Future<String> call(String original) async {
     try {
       final out = await _primitive.complete(
-        instruction: _system,
+        instruction: instruction,
         input: original,
         config: _config,
         traceId: 'result_summarize',

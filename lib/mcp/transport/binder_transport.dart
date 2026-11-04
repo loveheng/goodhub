@@ -30,6 +30,13 @@ import 'mcp_transport.dart';
 ///  - 反向请求（server→client，带 method+id，如 `sampling/createMessage`）→ 经
 ///    [onServerRequest] 处理后由 [answerReverse] 回程，闭环见 §1.2.2；
 ///  - `onTransportError` 死亡信封（binderDied）→ [_failInFlight] 秒级收敛在途。
+///
+/// **两条死亡链路互不替代（W5 调用方进程死亡联动打断，K17）**：
+///  - 既有：`onTransportError`（binderDied）= 宿主作**客户端**感知对端死亡 →
+///    收敛宿主在途请求；
+///  - 新增：`onCallerDied`（平台侧独立死亡代理）= 宿主作**算力提供方**时感知
+///    **调用方**进程死亡 → 驱动宿主打断该调用方名下在途的端侧执行。
+///    既有方向的死亡代理不覆盖反向路径，故不复用既有信封/回调。
 class BinderTransport implements McpTransport {
   BinderTransport({
     required this.transportId,
@@ -128,6 +135,8 @@ class BinderTransport implements McpTransport {
         return _route(call.arguments, isError: false);
       case 'onTransportError':
         return _route(call.arguments, isError: true);
+      case 'onCallerDied':
+        return _routeCallerDied(call.arguments);
       default:
         throw MissingPluginException(call.method);
     }
@@ -149,15 +158,56 @@ class BinderTransport implements McpTransport {
         'binder transport 连接中断（${code is String ? code : 'UNKNOWN'}）：'
         '${message is String ? message : 'unknown'}',
       );
+      // 既有死亡信封**不驱动**调用方死亡打断（K17 红线）：本链路的终态是
+      // 「宿主 client 在途请求失败」；反向路径的「宿主在途算力执行被打断」
+      // 走新增链路 `onCallerDied`（平台侧独立死亡代理），两条链路互不替代。
     } else {
       transport._onNativeEvent(arguments);
     }
     return const <String, Object?>{'delivered': true};
   }
 
+  /// 调用方死亡事件路由（**新增链路**，W5 调用方进程死亡联动打断）：
+  /// 平台侧为调用方链路注册的**独立**死亡代理触发 → 原生推 `onCallerDied`
+  /// → 通知 [onCallerDeath] 钩子，宿主协作式打断该调用方名下在途的端侧执行
+  /// 并作废本次调用（K17）。
+  ///
+  /// 与既有 `onTransportError` 死亡信封**不共线**（既有方向的死亡代理不覆盖
+  /// 反向路径，须新增链路而非复用既有字段）。
+  ///
+  /// 事件键 = 调用方身份键（包名，物理主键）——必须与在途执行注册的
+  /// callerKey 同源，否则匹配不上（漏打断 = 孤儿算力空跑）。原生未带键时
+  /// 回落本实例的 [packageName]（同源保证）。
+  static Map<String, Object?> _routeCallerDied(dynamic arguments) {
+    if (arguments is! Map) return const <String, Object?>{'delivered': false};
+    final tid = arguments['transportId'];
+    if (tid is! String) return const <String, Object?>{'delivered': false};
+    final transport = _instances[tid];
+    if (transport == null) return const <String, Object?>{'delivered': false};
+    final rawKey = arguments['callerKey'];
+    final callerKey = rawKey is String && rawKey.isNotEmpty
+        ? rawKey
+        : transport.packageName;
+    BinderTransport.onCallerDeath?.call(callerKey);
+    return const <String, Object?>{'delivered': true};
+  }
+
   /// server→client 反向请求处理器（与 [McpClient.onServerRequest] 对齐）：处理后经
   /// [answerReverse] 回程。由 [McpClient.binder] 工厂转发到 client 的处理器。
   Future<Map<String, Object?>?> Function(String method, Object? params)? onServerRequest;
+
+  /// 调用方进程死亡通知钩子（W5 调用方进程死亡联动打断，K17，**新增链路**）。
+  ///
+  /// 触发源 = 平台侧**独立**死亡代理推来的 `onCallerDied` 事件（见
+  /// [_routeCallerDied]）——与既有 `onTransportError` 死亡信封
+  /// （宿主 client 在途收敛）**不共线**：既有方向的死亡代理不覆盖反向路径
+  /// （宿主作算力提供方时感知调用方死亡），须新增链路而非复用既有字段。
+  ///
+  /// 参数 = 调用方身份键（Binder 路径 = 插件包名 [packageName]，物理主键），
+  /// 必须与在途执行注册的 callerKey 同源。消费侧 = coordinator 的
+  /// `CallerDeathInterrupt` 注册表（mcp 层不反向依赖 coordinator——由装配层
+  /// 注入，见 `ensureCallerDeathInterruptWired`）。
+  static void Function(String callerKey)? onCallerDeath;
 
   /// server→client 主动通知分发（无 id，如 `notifications/resources/updated`）：
   /// [McpClient.binder] 工厂转发到 [McpClient.handleServerNotification]（含

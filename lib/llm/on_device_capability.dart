@@ -45,6 +45,34 @@ enum PrimitiveFallbackPolicy {
   degradeToTruncate,
 }
 
+/// 挂起态载荷（W3-S18c，K21 三条红线的机械承载）：
+/// - **已算完产物**：待确认操作的意图与参数是流收口后已算完的产物，不是
+///   半截生成态；
+/// - **继续签名**：调用方凭 [resumeToken] 与用户确认凭据在新一轮重入；
+///   宿主**不驻留等待实例**（挂起即返回，等待在调用方/用户侧）；
+/// - **不占执行槽**：挂起发生在流收口之后，算力已让槽；
+///   **禁在算力占用期内同步等待人工确认**。
+class PrimitiveSuspension {
+  const PrimitiveSuspension({
+    required this.intent,
+    required this.params,
+    required this.resumeToken,
+    this.payload,
+  });
+
+  /// 待确认操作的意图（人可读，供确认卡渲染）。
+  final String intent;
+
+  /// 操作参数（结构化键值；超长载荷用既有 `$ref` 引用句柄承载）。
+  final Map<String, String> params;
+
+  /// 继续签名：新一轮重入的凭据（宿主不驻留等待实例，签名即重入锚）。
+  final String resumeToken;
+
+  /// 已算完的产物文本（挂起时生成已完成——红线：非半截生成态）。
+  final String? payload;
+}
+
 /// 原语调用参数（刻意最小：无任务模板位）。
 class OnDevicePrimitiveConfig {
   const OnDevicePrimitiveConfig({
@@ -73,7 +101,66 @@ class OnDevicePrimitiveException implements Exception {
       'OnDevicePrimitiveException: $message${cause == null ? '' : ' (cause: $cause)'}';
 }
 
+/// 原语被打断（协作式打断生效，K11）。
+///
+/// **语义边界**：本异常只表示「本次调用作废」（产出丢弃、不计数、不回程），
+/// **不承诺算力已腾出**——打断是协作式的（中断只在生成循环检查点生效），
+/// 等待窗口耗尽时不得假设打断已生效（K11）。
+class OnDeviceInterruptedException implements Exception {
+  const OnDeviceInterruptedException([this.reason = '端侧调用被打断']);
+
+  final String reason;
+
+  @override
+  String toString() => 'OnDeviceInterruptedException: $reason';
+}
+
+/// **可中断聚合**能力（可选接口——K17 调用方进程死亡联动打断的承载面）。
+///
+/// 供给面实现方可支持：在流建立后、收尾前允许**外部取消**（取消随退订下沉
+/// → 引擎 `cancel(requestId)` → 算力立即让槽）。
+///
+/// **同口径铁律**：本能力与 [OnDeviceCapabilityService.complete] **语义完全
+/// 相同**（受理段收口 / 三档降级 / 失败计数 / 空产出判定同一份实现）——
+/// 禁另立一套降级链（双源即漂移），实现方须把 [complete] 降为
+/// [completeInterruptible] 的包装。
+///
+/// 设计为**可选接口**而非主接口方法：主接口加方法会迫使所有实现与桩件
+/// 同步改签名（零收益的破坏面）；可选接口让不支持的实现走退化路径
+/// （执行器按 [OnDeviceCapabilityService.complete] 执行，无打断能力）。
+abstract interface class OnDeviceInterruptible {
+  /// complete 的可中断变体：与 [OnDeviceCapabilityService.complete] 同语义，
+  /// 差别 = [onSubscribed] 回调拿到**幂等取消钩子**（外部打断源注册位）。
+  ///
+  /// 打断触发（取消钩子被调）→ 订阅取消 → 引擎让槽 → 本方法以
+  /// [OnDeviceInterruptedException] 收口（**无产出**、**不计入失败计数**——
+  /// 打断是外部事件，不是端侧不可用）。
+  Future<String> completeInterruptible({
+    required String instruction,
+    required String input,
+    OnDevicePrimitiveConfig config,
+    PrimitiveFallbackPolicy fallback,
+    String? traceId,
+    void Function(Future<void> Function() cancel)? onSubscribed,
+  });
+}
+
 /// 端侧能力原语（公共服务抽象面；实现 = AIDL 引擎，测试 = 假件）。
+///
+/// **供给面唯一入口（W3-S16 收口钉）**：[complete] 是端侧算力供给面的
+/// **唯一**调用入口——新增消费方一律经本接口，禁绕过原语面直连
+/// [OnDeviceSupplyFace].generate 自组管线（直连面 = 主聊天路径专属，
+/// 与供给面分层，见 `docs/design/on-device-task-capability.md` §3 四层
+/// 分层）。收口纪律：新入口只须转为契约声明，不新增第二原语。
+///
+/// **无状态 / 幂等语义（K20）**：
+/// - **无状态**：单次调用自足——语义由 [complete] 参数全量给定，调用方
+///   侧无会话/上下文残留可依赖；实现侧不驻留任何轮次状态（每次调用独立
+///   构造 prompt，历史归调用方注入）；
+/// - **单轮边界**：不驱动工具往返（round-trip 由宿主工具环/任务来源方
+///   推进），失败重调 = 重新推理，语义幂等（无外部状态累积副作用）；
+/// - **不触发装载**：会话未就绪按 [PrimitiveFallbackPolicy] 收口（懒加载
+///   边界保持，显式装载走 W3-S18 可用性查询面，不归原语）。
 abstract interface class OnDeviceCapabilityService {
   /// 单发完成：instruction（任务指令）+ input（输入文本）→ 模型产出文本。
   ///
@@ -85,6 +172,50 @@ abstract interface class OnDeviceCapabilityService {
     PrimitiveFallbackPolicy fallback,
     String? traceId,
   });
+
+  /// 能力可用性查询（W3-S18）：只读探测，零副作用、不触发装载。
+  ///
+  /// 供给面调用前的判据面——调用方据此决定直调 / 显式装载 / 分流云端。
+  Future<OnDeviceCapabilityAvailability> availability();
+
+  /// 幂等显式装载（W3-S18）：**仅由调用方主动发起**——本方法是装载的显式
+  /// 入口，不是 [complete] 的隐式兜底；懒加载边界保持（原语调用绝不触发
+  /// 装载，红线见 S16 契约钉）。幂等：已 ready 时 no-op 直接返回。
+  ///
+  /// 装载失败抛 [OnDeviceLoadException]（真因透传，禁静默降级）。
+  Future<void> loadExplicit();
+
+  /// 流式原语（W3-S18c）：instruction + input → 产出文本流。
+  ///
+  /// 端侧引擎契约本就是流式——本方法是**暴露既有能力**（S18c 实证基线），
+  /// [complete] 降为其聚合包装。语义约束：
+  /// - **取消随退订下沉**：订阅取消即透传 `cancel(requestId)`（引擎层
+  ///   `onCancel:` 既有承载），算力立即让槽，无孤儿任务空跑；
+  /// - **受理段收口**：熔断窗口 / PII 过滤 / 未就绪判定在流建立**前**完成
+  ///   ——未就绪直接抛 [OnDevicePrimitiveException]（流式消费方自行按策略
+  ///   降级，本方法不内嵌三档降级——那是 [complete] 聚合包装的职责）；
+  /// - **挂起态边界（K21）**：挂起是消费方编排产物——待确认操作必须是
+  ///   **已算完的产物**（流已收口、执行槽已释放）打包为 [PrimitiveSuspension]
+  ///   返回；**禁在算力占用期内同步等待人工确认**（挂起不占执行槽）。
+  Stream<EngineChunk> completeStream({
+    required String instruction,
+    required String input,
+    OnDevicePrimitiveConfig config,
+    String? traceId,
+  });
+}
+
+/// 能力可用性三态（W3-S18）。
+enum OnDeviceCapabilityAvailability {
+  /// 热态：权重已驻留，可立即产出。
+  ready,
+
+  /// 冷态：未装载或装载中（可经 [OnDeviceCapabilityService.loadExplicit]
+  /// 显式装载；交互级遇冷态的分流裁决归路由判定链 D3 档）。
+  cold,
+
+  /// 不可用：装载终态失败（资产缺失 / 设备不支持 / 内存不足）。
+  unavailable,
 }
 
 /// 原语输入过滤端口（F5 PII 入口收口的注入位）：在 input 进入端侧引擎前
@@ -103,7 +234,8 @@ typedef PrimitiveInputFilter = String Function(String input);
 /// 直接走降级路径（`[DEGRADE]` 留痕）；**绝不触碰主聊天会话的
 /// CircuitBreaker**（原语失败只代表原语任务形态失败，引擎级物理崩溃仍由
 /// 主熔断器经 EngineDiedException 口径响应）。
-class AidlOnDeviceCapabilityService implements OnDeviceCapabilityService {
+class AidlOnDeviceCapabilityService
+    implements OnDeviceCapabilityService, OnDeviceInterruptible {
   AidlOnDeviceCapabilityService(this._engine,
       {this.cloudFallback, this.inputFilter});
 
@@ -144,22 +276,122 @@ class AidlOnDeviceCapabilityService implements OnDeviceCapabilityService {
   }
 
   @override
+  Future<OnDeviceCapabilityAvailability> availability() async {
+    // 只读探测（零副作用，不触发装载）——loadState 三态映射：
+    // ready=热态；unloaded/loading=冷态；failed=不可用（终态失败）。
+    return switch (_engine.loadState.value) {
+      OnDeviceLoadState.ready => OnDeviceCapabilityAvailability.ready,
+      OnDeviceLoadState.failed => OnDeviceCapabilityAvailability.unavailable,
+      _ => OnDeviceCapabilityAvailability.cold,
+    };
+  }
+
+  @override
+  Future<void> loadExplicit() async {
+    // 幂等显式装载（S18）：仅由调用方主动发起；ready = no-op。
+    // enable() 为 OnDeviceEnableCapable 合取成员（OnDeviceSupplyFace 保证
+    // 在场），失败真因透传（OnDeviceLoadException），禁静默降级。
+    if (_engine.loadState.value == OnDeviceLoadState.ready) return;
+    await _engine.enable();
+  }
+
+  @override
   Future<String> complete({
     required String instruction,
     required String input,
     OnDevicePrimitiveConfig config = const OnDevicePrimitiveConfig(),
     PrimitiveFallbackPolicy fallback = PrimitiveFallbackPolicy.failFast,
     String? traceId,
+  }) =>
+      // 语义单源（S18c + K17）：complete = completeInterruptible 的聚合包装
+      // （降级三档 / 熔断计数 / 空产出判定只在下面一份实现里——禁双源漂移）。
+      completeInterruptible(
+        instruction: instruction,
+        input: input,
+        config: config,
+        fallback: fallback,
+        traceId: traceId,
+      );
+
+  @override
+  Future<String> completeInterruptible({
+    required String instruction,
+    required String input,
+    OnDevicePrimitiveConfig config = const OnDevicePrimitiveConfig(),
+    PrimitiveFallbackPolicy fallback = PrimitiveFallbackPolicy.failFast,
+    String? traceId,
+    void Function(Future<void> Function() cancel)? onSubscribed,
   }) async {
-    // 熔断双轨：降级窗口内不再压引擎（连槽位探测都省，直接走降级路径）。
-    if (_inDegradeCooldown()) {
-      return _degrade(fallback, '原语降级窗口内（连续 $_consecutiveFailures 次失败）',
-          traceId,
+    // 受理段（流建立前收口：熔断窗口 / PII / 未就绪）由 completeStream 内
+    // 完成，其异常经流错误通道进入本方法的 catch → 统一走 [_degrade] 收口
+    // （禁旁路降级链：旁路 = 计数丢失 + degradeToCloud 档在该形态下失效）。
+    try {
+      final buf = StringBuffer();
+      final completer = Completer<String>();
+      var interrupted = false;
+      late StreamSubscription<EngineChunk> sub;
+      // 取消钩子（幂等）：打断源经 [onSubscribed] 注册 → 退订 → 引擎
+      // `cancel(requestId)` 让槽（取消随退订下沉）。
+      Future<void> cancelOnce() async {
+        if (interrupted) return;
+        interrupted = true;
+        await sub.cancel();
+        if (!completer.isCompleted) {
+          completer.completeError(const OnDeviceInterruptedException());
+        }
+      }
+      sub = completeStream(
+        instruction: instruction,
+        input: input,
+        config: config,
+        traceId: traceId,
+      ).listen(
+        (chunk) => buf.write(chunk.deltaText),
+        onError: (Object e) {
+          if (!completer.isCompleted) completer.completeError(e);
+        },
+        onDone: () {
+          if (!completer.isCompleted) completer.complete(buf.toString().trim());
+        },
+        cancelOnError: true,
+      );
+      // 订阅建立后立即交出取消钩子（打断源注册位）——自此外部打断可让槽。
+      onSubscribed?.call(cancelOnce);
+      final t = await completer.future;
+      if (t.isEmpty) {
+        return await _degrade(fallback, '端侧产出为空', traceId,
+            instruction: instruction, input: input, config: config);
+      }
+      _consecutiveFailures = 0; // 成功即复位独立计数
+      _degradedUntil = null;
+      return t;
+    } on OnDeviceInterruptedException {
+      // 打断是**外部事件**（调用方死亡等），不是端侧不可用——不计入降级失败
+      // 计数、不走降级策略（产出作废由调用方处置；K11：打断未生效不等于算力
+      // 已腾出，引擎侧终态自收）。
+      rethrow;
+    } catch (e) {
+      final reason = e is OnDevicePrimitiveException
+          ? e.message
+          : '端侧原语失败: $e';
+      return await _degrade(fallback, reason, traceId,
           instruction: instruction, input: input, config: config);
     }
-    // PII 入口过滤（评审修复 #2：过滤**前置**到 try 外——降级路径同样只允许
-    // 已过滤文本出境，fail-closed：过滤失败 = 拒绝调用，以占位符替代原文，
-    // 绝不让未过滤原文经任何降级档流出）。
+  }
+
+  @override
+  Stream<EngineChunk> completeStream({
+    required String instruction,
+    required String input,
+    OnDevicePrimitiveConfig config = const OnDevicePrimitiveConfig(),
+    String? traceId,
+  }) async* {
+    // 受理段（流建立前收口）：熔断窗口 → PII 过滤（fail-closed）→ 未就绪
+    // 判定（懒加载边界：不触发装载，直接抛给流式消费方自行降级）。
+    if (_inDegradeCooldown()) {
+      throw OnDevicePrimitiveException(
+          '原语降级窗口内（连续 $_consecutiveFailures 次失败）');
+    }
     String effectiveInput;
     final filter = inputFilter;
     if (filter == null) {
@@ -168,57 +400,26 @@ class AidlOnDeviceCapabilityService implements OnDeviceCapabilityService {
       try {
         effectiveInput = filter(input);
       } catch (fe) {
-        return await _degrade(
-            fallback, 'PII 过滤失败（fail-closed 拒绝）: $fe', traceId,
-            instruction: instruction,
-            input: '[已按 PII 围栏拦截：过滤失败，原文不外传]',
-            config: config);
+        throw OnDevicePrimitiveException(
+            'PII 过滤失败（fail-closed 拒绝）: $fe');
       }
     }
-    try {
-      // 懒加载边界：会话未就绪不触发装载，直接按策略收口。
-      if (_engine.loadState.value != OnDeviceLoadState.ready) {
-        return await _degrade(fallback, '端侧会话未就绪（未装载/装载中）', traceId,
-            instruction: instruction, input: effectiveInput, config: config);
-      }
-      final prompt = buildOnDeviceChatPromptJson([
-        SystemMessage(instruction),
-        UserMessage(effectiveInput),
-      ]);
-      final requestId =
-          'prim_${traceId == null ? '' : '${traceId}_'}${_seq++}';
-      final out = await _generateWithSlotWait(
-        requestId: requestId,
-        prompt: prompt,
-        config: config,
-      );
-      final t = out.trim();
-      if (t.isEmpty) {
-        return await _degrade(fallback, '端侧产出为空', traceId,
-            instruction: instruction, input: effectiveInput, config: config);
-      }
-      _consecutiveFailures = 0; // 成功即复位独立计数
-      _degradedUntil = null;
-      return t;
-    } on OnDevicePrimitiveException {
-      rethrow;
-    } catch (e) {
-      return await _degrade(fallback, '端侧原语失败: $e', traceId,
-          instruction: instruction, input: effectiveInput, config: config);
+    if (_engine.loadState.value != OnDeviceLoadState.ready) {
+      throw OnDevicePrimitiveException('端侧会话未就绪（未装载/装载中）');
     }
-  }
-
-  /// 生成 + 槽位有界等待：`service_busy` 在预算窗口内退避重试，其余异常上抛。
-  Future<String> _generateWithSlotWait({
-    required String requestId,
-    required String prompt,
-    required OnDevicePrimitiveConfig config,
-  }) async {
+    final prompt = buildOnDeviceChatPromptJson([
+      SystemMessage(instruction),
+      UserMessage(effectiveInput),
+    ]);
+    final requestId =
+        'prim_${traceId == null ? '' : '${traceId}_'}${_seq++}';
+    // 槽位有界退避受理（service_busy 窗口内重试，超时上抛——流式消费方
+    // 自行处置）；受理成功后**直通引擎流**：取消随退订下沉（订阅取消即
+    // 透传 cancel(requestId)，算力立即让槽——引擎层 onCancel 既有承载）。
     final deadline = DateTime.now().add(slotWaitBudget);
     while (true) {
       try {
-        final buf = StringBuffer();
-        await for (final chunk in _engine.generate(
+        yield* _engine.generate(
           requestId: requestId,
           prompt: prompt,
           config: GenerationConfig(
@@ -226,13 +427,11 @@ class AidlOnDeviceCapabilityService implements OnDeviceCapabilityService {
             temperature: config.temperature,
             topP: config.topP,
           ),
-        )) {
-          buf.write(chunk.deltaText);
-        }
-        return buf.toString();
+        );
+        return;
       } on PlatformException catch (e) {
-        final busy = e.code == 'service_busy' &&
-            DateTime.now().isBefore(deadline);
+        final busy =
+            e.code == 'service_busy' && DateTime.now().isBefore(deadline);
         if (!busy) rethrow;
         await Future<void>.delayed(
             const Duration(milliseconds: 150)); // 有界退避重试

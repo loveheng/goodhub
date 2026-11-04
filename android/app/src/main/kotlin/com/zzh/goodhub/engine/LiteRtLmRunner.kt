@@ -252,6 +252,12 @@ class LiteRtLmRunner(private val context: Context) : OnDeviceRunner {
         temperature: Float,
         topP: Float,
         stopSequences: List<String>,
+        // S17b（task-capability，D4 前提）：约束解码规格——Runner 侧自治匹配，
+        // 调用方（EngineService）经 GenerationParams 单源传入；null = 无约束
+        //（存量调用零变化）。SDK 0.18.1 ResponseFormat.json/regex（2026-10-11
+        // 旧裸机桥真机实证 regex/JSON Schema 严格合规；:engine 换线后接入）。
+        responseFormatType: String?,
+        responseFormatValue: String?,
     ): Int {
         val e = engine
         if (e == null || !ready) {
@@ -296,6 +302,20 @@ class LiteRtLmRunner(private val context: Context) : OnDeviceRunner {
         // system → systemInstruction；历史（除 system 与末轮）→ initialMessages
         // （user→USER / assistant→MODEL）；末轮 → sendMessage 触发生成。
         val systemTurn = turns.firstOrNull { it.role == "system" }
+        // S17b（D4 前提）：约束解码规格 → ResponseFormat（SDK 0.18.1）。
+        // UNCERTAIN: enableResponseFormat + ConversationConfig.responseFormat 的
+        // SDK 语义未在 :engine 换线后真机实证（2026-10-11 实证出自旧裸机桥路径）
+        // ——接入按 API 面直传，真机批次复验；解码失败显式归因（K15 禁截断）。
+        val responseFormat = responseFormatValue?.takeIf { it.isNotEmpty() }
+            ?.let { v ->
+                when (responseFormatType) {
+                    "json" -> com.google.ai.edge.litertlm.ResponseFormat.json(v)
+                    "regex" -> com.google.ai.edge.litertlm.ResponseFormat.regex(v)
+                    else -> null.also {
+                        Log.e(TAG, "[DEGRADE] unknown responseFormat type=$responseFormatType (spec dropped)")
+                    }
+                }
+            }
         // 历史轮可裁剪（var）：LiteRT-LM 上下文窗有限（Gemma3-1B bundle =
         // 1280 token），超限时 SDK 报 INVALID_ARGUMENT "Input token ids are
         // too long" 且零产出收流（2026-11-02 真机实证：第二轮 1291>=1280 →
@@ -380,6 +400,11 @@ class LiteRtLmRunner(private val context: Context) : OnDeviceRunner {
                             latch.countDown()
                         }
                     },
+                    // S17b（D4 前提）：约束解码规格随调用下发；null = 无约束
+                    //（SDK $default 口径，存量调用零变化）。K15：解码失败显式
+                    // 归因（lastStreamError/负码），结构化场景禁截断降级档，
+                    // Dart 侧带同一份规格回退云端。
+                    responseFormat = responseFormat,
                 )
                 // 有界等待（防 SDK 回调丢失挂死生成线程）；onDone/onError 是最后
                 // 回调且先于 countDown 完成滞留冲刷——等待返回后 native 回调侧

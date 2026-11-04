@@ -652,6 +652,14 @@ class AidlOnDeviceEngine
               'temperature': config.temperature,
               'topP': config.topP,
               'stopSequences': config.stopSequences,
+              // S17b（D4 前提）：约束解码规格随生成参数下发；null = 无约束
+              //（键缺席语义，Kotlin 侧 GenerationParams 键名单源同构）。
+              // 归因边界（已登记跟进项）：:engine 侧负码（GenieX 管线不支持
+              // = -5）当前仅 logcat 留痕、无独立回传通道——Dart 侧零产出经
+              // 既有兜底切云保产出（K15 满足：规格随请求切换自然携带云端），
+              // 类型级归因细化须扩 onGenerateFinished Bundle 键集（另行施工）。
+              if (config.responseFormat != null)
+                'responseFormat': config.responseFormat!.toChannelArgs(),
               // 票据缺失（通道异常等）= 未知态：发空 epoch 让 :engine 权威拒绝
               //（禁本地猜测放行——I2）。
               'expectInstanceId': ticket?.instanceId ?? '',

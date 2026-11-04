@@ -25,8 +25,23 @@ class ClaimedTask {
   });
 
   factory ClaimedTask.parse(Object? result) {
+    // W4 验收钉·协议版本容错：违约时尽力提取回写锚（taskId/itemId）——
+    // 非空锚让消费循环能对该任务单次立即回写不兼容终态（禁重试防坏任务
+    // 卡死循环）；连锚都提取不到则 null（兜底=超时回收）。
+    McpProtocolException violation(String why) {
+      String? tid;
+      String? iid;
+      if (result is Map) {
+        final t = result['task_id'];
+        final i = result['item_id'];
+        if (t is String && t.isNotEmpty) tid = t;
+        if (i is String && i.isNotEmpty) iid = i;
+      }
+      return McpProtocolException(why, taskId: tid, itemId: iid);
+    }
+
     if (result is! Map<String, Object?>) {
-      throw const McpProtocolException('claim result is not an object');
+      throw violation('claim result is not an object');
     }
     final status = result['status'];
     if (status == 'idle') return idle;
@@ -34,7 +49,7 @@ class ClaimedTask {
     final itemId = result['item_id'];
     final taskAction = result['task_action'];
     if (taskId is! String || itemId is! String || taskAction is! String) {
-      throw const McpProtocolException('claim payload violates contract §3.2');
+      throw violation('claim payload violates contract §3.2');
     }
     if (status == 'not_found') {
       final note = result['note'];
@@ -48,7 +63,7 @@ class ClaimedTask {
     final text = result['text'];
     final version = result['version'];
     if (text is! String || version is! int) {
-      throw const McpProtocolException('claim payload violates contract §3.2');
+      throw violation('claim payload violates contract §3.2');
     }
     final humanTags = result['human_tags'];
     final blockKey = result['block_key'];
@@ -156,6 +171,13 @@ class GoodshareTaskApi {
   /// 推理期间每 5s 一次（含模型加载等待期）；30s 无心跳任务被回收。
   Future<void> touch(String taskId) async {
     await _tool('touch_ai_task', params: {'task_id': taskId});
+  }
+
+  /// 放弃认领（ai-app-split.md §3.12.4 Release 原语）：任务回 pending
+  /// 立即可再认领。released=false = 任务不在 processing 态。
+  Future<bool> release(String taskId) async {
+    final r = await _tool('release_ai_task', params: {'task_id': taskId});
+    return r is Map && r['released'] == true;
   }
 
   /// 返回最新条目快照（同 get_item 形状）；version_conflict 由调用方处理重试。

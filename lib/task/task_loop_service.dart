@@ -14,7 +14,9 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
-import '../mcp/goodshare_task_api.dart';
+import '../core/errors/mcp_error.dart';
+import '../mcp/goodshare_task_api.dart' show ApplyPayload, ClaimedTask, GoodshareTaskApi;
+import 'task_source.dart';
 import '../mcp/mcp_client.dart';
 import '../mcp/server_endpoints.dart';
 import 'task_inference.dart';
@@ -88,7 +90,7 @@ class TaskLoopService {
     this.heartbeatInterval = const Duration(seconds: 5),
   });
 
-  final GoodshareTaskApi api;
+  final TaskSource api;
   final TaskInference inference;
 
   /// 事件回调：人类入口传 UI setState 适配器；AI 入口传遥测收集器。
@@ -102,7 +104,25 @@ class TaskLoopService {
 
   /// 释放底层 client（window-slim P1-D：buildApi 建的 McpClient 此前无任何
   /// 释放通道，全类无 close；幂等语义由 McpClient.close 统一承诺）。
-  void close() => api.close();
+  ///
+  /// W4-A Release 接线（§3.12.4）：close 前若有未终结的认领任务，先经
+  /// 来源侧放弃认领（processing → pending 立即回收可再认领），替代此前
+  /// 「认领后不回写等 30s 僵尸回收」的旧形态；失败仅留痕（close 不因
+  /// 网络问题卡住），任务兜底仍是 30s 回收。
+  Future<void> close() async {
+    final current = _current;
+    if (current != null) {
+      try {
+        final released = await api.release(current.taskId);
+        debugPrint('[task-loop] close release $current.taskId: '
+            'released=$released');
+      } catch (e) {
+        debugPrint('[DEGRADE] task-loop close release: $e（兜底=30s 回收）');
+      }
+      _current = null;
+    }
+    api.close();
+  }
 
   /// 单次闭环。返回是否实际处理了任务（false = idle）。
   /// 任何异常：先发 [LoopFailed] 通告（AI 入口的遥测依赖），再原样上抛。
@@ -112,6 +132,34 @@ class TaskLoopService {
   Future<bool> runOnce() async {
     try {
       return await _runOnceInner();
+    } on McpProtocolException catch (e) {
+      // W4 验收钉·协议版本容错：claim 载荷违约（契约版本高于宿主能力 /
+      // 能力需求解析失败）= **不可重试类别**——重试只会反复认领同一坏任务
+      // 烧额度。带回写锚（taskId/itemId）时单次立即回写不兼容终态（apply
+      // failed，note 记违约原因），本轮正常收口（循环继续消费后续任务，
+      // 不被坏任务卡死）；无锚（连 task_id 都提取不到）无法收尾任务——
+      // 通告后**上抛**交消费循环熔断兜底（任务侧兜底 = 30s 超时回收）。
+      final tid = _current?.taskId ?? e.taskId;
+      final iid = _current?.itemId ?? e.itemId;
+      _current = null;
+      if (tid != null && tid.isNotEmpty) {
+        try {
+          await api.apply(ApplyPayload(
+            taskId: tid,
+            itemId: iid ?? '',
+            note: '协议不兼容收尾（禁重试）：${e.message}',
+          ));
+          debugPrint('[DEGRADE] task-loop 协议违约任务单次终态收尾: $tid');
+        } catch (applyError) {
+          debugPrint('[DEGRADE] task-loop 协议违约收尾失败: $applyError（兜底=30s 回收）');
+        }
+        _emit(LoopFailed(e, taskId: tid, itemId: iid));
+        // 返回 true = 本步已处置（终态收尾），消费循环继续下一条；不 rethrow
+        // ——协议违约不计入连续失败熔断（熔断管通道/引擎故障，不管坏任务）。
+        return true;
+      }
+      _emit(LoopFailed(e, taskId: tid, itemId: iid));
+      rethrow; // 无锚：无法单次收尾，上抛交熔断兜底（禁静默吞）。
     } on Object catch (e) {
       _emit(LoopFailed(e, taskId: _current?.taskId, itemId: _current?.itemId));
       _current = null;
@@ -271,7 +319,7 @@ TaskLoopService buildApi({
   final ep = ServerEndpoint.ephemeral(endpoint: baseUrl, ephemeralKey: apiKey);
   final client = McpClient.http(baseUrl: ep.endpoint, apiKey: ep.ephemeralKey);
   return TaskLoopService(
-    api: GoodshareTaskApi(client),
+    api: GoodshareTaskSource(GoodshareTaskApi(client)),
     inference: inference,
   );
 }

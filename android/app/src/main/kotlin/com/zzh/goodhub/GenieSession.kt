@@ -54,6 +54,10 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
         /// 但 SDK 卡死不得占死调用线程（调用方含 Binder 线程池 → 卡死即全部
         /// AIDL 分派停摆 = 全局无响应，P2-13）。
         private const val ABORT_WAIT_MS = 300L
+
+        /** S17b（K15）：带规格请求在本 Runner 不可服务（格式承载缺失）——上层
+         *  据此带同一份规格回退云端，禁截断降级档。Runner 可扩展负码须显式归因。 */
+        private const val ERR_RESPONSE_FORMAT_UNSUPPORTED = -5
     }
 
     @Volatile private var wrapper: LlmWrapper? = null
@@ -363,7 +367,20 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
         // 多栈构型：默认值不在实现层（override 禁默认参数）——调用方
         // （EngineService）统一经 GenerationParams 单源传入。
         stopSequences: List<String>,
+        // S17b（task-capability，D4 前提）：约束解码规格——GenieX 管线暂无
+        // 对应承载位（Genie/llama.cpp 采样管线无 SDK 级 ResponseFormat 入口；
+        // 方言差异归一 = 各 Runner 自治，本 Runner 显式归因不支持，禁静默
+        // 忽略规格生成无约束产出（K15：带规格失败回退云端）。
+        responseFormatType: String?,
+        responseFormatValue: String?,
     ): Int {
+        // K15 显式归因：带规格请求在本 Runner 不可服务（-4 = 格式承载缺失），
+        // 上层（Dart）据此带同一份规格回退云端保产出，禁截断降级档。
+        if (!responseFormatValue.isNullOrEmpty()) {
+            Log.e(TAG, "[DEGRADE] constrained decoding not supported on genie pipeline " +
+                "(type=$responseFormatType) -> caller falls back to cloud with spec")
+            return ERR_RESPONSE_FORMAT_UNSUPPORTED
+        }
         val w = wrapper ?: throw IllegalStateException("genie session not created")
         abortRequested = false
         lastStreamError = null

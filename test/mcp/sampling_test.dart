@@ -30,6 +30,21 @@ class _FakeEngine implements SamplingEngine {
   }
 }
 
+/// 多块引擎：单次调用产两块流（W4 流式口径钉——引擎层是流，导出面须聚合）。
+class _MultiBlockEngine implements SamplingEngine {
+  @override
+  String get name => 'multi-block';
+
+  @override
+  Stream<String> sendText({
+    required List<ChatMessageData> messages,
+    required int maxTokens,
+  }) async* {
+    yield '第一块';
+    yield '第二块';
+  }
+}
+
 void main() {
   group('SamplingQuota（D3）', () {
     test('窗口内 20 次全放行，第 21 次拒绝并给 retry hint', () {
@@ -139,6 +154,31 @@ void main() {
       expect(engine.lastMaxTokens, 256);
       expect(msgs.first, isA<SystemChatMessage>());
       expect(msgs.last, isA<UserChatMessage>());
+    });
+
+    test('W4 验收钉·跨 App 流式口径：多块引擎流 → 聚合单 result（导出面不分块）',
+        () async {
+      // 红线：首期跨 App 导出只暴露聚合完成面——外部 App 经导出项调用拿到
+      // 的是聚合结果而非分块流（避免联调期对「是否流式」扯皮）；后续开放
+      // 跨 App 流式须显式声明承载机制并处理流中断与半截产物清理。
+      final multiBlock = _MultiBlockEngine();
+      final handler = samplingRequestHandler(
+        engine: multiBlock,
+        quota: SamplingQuota(),
+        serverKey: 'goodshare',
+      );
+      final result = await handler('sampling/createMessage', {
+        'messages': [
+          {'role': 'user', 'content': {'type': 'text', 'text': 'x'}},
+        ],
+      });
+      final content = result!['content'] as Map;
+      expect(content['type'], 'text');
+      // 聚合面：两块拼接为完整文本，result 无任何分块/流式字段。
+      expect(content['text'], '第一块第二块');
+      expect(result.containsKey('stream'), isFalse);
+      expect(result.containsKey('delta'), isFalse);
+      expect(result['role'], 'assistant');
     });
 
     test('maxTokens 超硬顶 → 宿主 clamp 到 kSamplingMaxTokensCap（D3）', () async {

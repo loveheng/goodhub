@@ -11,9 +11,16 @@ import 'package:goodhub/mcp/goodshare_task_api.dart';
 import 'package:goodhub/task/task_consume_loop.dart';
 import 'package:goodhub/task/task_inference.dart';
 import 'package:goodhub/task/task_loop_service.dart';
+import 'package:goodhub/task/task_source.dart';
 
 /// 可控队列：按脚本依次返回 claimed / idle，并记录认领次数。
-class _ScriptedApi implements GoodshareTaskApi {
+class _ScriptedApi implements TaskSource {
+  @override
+  String get serverId => 'com.zzh.goodshare';
+
+  @override
+  Future<bool> release(String taskId) async => true;
+
   _ScriptedApi(this.script);
 
   final List<ClaimedTask> script;
@@ -72,7 +79,7 @@ class _GatedApi extends _ScriptedApi {
     return g.future;
   }
 
-  void release(int i, ClaimedTask t) => gates[i].complete(t);
+  void gateRelease(int i, ClaimedTask t) => gates[i].complete(t);
 }
 
 void main() {
@@ -278,7 +285,7 @@ void main() {
     expect(api.gates.length, 1, reason: '前置：首轮 claim 在途（挂起等放行）');
 
     l.dispose(); // 在途时销毁
-    api.release(0, claimed('t1'));
+    api.gateRelease(0, claimed('t1'));
     await pumpEventQueue();
     await pumpEventQueue();
     expect(api.gates.length, 1,
@@ -299,7 +306,7 @@ void main() {
     expect(api.gates.length, 1);
 
     alive = false; // 轮内断开
-    api.release(0, claimed('t1'));
+    api.gateRelease(0, claimed('t1'));
     await pumpEventQueue();
     await pumpEventQueue();
     expect(api.gates.length, 1,

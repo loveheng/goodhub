@@ -65,6 +65,12 @@ data class GenerationParams(
      * 此处携路径（Binder 只传短元数据——§8 载荷上限立法）。:engine 读取后
      * 即删，双方都不留存。null/空 = 内联 promptJson 口径。 */
     val promptFilePath: String? = null,
+    /** S17b（task-capability，D4 前提）：约束解码规格——type = 'json'|'regex'，
+     * value = Schema 文本/正则。null = 无约束（Dart 侧键缺席语义）。Runner
+     * 侧自治匹配（token 级解析禁中心化，D-3 纪律；K15：解码失败带同一份
+     * 规格回退云端，禁截断降级档）。 */
+    val responseFormatType: String? = null,
+    val responseFormatValue: String? = null,
 ) {
     fun toBundle(): Bundle = Bundle().apply {
         putInt(KEY_MAX_TOKENS, maxTokens)
@@ -73,15 +79,20 @@ data class GenerationParams(
         putStringArrayList(KEY_STOP_SEQUENCES, ArrayList(stopSequences))
         putBoolean(KEY_FOREGROUND, foreground)
         if (!promptFilePath.isNullOrEmpty()) putString(KEY_PROMPT_FILE_PATH, promptFilePath)
+        if (!responseFormatType.isNullOrEmpty()) putString(KEY_RESPONSE_FORMAT_TYPE, responseFormatType)
+        if (!responseFormatValue.isNullOrEmpty()) putString(KEY_RESPONSE_FORMAT_VALUE, responseFormatValue)
     }
 
     override fun equals(other: Any?): Boolean = other is GenerationParams &&
         maxTokens == other.maxTokens && temperature == other.temperature &&
         topP == other.topP && stopSequences == other.stopSequences &&
-        foreground == other.foreground
+        foreground == other.foreground &&
+        responseFormatType == other.responseFormatType &&
+        responseFormatValue == other.responseFormatValue
 
     override fun hashCode(): Int = listOf(
         maxTokens, temperature, topP, stopSequences, foreground,
+        responseFormatType, responseFormatValue,
     ).hashCode()
 
     companion object {
@@ -91,6 +102,8 @@ data class GenerationParams(
         const val KEY_STOP_SEQUENCES = "stopSequences"
         const val KEY_FOREGROUND = "foreground"
         const val KEY_PROMPT_FILE_PATH = "promptFilePath"
+        const val KEY_RESPONSE_FORMAT_TYPE = "responseFormatType"
+        const val KEY_RESPONSE_FORMAT_VALUE = "responseFormatValue"
 
         // 双端缺省单源（2026-11-03 对齐）：与 Dart 侧 GenerationConfig 内建默认
         // 同值——此前 0.7/0.9 与 Dart 1.0/0.95 漂移，任一侧漏传即落回低温窄
@@ -106,17 +119,25 @@ data class GenerationParams(
             topP = b?.getDouble(KEY_TOP_P, DEFAULT_TOP_P) ?: DEFAULT_TOP_P,
             stopSequences = b?.getStringArrayList(KEY_STOP_SEQUENCES) ?: emptyList(),
             foreground = b?.getBoolean(KEY_FOREGROUND, false) ?: false,
+            responseFormatType = b?.getString(KEY_RESPONSE_FORMAT_TYPE),
+            responseFormatValue = b?.getString(KEY_RESPONSE_FORMAT_VALUE),
         )
 
-        /** 桥入向：通道 Map args → Bundle（缺省值单源在此）。 */
-        fun fromArgs(args: Map<*, *>, foreground: Boolean): GenerationParams = GenerationParams(
-            maxTokens = (args["maxTokens"] as? Number)?.toInt() ?: DEFAULT_MAX_TOKENS,
-            temperature = (args["temperature"] as? Number)?.toDouble() ?: DEFAULT_TEMPERATURE,
-            topP = (args["topP"] as? Number)?.toDouble() ?: DEFAULT_TOP_P,
-            stopSequences = (args["stopSequences"] as? List<*>)
-                ?.map { it?.toString().orEmpty() } ?: emptyList(),
-            foreground = foreground,
-            promptFilePath = args["promptFilePath"] as? String,
-        )
+        /** 桥入向：通道 Map args → Bundle（缺省值单源在此）。Dart 侧 responseFormat
+         * 传 Map{type,value}（LlmResponseFormat.toChannelArgs），缺席 = 无约束。 */
+        fun fromArgs(args: Map<*, *>, foreground: Boolean): GenerationParams {
+            val fmt = args["responseFormat"] as? Map<*, *>
+            return GenerationParams(
+                maxTokens = (args["maxTokens"] as? Number)?.toInt() ?: DEFAULT_MAX_TOKENS,
+                temperature = (args["temperature"] as? Number)?.toDouble() ?: DEFAULT_TEMPERATURE,
+                topP = (args["topP"] as? Number)?.toDouble() ?: DEFAULT_TOP_P,
+                stopSequences = (args["stopSequences"] as? List<*>)
+                    ?.map { it?.toString().orEmpty() } ?: emptyList(),
+                foreground = foreground,
+                promptFilePath = args["promptFilePath"] as? String,
+                responseFormatType = fmt?.get("type")?.toString(),
+                responseFormatValue = fmt?.get("value")?.toString(),
+            )
+        }
     }
 }

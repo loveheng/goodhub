@@ -453,7 +453,9 @@ void _assembleTests() {
       locals: const [],
       apiKeyReader: (id) async => 'key-$id',
       memoryStore: MemoryStore.underSupportDir(tmp.path),
-      skills: SkillRegistry(),
+      // S17c：语义外注经 SkillRegistry 按名解析——空表会在装配期显式失败，
+      // 与生产装配一致补 builtin 全集（本用例测的是端点失败降级，非语义闸）。
+      skills: SkillRegistry()..registerAll(builtinSkills()),
       engine: _FakeEngine(),
       tempDirResolver: _tmpDir,
       documentsDirResolver: _tmpDir,

@@ -13,6 +13,8 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/coordinator/agent_loop.dart';
 import 'package:goodhub/coordinator/host_tool_invoker.dart';
+import 'package:goodhub/llm/on_device_capability.dart';
+import 'package:goodhub/llm/on_device_engine.dart';
 import 'package:goodhub/coordinator/permission_gateway.dart';
 import 'package:goodhub/mcp/transport/host_transport.dart' show kHostExportAllowlist;
 import 'package:goodhub/resources/resource_store.dart';
@@ -169,6 +171,9 @@ void main() {
       final port = await assembleHostToolInvoker(
         memoryStore: store,
         resourceStoreResolver: () async => res,
+        // W5：供给面注入位补齐（与生产装配一致）——防悬空登记钉要求
+        // Allowlist 每一项在执行链上可达；缺注入 = 导出面降级属装配层语义。
+        onDeviceCapability: _StubCapability(),
       );
 
       expect(kHostExportAllowlist, isNotEmpty,
@@ -180,4 +185,31 @@ void main() {
       }
     });
   });
+}
+
+/// 供给面假件（W5 防悬空登记钉用）：complete 直通占位产出。
+class _StubCapability implements OnDeviceCapabilityService {
+  @override
+  Future<String> complete({
+    required String instruction,
+    required String input,
+    OnDevicePrimitiveConfig config = const OnDevicePrimitiveConfig(),
+    PrimitiveFallbackPolicy fallback = PrimitiveFallbackPolicy.failFast,
+    String? traceId,
+  }) async => 'stub 产出';
+
+  @override
+  Future<OnDeviceCapabilityAvailability> availability() async =>
+      OnDeviceCapabilityAvailability.ready;
+
+  @override
+  Future<void> loadExplicit() async {}
+
+  @override
+  Stream<EngineChunk> completeStream({
+    required String instruction,
+    required String input,
+    OnDevicePrimitiveConfig config = const OnDevicePrimitiveConfig(),
+    String? traceId,
+  }) => Stream.value(const EngineChunk(deltaText: 'stub 产出'));
 }

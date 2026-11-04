@@ -205,6 +205,37 @@ void main() {
           reason: '策略过滤不得成为绕开私有防火墙的后门');
     });
 
+    test('W5 投影策略适配：端侧供给面导出项（on_device_complete）四档行为',
+        () async {
+      // 红线：导出面经 Allowlist 登记（tags=['core']，_meta.goodhub 合成），
+      // 四档可见性=管线既有机制的钉住（防投影演进破坏导出面语义）。
+      // 自包含桩（不污染本组共享 host face——既有断言聚焦各自机制）。
+      final hostW5 = await _face('host', [_tool('odc', tags: ['core'])]);
+      List<String> w5names(ProjectionPolicy policy) {
+        final r = ProjectionFilter.project(
+          faces: {'pub': pub, 'host': hostW5},
+          privateServerIds: const {},
+          activePrivateServerId: null,
+          policy: policy,
+          systemTools: const [],
+        );
+        return [for (final t in r.tools) t.name];
+      }
+
+      // full：进面（shared + host 公共面成员）。
+      expect(w5names(const ProjectionPolicy.full()), contains('host__odc'));
+      // pruned(tag=core)：tags 白名单拾取 → 进面。
+      expect(w5names(ProjectionPolicy.pruned({'core'})), contains('host__odc'));
+      // pruned(其他 tag)：未命中白名单 → 裁剪（未打标一律剔除的既有铁律）。
+      expect(w5names(ProjectionPolicy.pruned({'io'})),
+          isNot(contains('host__odc')));
+      // single(host)：收敛到 host 服务 → 裸名进面。
+      expect(w5names(ProjectionPolicy.single('host')), contains('odc'));
+      // single(pub)：非目标服务 → 不进面。
+      expect(w5names(ProjectionPolicy.single('pub')),
+          isNot(contains('host__odc')));
+    });
+
     test('② 海关豁免：激活私有域的非 shared 工具进面（2026-10-23 裁决，修「能调不能看」）', () {
       final n = names(const ProjectionPolicy.full(), activePrivate: 'priv');
       expect(n, contains('priv__hidden'),

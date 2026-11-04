@@ -12,6 +12,21 @@
 /// 要不要向外部 Agent 暴露」**完全由本仓（client 端）判断**。真正的调用方可信性
 /// （同签名 / 信任白名单）是另一条独立维度，不得与本标记合成一套安全边界。
 ///
+/// **供给面导出项的实际控制链（W5 落点对齐，2026-11-04）**：`host__` 命名
+/// 空间导出项（如 `on_device_complete`）的访问控制**不在本文件**——本标记只
+/// 是投影海关的输入之一。实际控制链五级，依次为：
+/// 1. **登记制**：`kHostExportAllowlist`（`mcp/transport/host_transport.dart`）
+///    ——未登记者一律不对外导出（合成 `tools/list` 前已收敛），登记三关 =
+///    产品价值 / 隐私影响评估 / 回归钉；
+/// 2. **主体矩阵**：`HostExportEntry.allowedActors`（owner / external 网关），
+///    网关 `toolsCall` 每请求运行时裁决（[Actor] 由鉴权层推导）；
+/// 3. **调用方配额**：`SupplyQuota`（`coordinator/supply_quota.dart`，K22 事务
+///    语义：频次产出才计 / 并发退出即释放）；
+/// 4. **投影裁剪**：本文件标记 + `_meta.goodhub.tags` 共同决定四档投影
+///    （`projection_pipeline.dart`）下是否进目录——shared 缺失即不放大暴露面；
+/// 5. **执行面语义**：failFast 降级显式可知（宿主不兜底云端）、后台冷装载
+///    不被自动满足（懒加载边界）。
+///
 /// 下落点：`core/`（跨域共享 DTO——`llm` 的 [CloudToolSchema]、`mcp` 的海关
 /// 实现、`coordinator` 的聚合路由、`gateway` 的对外目录均消费；core 零出向）。
 library;

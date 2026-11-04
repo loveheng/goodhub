@@ -60,6 +60,12 @@ interface OnDeviceRunner {
         temperature: Float,
         topP: Float,
         stopSequences: List<String>,
+        /** S17b（task-capability，D4 前提）：约束解码规格——type = 'json'|'regex'，
+         *  value = Schema 文本/正则；null = 无约束。Runner 侧自治匹配（token 级
+         *  解析禁中心化，D-3 纪律）；K15：解码失败须显式归因带同一份规格回退
+         *  云端，结构化场景禁截断降级档。 */
+        responseFormatType: String?,
+        responseFormatValue: String?,
     ): Int
 
     /** 取消信号（§6.3）；无在途请求时调用须安全（幂等无害）。 */
