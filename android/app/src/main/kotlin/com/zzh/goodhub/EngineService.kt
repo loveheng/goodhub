@@ -188,6 +188,43 @@ class EngineService : Service() {
         runCatching { listener?.onLoadPhaseChanged(phase) }
     }
 
+    // ==== W3-4 引擎存活打点（timeout-signaling）====
+    // 受理瞬间启动 2s 周期 tick；数据流空档（prefill/首 token 前、长间隙
+    // decode）才上行——2s 内有 token 写出即跳过（token 数据帧本身即最硬活体
+    // 证据，禁重复心跳拖 IPC）。生成收尾 finally 统一取消。看门狗兜底不撤。
+
+    /// LivenessTick 周期（方案红线：下限 2s——看门狗 30s 下失联判定前有 ≥15
+    /// 个 tick，500ms 属过度保守白耗 Binder）。
+    private val livenessTickIntervalMs = 2000L
+
+    /// 最近一次数据面 token 写出时刻（毫秒；受理时重置为受理瞬间——首 tick
+    /// 恒在第 2s 发出，覆盖 prefill 全程空档）。
+    @Volatile private var lastTokenAtMs: Long = 0
+
+    private val livenessTickRunnable = object : Runnable {
+        override fun run() {
+            val idleMs = System.currentTimeMillis() - lastTokenAtMs
+            if (idleMs >= livenessTickIntervalMs) {
+                Log.d(TAG, "liveness tick (data-gap ${idleMs}ms)")
+                runCatching { listener?.onLivenessTick() }
+            }
+            mainHandler.postDelayed(this, livenessTickIntervalMs)
+        }
+    }
+
+    /// 受理瞬间启动 tick（用户约束：计时器在 :engine 真正受理并提交底层硬件
+    /// 的瞬间重置并启动，第 2 秒发首帧——防 Dart 受理 10s / 看门狗首字前误判）。
+    private fun startLivenessTick() {
+        lastTokenAtMs = System.currentTimeMillis()
+        mainHandler.removeCallbacks(livenessTickRunnable)
+        mainHandler.postDelayed(livenessTickRunnable, livenessTickIntervalMs)
+    }
+
+    /// 生成收尾取消 tick（finally 统一收口；无在途生成禁发心跳）。
+    private fun stopLivenessTick() {
+        mainHandler.removeCallbacks(livenessTickRunnable)
+    }
+
     /// G2-1 墓碑标记（死因可见性 ADR 2026-10-31）：`<pid>.flag` 生命周期状态
     /// 文件——FLAG_LOADING（loadModel 受理）/ FLAG_READY（doLoad 成功），
     /// 正常退出（onDestroy）清理。SIGKILL 不可捕获 → 死因对 App 不可见，
@@ -237,21 +274,27 @@ class EngineService : Service() {
     }
 
     /// S2-4 三态生命周期状态机（§4.1）：驱逐动作 = Genie 会话 + 数据面释放。
-    private val lifecycle = com.zzh.goodhub.engine.EngineLifecycle { reason ->
-        Log.i(TAG, "lifecycle evict: $reason")
-        session.close()
-        dataPlane?.close()
-        dataPlane = null
-        // P0-3 收口：驱逐是 `:engine` **自发**的状态变更（TTL / trim / 护栏 /
-        // 主动 release），必须上行主进程——否则 Dart 侧 `loadState` 停在
-        // ready 说谎态，下一次端侧请求必败且归因误导（详见
-        // IOnDeviceEngineListener.onEngineEvicted 的注释）。
-        // 注：进程被外部处决的路径不走这里（Binder 已断，由主进程
-        // ServiceConnection.onServiceDisconnected 合流）。
-        notifyEngineEvicted(reason)
-        // FGS 撤下对称（路线 B）：驱逐 = 权重释放，保活失去意义，常驻通知须收。
-        stopFgs()
-    }
+    private val lifecycle = com.zzh.goodhub.engine.EngineLifecycle(
+        onEvict = { reason ->
+            Log.i(TAG, "lifecycle evict: $reason")
+            session.close()
+            dataPlane?.close()
+            dataPlane = null
+            // P0-3 收口：驱逐是 `:engine` **自发**的状态变更（TTL / trim / 护栏 /
+            // 主动 release），必须上行主进程——否则 Dart 侧 `loadState` 停在
+            // ready 说谎态，下一次端侧请求必败且归因误导（详见
+            // IOnDeviceEngineListener.onEngineEvicted 的注释）。
+            // 注：进程被外部处决的路径不走这里（Binder 已断，由主进程
+            // ServiceConnection.onServiceDisconnected 合流）。
+            notifyEngineEvicted(reason)
+            // FGS 撤下对称（路线 B）：驱逐 = 权重释放，保活失去意义，常驻通知须收。
+            stopFgs()
+        },
+        // 受理窗口竞态护栏（2026-11-05 真机实证）：槽 busy（在途 / 受理中生成）
+        // → TTL 拒绝驱逐，杜绝孤儿在途生成（空产出 frames=0 + 误导 busy）。
+        // 槽字段先于本字段声明，lambda 迟绑定读取，不依赖初始化顺序。
+        isBusy = { slot.isBusy },
+    )
 
     /// TTL 定时器（主线程 Handler；代次失配由状态机作废，防旧计时器杀新会话）。
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
@@ -400,6 +443,14 @@ class EngineService : Service() {
             if (loadedOnce) {
                 Log.w(TAG, "[DEGRADE] loadModel: in-process reload refused " +
                     "(singleton-per-process) -> clean exit for cold reload")
+                // 显式自杀契约（lifecycle-single-source §3「把隐式自杀副作用
+                // 改为显式契约」；2026-11-05 真机实证在途流被误杀）：clean exit
+                // 前上行 cold-reload-restart——主进程据此置「自杀重启窗口」，
+                // 紧随其后的 binder 断（onProcessDied）不再按 process-killed
+                // 无差别收口在途生成流（新进程重受理的产出否则投到死流被
+                // 丢弃，EOS 到达但用户只见错误卡）。300ms kill 延迟即事件
+                // 送达窗口。
+                runCatching { notifyEngineEvicted("cold-reload-restart") }
                 runCatching {
                     android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                         android.os.Process.killProcess(android.os.Process.myPid())
@@ -554,7 +605,18 @@ class EngineService : Service() {
             // 却被丢弃，端侧跑 SDK 默认采样。
             val temperature = gp.temperature.toFloat()
             val topP = gp.topP.toFloat()
-            lifecycle.onGenerateStart() // S2-4：WARM_STANDBY → ACTIVE（TTL 定时器随代次作废）
+            // S2-4：WARM_STANDBY → ACTIVE。真机实证（2026-11-05）：旧注释「TTL
+            // 定时器随代次作废」不成立——代次仅驱逐/warmup 时 +1，生成开始不增
+            // 代次，旧 TTL 定时器不作废，可在受理窗口到点杀会话（Qwen 空产出
+            // 根因）。此处兑现「挂起由接线方取消定时器承载」的文档化意图：
+            // 生成开始取消，收尾 onGenerateFinished → scheduleTtl 重排。纵深：
+            // 状态机 isBusy 护栏（受理窗口槽已授予但本行未及执行时兜底）。
+            mainHandler.removeCallbacksAndMessages(null)
+            lifecycle.onGenerateStart()
+            // W3-4：受理瞬间启动存活打点（第 2s 首帧覆盖 prefill 空档）。
+            // 注：上一行 removeCallbacksAndMessages(null) 清空的是 TTL 定时器
+            //（v2.6 语义），本 tick 随后重排，互不干扰。
+            startLivenessTick()
             // F3 大载荷通道（评审修复 2026-10-31）：promptFilePath 在场 = 超内联
             // 上限的 promptJson 经临时文件承载——**读取前移到本同步段**（受理
             // 返回前已读+删，消除「受理成功但生成线程读取前进程被杀」的残留
@@ -643,6 +705,9 @@ class EngineService : Service() {
                         }
                         pending = ArrayList(64)
                         lastFlush = System.currentTimeMillis()
+                        // W3-4：token 写出 = 数据流活体，刷新 tick 跳过基准
+                        //（2s 内有 token 则 tick 静默——禁重复心跳）。
+                        lastTokenAtMs = System.currentTimeMillis()
                         // 诊断打点（S2-5 字节流对账）：写侧累计字节数——与 Dart
                         // 接收侧累计对账，区分「socket/投递丢字节」与「解码器状态」。
                         benchBytes += flushed
@@ -690,12 +755,25 @@ class EngineService : Service() {
                     // （替代旧 RingBuffer awaitDrained/read_idx 凭据，随游标退役）。
                     // 仅 IPC 死锁路径例外：写端已不可用（数据面已关闭，EOF 通知
                     // 对端），尾批语义由 onIpcDeadlock 切云收口。
-                    if (!sink.ipcDeadlock) {
+                    //
+                    // **会话死亡同理禁发（I6 收敛去歧义，2026-11-05 Qwen 空产出
+                    // 真机实证）**：EOS = 「本代流正常完成」语义。会话已被驱逐/
+                    // 释放（close 置 ready=false）时若照发 EOS，EOS 会经仍在位的
+                    // 数据面抢先抵达 Dart，把在途流以 0 字节「空产出」**正常收敛**
+                    // （抢在数据面 EOF 的 EngineDied 切云之前），归因被误记成模型
+                    // 缺陷（zeroOutput → DispatchProfile 污染）。禁发后由数据面
+                    // 关闭的 EOF 以 EngineDiedException 收口 → 无缝切云（I6 立法
+                    // 语义）；EOF 缺席时无进展看门狗兜底，同一语义。取消路径
+                    //（abortRequested）session.ready 仍 true，EOS 照发不受影响。
+                    if (!sink.ipcDeadlock && session.ready) {
                         try {
                             dp.writer.writeEos()
                         } catch (e: Exception) {
                             Log.w(TAG, "[DEGRADE] writeEos failed: $e")
                         }
+                    } else if (!sink.ipcDeadlock) {
+                        Log.i(TAG, "session dead at finish — skip clean EOS, " +
+                            "let data-plane EOF converge (cloud fallback)")
                     }
                     if (sink.ipcDeadlock) {
                         runCatching { cb?.onIpcDeadlock() }
@@ -720,9 +798,12 @@ class EngineService : Service() {
                     cb?.onGenerateFinished(requestId, if (cancelled || status < 0) 1 else 0)
                 } catch (e: Exception) {
                     Log.w(TAG, "[DEGRADE] genie generate aborted: $e")
-                    runCatching { dp.writer.writeEos() }
+                    // 会话死亡同理禁发干净 EOS（见上方 I6 收敛去歧义注释）。
+                    if (session.ready) runCatching { dp.writer.writeEos() }
                     runCatching { cb?.onGenerateFinished(requestId, 1) }
                 } finally {
+                    // W3-4：生成收尾取消存活打点（无在途生成禁发心跳）。
+                    stopLivenessTick()
                     // S3-3：槽释放（仅槽主生效；打断方 CAS 等待即刻放行）。
                     slot.release(requestId)
                     // S3-2：**FGS 不在此卸载** —— 生成收尾 ≠ 释放权重，
@@ -750,12 +831,13 @@ class EngineService : Service() {
 
         override fun truncateContext(keepTokens: Int) {
             // S3-6 KV 复用语义收口（总纲 §2「keepTokens=0 等价旧 resetContext」
-            // + NPU 稿 §2.4 Prefix Cache 唯一主路线）：geniex-android 管线下
-            // 前缀复用为运行时内置，App 侧无需自研 KV 槽位管理——
+            // + NPU 稿 §2.4 落位实证）：geniex-android 管线下 App 侧无需
+            // 自研 KV 槽位管理——
             //  - keepTokens=0（清历史重放同前缀）：GenieSession.query 每请求
-            //    前置 reset 单发隔离，KV 从 0 对齐口径天然满足；重放同前缀
-            //    命中运行时前缀缓存（llama.cpp prompt cache 层），S2-5 观测
-            //    钩子即按此口径复测；
+            //    前置 reset 单发隔离，KV 从 0 对齐口径天然满足。[Fact 2026-11-03
+            //    真机 bench：TTFT 随历史长度线性增长，每请求全量重 prefill、
+            //    无跨请求前缀复用——勿再声称命中运行时前缀缓存，SSOT =
+            //    context-stepped-pruning §2.5 ADR]；
             //  - keepTokens>0（部分回滚）：Genie 无部分回滚 API，不支持——
             //    DEGRADE 留痕不静默，调用方按全会话语义使用。
             if (keepTokens > 0) {
@@ -791,6 +873,8 @@ class EngineService : Service() {
                 status = currentStatus(),
                 modelId = loadedModelId,
                 runtime = session.activeRuntime,
+                runtimeDetail = session.runtimeDetail,
+                loadError = session.loadError ?: "",
                 issuedAtMs = System.currentTimeMillis(),
             )
             return com.zzh.goodhub.engine.SessionTicketWire.run { t.toBundle() }

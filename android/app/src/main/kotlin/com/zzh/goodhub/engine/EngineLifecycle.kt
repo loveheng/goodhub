@@ -34,6 +34,16 @@ class EngineLifecycle(
     private val ttlMs: Long = DEFAULT_TTL_MS,
     /** 驱逐动作回调（接线方：Genie 会话 + 数据面释放）。 */
     private val onEvict: (reason: String) -> Unit,
+    /**
+     * 在途 / 受理中生成判定（接线方：单执行槽 busy 态）。
+     *
+     * 受理窗口竞态护栏（2026-11-05 真机实证）：执行槽已授予但 [onGenerateStart]
+     * 尚未背书 ACTIVE 转换（受理窗口），此间状态仍 WARM_STANDBY——此刻 5min
+     * TTL 到点驱逐会孤儿在途生成（空产出 frames=0 + 误导 busy）。busy 时
+     * [onTtlElapsed] 拒绝驱逐，待空闲后定时器再触发。默认恒 false = 纯状态机
+     * 语义不变（兼容既有测试）。
+     */
+    private val isBusy: () -> Boolean = { false },
 ) {
     companion object {
         /** §4.1 Inactivity TTL 3~5min，取上界 5min（后台续航优先于重载开销）。 */
@@ -63,6 +73,7 @@ class EngineLifecycle(
      */
     @Synchronized
     fun onTtlElapsed(generationAtSchedule: Int): Boolean {
+        if (isBusy()) return false // 受理窗口 / 在途护栏：不驱逐（见 isBusy 文档）
         if (state != State.WARM_STANDBY) return false
         if (generationAtSchedule != generation) return false // 过期定时器作废
         evict("ttl-elapsed(${ttlMs}ms)")

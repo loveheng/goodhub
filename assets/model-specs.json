@@ -22,6 +22,14 @@
         "qa": "长体量产出冗长（181 字 vs 限 120），降级档"
       },
       "taskAffinitySource": "bench-archive S11 2026-11-03 OnePlus PLQ110 (Ace 6/sun) gemma3-1b 两轮独立采样 18/18 一致"
+    },
+    {
+      "id": "gguf-qwen3.5-2b",
+      "runtime": "llama_cpp",
+      "artifactPattern": "Qwen3.5-2B",
+      "contextTokens": 8192,
+      "loadTimeoutSec": 180,
+      "taskAffinitySource": "Qwen 真机轮 2026-11-04 OnePlus PLQ110：GGUF 头声明 contextLength=262144 满窗 KV 分配装载期 LMK（两次复现），nCtx 按本行收敛 8192 首批试验窗口；llama_cpp+GPU 实测 ~9 tok/s（Q4_0 OpenCL 慢档，对照 Gemma GPU 109）。recommendedSampling 无策展数据不写（禁猜测值），采样 A/B 待后续真机轮。loadTimeoutSec=180（§7 裁决 5）：过热降频/冻结恢复环境装载实测 100s+ 必被 90s 默认上界打断（2026-11-05 真机实证），按体积声明放宽"
     }
   ]
 }

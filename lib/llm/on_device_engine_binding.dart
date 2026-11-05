@@ -137,6 +137,11 @@ class OnDeviceEngineBinding {
   /// （0=PARSING / 1=ALLOCATING，常量见 listener 契约）。诊断面，不参与路由。
   void Function(int phase)? onLoadPhaseChanged;
 
+  /// W3-4 引擎存活打点（timeout-signaling）：:engine 在数据流空档（prefill/
+  /// 长 decode 间隙）每 2s 上行——消费方 = 重置无进展看门狗（token 数据帧
+  /// 本身即活体，2s 内有 token 时 :engine 侧不发 tick，禁重复心跳）。
+  void Function()? onLivenessTick;
+
   OnDeviceEngineBinding() {
     // handler 注册不在此处：纯 Dart 测试环境（无 WidgetsFlutterBinding）构造
     // 即触发 setMethodCallHandler 断言。延迟到首次 [bind]（见 _ensureHandler）
@@ -162,6 +167,8 @@ class OnDeviceEngineBinding {
             debugPrint('[on-device] load phase -> $phase');
             onLoadPhaseChanged?.call(phase);
           }
+        case 'onLivenessTick':
+          onLivenessTick?.call();
         case 'onGenerateFinished':
           final args = call.arguments as Map;
           onGenerateFinished?.call(

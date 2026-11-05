@@ -15,6 +15,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
@@ -40,6 +41,14 @@ import 'degradation_controller.dart';
 // 漂移）；此处 re-export 保持既有 import 面与测试钉兼容。
 export 'capability_router.dart' show onDeviceInputOverflows;
 
+/// 端侧 prompt 构造结果：实际送达 :engine 的载荷 + 裁剪后内容字符数 +
+/// 选中模型（窗口值/采样参数同源），供窗口准入与超窗预检共用。
+typedef _DevicePrompt = ({
+  String promptJson,
+  int contentChars,
+  OnDeviceModelOption? selected,
+});
+
 class HybridCloudEngine implements CloudLlmEngine {
   HybridCloudEngine({
     required this.controller,
@@ -52,6 +61,7 @@ class HybridCloudEngine implements CloudLlmEngine {
     this.isForegroundProbe,
     this.availMemProbe,
     this.quotaChecker,
+    this.onDeviceModelResolver,
   }) : _enableCapable = onDevice is OnDeviceEnableCapable
             ? onDevice as OnDeviceEnableCapable
             : null;
@@ -108,6 +118,11 @@ class HybridCloudEngine implements CloudLlmEngine {
   /// 该调用方配额已超限。配额实例由装配方持有（复用 `SamplingQuota`
   /// 滑窗形态，不新建限流器），判定链只消费结论。
   final bool Function()? quotaChecker;
+
+  /// 当前选中端侧模型解析器（注入；null = 走落盘 `OnDeviceModelSelection.read`）。
+  /// 值源与装配面同源，仅用于让窗口准入/超窗预检在测试与诊断场景可注入
+  /// 指定窗口资产；缺省行为零变化。
+  final Future<OnDeviceModelOption?> Function()? onDeviceModelResolver;
 
   /// 断网探测（无探测位 = 视作在线）。
   ///
@@ -175,6 +190,46 @@ class HybridCloudEngine implements CloudLlmEngine {
     );
   }
 
+  /// 选中模型单一读取口（注入优先，缺省落盘选择）。
+  Future<OnDeviceModelOption?> _readSelectedModel() =>
+      onDeviceModelResolver?.call() ?? OnDeviceModelSelection.read();
+
+  /// 构造端侧实际载荷并给出裁剪后内容字符数。
+  ///
+  /// 窗口准入（S14c `inputEstimateTokens`）与 P1-5 超窗预检**必须复用本结果**：
+  /// 宿主聊天的 system 指令 + 工具面 + 历史动辄数千字符，而端侧默认策略
+  /// ⓪ 真裸只把最新 user 轮送进 :engine。按裁剪前的原始消息全量估算，
+  /// 1280 窗口的 1B bundle 每轮都会算出 >704 字符而误判超窗（真机：选中
+  /// 1B 即报「输入超出端侧模型上下文窗口且未配置云端兜底」）。
+  ///
+  /// `contentChars` = JSON 解码后各 content 长度之和（[estimateTokens] 字符级
+  /// 上界口径），不含 +64 脚手架开销——判据侧由 `onDeviceInputOverflows`
+  /// 统一补齐，禁在此重复计入。
+  Future<_DevicePrompt> _devicePrompt(
+    CloudChatRequest request, {
+    OnDeviceModelOption? selected,
+  }) async {
+    final model = selected ?? await _readSelectedModel();
+    final deviceKey = model?.dirName ?? 'device-default';
+    final devicePolicyId = await HistoryPolicySelection.readForModel(
+        deviceKey, device: true);
+    final promptJson = await buildOnDeviceChatPromptJsonAsync(
+      request.messages,
+      contextTokens: model?.contextTokens,
+      historyPolicy: HistoryPolicySelection.resolve(devicePolicyId),
+    );
+    var contentChars = 0;
+    for (final m
+        in (jsonDecode(promptJson) as List).cast<Map<String, dynamic>>()) {
+      contentChars += estimateTokens(m['content'] as String? ?? '');
+    }
+    return (
+      promptJson: promptJson,
+      contentChars: contentChars,
+      selected: model,
+    );
+  }
+
   @override
   String get name => cloud == null
       ? '混合引擎（仅端侧）· ${onDevice?.name ?? '无'}'
@@ -218,24 +273,17 @@ class HybridCloudEngine implements CloudLlmEngine {
     // 三处复用，不新增第二套读取）。窗口 = modelProfile.contextTokens（
     // model-specs.json per-bundle 声明；未标注族 = null 未知不拦）。
     final selectedModel = canDeviceCandidate && wantDevice
-        ? await OnDeviceModelSelection.read()
+        ? await _readSelectedModel()
         : null;
-    // S14c 输入估算：tokens.dart 字符级上界口径（estimateTokens = length）
-    // 逐 message 求和——与 _deviceSend 预检循环同口径同源（禁两套估法）。
+    // S14c 输入估算（2026-11-04 真机回归修正）：按**实际送达 :engine 的裁剪
+    // 后载荷**估算，禁按原始请求全量逐 message 求和——端侧默认 ⓪ 真裸只留
+    // 最新 user 轮，把原始 system/历史计入会把 1280 窗口的 1B bundle 每轮误判
+    // 超窗。构造结果同时交 _deviceSend 复用（禁二次构造 / 禁两套估法）。
+    _DevicePrompt? preparedPrompt;
     int? inputEstimateTokens;
     if (selectedModel != null) {
-      var chars = 0;
-      for (final m in request.messages) {
-        chars += switch (m) {
-          SystemMessage(:final content) => estimateTokens(content),
-          UserMessage(:final content) => estimateTokens(content),
-          AssistantMessage(:final content) => content == null
-              ? 0
-              : estimateTokens(content),
-          _ => 0,
-        };
-      }
-      inputEstimateTokens = chars;
+      preparedPrompt = await _devicePrompt(request, selected: selectedModel);
+      inputEstimateTokens = preparedPrompt.contentChars;
     }
     // S14b 驻留资产匹配度取证（K19）：仅端侧已就绪时查票据——冷态下无驻留
     // 可言，换驻留禁令不适用（交互级冷态走时效段 D3 档）。票据 modelId 与
@@ -425,13 +473,15 @@ class HybridCloudEngine implements CloudLlmEngine {
         reason: offline
             ? '物理断网'
             : (preferOnDevice ? '用户偏好优先端侧' : '云端降级冷却期'),
+        prompt: preparedPrompt,
       );
       return;
     }
     final c = cloud;
     if (c == null) {
       if (canDevice) {
-        yield* _deviceSend(request, reason: '云端未配置');
+        yield* _deviceSend(request,
+            reason: '云端未配置', prompt: preparedPrompt);
         return;
       }
       throw InferenceException(
@@ -636,6 +686,7 @@ class HybridCloudEngine implements CloudLlmEngine {
   Stream<CloudStreamEvent> _deviceSend(
     CloudChatRequest request, {
     required String reason,
+    _DevicePrompt? prompt,
   }) {
     final device = onDevice!;
     // 已完成标志：stream 正常 done 后 yield* 也会退订（触发 onCancel），
@@ -648,57 +699,40 @@ class HybridCloudEngine implements CloudLlmEngine {
     Future<void>(() async {
       debugPrint('[HybridEngine] 端侧路径（$reason）：${device.name}');
       try {
-        // 端侧对话 prompt 构造（2026-10-31 设计修正）：消息序列 JSON（多轮
-        // ChatML 由 :engine 模板承载角色）——旧「单发压平 + 文字标注」把
-        // assistant 回答塞进 user 轮，违背训练分布 → 复读环（真机定谳）。
-        // 历史预算按当前选中模型的上下文窗口动态推导（2026-11-02 真机定谳：
-        // 全局字符预算对 1280-context bundle 的 ASCII 历史必然溢出）。
-        final selected = await OnDeviceModelSelection.read();
-        // 策略模式接线（2026-11-02）：策略挂模型本身（用户拍板）——按当前
-        // 选中模型的 dirName 取偏好（默认 ① = 旧行为零变化，⓪/②/③ 可切）。
-        // selected 为 null（注册表空，理论不可达——端侧路径前置已判 canDevice）
-        // 回落 'device-default' 键，读侧落默认 ①。
-        final deviceKey = selected?.dirName ?? 'device-default';
-        final devicePolicyId = await HistoryPolicySelection.readForModel(
-            deviceKey,
-            device: true);
-        final promptJson = await buildOnDeviceChatPromptJsonAsync(
-          request.messages,
-          contextTokens: selected?.contextTokens,
-          historyPolicy: HistoryPolicySelection.resolve(devicePolicyId),
-        );
-        debugPrint('[HybridEngine] 端侧对话 prompt：promptJsonChars=${promptJson.length}');
+        // 端侧对话 prompt 构造与载荷估算（_devicePrompt 单源）：消息序列 JSON
+        // 由 :engine 侧 ChatML 模板承载角色；历史预算按选中模型窗口动态推导，
+        // 策略挂模型本身（默认 ⓪ 真裸 = 仅最新 user 轮）。主入口已构造时复用，
+        // 云端兜底等旁路自行构造——两处口径恒等，禁二次估法。
+        final prepared = prompt ?? await _devicePrompt(request);
+        final promptJson = prepared.promptJson;
+        final selected = prepared.selected;
+        debugPrint('[HybridEngine] 端侧对话 prompt：promptJsonChars=${promptJson.length}'
+            ' contentChars=${prepared.contentChars}');
         // P1-5 输入零预算预检（机制审计，设计定稿 2026-11-01）：**拒绝优先**——
         // 预检超窗显式报错切云（产出优先），设备路径禁第二套截断（阶梯截断 =
         // 上下文治理唯一机制，归 stepped-pruning draft）。预算来源 = 资产面
         // 声明 contextTokens（modelProfile 单源）；未标注（GenieX 系）跳过
         // 预检——其历史字符预算机制（kOnDeviceHistoryCharBudget）在场兜底，
         // 硬编码默认窗口会误拒正常多轮对话。
-        // UNCERTAIN: 超窗时 SDK 行为（尾部截断 vs 硬失败）未实证——GenieX 系
-        // 无预检沿用现状；litertlm 系走拒绝路径不触 SDK（观测钩子归真机批次）。
+        // [Fact] 超窗 SDK 行为实证（Qwen 真机轮 2026-11-04，Ace 6）：GenieX
+        // llama_cpp 系超窗 = SDK 抛「Input prompt too long」RuntimeException
+        // **硬失败**，:engine 捕获转 [DEGRADE]，Dart 侧表现为空产出干净闭合
+        // （bytesIn=0/chunks=1，非尾部截断、非进程崩溃）——预检缺席时生产侧
+        // 空产出显式报错路径兜底（2026-10-30 已收口），用户可见不静默。
+        // GenieX 系无预检沿用现状成立。
+        // 判据 = 裁剪后实际载荷（+64 JSON 脚手架）+ 输出预留；按裁剪前原始
+        // 消息算会把长 system/历史误当 payload，1280 窗口 1B bundle 每轮误拒
+        //（2026-11-04 真机回归）。单轮超 builder 预算仍是唯一真溢出源。
         final ctxTokens = selected?.contextTokens;
         if (ctxTokens != null) {
-          var contentChars = 0;
-          for (final m in request.messages) {
-            contentChars += switch (m) {
-              SystemMessage(:final content) => content.length,
-              UserMessage(:final content) => content.length,
-              AssistantMessage(:final content) => content?.length ?? 0,
-              _ => 0,
-            };
-          }
           final outputReserve = request.maxTokens ?? 512;
-          // 字符口径 = ASCII 最坏 1 字符 1 token（与 prompt builder 预算同
-          // 口径；中文实际 ~1.3~1.5 字/token，估算只偏保守不漏拒）。+64 =
-          // JSON 序列化脚手架开销。builder 已把历史裁到 ctx-768 内（单轮
-          // 超 builder 预算的当前轮是唯一溢出源，正是本预检的目标）。
           if (onDeviceInputOverflows(
-            contentChars: contentChars,
+            contentChars: prepared.contentChars,
             outputReserve: outputReserve,
             windowTokens: ctxTokens,
           )) {
             throw OnDeviceContextOverflowException(
-                ctxTokens, contentChars + outputReserve + 64);
+                ctxTokens, prepared.contentChars + outputReserve + 64);
           }
         }
         // P1-6（2026-11-01）：流式契约——逐 delta 投递，消除「收满 512 token
@@ -732,8 +766,17 @@ class HybridCloudEngine implements CloudLlmEngine {
           //（真机实证「端侧生成失败（null）：空产出」不可读）。
           final reason = status ?? '端侧引擎就绪';
           final why = aware ?? status ?? '空产出（模型未产出任何内容）';
+          // I6 归因防护（2026-11-05）：归因时引擎**非就绪**（已被驱逐/状态未知/
+          // 通道异常）＝零产出不可信为模型缺陷——按会话死亡语义抛 EngineDied
+          // （catch 分支无缝切云，产出优先），**禁记 zeroOutput**：否则一次性
+          // 基础设施事件被持久化成坏后端记忆，下轮无故跳开端侧。
+          if (status != null) {
+            throw EngineDiedException(
+                'session not ready at empty-output attribution ($status)');
+          }
           // DispatchProfile 第二写入方（设计稿 §7）：运行时零产出 → 标观测
           // 后端 EXCLUDED，下轮查表直跳（#4 坏后端记忆并入画像）。
+          // （走到此处引擎必就绪：模型真没说话，归因可信。）
           await recordRuntimeBackendExcluded(
               selected, BackendReason.zeroOutput);
           throw InferenceException('端侧生成失败（$reason）：$why');
@@ -770,8 +813,23 @@ class HybridCloudEngine implements CloudLlmEngine {
         } else if (e is EngineDiedException) {
           // DispatchProfile 第二写入方（设计稿 §7）：运行时崩溃/死亡 → 标
           // EXCLUDED，下轮查表直跳（同 #4 坏后端记忆并入画像）。
-          await recordRuntimeBackendExcluded(
-              await OnDeviceModelSelection.read(), BackendReason.crash);
+          // 归因过滤（2026-11-05，与 I6 收敛去歧义配套）：**在途被驱逐打断**
+          //（SESSION_ABORTED_BY_EVICTION）、数据面 EOF（驱逐关闭数据面）与
+          // **装载未完成类可重试分码**（session_loading 装载慢被打断 /
+          // session_epoch_mismatch 票据过期 / session_model_mismatch 资产变更
+          // ——均为可自愈中断，真机实证 14:38 装载 100s 超窗被打断被记成
+          // GPU crash）不是后端缺陷——记 crash 会把正常生命周期/环境事件持久
+          // 化成坏后端记忆，下轮无故跳开端侧。真进程死亡/看门狗/死锁类照记。
+          final diedReason = e.reason.toLowerCase();
+          final evictionLifecycle = diedReason.contains('session_aborted_by_eviction') ||
+              diedReason.contains('data plane eof') ||
+              diedReason.contains('session_loading') ||
+              diedReason.contains('session_epoch_mismatch') ||
+              diedReason.contains('session_model_mismatch');
+          if (!evictionLifecycle) {
+            await recordRuntimeBackendExcluded(
+                await _readSelectedModel(), BackendReason.crash);
+          }
           // on-device S1-5（总纲 §2）：`:engine` 进程死亡/驱动 Panic 无缝切云，
           // 绝不闪退主进程、绝不让用户会话炸错误卡。切云一次直达（端侧已死，
           // 云端再失败只能原样上抛）。同一 ctrl 承载——§10 取消联动（onCancel →

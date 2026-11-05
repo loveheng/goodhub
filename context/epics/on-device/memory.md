@@ -49,7 +49,7 @@ last-merge: none
 |---|---|---|---|---|
 | 端侧摘要器实证 | `OnDeviceResultSummarizer` 已证「异步小模型管线可行」(`context_governor.dart:75-98`) | `$ref` 句柄注水真机路径**待端侧摘要器实证** | m3 §头注 / host-gateway §3.5 | 实证待补 |
 | 超大 Tool Result 确定性地板 | 仅模型摘要路径，存在 `summarizer==null` 与摘要失败两条原文直出旁路 | 缺端侧引擎或摘要失败时零上限直入上下文，击穿单轮窗口 | host-gateway §10.4 | **已锁定** D-I 硬截断 `kToolResultHardCap=2000t≈8KB`（Head50+Tail20） |
-| 阶梯截断 + 端侧摘要归档 | 朴素逐轮滑动窗口「每轮 100% Cache Miss」+「出窗即失忆」 | 高低水位双缓冲(6~12) + 被裁轮次经端侧摘要器归档回注 | context-stepped-pruning.md | **draft 未落地**；§5 含「端侧引擎不可用时云端摘要降级（默认不做）」 |
+| 阶梯截断 + 端侧摘要归档 | 朴素逐轮滑动窗口「每轮 100% Cache Miss」+「出窗即失忆」 | 高低水位双缓冲(6~12) + 被裁轮次经端侧摘要器归档回注 | context-stepped-pruning.md | **已落地**（2026-11-03 盘点代码面零缺口；§2.5 ADR draft→active；KV 实证 [Fact] 每请求全量重 prefill、无跨请求前缀复用）；§5 含「端侧引擎不可用时云端摘要降级（默认不做）」 |
 
 ### C. 端侧 PII 遮蔽
 
@@ -62,7 +62,7 @@ last-merge: none
 
 | 项 | 现状 | 缺口 / 描述 | 落点 | 触发 / 状态 |
 |---|---|---|---|---|
-| 移动端生命周期与重连 | 全仓**无任何 `AppLifecycleState` / `WidgetsBindingObserver` 钩子**；网关无 ping-on-resume / 半开 SSE 探测 / unreachable 降级 | 应：后台优雅暂停心跳、恢复前台 ping、不可达降级为仅 Public 工具 | host-gateway §10.1 | 缺口（优先补） |
+| 移动端生命周期与重连 | D1 已落地（2026-11-03）：ConnectionHealth pause/resume（pause 仅摘定时器、resume 立即探活压 SSE 假死窗口）+ 静态注册表 `_live` + main.dart 生命周期挂钩（resumed→resumeAll+端侧预热 / paused/hidden/detached→pauseAll）+ 测试钉 3 例 | unreachable「仅 Public 工具」不建显式机制（裁决：不可达工具经 ToolRouter 熔断收敛 isError，语义已覆盖） | host-gateway §10.1（现状已回填） | **已落地** |
 | 端侧 Agent 失控环路（Loop Storm） | Trace-ID + Hop-Count 跨协议强制透传已落地（`gateway_loop_guard.dart` `hop_count≤2` 熔断） | 风险：PC→网关→本地 App→自动化脚本→又调 `:8766`，或端侧 Agent 失控无限递归 | thirdconnect §9.5 | **已防护**（机制存活，非缺口） |
 
 ## 已锁定 vs 未落地（速判）
@@ -70,8 +70,8 @@ last-merge: none
 - **已锁定机制**：超大 Tool Result 硬截断（D-I）、Loop Storm 环路防护（`hop_count≤2`）、N7 正则四类 + 无人值守 fail-closed、**NPU 兜底（2026-10-31）：`GenieSession.doLoad` 以 QAIRT+NPU 为主路，仅 QAIRT build 失败（NPU 驱动/HTP 不可用）回落 `llama_cpp+CPU` 完成本会话（同 GGUF 资产 + tokenizer，AAR 已捆绑两插件）；热/OOM 不触发兜底仍收口云端（遵「禁 CPU 分流」）；Dart 路由层/AIDL 不变（运行时无关），D1a 设备分档不变，仅推翻 D1「无 CPU 兜底」条款且限定高端 NPU 设备（`decisions.md` ADR）**。
 - **已锁定机制（续·2026-11-01 拍板）**：**端侧回退链物理重构 = NPU(QAIRT) → GPU(llama_cpp+GPU) → 云端 [DEGRADE]**，CPU 彻底出局（含代码路径物理删除，待 GPU Spike 全绿后执行）；**推翻 v3.2「NPU build 失败回落 CPU」条款**（`decisions.md` ADR 对应条据此修订）。破窗效应依据：留 CPU 分支会在偶发超时/内存受压时启发式滑落 CPU，复现发热与前台假死；云端安全网（HybridCloudEngine 第一等公民）足以兜底，且可借 [DEGRADE] 打点倒逼 GPU 档闭环。
 - **已锁定机制（续·2026-11-01 拍板）**：**准入探针与坏后端记忆合并为单一 `DispatchProfile`** —— 按 `modelId # Build.FINGERPRINT` 为键的 `{backend: {verdict: HEALTHY|EXCLUDED, reason, ttftMs, memBytes, probedAt}}`，两个写入方（导入后准入探针 + 运行时崩溃/零产出）共享、一个消费方（Dart 路由查表分流，不再拉 `:engine` 踩已知坑）；画像存 `.admission.json`（与 `.asset-meta.json` 同目录），复用 `asset_manager` 的 `recoverIfDriverChanged` 驱动指纹失效 → 脏删重探。设计稿 = `docs/design/on-device-admission-probe.md`。
-- **仍为空缺 / draft / 未排期**：端侧模型管理链（已归档未复活）、iOS 端侧引擎适配、端侧模型 OOM 独立进程化（G6）、端侧摘要器 `$ref` 注水实证、端侧 PII 模型层、移动端生命周期钩子、阶梯截断端侧摘要归档（draft）。
+- **现在不做（2026-11-03 盘点裁决，均带触发器）**：模型管理链复活（A1，触发=需免 SAF 的在线 OTA 分发）、iOS 端侧引擎适配（A3，硬前置缺位纯留位）、端侧模型 OOM 独立进程化 G6（A2，触发=真机网关连带死亡）、端侧摘要器 `$ref` 注水实证（B1，随下次真机轮顺带）、端侧 PII 模型层（C1，触发=真实受损案例）、多模态 PII（C2，触发=M3+ 多模态接入）。阶梯截断 / 移动端生命周期钩子已于 11-03 落地，不再列。
 
 ## 断点
 
-- [断点] 通用实现纪律治理轮收口（e05bed9：SessionTicketWire 双端缺省对齐 1.0/0.95、kLitertlmContextTokens 目录层删除、LlmBridge 生成面退役 319→74 行纯探针桥、栈级魔数出处钉——「代码通用不为模型写死参数」全仓清零）。元数据管线 + 治理连收——下一步：Qwen 系真机验证补规格表行、模型管理链（域内待办最重项）或等新指令
+- [断点] 下一步：① **观测债三件 + 采样 A/B 全收（2026-11-05 真机轮）**——drift 修复（reconcileLoadStateFromTicket）、归因过滤白名单扩充（session_loading 类不记 crash）、loadTimeoutSec 实现（§7 裁决 5，Qwen 声明 180 重导入落盘）、采样 A/B（A/C 干净零复读 → recommendedSampling 维持不写禁猜值；B 组长输入被 libggml-cpu 0.10.0 SIGSEGV 阻塞不可评）、tombstone 归因（libggml-cpu `ggml_cpu_extra_compute_forward` 两次复现，重评触发器 = geniex 升版 >0.10.0）。② 剩余待办：geniex 升版后重跑（hexagon NPU + libggml-cpu 崩溃 + B 组长输入复评三件合并触发）、session-mirror drift 已修待下次 bench 轮验证。③ debug-bridge 工具批两批全落地——批一（tap_bounds+前台守卫/wait_log/ui-tree NaN 容错/--file+stdin/device-log）；批二系统 UI 绕行（foreground 报前台包名+是否 GoodHub / system-ui 解析系统 UI 可点节点 / system-tap 系统级 tap）——**下次真机调试优先桥面语义端点，截图仅最后手段**：GoodHub 内 UI 用 tap_bounds（粘贴 ui-tree bounds），系统 UI（SAF/权限弹窗）先 foreground 判断再 system-ui 定位 + system-tap 驱动，等结果用 wait_log 非睡眠。已知限制：SAF 文件行仅 dump 出 click=false TextView，精确点选受系统 UI 交互限制（可后续增强 system-ui 输出 clickable 容器）。设备现态：干净包含全部修复 + Qwen 已重导入（meta 含 loadTimeoutSec=180）+ GenieX 增配 v0.10.0 已装

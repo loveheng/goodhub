@@ -469,6 +469,10 @@ class OnDeviceBench {
       final s = await sharedOnDeviceEngine.authoritativeStatus();
       if (s == EngineStatus.ready) {
         debugPrint('[on-device-bench] model ready after ~${i}s');
+        // 显式装载链投影写回（2026-11-05 drift 观测债）：裸 loadModel 绕过
+        // enable 的 _loadState 写面——就绪后按权威票据补写，消除后续每次
+        // generate 的 session-mirror drift。
+        await sharedOnDeviceEngine.reconcileLoadStateFromTicket();
         return;
       }
       if (s == EngineStatus.unsupportedDevice) {

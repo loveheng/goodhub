@@ -504,6 +504,12 @@ object EngineServiceBridge {
                             invokeOnMain("onLoadPhaseChanged", mapOf("phase" to phase))
                         }
 
+                        override fun onLivenessTick() {
+                            // W3-4 引擎存活打点（timeout-signaling）：oneway 单向
+                            // 上行，主进程消费 = 重置无进展看门狗（数据流空档防误判）。
+                            invokeOnMain("onLivenessTick", null)
+                        }
+
                         override fun onEngineDied() {
                             Log.w(TAG, "[DEGRADE] engine reported onEngineDied: cloud fallback wiring pending S1-5")
                             invokeOnMain("onEngineDied", null)

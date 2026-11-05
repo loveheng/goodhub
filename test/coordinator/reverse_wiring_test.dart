@@ -319,9 +319,16 @@ void main() {
         supplyQuota: SupplyQuota(),
       );
 
-      final pending = binderFace.client.onServerRequest!(
+      // S07/S07b：Binder 面走携带平台侧已解析身份的钩子（onServerRequest 已
+      // 不再被 wireSampling 设置——身份经内核 UID 解析随帧到达）。
+      final pending = (binderFace.client.transport as BinderTransport)
+          .onServerRequestWithCaller!(
         HostOnDeviceToolExecutor.reverseMethodName,
         {'instruction': 'i', 'input': 'x'},
+        const ResolvedCallerIdentity(
+          packageName: 'com.zzh.goodshare',
+          signatureSha256: 'sha256:caller',
+        ),
       );
       final settled = expectLater(pending, throwsA(isA<McpRpcException>()));
       await Future<void>.delayed(const Duration(milliseconds: 10));

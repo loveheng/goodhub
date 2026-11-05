@@ -183,6 +183,9 @@ class _ChatPageState extends State<ChatPage>
     // 端侧显式加载指示：首次命中端侧路径时引擎进入 loading，轨道显式呈现
     // 「端侧模型加载中…」，加载完成/失败自动撤下（失败另有请求级错误卡）。
     onDeviceEngine.loadState.addListener(_onOnDeviceLoadStateChanged);
+    // W2-3 装载阶段细分（timeout-signaling）：loading 期间按 :engine 上行的
+    // 装载阶段（0=解析资产 / 1=分配算力）刷新指示文案，替代固定黑盒死等感知。
+    onDeviceEngine.loadPhase.addListener(_onOnDeviceLoadPhaseChanged);
     // 端侧状态芯片初始快照（Fix3）：打开页面时引擎可能已就绪/装载中——
     // 监听器只在「变化」时触发，初始态必须显式取样否则芯片首帧缺失。
     final onDeviceNow = onDeviceEngine.loadState.value;
@@ -217,6 +220,7 @@ class _ChatPageState extends State<ChatPage>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     onDeviceEngine.loadState.removeListener(_onOnDeviceLoadStateChanged);
+    onDeviceEngine.loadPhase.removeListener(_onOnDeviceLoadPhaseChanged);
     taskConsumeBootstrap.isHostBusy = null; // 解绑运行态端口（防悬空引用）
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
@@ -238,6 +242,23 @@ class _ChatPageState extends State<ChatPage>
   /// 驱逐静默复位 unloaded（零提示）→ 用户对端侧「何时在跑 / 何时已失效 /
   /// 下次提问为何变慢」全程无感知。
   static const String _kOnDeviceLoadingNote = '⏳ 端侧模型加载中…';
+
+  /// W2-3 装载阶段文案（timeout-signaling）：phase → 用户可读阶段名。
+  /// 值 = listener 契约常量（0=PARSING / 1=ALLOCATING），-1/未知 = 通用文案。
+  static String _onDeviceLoadingNoteForPhase(int phase) => switch (phase) {
+        0 => '⏳ 端侧模型加载中（解析资产）…',
+        1 => '⏳ 端侧模型加载中（分配算力）…',
+        _ => _kOnDeviceLoadingNote,
+      };
+
+  /// 装载阶段上行（W2-3）：仅 loading 态且瞬态 pill 在场时刷新文案（阶段
+  /// 推进 = 进度可见；非 loading 的 phase 打点不提示）。
+  void _onOnDeviceLoadPhaseChanged() {
+    if (!mounted || !_loadingNoticeActive) return;
+    if (onDeviceEngine.loadState.value != OnDeviceLoadState.loading) return;
+    _showTransientNotice(
+        _onDeviceLoadingNoteForPhase(onDeviceEngine.loadPhase.value), false);
+  }
 
   /// 端侧加载瞬态 pill 是否已展示（过程类不收纳，用本地标记管理显隐）。
   bool _loadingNoticeActive = false;
@@ -1581,6 +1602,8 @@ class _RoundRecordButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = consoleTokens(context);
     return IconButton(
+      // 稳定寻址锚点（AI 调试桥按 key 点按）：AppBar「本轮记录」入口。
+      key: const Key('chat-round-record'),
       // tooltip 明说档位（§6 双通道：颜色之外的第二通道）。
       tooltip: hasDanger
           ? '本轮记录（有告警，点击查看）'

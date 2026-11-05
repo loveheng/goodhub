@@ -44,6 +44,11 @@ dependencies:
   rich_text:
     path: ../rich_text
 
+  # 真机 AI 调试桥（多 App 复用组件，2026-11-05 抽取为同级独立仓
+  # ../app_debug_bridge，与 rich_text 同范式：仓内物理单副本，禁双副本分叉）
+  app_debug_bridge:
+    path: ../app_debug_bridge
+
   # 云端 BYOK 密钥安全存储（M2-T1，architecture §1 密钥纪律）：
   # Android 后端 EncryptedSharedPreferences/Keystore
   # 升 11.x：9.x 经 flutter_secure_storage_windows 锁 win32 ^5.0.0，与

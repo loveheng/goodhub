@@ -10,6 +10,7 @@ import 'llm.dart';
 import 'on_device_asset_manager.dart';
 import 'on_device_chat_prompt.dart' show kPromptInlineBinderLimitChars;
 import 'on_device_circuit_breaker.dart';
+import 'on_device_session_ticket.dart';
 import 'on_device_death_cause.dart';
 import 'on_device_detokenizer.dart';
 import 'on_device_engine.dart';
@@ -93,6 +94,14 @@ class AidlOnDeviceEngine
     _binding.onProcessDied = _onProcessDied;
     _binding.onEngineEvicted = _onEngineEvicted;
     _binding.onEvictionInterrupted = _onEvictionInterrupted;
+    // W2-3 装载进度事件（timeout-signaling）：AIDL onLoadPhaseChanged（oneway，
+    // 不阻塞 :engine 装载线程）→ 引擎面 loadPhase 可观察——UI 据此呈现
+    // 「解析资产 / 分配算力」阶段，替代固定 90s 黑盒死等的感知面。
+    _binding.onLoadPhaseChanged = (phase) => _loadPhase.value = phase;
+    // W3-4 引擎存活打点（timeout-signaling）：数据流空档（prefill/长 decode
+    // 间隙）的 tick = native 声明「硬件在算」→ 重置全部活跃流看门狗（防首字
+    // 前误判切云）。看门狗 30s 兜底不撤除（进程冻结场景 tick 同样不可达）。
+    _binding.onLivenessTick = _onLivenessTick;
   }
 
   /// 端侧流**无进展看门狗**时长（注入位供单测压缩）：端侧数据面此前**无任何
@@ -114,6 +123,20 @@ class AidlOnDeviceEngine
   final ValueNotifier<OnDeviceLoadState> _loadState =
       ValueNotifier<OnDeviceLoadState>(OnDeviceLoadState.unloaded);
 
+  /// 装载阶段打点镜像（W2-3 进度事件；值 = listener 契约常量：0=PARSING /
+  /// 1=ALLOCATING，-1=无在途装载）。装载收口（ready/failed/作废）复位 -1。
+  final ValueNotifier<int> _loadPhase = ValueNotifier<int>(-1);
+
+  /// 装载阶段可观察面（W2-3：UI 进度呈现数据源，替代固定黑盒死等感知）。
+  @override
+  ValueListenable<int> get loadPhase => _loadPhase;
+
+  /// 请求侧装载等待脱钩器（W2-3 可取消装载）：非 null = 有等待者在场。
+  Completer<String>? _loadWaitDetach;
+
+  /// 脱钩哨兵（_awaitLoadTask 的 Future.any 三态判别用）。
+  static const String kLoadDetached = 'load-wait-detached';
+
   /// 加载状态可观察面（[OnDeviceEnableCapable]）。
   @override
   ValueListenable<OnDeviceLoadState> get loadState => _loadState;
@@ -133,6 +156,11 @@ class AidlOnDeviceEngine
   /// 60~90s）：超时 = 请求侧报错退出、**装载后台继续**（B-2 语义不变）。
   static const Duration _loadWaitPerRequest = Duration(seconds: 90);
 
+  /// 当前装载任务的请求侧上界（enable 提交时按目标模型的 meta 声明
+  /// `loadTimeoutSec` 设置，缺省 = [_loadWaitPerRequest]；§7 裁决 5——
+  /// 过热降频/冻结恢复环境大模型装载实测可超 90s，按体积声明放宽）。
+  Duration _activeLoadWait = _loadWaitPerRequest;
+
   /// 「引擎重启装载」预期态标志（Fix1 恢复语义去歧义）：`:engine` 拒绝同
   /// 进程重载（单进程单装载纪律）→ 进程将自杀交 AMS 冷启动新进程装载。
   /// 该过程伴随 `not_bound` / 连接超时，属**预期**中断——禁计入
@@ -146,6 +174,16 @@ class AidlOnDeviceEngine
   /// 装载退避的快死棘轮据此分类（替代 livedMs<30000 概率推断）；消费后清。
   EngineDeathCause? _lastDeathCause;
   DateTime? _lastDeathCauseAt;
+
+  /// 自杀重启窗口（2026-11-05 真机实证）：`:engine` 同进程重载拒绝 → clean
+  /// exit 前显式上行 `cold-reload-restart`（lifecycle-single-source §3「把
+  /// 隐式自杀副作用改为显式契约」），此处记窗口——紧随其后的 binder 断
+  ///（onProcessDied）属**预期**冷重载环节，不得按 process-killed 无差别
+  /// 收口在途生成流（否则新进程重受理的产出投到死流被丢弃）。窗口 =
+  /// 自杀 → AMS 重启 → 重装载 → 重受理全程的上界；窗口内真 LMK 误入
+  /// 由无进展看门狗兜底收口，代价可控。
+  static const Duration _reloadRestartWindow = Duration(seconds: 60);
+  DateTime? _reloadRestartWindowUntil;
 
   /// 显式加载端侧引擎（懒加载兜底：首次命中端侧路径由 [HybridCloudEngine]
   /// 触发）。装载跑在后台任务 [_runBackgroundLoad] 里（B-2：中断类失败分钟级
@@ -166,23 +204,44 @@ class AidlOnDeviceEngine
     }
     final gen = ++_loadGen; // 作废任何旧任务（含目标变更场景）
     _loadTaskModelId = target?.dirName;
+    // 请求侧装载上界随目标声明（§7 裁决 5）：meta loadTimeoutSec 缺席 = 90s。
+    _activeLoadWait = target?.loadTimeoutSec != null && target!.loadTimeoutSec! > 0
+        ? Duration(seconds: target.loadTimeoutSec!)
+        : _loadWaitPerRequest;
     _loadTask = _runBackgroundLoad(target, gen, backendHint).whenComplete(() {
       if (_loadGen == gen) {
         _loadTask = null;
         _loadTaskModelId = null;
+        _loadPhase.value = -1; // 装载收口复位阶段打点（过程态不留残值）
       }
     });
     return _awaitLoadTask();
   }
 
   /// 有界等待当前装载任务（并发进入复用同一任务）。
+  ///
+  /// W2-3 可取消装载：[cancelLoadWait] 触发脱钩 completer → 本请求立即以
+  /// 可重试异常退出，**禁作废 `_loadGen`**（cancel = detach，后台装载继续，
+  /// B-2 语义不变——强杀会复现「老装载后台跑满 I/O、状态错乱」）。
   Future<EngineStatus> _awaitLoadTask() async {
     final task = _loadTask;
     if (task == null) return EngineStatus.ready; // 防御：任务已收口未重启
+    final detach = Completer<String>();
+    _loadWaitDetach = detach;
     try {
-      final ok = await task.timeout(_loadWaitPerRequest);
-      if (ok) return EngineStatus.ready;
-      throw OnDeviceLoadException(_loadTaskError ?? '端侧加载失败');
+      // any 结果三态：task 完成 true=就绪 / false=终态失败（原语义上抛
+      // _loadTaskError）/ kLoadDetached 哨兵=脱钩 completer 先完成（用户取消）。
+      final ok = await Future.any<Object?>([task, detach.future])
+          .timeout(_activeLoadWait);
+      if (ok == kLoadDetached) {
+        // 脱钩路径（用户取消等待）：请求侧退出，装载任务原样在后台。
+        throw const OnDeviceLoadException(
+            '已取消等待端侧模型装载（后台装载继续，可稍后重试）',
+            retryable: true);
+      }
+      final taskOk = ok as bool;
+      if (!taskOk) throw OnDeviceLoadException(_loadTaskError ?? '端侧加载失败');
+      return EngineStatus.ready;
     } on TimeoutException {
       // B-2 核心：请求侧超时 ≠ 装载失败——后台仍在分钟级退避重试。
       // 温控摘除（2026-10-31 用户裁决）：过热分叉随切云沿一并退役。
@@ -190,7 +249,18 @@ class AidlOnDeviceEngine
           '端侧模型装载进行中（后台继续装载；内存紧张可清理后台应用），请稍后重试',
           retryable: true,
           degraded: false);
+    } finally {
+      if (_loadWaitDetach == detach) _loadWaitDetach = null;
     }
+  }
+
+  /// 请求侧装载等待脱钩（W2-3 可取消装载）：仅结束当前有界等待，**不触发
+  /// `_loadGen` 代次作废**——后台装载继续。无等待者 = false。
+  bool cancelLoadWait() {
+    final d = _loadWaitDetach;
+    if (d == null || d.isCompleted) return false;
+    d.complete(kLoadDetached);
+    return true;
   }
 
   /// B-2 后台装载任务：中断类失败按 [backoffs] 分钟级封顶退避无限重试
@@ -206,6 +276,12 @@ class AidlOnDeviceEngine
   Future<bool> _runBackgroundLoad(
       OnDeviceModelOption? model, int gen, String? backendHint) async {
     _loadTaskError = null;
+    // reason 随动作打日志（IRIDIS 对照）：装载入口带上次熔断/死亡事件，
+    // 排查「为何这次没走端侧」不再需要复现死亡现场。
+    final breakerTrace = breaker.lastEventReason;
+    if (breakerTrace != null) {
+      debugPrint('on_device load: last breaker event → $breakerTrace');
+    }
     // 装载进行中即对用户可见（Fix3a）：此前**全仓无人写 loading 态**——
     // UI 的「⏳ 端侧模型加载中…」指示器是死代码（永不触发），用户对
     // 「端侧正在装载 / 回收后重载」全程无感知（端侧失效不可见）。
@@ -319,7 +395,23 @@ class AidlOnDeviceEngine
         if (loadedClass == OnDeviceStatusClass.terminal) {
           // 终态失败文案白话化（禁把内部枚举名抛给用户——真机曾见
           // 「模型装载失败（circuitBroken）」，用户看不懂也无从行动）。
-          throw OnDeviceLoadException(engineStatusFailureReason(loaded));
+          // 真因优先（2026-11-05 文案误归因修复，getLoadError 立法意图的
+          // 票据承载）：装载失败 ≠ 资产缺失——geniex 运行库未装被 assetMissing
+          // 笼统文案报成「请导入模型」，补救方向完全误导（真机实证 2026-11-05）。
+          // 先取票据 loadError 归因：运行库缺失 → 运行库文案；其他真因 → 透出；
+          // 真因缺席（旧 :engine）→ 维持既有状态文案。
+          var why = engineStatusFailureReason(loaded);
+          try {
+            final t = await _binding.fetchSessionTicket();
+            final err = t?.loadError ?? '';
+            if (err.contains('geniex runtime not installed')) {
+              why = '端侧运行库未安装（GenieX 增配，请在设置·端侧模型配置安装后重试）';
+            } else if (err.isNotEmpty) {
+              why = err;
+            }
+          } catch (_) {// 票据不可得 = 真因未知，维持状态文案（禁猜测）。
+          }
+          throw OnDeviceLoadException(why);
         }
         // 数据面消费 worker（原在 generate 内惰性启动，现收编进显式加载）：
         // 失败即「端侧加载失败」，对用户可见、不静默切云。
@@ -424,6 +516,18 @@ class AidlOnDeviceEngine
     });
   }
 
+  /// 显式装载链的 loadState 写回（2026-11-05 session-mirror drift 观测债）：
+  /// bench 诊断路径裸调 [loadModel] 绕过 [enable] 的投影写回——装载收尾后
+  /// 以**权威票据**对账补写（I2：投影由权威派生，非猜测），消除
+  /// `session-mirror drift`（此前每次 generate 刷 DEGRADE）。非 ready/busy
+  /// 不动投影（失败/未知态由装载链自身收口）。
+  Future<void> reconcileLoadStateFromTicket() async {
+    final s = await authoritativeStatus();
+    if (s == EngineStatus.ready || s == EngineStatus.busy) {
+      _loadState.value = OnDeviceLoadState.ready;
+    }
+  }
+
   /// 卸载释放：停数据面 worker + 释放 :engine 权重内存，退回 unloaded（释放
   /// ~1.9GB 权重驻留，端侧重新回到「未启用」态）。
   @override
@@ -453,6 +557,13 @@ class AidlOnDeviceEngine
   @override
   Future<EngineStatus?> authoritativeStatus() =>
       _binding.fetchSessionTicket().then((t) => t?.status);
+
+  /// 运行环境实况票据（2026-11-05 资源中心实况面）：一次取回权威态 +
+  /// `runtimeDetail`（runtime/计算单元/unfit 原因/sdk 版本）。通道异常 = null
+  /// （未知态，UI 按「:engine 不可达」如实展示，禁猜测）。诊断只读面，
+  /// 不参与路由判定（票据铁律同源）。
+  @override
+  Future<SessionTicket?> sessionTicket() => _binding.fetchSessionTicket();
 
   @override
   Future<bool> isAvailable() async =>
@@ -559,7 +670,11 @@ class AidlOnDeviceEngine
       // 极端发热交 OEM 自身限频保护。
       if (await breaker.isBroken || breaker.inCooldown) {
         _active.remove(requestId);
-        ctrl.addError(const EngineDiedException('circuit breaker / cooldown active'));
+        // reason 随动作打日志（IRIDIS 对照）：闸门拒绝消息携带上次熔断事件。
+        final trace = breaker.lastEventReason;
+        ctrl.addError(EngineDiedException(trace == null
+            ? 'circuit breaker / cooldown active'
+            : 'circuit breaker / cooldown active (last: $trace)'));
         await ctrl.close();
         return;
       }
@@ -878,6 +993,15 @@ class AidlOnDeviceEngine
     }
   }
 
+  /// W3-4 引擎存活打点消费：native 在数据流空档上行 = 「底层硬件在算，数据
+  /// 面通道活着」→ 重置全部活跃流无进展看门狗（等价于一次字节活体喂狗，
+  /// 防 prefill 首字前/长 decode 间隙被 30s 看门狗误判切云）。
+  void _onLivenessTick() {
+    for (final id in List.of(_active.keys)) {
+      _armWatchdog(id);
+    }
+  }
+
   /// 数据面 EOF（S3-7 修订）：native worker 读到对端关闭（:engine 数据面
   /// 死亡）即刻上抛——活跃流以 EngineDiedException 收口切云，不经看门狗
   /// 兜底（旧双沿门控的 2s 定时器猜测已整体退役）。
@@ -939,13 +1063,15 @@ class AidlOnDeviceEngine
 
   void _onDied() {
     // AIDL onEngineDied = 本端驱动 Panic / 算子越界 abort → 计入 L1/L2（§6.5）。
-    unawaited(breaker.report(countable: true));
+    unawaited(breaker.report(
+        countable: true, reason: 'onEngineDied(驱动 Panic/算子越界 abort)'));
     _failAllActive(const EngineDiedException());
   }
 
   void _onProcessDied() {
     // 外部处决（SIGKILL/LMK）→ 不计入熔断，仅维护 500ms 冷却窗口（§6.5 v2.6）。
-    unawaited(breaker.report(countable: false));
+    unawaited(breaker.report(
+        countable: false, reason: 'onProcessDied(SIGKILL/LMK 外部处决)'));
     // G2-3 排除法裁定（墓碑 ADR）：读墓碑证据产出死因——快死棘轮从此按
     // 分类消费（替代 livedMs<30000 概率推断）。裁定异步落缓存；墓碑面
     // 不可用 = unknownColdStart（非快死侧，保守）。availMem 探测仅留痕
@@ -972,6 +1098,17 @@ class AidlOnDeviceEngine
     if (_loadTask == null) {
       _loadState.value = OnDeviceLoadState.unloaded;
     }
+    // 自杀重启窗口豁免（2026-11-05 真机实证）：`:engine` 装载拒绝 → 有意
+    // 自杀冷重载的 binder 断不是真进程死亡——在途生成流保留（受理循环的
+    // not_bound 可重试中断会自动重连重发，产出回原 ctrl）；真死类（LMK/
+    // Panic/窗口外）维持无差别收口，窗口内误入由无进展看门狗兜底。
+    final restartArmed = _reloadRestartWindowUntil != null &&
+        DateTime.now().isBefore(_reloadRestartWindowUntil!);
+    if (restartArmed) {
+      debugPrint('[on-device] process died inside suicide-restart window → '
+          'keep active generations (cold reload in progress)');
+      return;
+    }
     _failAllActive(const EngineDiedException('process killed externally'));
   }
 
@@ -986,6 +1123,17 @@ class AidlOnDeviceEngine
   /// initialized`，且错误文案呈现 `assetMissing`（立法语义=模型未下载）
   /// ——把「空闲 5 分钟后模型被正常回收」报成「模型没下载」，补救方向完全误导。
   void _onEngineEvicted(String reason) {
+    // 自杀重启契约（2026-11-05）：`:engine` 装载拒绝 clean exit 前的显式
+    // 上行——置重启窗口（onProcessDied 据此豁免在途流收口），**不复位
+    // loadState**（自杀是装载链正常环节，装载任务自身收口时再置终态）；
+    // 其余 reason 维持既有复位语义。
+    if (reason == 'cold-reload-restart') {
+      _reloadRestartWindowUntil = DateTime.now().add(_reloadRestartWindow);
+      debugPrint('[on-device] cold-reload-restart: suicide restart window '
+          'armed (${_reloadRestartWindow.inSeconds}s) — pending process-died '
+          'will not fail active generations');
+      return;
+    }
     // M2 投影作废（I2）：镜像已在 binding 事件入口 invalidate——此处仅复位
     // loadState 消费面。
     _loadState.value = OnDeviceLoadState.unloaded;

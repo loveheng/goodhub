@@ -49,7 +49,14 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.zzh.goodhub"
+        // 测量变体隔离（2026-11-04）：GOODHUB_BENCH_ID 在场时 applicationId 加
+        // 后缀（com.zzh.goodhub.bench）——bench 构建与日常 App 并存安装，
+        // 防止 ON_DEVICE_BENCH 启动测量轮抢占日常 App 的引擎（真机回归实证：
+        // bench 侧载日常包后启动即自动跑测量 + 失败装载无限重试，正常聊天被挤）。
+        // 默认（无环境变量）= 正常 applicationId，构建口径零变化。
+        applicationId = "com.zzh.goodhub" +
+            (System.getenv("GOODHUB_BENCH_ID")?.takeIf { it.isNotBlank() }
+                ?.let { ".$it" } ?: "")
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         // 兼容拍板沿用 goodshare：Android 14+，不做低版本兼容

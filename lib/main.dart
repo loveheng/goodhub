@@ -5,12 +5,14 @@ library;
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show kReleaseMode;
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'app/task_consume_bootstrap.dart';
 import 'core/app_log.dart';
 import 'coordinator/ref_store.dart';
+import 'gateway/debug_bridge.dart';
 import 'task/task_consume_ledger.dart';
 import 'llm/on_device_bench.dart';
 import 'llm/on_device_engine_aidl.dart';
@@ -20,6 +22,8 @@ import 'mcp/connection_health.dart';
 import 'llm/on_device_model_catalog.dart';
 import 'sandbox/memory_store.dart';
 import 'ui/chat_page.dart';
+import 'ui/debug_routes.dart';
+import 'ui/debug_wiring.dart';
 import 'ui/navigator_key.dart';
 import 'ui/tokens/app_theme.dart';
 
@@ -41,12 +45,25 @@ const bool kGeniexAutoInstall =
 const bool kGeniexAutoReinstall =
     bool.fromEnvironment('ON_DEVICE_GENIEX_REINSTALL', defaultValue: false);
 
+/// 真机 AI 调试桥（仅 debug 装配）：实现已抽至公共包 `app_debug_bridge`，宿主
+/// 只在 `debug_wiring` 里接上日志源 / 导航句柄 / 路由白名单三个端口；
+/// release 构建由 `!kReleaseMode` 剔除。
+final DebugBridge debugBridge = buildDebugBridge();
+
 void main() async {
   // 三态主题（暗/亮/暖）持久化于 SharedPreferences，启动期读取后注入单例，
   // 再 runApp——避免首帧用错主题闪一下。
   WidgetsFlutterBinding.ensureInitialized();
   // 日志捕获 sink（调试页数据源）：先装再跑，启动期 debugPrint 即入缓冲。
   AppLog.install();
+  if (!kReleaseMode) {
+    try {
+      await debugBridge.start();
+    } on Object catch (e) {
+      // 调试设施非主路径：端口占用 / 无网络权限只留痕，绝不阻断 App 启动。
+      debugPrint('[DEGRADE] debug-bridge start: $e');
+    }
+  }
   final initial = await readAppTheme();
   AppThemeController.instance = AppThemeController(initial);
   runApp(const GoodHubApp());
@@ -77,6 +94,7 @@ class _GoodHubAppState extends State<GoodHubApp> with WidgetsBindingObserver {
   @override
   void dispose() {
     taskConsumeBootstrap.dispose(); // §3.12.2-7 生命周期解绑（清定时器 + 释放 client）
+    if (!kReleaseMode) unawaited(debugBridge.stop()); // §7 释放卫生：关调试监听
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -135,6 +153,10 @@ class _GoodHubAppState extends State<GoodHubApp> with WidgetsBindingObserver {
   /// （端侧为可选加速路径，云端默认通路不受影响）。
   Future<void> _bootstrapOnDeviceEngine() async {
     try {
+      // 入口探针（测量变体排障 2026-11-04）：bench 未触发时区分「开关未进包」
+      // 与「前置 await 卡死」两个方向，常驻观察面。
+      debugPrint('[on-device] bootstrap enter benchOn=$kOnDeviceBenchOnReady '
+          'modelDir="$kOnDeviceBenchModelDir"');
       if (kOnDeviceBreakerReset) {
         // §6.5 reset 语义（手动清缓存路径）：测量轮间清 L1/L2 锁。
         await sharedOnDeviceEngine.breaker.reset();
@@ -244,7 +266,17 @@ class _GoodHubAppState extends State<GoodHubApp> with WidgetsBindingObserver {
         navigatorKey: appNavigatorKey, // 网关 L2 远程确认卡等后台弹层入口
         theme: buildAppTheme(AppThemeController.instance.value),
         themeMode: ThemeMode.light,
-        home: const ChatPage(),
+        // debug/profile 直达调试页：release 编译期剔除，生产无命名路由面。
+        onGenerateRoute: kReleaseMode ? null : resolveDebugRoute,
+        onGenerateInitialRoutes: kReleaseMode
+            ? null
+            : (initialRoute) => generateDebugInitialRoutes(
+                  initialRoute,
+                  home: const ChatPage(),
+                ),
+        // WidgetsApp 断言：onGenerateInitialRoutes 与 home 不可同时非 null。
+        // debug 的首页由上面的初始路由生成器产出，release 才走 home。
+        home: kReleaseMode ? const ChatPage() : null,
       ),
     );
   }

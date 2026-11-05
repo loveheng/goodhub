@@ -73,7 +73,8 @@ interface IOnDeviceEngineService {
     // 下发 finishReason="cancelled" 收尾）。
     void cancelGenerate(String requestId);
 
-    // KV-Cache 回滚（§2.4 Prefix Cache 唯一主路线；keepTokens=0 等价旧 resetContext）。
+    // 单发隔离语义（§2.4 落位实证；keepTokens=0 等价旧 resetContext；
+    // 端侧无跨请求前缀复用，见 context-stepped-pruning §2.5 ADR）。
     void truncateContext(int keepTokens);
 
     // 主动回收 → COLD-EVICTED（§4.1）。

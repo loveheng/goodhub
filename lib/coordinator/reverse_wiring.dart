@@ -70,13 +70,34 @@ void wireSampling({
                 quota: supplyQuota,
                 callerKey: _callerIdentityOf(entry.value),
               );
-    entry.value.client.onServerRequest = (method, params) {
+    // S07/S07b：Binder 面走携带平台侧已解析身份的钩子（帧未携带身份 = 平台侧
+    // 解析失败，由传输层按拒绝处置 -32001，本处理器只消费已解析身份）；
+    // 非 Binder 面（HTTP）无内核身份，维持既有钩子零变化。
+    Future<Map<String, Object?>?> handle(
+      String method,
+      Object? params,
+      ResolvedCallerIdentity? caller,
+    ) async {
       if (method == HostOnDeviceToolExecutor.reverseMethodName) {
-        return _forwardOnDeviceComplete(supplyExport!, params);
+        return _forwardOnDeviceComplete(
+          supplyExport!,
+          params,
+          // 主体可辨（S07b）：优先内核解析身份；HTTP 面无内核身份回退既有键。
+          callerKeyOverride: caller?.packageName,
+        );
       }
       onSamplingBegin?.call();
       return sampling(method, params).whenComplete(() => onSamplingEnd?.call());
-    };
+    }
+
+    final transport = entry.value.client.transport;
+    if (transport is BinderTransport) {
+      transport.onServerRequestWithCaller = (method, params, caller) =>
+          handle(method, params, caller);
+    } else {
+      entry.value.client.onServerRequest = (method, params) =>
+          handle(method, params, null);
+    }
   }
 }
 
@@ -98,15 +119,21 @@ String _callerIdentityOf(McpToolFace face) {
 /// host/onDeviceComplete 反向请求处理：转发到导出执行器（K22 配额 + 降级
 /// 语义单源——params 序列化后经同一 execute 路径，禁旁路副本）；isError
 /// 结果转 McpRpcException(-32000) error 帧（message 原文透传，转发方显式
-/// 可知红线）。
+/// 可知红线）。[callerKeyOverride] = S07b 平台侧已解析的调用方包名（内核
+/// UID 推导），优先于 per-face 实例键（主体可辨：配额记账与死亡打断按
+/// 内核身份裁决，非 transport 元数据）。
 Future<Map<String, Object?>?> _forwardOnDeviceComplete(
-    HostOnDeviceToolExecutor export, Object? params) async {
+    HostOnDeviceToolExecutor export, Object? params,
+    {String? callerKeyOverride}) async {
   final p = params is Map<String, Object?> ? params : <String, Object?>{};
-  final r = await export.execute(AssembledToolCall(
-    id: 'rev-host-export',
-    name: HostOnDeviceToolExecutor.toolName,
-    argumentsJson: jsonEncode(p),
-  ));
+  final r = await export.execute(
+    AssembledToolCall(
+      id: 'rev-host-export',
+      name: HostOnDeviceToolExecutor.toolName,
+      argumentsJson: jsonEncode(p),
+    ),
+    callerKeyOverride: callerKeyOverride,
+  );
   if (r.isError) {
     throw McpRpcException(-32000, r.content);
   }

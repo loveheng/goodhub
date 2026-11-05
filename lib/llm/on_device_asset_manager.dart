@@ -760,10 +760,16 @@ class OnDeviceAssetManager {
               'hexagonArch unknown → NPU 档不可用（GPU 档运行）');
         }
       } else if (ggufs.isNotEmpty) {
-        // GGUF 通道按首发节奏关闸（2026-11-01 拍板三闸之一）：归档夹带 GGUF
-        //（无 genie_config）→ 导入期即拒，不进注册表；装载闸兜底仍在。
-        return _AssetLayout(
-            error: 'GGUF 通道按首发节奏关闸（llama.cpp 代码保留未开放）');
+        // GGUF 通道闸（2026-11-01 拍板三闸之一；**2026-11-05 用户拍板正式
+        // 放开**——llama_cpp 通路经 Qwen 真机轮实证健康，kOnDeviceLlamaCppEnabled
+        // 默认 true）：关闸态仍拒（归档夹带 GGUF 导入期即拒，不进注册表），
+        // 放开态放行入册——此前此闸**未接开关**（硬编码拒收），首发闸翻转后
+        // 用户导入被本闸漏拒（真机实证 2026-11-05），修正为与三闸同源。
+        if (!kOnDeviceLlamaCppEnabled) {
+          return _AssetLayout(
+              error: 'GGUF 通道按首发节奏关闸（llama.cpp 代码保留未开放）');
+        }
+        runtime = OnDeviceRuntime.llamaCpp;
       } else {
         // 族级导入拒绝（2026-11-02 拍板）：未知布局显式拒（联发科包等不支持的
         // 运行时），非静默 auto——不认识的族不许进注册表踩装载失败。
@@ -866,8 +872,28 @@ class OnDeviceAssetManager {
       final stops = stopSequencesForFamily(family);
       if (stops != null) profile['stopSequences'] = stops;
       final ctx = probe?.contextLength;
+      // 规格表策展行（artifactPattern contains）一次匹配：ctx 兜底 + 装载
+      // 上界声明共用（无命中行/字段缺席照旧不猜值）。
+      final spec = await _matchBundleSpec(
+          OnDeviceRuntime.llamaCpp, gguf.path.split('/').last);
       if (ctx != null) {
         profile['contextTokens'] = ctx;
+      } else {
+        // GGUF 头探不出 context_length（真实工件实证 Qwen3.5 头内嵌键在
+        // `<arch>.context_length` 且探针覆盖面外）→ 规格表兜底：命中才写——
+        // 缺此兜底 = nCtx 落模型声明满窗（262144）→ 装载期满窗 KV 被
+        // LMK 处决（2026-11-05 用户导入 Qwen GGUF 真机复现，装载无日志
+        // 静默卡死，GenieSession 消费链同 11-04 修复口径）。
+        final specCtx = (spec?['contextTokens'] as num?)?.toInt();
+        if (specCtx != null) profile['contextTokens'] = specCtx;
+      }
+      // 装载上界声明（lifecycle-single-source §7 裁决 5）：per-bundle 规格表
+      // 策展行透传（按体积预填；过热降频/冻结恢复环境装载实测可超 90s 默认
+      // 上界，2026-11-05 真机实证 2B GGUF 降频装载 100s+ 必被打断）——数据
+      // 住配置文件零代码适配，无命中行/字段缺席照旧不猜值。
+      final loadTimeoutSpec = (spec?['loadTimeoutSec'] as num?)?.toInt();
+      if (loadTimeoutSpec != null && loadTimeoutSpec > 0) {
+        profile['loadTimeoutSec'] = loadTimeoutSpec;
       }
     }
     return profile.isEmpty ? null : profile;

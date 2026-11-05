@@ -50,6 +50,7 @@ object CallerIdentityResolver {
             val sha = pi?.signingInfo?.apkContentsSigners
                 ?.firstOrNull()?.toByteArray()
                 ?.let { sha256Hex(it) } ?: ""
+            Log.i(TAG, "resolve: uid=$callingUid → ${packages[0]} (sigSha256=${if (sha.isEmpty()) "<empty>" else "${sha.take(12)}…"})")
             CallerIdentity(packageName = packages[0], signatureSha256 = sha)
         } catch (e: Throwable) {
             Log.w(TAG, "resolve uid=$callingUid failed: $e → deny")

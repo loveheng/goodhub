@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'llm.dart';
 import 'on_device_engine.dart';
 import 'on_device_model_catalog.dart';
+import 'on_device_user_demand.dart';
 
 /// 适配件：把总纲 §2 的 [OnDeviceEngine] 挂进既有 `HybridCloudEngine` 的
 /// 端侧槽（`OnDeviceLlmEngine`，单发聚合语义——hybrid 只做单发提取）。
@@ -18,9 +19,16 @@ import 'on_device_model_catalog.dart';
 /// 超标件只减不增）。
 class AidlOnDeviceLlmEngineAdapter
     implements OnDeviceLlmEngine, OnDeviceEnableCapable, OnDeviceFailureReasonAware {
-  AidlOnDeviceLlmEngineAdapter(this._inner);
+  /// [byProbe] = 探针专用实例标记（timeout-signaling W1-2）：true 时不递增
+  /// 用户需求代次——探针自驱动（load/生成）不算用户请求；仅混合引擎装配的
+  /// 用户实例（默认 false）在 enable / generateStream 入口 touch。
+  AidlOnDeviceLlmEngineAdapter(this._inner, {this.byProbe = false});
 
   final OnDeviceSupplyFace _inner;
+
+  /// 探针实例标记（true = 不 touch 用户需求代次）。
+  final bool byProbe;
+
   String? _currentRequestId;
 
   /// 最近一次生成的失败原因（零产出归因面，2026-10-30 真机实证「第二轮没有
@@ -59,8 +67,13 @@ class AidlOnDeviceLlmEngineAdapter
   ValueListenable<OnDeviceLoadState> get loadState => _inner.loadState;
 
   @override
-  Future<EngineStatus> enable({OnDeviceModelOption? model, String? backendHint}) =>
-      _inner.enable(model: model, backendHint: backendHint);
+  ValueListenable<int> get loadPhase => _inner.loadPhase;
+
+  @override
+  Future<EngineStatus> enable({OnDeviceModelOption? model, String? backendHint}) {
+    if (!byProbe) touchOnDeviceUserDemand(); // 用户路径进入标记（W1-2）
+    return _inner.enable(model: model, backendHint: backendHint);
+  }
 
   @override
   Future<void> disable() => _inner.disable();
@@ -77,6 +90,7 @@ class AidlOnDeviceLlmEngineAdapter
     double? temperature,
     double? topP,
   }) {
+    if (!byProbe) touchOnDeviceUserDemand(); // 用户路径进入标记（W1-2）
     final requestId = 'aidl-${DateTime.now().microsecondsSinceEpoch}';
     _currentRequestId = requestId;
     // prompt = 消息序列 JSON（2026-10-31 设计修正），system 已在消息序列内

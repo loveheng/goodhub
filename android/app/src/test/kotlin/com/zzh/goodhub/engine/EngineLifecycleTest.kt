@@ -147,4 +147,38 @@ class EngineLifecycleTest {
         assertFalse(lc.onTtlElapsed(g)) // 释放后代次递增，旧 TTL 定时器作废
         assertEquals(EngineLifecycle.State.COLD_EVICTED, lc.state)
     }
+
+    @Test
+    fun `受理窗口护栏：槽 busy 时 TTL 到点拒绝驱逐，空闲后恢复驱逐`() {
+        var busy = false
+        val lc = EngineLifecycle(isBusy = { busy }, onEvict = { evictions.add(it) })
+        val gen = lc.onWarmup()
+        // 受理窗口：槽已授予（busy=true）但 onGenerateStart 尚未背书 ACTIVE
+        //（状态仍 WARM_STANDBY）——旧缺陷即在此窗口被 TTL 孤儿化在途生成。
+        busy = true
+        assertFalse(lc.onTtlElapsed(gen))
+        assertEquals(EngineLifecycle.State.WARM_STANDBY, lc.state)
+        assertTrue(evictions.isEmpty())
+        // 空闲后（busy=false）同代次定时器再触发 → 正常驱逐
+        busy = false
+        assertTrue(lc.onTtlElapsed(gen))
+        assertEquals(EngineLifecycle.State.COLD_EVICTED, lc.state)
+        assertEquals(1, evictions.size)
+        assertTrue(evictions[0].contains("ttl-elapsed"))
+    }
+
+    @Test
+    fun `busy 护栏与代次校验正交：busy 优先拒驱逐，非 busy 时代次失配仍作废`() {
+        var busy = true
+        val lc = EngineLifecycle(isBusy = { busy }, onEvict = { evictions.add(it) })
+        val gen = lc.onWarmup()
+        // busy 时即便代次匹配也拒绝驱逐（护栏第一优先级）
+        assertFalse(lc.onTtlElapsed(gen))
+        assertTrue(evictions.isEmpty())
+        // 非 busy + 代次失配仍按旧语义作废（不驱逐）
+        busy = false
+        lc.onWarmup() // 代次 +1
+        assertFalse(lc.onTtlElapsed(gen)) // 旧代次 → 作废
+        assertEquals(EngineLifecycle.State.WARM_STANDBY, lc.state)
+    }
 }

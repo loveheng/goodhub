@@ -11,10 +11,12 @@ import '../llm/geniex_runtime_binding.dart'
     LiteRtLmNpuStatus;
 import '../llm/on_device_admission_probe.dart' show sharedAdmissionProbe;
 import '../llm/on_device_asset_manager.dart' show OnDeviceAssetManager;
+import '../llm/on_device_engine_aidl.dart' show sharedOnDeviceEngine;
 import '../llm/on_device_gate_override.dart'
     show GateOverride, OnDeviceGateOverride;
 import '../llm/on_device_model_catalog.dart'
     show OnDeviceModelOption, OnDeviceModelSelection;
+import '../llm/on_device_session_ticket.dart' show SessionTicket;
 
 export '../llm/geniex_runtime_binding.dart'
     show GenieXStatus, LiteRtLmNpuStatus;
@@ -24,6 +26,7 @@ export '../llm/on_device_gate_override.dart' show GateOverride;
 export '../llm/on_device_model_catalog.dart'
     show ImportTarget, kOnDeviceLlamaCppEnabled, OnDeviceModelOption,
     OnDeviceModelSelection;
+export '../llm/on_device_session_ticket.dart' show SessionTicket;
 
 /// 端侧管理面服务聚合（设置段 / 导入流共用的唯一出口）。
 abstract final class OnDeviceAdmin {
@@ -91,4 +94,11 @@ abstract final class OnDeviceAdmin {
 
   static Future<OnDeviceModelOption?> readSelectedModel() =>
       OnDeviceModelSelection.read();
+
+  // ---- 运行环境实况（on_device_engine_aidl 票据面，2026-11-05）----
+
+  /// 实况票据（runtime + runtimeDetail = 计算单元/unfit 原因/sdk 版本）——
+  /// 资源中心端侧模型 Tab 的误判发现面。null = :engine 不可达/未知态。
+  static Future<SessionTicket?> sessionTicket() =>
+      sharedOnDeviceEngine.sessionTicket();
 }

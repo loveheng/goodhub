@@ -15,7 +15,7 @@ import 'package:flutter/material.dart';
 import '../components/panel_error_row.dart';
 import '../components/on_device_model_import.dart';
 import '../tokens/console_tokens.dart';
-import '../../llm/on_device_asset_manager.dart';
+import '../../coordinator/on_device_admin.dart';
 import '../../llm/on_device_model_catalog.dart';
 import '../../llm/on_device_history_policy_store.dart';
 
@@ -56,6 +56,11 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
   /// 每模型历史策略偏好快照（键 = dirName；缺省 = 默认 ①，读失败不阻塞资产面）。
   final Map<String, String> _policyIds = <String, String>{};
 
+  /// 运行环境实况票据（2026-11-05 用户裁决：资源中心列模型运行环境有助
+  /// 发现系统误判）。null = :engine 不可达/未知态——**不猜**，行内不渲染
+  /// 实况行（未装载是常态，不可达只在实际使用端侧时报错面可见）。
+  SessionTicket? _ticket;
+
   @override
   void initState() {
     super.initState();
@@ -75,6 +80,13 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
           m.dirName: await HistoryPolicySelection.readForModel(m.dirName,
               device: true),
       };
+      // 实况票据（诊断只读，失败不阻塞资产面——null 语义 = 不渲染实况行）。
+      SessionTicket? ticket;
+      try {
+        ticket = await OnDeviceAdmin.sessionTicket();
+      } on Object catch (_) {
+        ticket = null;
+      }
       if (!mounted) return;
       setState(() {
         _models = installed;
@@ -82,6 +94,7 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
         _policyIds
           ..clear()
           ..addAll(policyIds);
+        _ticket = ticket;
       });
     } catch (e) {
       if (mounted) setState(() => _error = '端侧模型目录读取失败：$e');
@@ -195,6 +208,45 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
               : r == OnDeviceRuntime.litertlm ? 'LiteRT-LM'
                   : '自动';
 
+  /// runtimeDetail 解析（Kotlin 侧格式：`runtime/计算单元[|unfit=原因]
+/// |sdk=版本`，2026-11-05 实况面）。null = 非本段承载格式（LiteRT-LM 系
+  /// 空串），行内不渲染实况。
+  ({String runtime, String unit, String? unfit, String sdk})? _parseDetail(
+      String d) {
+    if (d.isEmpty) return null;
+    final parts = d.split('|');
+    final head = parts.first.split('/');
+    final unit = head.length > 1 ? head[1] : '';
+    String? unfit;
+    String sdk = '';
+    for (final p in parts.skip(1)) {
+      if (p.startsWith('unfit=')) {
+        unfit = p.substring(5);
+      } else if (p.startsWith('sdk=')) {
+        sdk = p.substring(4);
+      }
+    }
+    return (runtime: head.first, unit: unit, unfit: unfit, sdk: sdk);
+  }
+
+  /// 实况档位白话（误判发现面）：正常 = 「实况：NPU 档」；失配留痕 =
+  /// 「实况：GPU 档（NPU 不适用已记录：…）」——直接回答「为什么跑 GPU」。
+  String? _liveLabel(SessionTicket ticket, InstalledModel m) {
+    if (!ticket.modelId.startsWith('${m.dirName}@') &&
+        ticket.modelId != m.dirName) {
+      return null; // 票据不属于本模型（当前装载的是别的模型）
+    }
+    final d = _parseDetail(ticket.runtimeDetail);
+    if (d == null) return null;
+    final unit = d.unit.isEmpty ? '' : '${d.unit} 档';
+    if (d.unfit != null) {
+      return '实况：$unit（NPU 不适用已记录：${d.unfit}）';
+    }
+    return '实况：$unit'
+        '${d.sdk.isEmpty ? '' : ' · geniex ${d.sdk}'}'
+        ' · 状态 ${ticket.status.name}';
+  }
+
   String _sizeLabel(int bytes) =>
       bytes >= (1 << 30)
           ? '${(bytes / (1 << 30)).toStringAsFixed(1)}GB'
@@ -222,6 +274,16 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
                     fontSize: Fsz.note,
                     color: selected ? t.l1Ok : t.terminalMuted),
               ),
+              if (_ticket != null && _liveLabel(_ticket!, m) != null)
+                Text(
+                  _liveLabel(_ticket!, m)!,
+                  key: ValueKey('on-device-model-live-${m.dirName}'),
+                  style: TextStyle(
+                      fontSize: Fsz.telemetrySm,
+                      color: _ticket!.runtimeDetail.contains('unfit=')
+                          ? t.l2Warn
+                          : t.terminalMuted),
+                ),
               _policyPicker(t, m.dirName),
             ],
           ),

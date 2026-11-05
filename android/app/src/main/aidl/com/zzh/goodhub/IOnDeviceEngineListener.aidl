@@ -13,6 +13,13 @@ oneway interface IOnDeviceEngineListener {
     // 「有进展即不判死」的活体语义；阶段推进 = 活体信号。诊断面，不参与路由。
     void onLoadPhaseChanged(int phase);
 
+    // W3-4 引擎存活打点（timeout-signaling）：受理后每 2s 一次，**仅在数据流
+    // 空档**（prefill/首 token 前、长间隙 decode——若 2s 内有 token 写出则本
+    // tick 跳过，token 数据帧本身即最硬活体证据，禁重复心跳）。主进程消费 =
+    // 重置无进展看门狗（防首字前误判切云）。看门狗 30s 兜底不撤除（进程冻结
+    // 场景本信令同样不可达，外部计时器不可替代）。
+    void onLivenessTick();
+
     // :engine 侧主动上报进程内致命事件（NPU 驱动 Panic / 算子越界 abort 等）；
     // 外部处决（OEM SIGKILL / LMK）不会触发本回调——由主进程侧
     // ServiceConnection.onServiceDisconnected 捕获，两路最终同归切云路径。

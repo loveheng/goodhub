@@ -177,8 +177,11 @@ enum LatencyReasonCode {
 /// - [subject]：调用主体属性（缺省宿主前台交互——存量调用零变化）；
 /// - [residentMatched]：驻留资产匹配度（当前驻留 vs 目标资产同族同版本；
 ///   null = 未知不判——票据取证不可达时不拦，交装载链路对账）；
-/// - [inputEstimateTokens]：输入 token 字符级上界估算（`estimateTokens`
-///   逐 message 求和口径；null = 未知不判——双未知不拦延续 S14 前口径）；
+/// - [inputEstimateTokens]：输入 token 字符级上界估算——**端侧 prompt
+///   builder 裁剪后实际可送达载荷**逐 message 求和（`estimateTokens` 口径；
+///   调用方须与执行侧超窗预检共用同一份构造结果，禁按原始请求全量估算：
+///   长 system/历史会被历史策略丢弃，计入即把小窗口资产每轮误判超窗）；
+///   null = 未知不判——双未知不拦延续 S14 前口径；
 /// - [outputReserve]：输出预留（缺省 512，与 `_deviceSend` 预检同口径）；
 /// - [availMemBytes]：整机可用内存（bytes；null = 取证不可达不判——探针
 ///   缺席/异常不拦端侧，交运行时护栏链兜底）。≤ [kAvailMemAbsoluteFloorBytes]

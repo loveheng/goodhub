@@ -327,4 +327,62 @@ void main() {
       expect(s.payload, isNotNull, reason: '挂起载荷 = 已算完的产物');
     });
   });
+
+  group('S18b 前缀复用句柄（契约留位，K12）', () {
+    test('acquire 签发：scope 透传 + 纪元单调递增（纯值零副作用）', () {
+      final svc = AidlOnDeviceCapabilityService(_FakeSupplyFace());
+      final h1 = svc.acquirePrefixReuseHandle(scope: 'summarize');
+      final h2 = svc.acquirePrefixReuseHandle(scope: 'summarize');
+      final h3 = svc.acquirePrefixReuseHandle(scope: 'classify');
+      expect(h1.scope, 'summarize');
+      expect(h2.scope, 'summarize');
+      expect(h2.epoch, greaterThan(h1.epoch),
+          reason: '同 scope 重新签发 = 新纪元（旧句柄可辨）');
+      expect(h3.scope, 'classify');
+      expect(h3.epoch, greaterThan(h2.epoch), reason: '纪元进程内单调');
+    });
+
+    test('句柄值语义：==/hashCode 按 scope+epoch（调用方可显式持有与比对）', () {
+      const a = PrefixReuseHandle(scope: 's', epoch: 1);
+      const b = PrefixReuseHandle(scope: 's', epoch: 1);
+      const c = PrefixReuseHandle(scope: 's', epoch: 2);
+      const d = PrefixReuseHandle(scope: 't', epoch: 1);
+      expect(a, b);
+      expect(a.hashCode, b.hashCode);
+      expect(a, isNot(c));
+      expect(a, isNot(d));
+    });
+
+    test('invalidate 幂等 no-op：不抛、可重复调用（契约壳语义）', () async {
+      final svc = AidlOnDeviceCapabilityService(_FakeSupplyFace());
+      final h = svc.acquirePrefixReuseHandle(scope: 'summarize');
+      await svc.invalidatePrefixReuse(h);
+      await svc.invalidatePrefixReuse(h); // 幂等：重复调用不抛
+    });
+
+    test('句柄传递：config.prefixReuse 随原语调用接受（缺省 null 零变化）',
+        () async {
+      final face = _FakeSupplyFace(script: [
+        Stream.value(const EngineChunk(deltaText: '带句柄产出')),
+      ]);
+      final svc = AidlOnDeviceCapabilityService(face);
+      final h = svc.acquirePrefixReuseHandle(scope: 'summarize');
+      const cfgWith = OnDevicePrimitiveConfig(
+        prefixReuse: PrefixReuseHint(
+            handle: PrefixReuseHandle(scope: 'summarize', epoch: 0),
+            expectedPrefixChars: 512),
+      );
+      // 缺省 config：prefixReuse 为 null（既有行为零变化）。
+      expect(const OnDevicePrimitiveConfig().prefixReuse, isNull);
+      // 携带 hint 的调用照常受理（提示的引擎侧承载待实证，本面只传递）。
+      final out = await svc.complete(
+        instruction: '摘要',
+        input: '原文',
+        config: cfgWith,
+      );
+      expect(out, '带句柄产出');
+      expect(face.generateCalls, 1, reason: 'hint 经原语面受理，调用链零分支变化');
+      expect(h.scope, 'summarize');
+    });
+  });
 }

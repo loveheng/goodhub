@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-30
+updated: 2026-11-05
 ---
 
 # GoodHub 工程规范（Engineering Specification / Architecture SSOT）
@@ -331,6 +331,7 @@ class ActionCardFailed extends ActionCardState { final String error; /* ... */ }
 - **链式装配等价性（多层执行面 / 装饰器链）**：链式装配**一律经唯一装配器** `lib/coordinator/tool_executor_chain.dart`（`composeToolExecutorChain`：层按「优先级高 → 低」给出，折叠方向固定逐层向外 → 调用点**无法表达**「inner 指向链中段」的丢层形态），并补「全成员在场可调」单测——链条任一层被覆盖即产生「目录可见、调用全败」；实证 2026-10-23 宿主执行链丢层（架构债 #19 已结项）。机械门禁 = `arch-guard.sh` R9 + `test/architecture/executor_chain_rules_test.dart`（含金丝雀）
 - **有状态 UI 段**：设置页各段 State 必须混 `AutomaticKeepAliveClientMixin`——不变式由 `test/ui/settings_sections_keepalive_test.dart` 反向闸住。
 - **测试基线纪律**：门禁 = **不劣于开工前实测基线**（`flutter analyze` 0 issue + `flutter test --timeout 180s` 全绿），**不锁死测试总数**——新增用例只增不删，删用例须在 devlog 说明理由。
+- **验证分层（三层各有唯一职责，禁越层消耗真机）**：① **纯 Dart / widget 单测**（默认门禁，CI 全量跑）——装配等价性、纯函数、状态机、渲染与交互逻辑；② **真机驱动（integration_test）**——跨进程契约、平台通道、原生 Activity、系统授权、真实 Binder / HTTP 通道的端到端闭环；③ **真机手动（人工执行 + 截图取证）**——integration_test 无法干净覆盖的系统级项（独立原生 Activity 的 FSI 确认卡、电池优化白名单、厂商 ROM 设置页、纯视觉走查）。**下沉纪律**：① 能覆盖的不得升到 ②，② 能覆盖的不得升到 ③；升层须在 devlog 写明理由（例：信任卡片要真实 SharedPreferences 落库 → ②；L2AlertActivity 是独立原生 Activity 且需 PC 触发 → ③）。**AI 自驱**：真机调试优先走 debug 桥结构化观测（`docs/design/ai-debug-bridge.md`），截图只用于视觉断言。**命令与用例清单唯一出处** = `goodhub-workflow` skill §2.1。
 
 ### 8.2 机械门禁矩阵
 

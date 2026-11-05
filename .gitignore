@@ -46,6 +46,8 @@ context/**/*.bp.lock
 # R2 更新源本地凭证（self-update）
 .env
 updates/
+# R2 运行库上传暂存（10MB zip 产物，构建机生成非源码，勿入库）
+upload-r2/
 
 # QAIRT/Genie 原生库本体不入 git（on-device S2-1：~30MB+/库，构建机按
 # android/app/src/main/jniLibs/arm64-v8a/README.md 流程获取）

@@ -41,6 +41,12 @@ interface OnDeviceRunner {
      *  qairt / llama_cpp（GenieX 系）/ litertlm-npu / litertlm-gpu（LiteRT-LM 系）。 */
     val activeRuntime: String
 
+    /** 运行环境实况明细（诊断面，票据 runtimeDetail 字段透出 UI——2026-11-05
+     *  用户裁决「资源中心列模型运行环境有助发现系统误判」）：GenieX 系 =
+     *  `runtime/计算单元[|unfit=原因]|sdk=版本`；默认空串 = Runner 未承载
+     *  （LiteRT-LM 系暂无负记忆面）。 */
+    val runtimeDetail: String get() = ""
+
     /** 上轮 query 推理画像（null=不可用，诚实归因）。 */
     val lastProfile: EngineProfile?
 

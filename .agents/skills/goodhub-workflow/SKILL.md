@@ -124,9 +124,38 @@ flutter devices                          # 查看在线真机 ID
 flutter run -d <DEVICE_ID> --debug       # 挂载真机联调
 adb logcat -s flutter:*                  # 过滤 Flutter 运行时日志（黑屏取证三件套查 lessons.md android-ops 节）
 toolbox run build-apk --install          # apk  # 构建 debug 包并 adb 安装（内置设备已装版本防降级守卫）
+toolbox run debug-bridge --device <ID> <state|logs|ui-tree|action|navigate|ping>  # dbg  # AI 调试桥 CLI（薄管道透传，端点契约见 docs/design/ai-debug-bridge.md）
 ```
 
 > 装机纪律：`integration_test` 跑完后 `app-debug.apk` 会被测试壳入口覆盖，装机验证前必须先 `flutter build apk --debug` 重建正式入口（根因查 lessons.md android-ops 节）。
+
+### 2.1 验证分层与真机驱动（哪层跑什么）
+
+| 层 | 载体 | 门禁 | 覆盖 |
+| --- | --- | --- | --- |
+| ① 纯 Dart / widget | `flutter test`（默认带 `--timeout 180s`） | CI 全量跑 | 装配等价性、纯函数、状态机、渲染与交互逻辑 |
+| ② 真机驱动 | `flutter test integration_test/<file> -d <DEVICE_ID>` | 手动（需设备在线） | 跨进程契约、平台通道、原生 Activity、系统授权、真实 Binder / HTTP 闭环 |
+| ③ 真机手动 | 人工执行 + 截图取证 | 人工 | 独立原生 Activity 的 FSI 确认卡、电池优化白名单、厂商 ROM 设置页、纯视觉走查 |
+
+分层纪律（规则正文查 `coding-standards` §8.1）：能在 ① 覆盖的不得升到 ②，能在 ② 覆盖的不得升到 ③。
+
+integration_test 清单（**命令与前置的唯一出处**；各测试文件头注释是补充说明，不作准）：
+
+| 文件 | 覆盖 | 前置 |
+| --- | --- | --- |
+| `trust_gate_test.dart` | 信任闸门 UI 全路径（信任 / 拒绝 + SharedPreferences 落库） | 无（自造假数据），先跑它 |
+| `thirdconnect_e2e_test.dart` | 设备侧无头 e2e：发现 → Binder 同步 → 反向请求 → 网关 HTTP 聚合 | 设备在线 |
+| `goodshare_binder_e2e_test.dart` | 传输层：发现 → bind → tools/list → tools/call | goodshare 与 goodhub 同 keystore 同批安装，且 goodshare 至少启动过一次 |
+| `goodshare_toolrouter_e2e_test.dart` | 装配层：ToolRouter 前缀隔离 / JIT 两级发现 / 激活集门控 | 同上 |
+| `goodshare_wal_e2e_test.dart` | WAL 写路径并发压测（无死锁 / 无库内 locked） | 同上 |
+| `gateway_external_probe_test.dart` | 外联探针：网关绑 0.0.0.0:8766 保活 120s，供 PC 侧 `adb forward tcp:8766 tcp:8766` + curl 打 /mcp | 非断言用例，需外部 curl 驱动 |
+
+```bash
+flutter test integration_test/trust_gate_test.dart -d <DEVICE_ID>  # 单例跑法（前置最简）
+toolbox run build-apk --install                                     # ⚠️ 跑完必须重建正式入口（测试壳覆盖 app-debug.apk）
+```
+
+AI 自驱真机调试走 debug 桥（结构化观测 + 按锚点操作，替代截图猜坐标）：`toolbox run debug-bridge --device <ID> <state|logs|ui-tree|action|navigate|ping>`，契约见 `docs/design/ai-debug-bridge.md`。
 
 ### 3. 打包与发布（Release Workflow）
 

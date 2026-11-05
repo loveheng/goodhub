@@ -17,6 +17,8 @@ class SessionTicket {
     required this.status,
     this.modelId = '',
     this.runtime = '',
+    this.runtimeDetail = '',
+    this.loadError = '',
     this.issuedAtMs = 0,
   });
 
@@ -26,6 +28,8 @@ class SessionTicket {
   static const String kStatus = 'status';
   static const String kModelId = 'modelId';
   static const String kRuntime = 'runtime';
+  static const String kRuntimeDetail = 'runtimeDetail';
+  static const String kLoadError = 'loadError';
   static const String kIssuedAtMs = 'issuedAtMs';
 
   final String instanceId;
@@ -33,6 +37,16 @@ class SessionTicket {
   final EngineStatus status;
   final String modelId;
   final String runtime;
+
+  /// 运行环境实况明细（2026-11-05 资源中心实况面）：GenieX 系 =
+  /// `runtime/计算单元[|unfit=原因]|sdk=版本`；空串 = Runner 未承载（向后
+  /// 兼容：旧 :engine 票据无此键）。
+  final String runtimeDetail;
+
+  /// 装载失败真因（2026-11-05 文案误归因修复）：终态失败时据此白话化，
+  /// 禁再把「运行库未装」报成「模型未导入」；空串 = 无失败/未承载（旧
+  /// :engine 票据向后兼容）。
+  final String loadError;
   final int issuedAtMs;
 
   /// 通道解析（Bundle → `Map<dynamic, dynamic>`）：缺字段 / 空实例标识 → null
@@ -50,6 +64,8 @@ class SessionTicket {
       status: engineStatusFromOrdinal(ordinal.toInt()),
       modelId: raw[kModelId] as String? ?? '',
       runtime: raw[kRuntime] as String? ?? '',
+      runtimeDetail: raw[kRuntimeDetail] as String? ?? '',
+      loadError: raw[kLoadError] as String? ?? '',
       issuedAtMs: (raw[kIssuedAtMs] as num?)?.toInt() ?? 0,
     );
   }

@@ -79,6 +79,7 @@ class OnDevicePrimitiveConfig {
     this.maxTokens = 256,
     this.temperature = 0.3,
     this.topP = 0.9,
+    this.prefixReuse,
   });
 
   /// 产出上限（原语任务输出体量界；摘要默认 256）。
@@ -87,6 +88,79 @@ class OnDevicePrimitiveConfig {
   /// 原语任务偏确定性，低温缺省。
   final double temperature;
   final double topP;
+
+  /// 前缀复用提示（S18b 契约留位，可选）：调用方显式持有 [PrefixReuseHandle]
+  /// 后在后续调用传入。**不承诺命中率**（K12——[Fact] 2026-11-05 真机实证：
+  /// GenieSession 每请求 `w.reset()` 单发隔离下同 prompt 重发 TTFT 持平
+  /// （4661→4971ms，Ace 6 / Qwen3.5-2B llama_cpp 栈）= 每请求全量重 prefill，
+  /// 无跨请求前缀缓存命中，Runner 侧不承载；重评触发 =
+  /// context-stepped-pruning §2.5 ADR（SDK 暴露会话级复用接口））。
+  /// 不支持提示的引擎面静默忽略（能力缺失非降级，
+  /// 见 [OnDevicePrefixReuseAware] 契约注）。缺省 null = 既有行为零变化。
+  final PrefixReuseHint? prefixReuse;
+}
+
+/// 前缀复用句柄（S18b 契约留位）：供给面签发、调用方显式持有与失效的不透明
+/// 凭据。**本期只落契约与句柄传递**——句柄不承载任何已实证的缓存语义，
+/// [Fact] 2026-11-05 真机实证前缀复用无收益（见 [OnDeviceCapabilityConfig.prefixReuse]
+/// 注），Runner 侧不承载，句柄维持纯传递载体。
+class PrefixReuseHandle {
+  const PrefixReuseHandle({required this.scope, required this.epoch});
+
+  /// 复用域标识（调用方语义，如 `summarize` / `classify:<item-id>`）。
+  final String scope;
+
+  /// 签发纪元（供给面单调递增；同 scope 重新签发即新纪元，旧句柄可被失效）。
+  final int epoch;
+
+  @override
+  String toString() => 'PrefixReuseHandle($scope#$epoch)';
+
+  @override
+  bool operator ==(Object other) =>
+      other is PrefixReuseHandle &&
+      other.scope == scope &&
+      other.epoch == epoch;
+
+  @override
+  int get hashCode => Object.hash(scope, epoch);
+}
+
+/// 前缀复用提示（S18b）：句柄 + 可选的前缀体量预估，经
+/// [OnDevicePrimitiveConfig.prefixReuse] 随原语调用传递。
+class PrefixReuseHint {
+  const PrefixReuseHint({required this.handle, this.expectedPrefixChars});
+
+  final PrefixReuseHandle handle;
+
+  /// 预期稳定前缀体量（字符数，可选）——供 Runner 侧自治匹配参考，不承诺。
+  final int? expectedPrefixChars;
+
+  @override
+  String toString() =>
+      'PrefixReuseHint($handle${expectedPrefixChars == null ? '' : ', ~$expectedPrefixChars chars'})';
+}
+
+/// **前缀复用能力**（可选接口——S18b 契约留位的承载面）。
+///
+/// 设计为**可选接口**而非主接口方法（同 [OnDeviceInterruptible] 铁律）：
+/// 主接口加方法会迫使所有实现与桩件同步改签名（零收益的破坏面）；本能力
+/// 无现有实现可兑现（引擎侧承载待实证），更须隔离在可选面上。
+///
+/// **K12 红线**：**收益未实证前不承诺命中率**——本接口只承载「句柄签发 /
+/// 传递 / 失效」的契约壳，不承诺任何复用效果； Runner 侧自治匹配（引用
+/// 既有前缀缓存与上下文回滚能力，**不新建缓存机制**）随收益实证落地。
+abstract interface class OnDevicePrefixReuseAware {
+  /// 签发前缀复用句柄（纯值构造，零副作用、不触发装载）。
+  ///
+  /// [scope] 为调用方语义的复用域标识；同 scope 重复签发返回**新纪元**句柄
+  /// （旧句柄不自动失效，由调用方显式 [invalidatePrefixReuse]）。
+  PrefixReuseHandle acquirePrefixReuseHandle({required String scope});
+
+  /// 显式失效句柄（幂等）：调用方主动废弃复用域（如底层资产换装后）。
+  /// 本期契约壳 = no-op（引擎侧承载待实证）；实现方禁抛（失效失败不构成
+  /// 原语失败，句柄语义未实证前失效也无实义）。
+  Future<void> invalidatePrefixReuse(PrefixReuseHandle handle);
 }
 
 /// 原语失败（failFast 语义的唯一出口；cause 保留真因供归因）。
@@ -235,11 +309,15 @@ typedef PrimitiveInputFilter = String Function(String input);
 /// CircuitBreaker**（原语失败只代表原语任务形态失败，引擎级物理崩溃仍由
 /// 主熔断器经 EngineDiedException 口径响应）。
 class AidlOnDeviceCapabilityService
-    implements OnDeviceCapabilityService, OnDeviceInterruptible {
+    implements OnDeviceCapabilityService, OnDeviceInterruptible, OnDevicePrefixReuseAware {
   AidlOnDeviceCapabilityService(this._engine,
       {this.cloudFallback, this.inputFilter});
 
   final OnDeviceSupplyFace _engine;
+
+  /// 前缀复用句柄签发纪元（进程内单调；仅句柄身份，非会话状态——K20 无状态
+  /// 纪律不受影响：句柄不驻留轮次语义，承载归 Runner 侧待实证项）。
+  int _prefixEpoch = 0;
 
   /// degradeToCloud 的云端兜底函数（装配注入；null 时该档落 truncate）。
   final Future<String> Function(
@@ -293,6 +371,21 @@ class AidlOnDeviceCapabilityService
     // 在场），失败真因透传（OnDeviceLoadException），禁静默降级。
     if (_engine.loadState.value == OnDeviceLoadState.ready) return;
     await _engine.enable();
+  }
+
+  @override
+  PrefixReuseHandle acquirePrefixReuseHandle({required String scope}) {
+    // S18b 契约留位：纯值签发（零副作用、不触发装载、不驻留轮次状态）。
+    // 纪元单调递增保证同 scope 重新签发可辨新旧；句柄**不承载已实证的
+    // 缓存语义**（K12：收益未实证前不承诺命中率），引擎侧承载随待实证
+    // 项落地——届时 Runner 侧经 hint.handle 自治匹配，本面只传递。
+    return PrefixReuseHandle(scope: scope, epoch: ++_prefixEpoch);
+  }
+
+  @override
+  Future<void> invalidatePrefixReuse(PrefixReuseHandle handle) async {
+    // S18b 契约留位：幂等 no-op（句柄语义未实证，失效亦无实义；实现方
+    // 禁抛——失效失败不构成原语失败）。引擎侧回滚承载随收益实证落地。
   }
 
   @override

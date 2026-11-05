@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-31
+updated: 2026-11-05
 ---
 
 # 端侧引擎生命周期状态单源化（会话票据与代次对账）
@@ -46,7 +46,7 @@ updated: 2026-10-31
 ### 2.1 权威状态机收敛 `:engine`
 
 - **权威状态机 = `:engine` 的 `EngineLifecycle`**：`IDLE → LOADING → READY / EVICTED / DEAD` 单机承载（含 TTL、内存护栏、驱动 Panic、外部处决全部迁移沿）。
-- **主进程与 Dart 沦为投影**：`loadState`/bridge 句柄全部改为票据驱动的镜像（`onLifecycleChanged(state, gen)` 单事件源），**禁止本地独立判定 ready**；判定需求一律转为「等待权威沿」或「发命令看结果」。
+- **主进程与 Dart 沦为投影**：`loadState`/bridge 句柄全部改为票据驱动的镜像（`onLifecycleChanged(state, gen)` 单事件源），**禁止本地独立判定 ready**；判定需求一律转为「等待权威沿」或「发命令看结果」。**实现形态对齐（2026-11-05 审计）**：权威沿实际落地为三个命名回调——`onEngineEvicted(reason, evictingRequestId)`（自发驱逐）/ `onProcessDied`（外部处决与自杀冷重载）/ `onEngineDied`（驱动 Panic），均触发投影作废，与单一 `onLifecycleChanged` 功能等价；`enable()` 另持投影快路径短路（有会话闸门 + 原子 epoch 兜底）。
 - **代次号（gen）贯穿**：装载/驱逐/释放沿递增，旧沿的迟到处账按代次丢弃——消除迟到处账覆盖新状态竞态（B-2 已在 Dart 侧预演同型机制）。
 
 ```mermaid
@@ -164,6 +164,8 @@ sequenceDiagram
 
 - **不新增 `DRAINING` 缓冲态**：它会把「内存护栏击穿」这一最需要立即回收 ~2GB 权重的路径变成"等生成跑完"，与 §4.1 三态立法和「端侧内存水位最宝贵」的既定取舍直接冲突；TTL 维度现有 `WARM_STANDBY` 判定已天然实现"在途不驱逐"，无需新态。
 - **必须补的是驱逐打断在途的规范化信号**：`onEngineEvicted(reason)` 携带「是否打断在途 + `requestId`」，Dart 侧据此以 `SESSION_ABORTED_BY_EVICTION` 收口（可重试 / 切云，**区别于**进程死亡的 `EngineDied`）。当前该场景靠数据面 EOF 间接收口，语义被混同为「引擎死亡」，既丢归因也让上层切云/重试决策无从区分。
+- **在途流收敛竞争与 EOS 优先级（2026-11-05 真机实证补充，I6 可达性立法）**：在途流终态收敛有五条竞争路径——EOS 正常收尾 / 数据面 EOF（EngineDied→切云）/ 无进展看门狗（EngineDied→切云）/ 驱逐打断（SESSION_ABORTED_BY_EVICTION→切云）/ `onFinished`（仅记 reason 不收口）。**EOS = 「本代流正常完成」语义，会话死亡（`session.ready=false`）时生成线程禁发干净 EOS**——否则 EOS 经仍在位的数据面抢先抵达，把在途流以 0 字节「空产出」正常收敛（抢在 EOF 的 EngineDied 切云之前），归因被误记成模型缺陷（zeroOutput 持久化进 DispatchProfile）。已实现（`EngineService` 生成线程主/异常路径 `session.ready` 守卫）；空产出归因分支另有引擎就绪性守卫（非 ready → EngineDied 切云禁记 zeroOutput）+ EngineDied 记账按 reason 过滤（`session_aborted_by_eviction`/`data plane eof` 不记 crash）。
+- **自杀冷重载显式契约（2026-11-05，兑现 §3「把隐式自杀副作用改为显式契约」）**：同进程二次装载被拒 → `:engine` clean exit 前显式上行 `onEngineEvicted("cold-reload-restart")`，主进程置自杀重启窗口（60s）——窗口内 `onProcessDied` **豁免在途流收口**（保留 `_active`/ctrl，装载链 expectRestart 退避重连后新进程重受理，产出回原流）；真死类（LMK/Panic/窗口外）维持收口。墓碑三分类不受影响（自杀无崩溃栈 + FLAG_READY → `runtimeTerminated`，与 `hardCrash`/`lmkSigkill` 天然分离）。装载失败真因经票据 `loadError` 字段承载（getLoadError 立法意图，终态失败白话化归因——禁把「运行库未装」报成「模型未导入」）。
 
 ### 2.9 通道异常：强制作废 + 切云，禁止以旧票据重试
 
@@ -210,6 +212,7 @@ sequenceDiagram
 > 待办：混沌矩阵（`kill × rebind × evict × reload × 资产替换`）真机回归（§6 验收 1）。
 > 回归钉：全量 flutter test 1455 项全绿（含枚举双端对齐钉）。
 > **2026-10-31 追加（v2.2）**：`EngineStatus.reloading`（序数 8）+ 桥面兜底重绑 + UI 感知面（`loading` 态实写 + AppBar 端侧状态芯片 + 驱逐/失败转场提示）落地；回归钉 = `test/llm/on_device_engine_status_test.dart` ↔ Kotlin `EngineStatusOrdinalTest`（双端序数锚定，任一侧漂移即红）。
+> **2026-11-05 追加（v2.3，全量审计后修复三缺陷）**：① **I6 收敛可达性**——审计发现 I6 链路六段全接线但**结构性不可达**：在途流五条收敛路径竞争，会话被驱逐时生成线程照发干净 EOS 抢先以 0 字节「空产出」收敛（归因误记 zeroOutput 污染 DispatchProfile）；修复 = 会话死亡禁发干净 EOS（§2.8）+ 空产出归因守卫 + EngineDied 记账 reason 过滤，真机三形回归通过（TTL 驱逐后首发请求正常产出 / trim 打断→EngineDied 白话报错 / EXCLUDED 记账缺席）。② **自杀冷重载 vs 在途流收口竞态**——`_onProcessDied` 无差别收口在途流，新进程重受理的产出投到死流；修复 = `cold-reload-restart` 显式契约 + 60s 重启窗口豁免（§2.8），真机闭环实证（答案完整渲染）。③ **装载失败真因票据承载**——票据增 `loadError` 字段（§2.8，getLoadError 立法意图），终态失败白话化归因，禁把「运行库未装」报成「模型未导入」。附带：TTL 受理窗口驱逐竞态修复（`EngineLifecycle` 增 `isBusy` 谓词护栏 + 生成开始取消定时器）、票据增 `runtimeDetail`（资源中心实况面）。全量门禁绿（analyze 0 issue + Kotlin 编译 + ~800 测试）。
 
 | 步 | 内容 | 契约动作 | 回滚面 |
 |---|---|---|---|

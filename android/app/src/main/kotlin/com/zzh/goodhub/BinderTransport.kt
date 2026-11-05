@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.os.Binder
 import android.os.DeadObjectException
 import android.os.Handler
 import android.os.IBinder
@@ -245,14 +246,24 @@ object BinderTransportBridge {
     /// invokeMethod 推给 Dart 路由表（按 transportId 分发），Dart 回 ACK。
     /// 与 EventChannel 的本质区别：无按频道名的全局 handler 状态机——
     /// 多实例 listen/cancel 互不干扰（2026-10-17 卡死根因的根治）。
-    private fun dispatchEvent(tid: String, msg: String) {
+    ///
+    /// [caller] = 平台侧已解析的调用方身份（S07/S07b，可 null = 解析失败）：
+    /// 非空时随信封附 `caller` 字段 {packageName, signatureSha256}，Dart 侧
+    /// 反向请求据此消费已解析身份（载荷不承载身份，红线）。
+    private fun dispatchEvent(tid: String, msg: String, caller: CallerIdentityResolver.CallerIdentity?) {
         mainHandler.post {
             runCatching {
-                methodChannel.invokeMethod(
-                    "onNativeEvent",
-                    mapOf("transportId" to tid, "message" to msg),
-                    eventAck,
+                val payload = mutableMapOf<String, Any?>(
+                    "transportId" to tid,
+                    "message" to msg,
                 )
+                if (caller != null) {
+                    payload["caller"] = mapOf(
+                        "packageName" to caller.packageName,
+                        "signatureSha256" to caller.signatureSha256,
+                    )
+                }
+                methodChannel.invokeMethod("onNativeEvent", payload, eventAck)
             }.onFailure { Log.w(TAG, "dispatchEvent failed: $it") }
         }
     }
@@ -351,11 +362,35 @@ object BinderTransportBridge {
             override fun onEvent(jsonRpcMessage: String) {
                 // 透传插件事件到 Dart（progress / 异步终帧 / 反向请求在 Dart 侧完成）。
                 // §1.2.3：Binder 线程触发 → 保序专线串行化 → 主线程 MethodChannel 推送。
+                // S07/S07b：调用方身份须在本 Binder 事务线程内解析（getCallingUid
+                // 仅事务内有效，严禁异步补取），解析结果随事件信封下发。
                 val tid = id
                 val msg = jsonRpcMessage
+                val caller = resolveCallerOnce()
                 eventExecutor.execute {
-                    dispatchEvent(tid, msg)
+                    dispatchEvent(tid, msg, caller)
                 }
+            }
+        }
+
+        /// 已解析的调用方身份缓存（S07/S07b）：peer 进程身份随本连接固定，解析
+        /// 成功一次即缓存（双检锁）；失败**不缓存**（PM 瞬时故障下次事件重试），
+        /// 持续失败时每事件回 null → Dart 侧对反向请求按拒绝处置（禁匿名放行）。
+        ///
+        /// 红线：身份只从内核调用方 UID 推导（[CallerIdentityResolver] 单源），
+        /// 严禁从请求载荷或 transport 元数据读取（载荷自声明即允许冒充任意包名）。
+        @Volatile
+        private var resolvedCaller: CallerIdentityResolver.CallerIdentity? = null
+
+        /// 解析调用方身份（成功缓存，失败不缓存）：必须在 onEvent（Binder 事务
+        /// 线程）内调用 [Binder.getCallingUid]。
+        private fun resolveCallerOnce(): CallerIdentityResolver.CallerIdentity? {
+            resolvedCaller?.let { return it }
+            synchronized(lock) {
+                resolvedCaller?.let { return it }
+                val identity = CallerIdentityResolver.resolve(context, Binder.getCallingUid())
+                if (identity != null) resolvedCaller = identity
+                return identity
             }
         }
 

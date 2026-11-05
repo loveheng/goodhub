@@ -11,6 +11,7 @@ import 'package:goodhub/core/errors/inference_error.dart';
 import 'package:goodhub/llm/cloud/cloud_llm.dart';
 import 'package:goodhub/llm/llm.dart';
 import 'package:goodhub/llm/on_device_engine.dart';
+import 'package:goodhub/llm/on_device_model_catalog.dart';
 import 'package:goodhub/llm/device_tier.dart';
 import 'package:http/http.dart' as http;
 
@@ -869,6 +870,93 @@ void main() {
             contentChars: 700, outputReserve: 1024, windowTokens: 1280),
         isTrue,
       );
+    });
+  });
+
+  group('1B/1280 窗口准入按裁剪后载荷（2026-11-04 真机回归）', () {
+    /// 1280-context 的 1B 资产（与导入 meta modelProfile.contextTokens 同源）。
+    const oneB = OnDeviceModelOption(
+      id: 'gemma3-1b',
+      displayName: 'Gemma3-1B',
+      base: '',
+      dirName: 'gemma3-1b',
+      runtime: OnDeviceRuntime.litertlm,
+      installed: true,
+      contextTokens: 1280,
+    );
+
+    /// 复刻真机形态：超长 system + 长历史 + 短当前轮（⓪ 真裸只送当前轮）。
+    final longRequest = CloudChatRequest(messages: [
+      SystemMessage('S' * 2000),
+      UserMessage('U' * 900),
+      AssistantMessage(content: 'A' * 900),
+      UserMessage('短问题'),
+    ]);
+
+    HybridCloudEngine with1B({CloudLlmEngine? cloudEngine}) =>
+        HybridCloudEngine(
+          controller: controller,
+          cloud: cloudEngine,
+          onDevice: device,
+          preferOnDevice: true,
+          onDeviceModelResolver: () async => oneB,
+        );
+
+    test('未配置云端 + 长原始请求 → 按裁剪后载荷放行（不误报超窗）', () async {
+      controller.reportTransportTimeout();
+      device.next = '端侧产出';
+      final events = await with1B().send(longRequest).toList();
+      expect(events.whereType<CloudTextDelta>().single.text, '端侧产出');
+      final turns = (jsonDecode(device.prompts.single) as List)
+          .cast<Map<String, dynamic>>();
+      expect(turns.map((m) => m['role']).toList(), ['user']);
+      expect(turns.single['content'], '短问题');
+    });
+
+    test('路由窗口准入同口径：长原始请求不切云（云端零调用）', () async {
+      controller.reportTransportTimeout();
+      device.next = '端侧产出';
+      await with1B(cloudEngine: cloud).send(longRequest).toList();
+      expect(cloud.calls, isEmpty,
+          reason: '裁剪前全量 ~3800 字符若计入 1280 窗口会把端侧判死');
+      expect(device.prompts, hasLength(1));
+    });
+
+    test('单轮真超窗 → 静态窗口准入即拦（无云端时显式失败）', () async {
+      controller.reportTransportTimeout();
+      await expectLater(
+        with1B()
+            .send(CloudChatRequest(messages: [UserMessage('Q' * 1200)]))
+            .toList(),
+        throwsA(isA<InferenceException>().having(
+          (e) => e.message,
+          'message',
+          allOf(contains('云端未配置'), contains('窗口准入落空')),
+        )),
+      );
+      expect(device.prompts, isEmpty);
+    });
+
+    test('窗口未知旁路（健康态 + 无云端）→ P1-5 执行侧预检仍拒绝', () async {
+      // 路由层只在 wantDevice 时读窗口值源；本形态窗口未知不拦，终检归
+      // _deviceSend——真超窗时「未配置云端兜底」白话报错路径必须保留。
+      final bareSide = HybridCloudEngine(
+        controller: DegradationController(),
+        cloud: null,
+        onDevice: device,
+        onDeviceModelResolver: () async => oneB,
+      );
+      await expectLater(
+        bareSide
+            .send(CloudChatRequest(messages: [UserMessage('Q' * 1200)]))
+            .toList(),
+        throwsA(isA<InferenceException>().having(
+          (e) => e.message,
+          'message',
+          contains('输入超出端侧模型上下文窗口（约 1280 tokens）'),
+        )),
+      );
+      expect(device.prompts, isEmpty);
     });
   });
 

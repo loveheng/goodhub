@@ -84,6 +84,8 @@ updated: 2026-10-30
 ### 2.4 Prefix Cache 实现（KV-Cache 复用，v2.6 确认；**v3 落位实证 2026-11-01**）
 
 > **落位实证（2026-11-01）**：Genie 管线内置 KV-Cache 管理——自研 ION Buffer 槽位固化/DMA 指针维持不适用（Genie 封装）；前缀复用收益观测已入 bench `short-repeat` 用例（§7.1）。Prompt 拓扑正规化与 `truncateContext` 边界仍有效（后者 Kotlin 侧 no-op：Genie 无部分回滚 API，见 §6.4 S3-6 标注）。
+>
+> **[Fact] 实证修正（2026-11-03 真机 bench，Ace 6）**：TTFT 随历史长度线性增长（GPU 段 ≈0.56ms/tok、NPU 段 ≈8ms/tok）= **每请求全量重 prefill，无跨请求前缀复用**——本节「Prefix Cache 唯一主路线」自研路线随 v3 换 GenieX 已整体不适用，运行时前缀缓存收益不可依赖亦不可观测（SSOT = `context-stepped-pruning.md` §2.5 ADR「端侧不做前缀稳定裁剪」+ KV 定谳）。本节其余内容保留为 v2 QNN 自研路线历史设计。
 
 移动端 NPU 物理约束下，**Prefix Cache（固定前缀 KV 缓存）是唯一符合静态图约束的 KV 复用路线**；增量 Prefill 不作为本期基线（标记未来探索项）。
 

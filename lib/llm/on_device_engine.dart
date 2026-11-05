@@ -22,6 +22,7 @@ library;
 import 'package:flutter/foundation.dart';
 import 'llm.dart';
 import 'on_device_model_catalog.dart';
+import 'on_device_session_ticket.dart';
 
 /// 端侧引擎结构化状态（序数 = AIDL int，禁调序）。
 enum EngineStatus {
@@ -182,6 +183,10 @@ abstract interface class OnDeviceEnableCapable {
   /// 加载状态（unloaded/loading/ready/failed），UI 据此呈现加载指示。
   ValueListenable<OnDeviceLoadState> get loadState;
 
+  /// 装载阶段打点（W2-3，timeout-signaling）：值 = listener 契约常量
+  /// （0=PARSING / 1=ALLOCATING，-1=无在途装载）。UI 据此细分装载进度文案。
+  ValueListenable<int> get loadPhase;
+
   /// 显式加载：bind→就绪→资产→loadModel→数据面 worker。幂等（ready 后 no-op）；
   /// 失败抛 [OnDeviceLoadException]（带原因），不静默降级。
   /// backendHint（AIDL 2026-11-02 #8）：准入探针后端选择权注入（'gpu' = 强制
@@ -198,6 +203,11 @@ abstract interface class OnDeviceEngine {
   /// 轮询面已退役，状态唯一来源 = `:engine` 票据）。票据不可得（未连接 /
   /// 通道超时）返回 **null = 未知态**（I2 禁猜测，调用方按不可用/未知分流）。
   Future<EngineStatus?> authoritativeStatus();
+
+  /// 运行环境实况票据（2026-11-05 资源中心实况面）：整张票据含
+  /// `runtimeDetail`（runtime/计算单元/unfit 原因/sdk 版本）。null = 未知态，
+  /// 诊断只读面，不参与路由判定。
+  Future<SessionTicket?> sessionTicket();
 
   /// `== ready` 语法糖（总纲 §2）。状态未知（null）按不可用处理。
   Future<bool> isAvailable() async =>

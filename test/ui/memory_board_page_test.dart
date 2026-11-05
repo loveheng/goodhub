@@ -220,7 +220,11 @@ void main() {
     expect(find.text('task-discipline'), findsOneWidget);
     expect(find.text('goodshare-data'), findsOneWidget);
     expect(find.textContaining('拾贝是用户的收集器'), findsOneWidget);
-    expect(find.text('官方预置'), findsNWidgets(3));
+    expect(find.text('官方预置'),
+        findsNWidgets(builtinSkills()
+            .where((s) => s.scope != SkillScope.onDemand).length),
+        reason: '徽标数随 builtinSkills() 的 global+appScoped 档动态增长'
+            '（S17 增 supply/summarize 后为 4；onDemand 档不入看板），禁写死');
     expect(find.byKey(const Key('prompts-baseline-note')), findsOneWidget,
         reason: '无活态会话须明示展示的是官方预置 + 落盘基线而非实际注入面');
     expect(find.text('（暂无全局 Prompt——官方预置与用户自建将在此列出）'),
@@ -340,7 +344,11 @@ void main() {
     expect(find.text('cow/weekly-review'), findsOneWidget);
     expect(find.text('CoW 同步'), findsOneWidget);
     expect(find.text('逐条回顾本周收集条目。'), findsOneWidget);
-    expect(find.text('官方预置'), findsNWidgets(3));
+    expect(find.text('官方预置'),
+        findsNWidgets(builtinSkills()
+            .where((s) => s.scope != SkillScope.onDemand).length),
+        reason: '徽标数随 builtinSkills() 的 global+appScoped 档动态增长'
+            '（S17 增 supply/summarize 后为 4；onDemand 档不入看板），禁写死');
     expect(find.byKey(const Key('prompts-baseline-note')), findsNothing,
         reason: '活态面展示实际注入面，不再展示落盘基线提示');
   });

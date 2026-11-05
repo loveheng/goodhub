@@ -180,4 +180,113 @@ void main() {
       expect(cleared, isTrue, reason: '持久化锁须同步清除');
     });
   });
+
+  group('事件留痕 lastEventReason（IRIDIS 对照：reason 随下次动作打日志）', () {
+    test('无上报历史 = null', () {
+      expect(breaker.lastEventReason, isNull);
+    });
+
+    test('report 留痕携带 countable 与死因', () async {
+      await breaker.report(countable: false, reason: 'onProcessDied(SIGKILL)');
+      expect(breaker.lastEventReason, contains('countable=false'));
+      expect(breaker.lastEventReason, contains('onProcessDied(SIGKILL)'));
+    });
+
+    test('L1 触发覆盖为 trip 留痕', () async {
+      await breaker.report(countable: true, reason: 'onEngineDied');
+      t = t.add(const Duration(minutes: 1));
+      await breaker.report(countable: true, reason: 'onEngineDied');
+      expect(breaker.lastEventReason, startsWith('L1 trip'));
+      expect(breaker.lastEventReason, contains('onEngineDied'));
+    });
+
+    test('L2 触发覆盖为 24h 锁留痕', () async {
+      // L2 判据 = 当日 2 次 L1 触发；每次 L1 需窗口内 2 次 crash → 共 4 轮。
+      for (var i = 0; i < 4; i++) {
+        await breaker.report(countable: true);
+        t = t.add(const Duration(minutes: 1));
+      }
+      expect(breaker.lastEventReason, startsWith('L2 trip'));
+    });
+  });
+
+  group('L2 解锁接 driverFingerprint（timeout-signaling W1-1）', () {
+    late String? persistedLockFp;
+    late String? currentFp;
+    bool fpCleared = false;
+    late EngineCircuitBreaker fpBreaker;
+
+    setUp(() {
+      persistedLock = null;
+      persistedLockFp = null;
+      currentFp = 'fp-A';
+      fpCleared = false;
+      fpBreaker = EngineCircuitBreaker(
+        now: () => t,
+        readLock: () => Future<String?>.value(persistedLock),
+        writeLock: (iso) async => persistedLock = iso,
+        clearLock: () async => cleared = true,
+        readL1Triggers: () => Future<String?>.value(persistedL1Triggers),
+        writeL1Triggers: (list) async => persistedL1Triggers = list.join('|'),
+        readLockFingerprint: () => Future<String?>.value(persistedLockFp),
+        writeLockFingerprint: (fp) async => persistedLockFp = fp,
+        clearLockFingerprint: () async => fpCleared = true,
+        currentFingerprint: () => Future<String?>.value(currentFp),
+      );
+    });
+
+    /// 触发 L2：当日 2 次 L1（每次 L1 = 窗口内 2 次 crash）。
+    Future<void> tripL2() async {
+      for (var i = 0; i < 4; i++) {
+        await fpBreaker.report(countable: true);
+        t = t.add(const Duration(minutes: 1));
+      }
+    }
+
+    test('L2 触发时同写当前驱动指纹', () async {
+      await tripL2();
+      expect(persistedLock, isNotNull);
+      expect(persistedLockFp, 'fp-A', reason: '锁定时须记录触发时指纹');
+    });
+
+    test('锁期内指纹变更 → 提前解锁并清锁清指纹', () async {
+      await tripL2();
+      expect(persistedLockFp, 'fp-A');
+      // 模拟系统 OTA：驱动指纹漂移；冷启动新实例（L1 内存态清零，
+      // 指纹解锁后不应被残留的 L1 内存标志掩盖判定）。
+      currentFp = 'fp-B';
+      final fresh = EngineCircuitBreaker(
+        now: () => t,
+        readLock: () => Future<String?>.value(persistedLock),
+        writeLock: (iso) async => persistedLock = iso,
+        clearLock: () async => cleared = true,
+        readLockFingerprint: () => Future<String?>.value(persistedLockFp),
+        clearLockFingerprint: () async => fpCleared = true,
+        currentFingerprint: () => Future<String?>.value(currentFp),
+      );
+      expect(await fresh.isBroken, isFalse,
+          reason: '驱动指纹变更应提前解锁');
+      expect(cleared, isTrue, reason: '解锁须清除持久化锁');
+      expect(fpCleared, isTrue, reason: '解锁须清除锁定指纹');
+    });
+
+    test('锁期内指纹一致 → 维持锁定', () async {
+      await tripL2();
+      expect(await fpBreaker.isBroken, isTrue);
+      expect(cleared, isFalse);
+    });
+
+    test('锁定时未记录指纹（拿不到）→ 解锁仅靠时间过期', () async {
+      await tripL2();
+      persistedLockFp = null; // 触发时指纹缺失（旧版本锁/通道故障）
+      expect(await fpBreaker.isBroken, isTrue, reason: '无指纹可比对不误解锁');
+    });
+
+    test('当前指纹拿不到（通道故障）→ 维持锁定不误开', () async {
+      await tripL2();
+      currentFp = null;
+      expect(await fpBreaker.isBroken, isTrue);
+      expect(cleared, isFalse);
+    });
+  });
 }

@@ -70,13 +70,13 @@ abstract final class OnDeviceAssetFamily {
 /// 经 `:engine`（NPU（GenieX 增配已装）→ GPU → 云端收口，CPU 全程出局）。
 const bool kOnDeviceLiteRtLmEnabled = true;
 
-/// llama.cpp 通路用户面开关（首发节奏关闸，decisions.md ADR「首发节奏」
-/// 2026-11-01：llama.cpp 先不放出，从 LiteRT-LM 起步）——代码与已实证能力
-/// 保留不删，仅用户面（GGUF 导入 / 已装 GGUF 模型选择 / 装载入口）关闸，
-/// 关闸点 = 导入 UI 拒收 + `_select` 拒选 + `enable()` 装载闸兜底。
-/// 测量期放开：`--dart-define=ON_DEVICE_LLAMACPP=true`。
+/// llama.cpp 通路用户面开关（**已放开**，用户拍板 2026-11-05 推翻 ADR
+/// 「首发节奏」2026-11-01 关闸口径：llama_cpp 通路经 Qwen 真机轮实证健康
+/// （装载 3s / 生成 9 tok/s 慢档已记录画像），GGUF 导入即导入即用）——
+/// 关闸点保留（导入 UI / `_select` / `enable()` 装载闸），仅默认值翻转；
+/// 如需再关闸：`--dart-define=ON_DEVICE_LLAMACPP=false`。
 const bool kOnDeviceLlamaCppEnabled =
-    bool.fromEnvironment('ON_DEVICE_LLAMACPP', defaultValue: false);
+    bool.fromEnvironment('ON_DEVICE_LLAMACPP', defaultValue: true);
 
 /// 端侧模型描述符（装载目标）。身份锚点 = [dirName]（`models/` 下落盘目录名）。
 ///
@@ -97,6 +97,7 @@ class OnDeviceModelOption {
     this.installed = false,
     this.contextTokens,
     this.recommendedSampling,
+    this.loadTimeoutSec,
   });
 
   /// 由磁盘已装记录合成（导入模型：无下载基址）。
@@ -108,7 +109,8 @@ class OnDeviceModelOption {
         totalBytes = null,
         installed = true,
         contextTokens = null,
-        recommendedSampling = null;
+        recommendedSampling = null,
+        loadTimeoutSec = null;
 
   final String id;
   final String displayName;
@@ -121,6 +123,10 @@ class OnDeviceModelOption {
 
   /// 运行时标识（[OnDeviceRuntime] 常量之一）。
   final String runtime;
+
+  /// 装载上界声明（lifecycle-single-source §7 裁决 5，meta
+  /// `modelProfile.loadTimeoutSec` 透传）；null = 缺席走默认 90s。
+  final int? loadTimeoutSec;
 
   /// 实盘资产体积（字节）：磁盘扫描回填；未扫描 = null。
   final int? totalBytes;
@@ -171,6 +177,7 @@ class OnDeviceModelProfile {
     this.stopSequences = const [],
     this.contextTokens,
     this.recommendedSampling,
+    this.loadTimeoutSec,
   });
 
   /// 模板家族（qwen_chatml / llama3 / gemma / unknown）。
@@ -188,6 +195,12 @@ class OnDeviceModelProfile {
   /// bundle = 官方 Gallery 值；null = 缺席，消费方走引擎内建默认（禁猜值）。
   final OnDeviceSamplingPreset? recommendedSampling;
 
+  /// 装载上界声明（lifecycle-single-source §7 裁决 5：按体积预填、可改；
+  /// null = 缺席走默认 90s）。过热降频/OEM 冻结恢复环境下大模型装载实测
+  /// 可超 90s（2026-11-05 真机实证：2B GGUF 降频装载 100s+ 必被 90s 上界
+  /// 打断），按体积声明放宽——数据住配置文件，零代码适配。
+  final int? loadTimeoutSec;
+
   /// meta `modelProfile` map → 类型（防御式：非 Map / 字段类型不符忽略）。
   static OnDeviceModelProfile? fromMeta(Object? raw) {
     if (raw is! Map<String, dynamic>) return null;
@@ -197,6 +210,7 @@ class OnDeviceModelProfile {
         .where((s) => s.isNotEmpty)
         .toList(growable: false);
     final ctx = (raw['contextTokens'] as num?)?.toInt();
+    final loadTimeout = (raw['loadTimeoutSec'] as num?)?.toInt();
     final samplingRaw = raw['recommendedSampling'];
     final sampling = samplingRaw is Map<String, dynamic>
         ? OnDeviceSamplingPreset.fromMeta(samplingRaw)
@@ -204,13 +218,15 @@ class OnDeviceModelProfile {
     if ((family == null || family.isEmpty) &&
         (stops == null || stops.isEmpty) &&
         ctx == null &&
-        sampling == null) {
+        sampling == null &&
+        (loadTimeout == null || loadTimeout <= 0)) {
       return null;
     }
     return OnDeviceModelProfile(
       chatTemplateFamily: (family != null && family.isNotEmpty) ? family : null,
       stopSequences: stops ?? const [],
       contextTokens: ctx,
+      loadTimeoutSec: (loadTimeout != null && loadTimeout > 0) ? loadTimeout : null,
       recommendedSampling: sampling,
     );
   }
@@ -297,6 +313,8 @@ class InstalledModel {
         contextTokens: modelProfile?.contextTokens,
         // 推荐采样：S1 策展声明透出（下发链，§3.5）；无块 = null 走内建默认。
         recommendedSampling: modelProfile?.recommendedSampling,
+        // 装载上界声明（§7 裁决 5）：meta 声明透出，null 走默认 90s。
+        loadTimeoutSec: modelProfile?.loadTimeoutSec,
       );
 }
 

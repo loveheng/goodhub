@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-11-03
+updated: 2026-11-05
 ---
 # docs
 
@@ -50,3 +50,5 @@ updated: 2026-11-03
   - [design/review-fix-2026-10.md](design/review-fix-2026-10.md) — 全项目审查修复施工稿（2026-10-24 轮：P0 PopScope 失灵 + P1 资源收尾/事务竞态/网关/安全落盘 + 门禁矩阵账实修正，draft）
   - [design/task-orchestration.md](design/task-orchestration.md) — 多插件任务编排（TaskPlan 计划卡 · 写面围栏 PlanGuard · 批量授权 planGrant · 步骤台账聚合，draft）
   - [design/arch-consolidation.md](design/arch-consolidation.md) — 架构收敛施工稿：应用级 owner 注册中心 + 装配 Profile 化（活跃债 #20~#26，draft）
+  - [design/ai-debug-bridge.md](design/ai-debug-bridge.md) — AI 真机调试桥（结构化观测替代截图猜测：端点契约 / 控件语义树 / 安全边界，draft）
+  - [design/timeout-signaling.md](design/timeout-signaling.md) — 超时信令下沉优化方案（临时 epic：W1 Dart 侧解锁/探针异步化 → W2 装载异步化 → W3 native liveness → W4/W5 跨仓与待上游，draft）

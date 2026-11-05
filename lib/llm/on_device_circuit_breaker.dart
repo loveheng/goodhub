@@ -2,13 +2,15 @@ import 'dart:async';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'on_device_engine_binding.dart';
+
 /// 端侧引擎重启风暴两级阶梯熔断（on-device epic S1-6；立法源
 /// on-device-npu-deployment.md §6.5 v2.4/v2.6/v2.7）。
 ///
 /// | 级别 | 触发 | 惩罚 | 恢复 |
 /// |---|---|---|---|
 /// | L1（单进程级，默认） | 5 分钟内连续 Crash ≥ 2 次 | 内存标志，**本进程生命周期**内所有推理走云端 | 杀进程冷启动自愈 |
-/// | L2（持久化级） | **当天（本地自然日）累计触发 L1 达 2 次**（P2-9：持久化 L1 触发时间戳，**跨重启累计**） | 持久化时间戳，**锁定 24h** 强制切云 | 24h 过期 / 模型版本更新 / 手动清缓存 |
+/// | L2（持久化级） | **当天（本地自然日）累计触发 L1 达 2 次**（P2-9：持久化 L1 触发时间戳，**跨重启累计**） | 持久化时间戳，**锁定 24h** 强制切云 | 24h 过期 / 驱动指纹变更 / 模型版本更新 / 手动清缓存 |
 ///
 /// **L2 判据口径（P2-9，2026-11-01）**：每次 L1 触发把时间戳持久化（单键 ISO
 /// 列表）；判定时先剪枝**非当日**（本地自然日 00:00 起）时间戳，同日 ≥2 次即
@@ -31,16 +33,27 @@ class EngineCircuitBreaker {
     Future<void> Function()? clearLock,
     Future<String?> Function()? readL1Triggers,
     Future<void> Function(List<String> isoList)? writeL1Triggers,
+    Future<String?> Function()? readLockFingerprint,
+    Future<void> Function(String fp)? writeLockFingerprint,
+    Future<void> Function()? clearLockFingerprint,
+    Future<String?> Function()? currentFingerprint,
     DateTime Function()? now,
   })  : _readLock = readLock ?? _defaultRead,
         _writeLock = writeLock ?? _defaultWrite,
         _clearLock = clearLock ?? _defaultClear,
         _readL1Triggers = readL1Triggers ?? _defaultReadL1,
         _writeL1Triggers = writeL1Triggers ?? _defaultWriteL1,
+        _readLockFingerprint = readLockFingerprint ?? _defaultReadLockFp,
+        _writeLockFingerprint =
+            writeLockFingerprint ?? _defaultWriteLockFp,
+        _clearLockFingerprint =
+            clearLockFingerprint ?? _defaultClearLockFp,
+        _currentFingerprint = currentFingerprint ?? _defaultCurrentFp,
         _now = now ?? DateTime.now;
 
   static const String _lockKey = 'on_device.engine.l2_lock_until';
   static const String _l1TriggersKey = 'on_device.engine.l1_trigger_at';
+  static const String _lockFpKey = 'on_device.engine.l2_lock_fingerprint';
   static const Duration l1Window = Duration(minutes: 5);
   static const Duration l2LockDuration = Duration(hours: 24);
   static const Duration cooldownWindow = Duration(milliseconds: 500);
@@ -50,6 +63,10 @@ class EngineCircuitBreaker {
   final Future<void> Function() _clearLock;
   final Future<String?> Function() _readL1Triggers;
   final Future<void> Function(List<String>) _writeL1Triggers;
+  final Future<String?> Function() _readLockFingerprint;
+  final Future<void> Function(String) _writeLockFingerprint;
+  final Future<void> Function() _clearLockFingerprint;
+  final Future<String?> Function() _currentFingerprint;
   final DateTime Function() _now;
 
   /// L1 内存态：窗口内 crash 时间戳（进程生命周期，冷启动即复位）。
@@ -71,16 +88,22 @@ class EngineCircuitBreaker {
 
   DateTime? _lastDeathAt;
 
+  /// 最近一次上报/熔断事件留痕（IRIDIS 对照：reason 随下次动作一起打日志
+  /// ——装载/生成闸门消费 [lastEventReason]，死亡现场不再静默）。
+  String? _lastEvent;
+
   /// 本地自然日同日判定（00:00 起算，与「当天累计」用户口径一致）。
   bool _isSameLocalDay(DateTime a, DateTime b) =>
       a.year == b.year && a.month == b.month && a.day == b.day;
 
   /// 进程死亡上报。[countable] = 是否计入熔断（§6.5 收窄口径：仅本端驱动
   /// Panic / 算子越界 abort 为 true；SIGKILL/LMK/驱动不兼容/CMA 失败为 false，
-  /// 但同样进入冷却窗口）。
-  Future<void> report({required bool countable}) async {
+  /// 但同样进入冷却窗口）。[reason] = 死因留痕（随下次装载/闸门日志外带）。
+  Future<void> report({required bool countable, String? reason}) async {
     final now = _now();
     _lastDeathAt = now;
+    _lastEvent =
+        'report(countable=$countable${reason == null ? '' : ', reason=$reason'}) @ ${now.toIso8601String()}';
     if (!countable) return;
     // L1：5 分钟滑动窗口内连续 crash ≥ 2。
     if (_l1WindowStart == null || now.difference(_l1WindowStart!) > l1Window) {
@@ -92,6 +115,7 @@ class EngineCircuitBreaker {
 
     // L1 触发。
     _l1Broken = true;
+    _lastEvent = 'L1 trip (${reason ?? 'unknown cause'}) @ ${now.toIso8601String()}';
     _l1Crashes.clear();
     _l1WindowStart = null;
     // P2-9：L2 判据 = 持久化 L1 触发时间戳的同日（本地自然日）累计。
@@ -107,9 +131,11 @@ class EngineCircuitBreaker {
     }
     if (_l1Triggers.length < 2) return;
 
-    // L2 触发：持久化 24h 锁，并清空 L1 触发列表（锁期内不再累计）。
+    // L2 触发：持久化 24h 锁 + 触发时驱动指纹（解锁增强：指纹变更即提前
+    // 解锁），并清空 L1 触发列表（锁期内不再累计）。
     final until = now.add(l2LockDuration);
     _l2LockUntil = until;
+    _lastEvent = 'L2 trip 24h lock (${reason ?? 'unknown cause'}) @ ${now.toIso8601String()}';
     _l1Triggers.clear();
     try {
       await _writeL1Triggers(const []);
@@ -121,18 +147,57 @@ class EngineCircuitBreaker {
     } catch (_) {
       // 持久化失败按内存态兜底（本进程内仍锁定），不阻断切云路径。
     }
+    try {
+      final fp = await _currentFingerprint();
+      if (fp != null && fp.isNotEmpty) {
+        await _writeLockFingerprint(fp);
+      } else {
+        await _clearLockFingerprint(); // 拿不到指纹不记（解锁仅靠时间过期）
+      }
+    } catch (_) {
+      // 指纹记录失败不阻断锁定语义（解锁条件退化为纯时间过期）。
+    }
   }
 
   /// 是否处于熔断期（L1 内存态或 L2 持久化态）。熔断期间即便本地有产物
   /// 也不启用端侧（§6.5）；独立于 §4.1 COLD-EVICTED 状态机。
+  ///
+  /// L2 解锁增强（timeout-signaling W1-1）：锁期内驱动指纹变更（系统 OTA /
+  /// 运行库更新）→ 提前解锁。指纹任一侧拿不到 = 不比对（保守不误解锁，
+  /// 解锁退化为纯时间过期）。指纹走 `deviceFingerprint` 通道（系统属性
+  /// 直读，零副作用，锁期内可安全读取——无「锁着取不到指纹」死锁面）。
   Future<bool> get isBroken async {
     await _restoreLockIfNeeded();
     final now = _now();
-    if (_l2LockUntil != null && now.isBefore(_l2LockUntil!)) return true;
+    if (_l2LockUntil != null && now.isBefore(_l2LockUntil!)) {
+      if (await _unlockedByFingerprintDrift()) {
+        _lastEvent =
+            'L2 unlock (driver fingerprint changed) @ ${now.toIso8601String()}';
+        return _l1Broken;
+      }
+      return true;
+    }
     if (_l2LockUntil != null && now.isAfter(_l2LockUntil!)) {
       _l2LockUntil = null; // 24h 自然过期
     }
     return _l1Broken;
+  }
+
+  /// 锁期内指纹比对：锁定时指纹与当前指纹均非空且不等 → 清锁清指纹返 true。
+  Future<bool> _unlockedByFingerprintDrift() async {
+    try {
+      final locked = await _readLockFingerprint();
+      if (locked == null || locked.isEmpty) return false;
+      final current = await _currentFingerprint();
+      if (current == null || current.isEmpty) return false;
+      if (locked == current) return false;
+      _l2LockUntil = null;
+      await _clearLock();
+      await _clearLockFingerprint();
+      return true;
+    } catch (_) {
+      return false; // 比对失败 = 维持锁定（保守，宁多锁不误开）
+    }
   }
 
   /// 是否处于 500ms 驱动释放冷却窗口（窗口内阻断暖机/生成，防撞 FastRPC
@@ -143,6 +208,10 @@ class EngineCircuitBreaker {
     if (last == null) return false;
     return _now().difference(last) < cooldownWindow;
   }
+
+  /// 最近一次上报/熔断事件留痕（无上报历史 = null）。消费方（装载入口、
+  /// 生成闸门）随动作一起打日志，死亡现场不再静默。
+  String? get lastEventReason => _lastEvent;
 
   /// 复位（§6.5）：模型版本更新（新 hash）或用户手动清缓存解除 L1/L2。
   Future<void> reset() async {
@@ -156,6 +225,11 @@ class EngineCircuitBreaker {
       await _clearLock();
     } catch (_) {
       // 清理失败不阻断复位语义（内存态已清）。
+    }
+    try {
+      await _clearLockFingerprint();
+    } catch (_) {
+      // 同上：指纹键清理失败不阻断复位。
     }
     try {
       await _writeL1Triggers(const []);
@@ -193,7 +267,8 @@ class EngineCircuitBreaker {
     }
   }
 
-  // 默认持久化：shared_preferences（L2 锁时间戳 + L1 触发时间戳列表两键）。
+  // 默认持久化：shared_preferences（L2 锁时间戳 + 锁定指纹 + L1 触发时间戳
+  // 列表三键）；指纹读取走 `deviceFingerprint` 平台通道（系统属性直读）。
   static Future<String?> _defaultRead() async =>
       (await SharedPreferences.getInstance()).getString(_lockKey);
 
@@ -209,4 +284,23 @@ class EngineCircuitBreaker {
 
   static Future<void> _defaultClear() async =>
       (await SharedPreferences.getInstance()).remove(_lockKey);
+
+  static Future<String?> _defaultReadLockFp() async =>
+      (await SharedPreferences.getInstance()).getString(_lockFpKey);
+
+  static Future<void> _defaultWriteLockFp(String fp) async =>
+      (await SharedPreferences.getInstance()).setString(_lockFpKey, fp);
+
+  static Future<void> _defaultClearLockFp() async =>
+      (await SharedPreferences.getInstance()).remove(_lockFpKey);
+
+  static Future<String?> _defaultCurrentFp() async {
+    try {
+      return await OnDeviceEngineBinding.channel
+          .invokeMethod<String>('deviceFingerprint')
+          .timeout(const Duration(seconds: 3));
+    } catch (_) {
+      return null; // 拿不到指纹不比对（解锁退化为纯时间过期）
+    }
+  }
 }

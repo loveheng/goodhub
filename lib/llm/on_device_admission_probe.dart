@@ -11,6 +11,7 @@ import 'on_device_engine_adapter.dart';
 import 'on_device_engine_aidl.dart';
 import 'on_device_engine_binding.dart';
 import 'on_device_model_catalog.dart';
+import 'on_device_user_demand.dart';
 
 /// 端侧准入探针编排（DispatchProfile 设计稿 §3/§4，2026-11-01 拍板）。
 ///
@@ -34,6 +35,7 @@ class AdmissionProbe {
     required this.onObservedRuntime,
     required this.onDeviceProbe,
     required this.assetManager,
+    this.isEngineBusy,
     this.hardTimeout = const Duration(seconds: 10),
     this.probeMaxTokens = 32,
     this.now,
@@ -54,6 +56,11 @@ class AdmissionProbe {
   /// 设备环境探针（门禁数据源，§3 设备门禁）。
   final Future<DeviceProbe?> Function() onDeviceProbe;
   final OnDeviceAssetManager assetManager;
+
+  /// 引擎装载链占用判定（W1-2 让位：true = 用户请求在途，探针 load 前止步）。
+  /// 生产装配 = `loadState == loading`；null = 未接线（跳过止步检查）。
+  final bool Function()? isEngineBusy;
+
   final Duration hardTimeout;
 
   /// 冒烟生成上限（§4.1 生产探针：≥8 抓 mid-sequence 假绿，32 留复读环
@@ -93,12 +100,23 @@ class AdmissionProbe {
   /// 已有有效画像 → 原样返回（跳过重探）；否则执行探针。任何探针失败都不
   /// 抛出（编排层背景任务，失败留 [DEGRADE] 并返回 null——无画像 = 未知后端，
   /// 路由交既有降级链，禁因探针故障锁死端侧）。
+  ///
+  /// 让位状态机（timeout-signaling W1-2）：探针占用唯一 EngineSlot（单常驻
+  /// 纪律），与用户请求相撞时让位——① load 前检测到用户请求在途（引擎
+  /// loading 态）即刻止步；② 探针周期内用户需求代次递增（用户 enable/生成
+  /// 进入）→ 打断探针：装载失败不记坏画像（打断 ≠ 模型坏）、已载模型跳过
+  /// unload 转正给前台复用、被打断的微基准结果不写画像（不可信）。探针
+  /// 可重入：本轮放弃后下次导入/重探机会照常。
   Future<DispatchProfile?> probeIfNeeded(OnDeviceModelOption model) async {
     try {
       final existing = await assetManager.readDispatchProfile(model);
       if (existing != null) return existing; // 重探条件（§3）= 画像缺失/指纹漂移
       final gate = await _deviceGatePass();
       if (!gate) return null;
+      if (isEngineBusy?.call() ?? false) {
+        debugPrint('[on-device] admission probe skipped (user request in flight)');
+        return null; // ① load 前止步：用户请求占用装载链
+      }
       final first = await probe(model);
       // 第二段（AIDL backendHint #8，§4「NPU 败再探 GPU」）：首段探到 NPU
       // 判坏且 GPU 条目缺失 → 强制 GPU 档装载重探，补齐双 verdict 同体；
@@ -140,27 +158,49 @@ class AdmissionProbe {
   /// 执行探针（§4 执行协议）：load → 真生成微基准（硬超时）→ 有效性校验 →
   /// 裁决固化 → 探针后驱逐。输出非空 = HEALTHY；零产出/超时/异常 = EXCLUDED
   /// + reason（词表 = [BackendReason]）。
+  ///
+  /// 用户需求代次（W1-2）：进入时记 gen0，各阶段后比对——
+  /// - onLoad 失败但代次已变 → 装载是被用户请求打断（引擎代次作废），非
+  ///   模型坏 → 不记 EXCLUDED 直接返回 null；
+  /// - 微基准后代次已变 → 会话被打断结果不可信 → 丢弃不写画像，且跳过
+  ///   unload（已载模型转正给前台复用/由引擎接管清场，禁把用户正用的
+  ///   模型驱逐）。
   Future<DispatchProfile?> probe(OnDeviceModelOption model,
       {String? backendHint}) async {
+    final gen0 = onDeviceUserDemandGen.value;
     final observedRuntime =
         await onObservedRuntime().timeout(const Duration(seconds: 3)).catchError((_) => null);
     final key = backendKey(observedRuntime);
     final loaded = await onLoad(model, backendHint);
     if (!loaded) {
+      if (onDeviceUserDemandGen.value != gen0) {
+        debugPrint('[on-device] admission probe load aborted (user takeover)');
+        return null; // 装载被打断 ≠ 模型坏，不记 EXCLUDED
+      }
       await _record(model, key, BackendReason.opNotSupported, null);
       return null; // 装载失败归因留给 enable 链（画像只记 EXCLUDED 不误导）
     }
     BackendProfile entry;
+    var userTookOver = false;
     try {
       entry = await _microBenchmark();
     } finally {
-      // §4.5 探针后驱逐：COLD，用户首次真实使用重新懒加载。
-      try {
-        await onUnload();
-      } catch (e) {
-        debugPrint('[DEGRADE] admission probe unload: $e');
+      // §4.5 探针后驱逐：COLD，用户首次真实使用重新懒加载。让位例外
+      // （W1-2）：探针周期内用户请求进入 → 跳过 unload（模型转正给前台，
+      // 或交引擎既有代次作废链接管清场），禁驱逐用户正用的会话。
+      userTookOver = onDeviceUserDemandGen.value != gen0;
+      if (!userTookOver) {
+        try {
+          await onUnload();
+        } catch (e) {
+          debugPrint('[DEGRADE] admission probe unload: $e');
+        }
+      } else {
+        debugPrint('[on-device] admission probe yielded (user takeover, '
+            'loaded model left for foreground)');
       }
     }
+    if (userTookOver) return null; // 微基准被打断，结果不可信不写画像
     // 合并写入（保另一后端既有条目——双 verdict 同体契约 §1）。
     final existing = await assetManager.readDispatchProfile(model);
     final backends = <String, BackendProfile>{...?existing?.backends};
@@ -238,8 +278,10 @@ class AdmissionProbe {
 /// 生产装配（真机链）：适配器显式装载/生成/驱逐 + 票据 runtime 观测 +
 /// `ChannelLlmEngine.deviceProbe` 门禁源 + asset_manager 单例画像存储。
 /// 探针独立实例（不复用混合引擎的会话态），满足 §5 与引擎生命周期解耦。
+/// `byProbe: true` = 探针自驱动不 touch 用户需求代次（W1-2 让位信号只认
+/// 用户路径）；`isEngineBusy` = 引擎装载链在途（用户 enable 进行中）。
 final AidlOnDeviceLlmEngineAdapter _sharedProbeEngine =
-    AidlOnDeviceLlmEngineAdapter(sharedOnDeviceEngine);
+    AidlOnDeviceLlmEngineAdapter(sharedOnDeviceEngine, byProbe: true);
 
 final AdmissionProbe sharedAdmissionProbe = AdmissionProbe(
   onLoad: (m, backendHint) async =>
@@ -257,6 +299,8 @@ final AdmissionProbe sharedAdmissionProbe = AdmissionProbe(
   },
   onDeviceProbe: () => ChannelLlmEngine().deviceProbe(),
   assetManager: OnDeviceAssetManager.instance,
+  isEngineBusy: () =>
+      sharedOnDeviceEngine.loadState.value == OnDeviceLoadState.loading,
 );
 
 /// 运行时坏后端记账（DispatchProfile 第二写入方，设计稿 §7）：生成链路运行时

@@ -136,6 +136,10 @@ format: v1
 ## 2026-10-31 门禁语义改关注 + 删强行启用（已裁决并实施）
 - 裁决：MemGate 起跑闸与硬失败线保留；温控运行时沿保留且确认语义升级为「连续多次复核达标」（2×2s 持续 SEVERE）；forceOnDevice 单 commit 全删。已实施，验证 flutter analyze 0 issue + flutter test 全绿（1457+）。
 
-## 2026-10-31 第二轮复读环修复路线（定谳后待裁决）
+## timeout-signaling（超时信令下沉 · 2026-11-05 立项轮，临时 epic）
+
+- [x] **TS1 开工时点**：a) 现在按断点开工 W1 批次（W1-1 L2 解锁接 driverFingerprint + W1-2 探针异步化，agent 默认——低风险纯 Dart 侧，断点已指向 W1-1）b) 先搁置，epic 只留方案待后续窗口开工 → **已裁决 a（2026-11-05 用户勾选）：现在开工**
+- [x] **TS2 W1-2 准入探针异步化形态**：a) 后台异步跑、结果写画像（agent 默认：导入路径零阻塞，与已拍板的 DispatchProfile 探针轮合并施工）b) 懒探针——首次真正需要画像时才跑（导入更快，但首次使用体验多一次等待且探针时机不可控） → **已裁决 a（2026-11-05 用户勾选）：后台异步跑**
+
 - 定谳：第二轮带历史（历史轮=2）时模型复述第一轮回答（preview 实锤），bytesIn/charsOut 比例正常、decodeErrors=0——解码/投递/UI 全部无罪；根因 = 单发压平把 [助手] 回复全文塞进 user 轮，4B 模型倾向复述上下文。
 - 裁决（用户）：从底层设计找根因，不打地鼠——定谳复读环根因 = 输入形态违背模型训练分布（assistant 内容错位进 user 角色），已按 A 实施：promptJson → messages JSON，:engine ChatMLComposer 多轮交替模板，标注语法退役。已实施，flutter test 1444 全绿 + ChatMLComposerTest 4 例全绿。

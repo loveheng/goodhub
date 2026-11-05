@@ -26,6 +26,8 @@ object SessionTicketWire {
         putInt(SessionTicket.KEY_STATUS, status.ordinal)
         putString(SessionTicket.KEY_MODEL_ID, modelId)
         putString(SessionTicket.KEY_RUNTIME, runtime)
+        putString(SessionTicket.KEY_RUNTIME_DETAIL, runtimeDetail)
+        putString(SessionTicket.KEY_LOAD_ERROR, loadError)
         putLong(SessionTicket.KEY_ISSUED_AT, issuedAtMs)
     }
 
@@ -41,6 +43,8 @@ object SessionTicketWire {
             status = status,
             modelId = b.getString(SessionTicket.KEY_MODEL_ID) ?: "",
             runtime = b.getString(SessionTicket.KEY_RUNTIME) ?: "",
+            runtimeDetail = b.getString(SessionTicket.KEY_RUNTIME_DETAIL) ?: "",
+            loadError = b.getString(SessionTicket.KEY_LOAD_ERROR) ?: "",
             issuedAtMs = b.getLong(SessionTicket.KEY_ISSUED_AT),
         )
     }

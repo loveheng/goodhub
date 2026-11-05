@@ -8,6 +8,7 @@ import 'package:goodhub/llm/on_device_admission_probe.dart';
 import 'package:goodhub/llm/on_device_asset_manager.dart';
 import 'package:goodhub/llm/on_device_dispatch_profile.dart';
 import 'package:goodhub/llm/on_device_model_catalog.dart';
+import 'package:goodhub/llm/on_device_user_demand.dart';
 
 /// 准入探针编排回归钉（DispatchProfile 设计稿 §4 执行协议）。
 /// 覆盖：HEALTHY / 零产出 / 硬超时 / 生成异常 / 装载失败 / 门禁跳过 /
@@ -43,11 +44,13 @@ void main() {
     Stream<String> Function(String, {required int maxTokens})? onGenerate,
     Future<String?> Function()? onObservedRuntime,
     Future<DeviceProbe?> Function()? onDeviceProbe,
+    Future<void> Function()? onUnload,
+    bool Function()? isEngineBusy,
     Duration hardTimeout = const Duration(milliseconds: 200),
   }) {
     return AdmissionProbe(
       onLoad: onLoad ?? ((_, _) async => true),
-      onUnload: () async {},
+      onUnload: onUnload ?? () async {},
       onGenerate: onGenerate ??
           (_, {required maxTokens}) =>
               Stream.fromIterable(const ['Hel', 'lo']),
@@ -55,6 +58,7 @@ void main() {
           onObservedRuntime ?? (() async => 'litertlm-npu'),
       onDeviceProbe: onDeviceProbe ?? () async => null,
       assetManager: mgr(),
+      isEngineBusy: isEngineBusy,
       hardTimeout: hardTimeout,
       now: () => DateTime.fromMillisecondsSinceEpoch(1793571499687),
     );
@@ -192,5 +196,61 @@ void main() {
     ).probe(model());
     expect(p!.backends['NPU']!.verdict, BackendVerdict.healthy);
     expect(p.backends['GPU']!.reason, BackendReason.timeout);
+  });
+
+  group('让位状态机（timeout-signaling W1-2：用户需求代次）', () {
+    setUp(() {
+      onDeviceUserDemandGen.value = 0; // 全局代次复位，用例间隔离
+    });
+
+    test('引擎装载链在途（isEngineBusy=true）→ load 前止步', () async {
+      var loaded = false;
+      final p = await probe(
+        onLoad: (_, _) async {
+          loaded = true;
+          return true;
+        },
+        isEngineBusy: () => true,
+      ).probeIfNeeded(model());
+      expect(p, isNull);
+      expect(loaded, isFalse, reason: '用户请求占用装载链时探针须止步');
+    });
+
+    test('装载被用户请求打断（代次变化 + load 失败）→ 不记 EXCLUDED', () async {
+      final m = mgr();
+      final p = await probe(
+        onLoad: (_, _) async {
+          touchOnDeviceUserDemand(); // 用户 enable 进入 → 代次递增
+          return false; // 探针装载被引擎代次作废打断
+        },
+      ).probe(model());
+      expect(p, isNull);
+      final recorded = await m.readDispatchProfile(model());
+      expect(recorded, isNull, reason: '打断 ≠ 模型坏，禁记 EXCLUDED');
+    });
+
+    test('微基准期间用户请求进入 → 丢弃画像且跳过 unload（转正）', () async {
+      var unloaded = false;
+      final p = await probe(
+        onGenerate: (_, {required maxTokens}) async* {
+          yield 'Hel';
+          touchOnDeviceUserDemand(); // 用户请求在探针生成流中途进入
+          yield 'lo';
+        },
+        onUnload: () async => unloaded = true,
+      ).probe(model());
+      expect(p, isNull, reason: '被打断的微基准结果不可信');
+      expect(unloaded, isFalse, reason: '用户接管时禁驱逐已载模型（转正）');
+    });
+
+    test('无用户请求 → 正常探针 + 探针后驱逐照旧（回归钉）', () async {
+      var unloaded = false;
+      final p = await probe(
+        onUnload: () async => unloaded = true,
+      ).probe(model());
+      expect(p, isNotNull);
+      expect(p!.backends['NPU']!.verdict, BackendVerdict.healthy);
+      expect(unloaded, isTrue, reason: '无让位时 §4.5 探针后驱逐照旧');
+    });
   });
 }

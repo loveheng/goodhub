@@ -24,7 +24,10 @@ enum EngineDeathCause {
   /// 驱动 / SDK 崩溃（硬故障——计入熔断 countable 面语义归属）。
   hardCrash,
 
-  /// 运行期外部终止（FLAG_READY 后死亡，按环境再判）。
+  /// 运行期外部终止（FLAG_READY 后死亡，按环境再判）。含**有意自杀冷重载**
+  ///（cold-reload-restart 契约 2026-11-05：killProcess 无崩溃栈 → 归此，
+  /// 与 hardCrash 天然分离——真机三轮实证 12:09 lmkSigkill / 12:17
+  /// runtimeTerminated / 12:21 hardCrash 各归其位）。
   runtimeTerminated,
 
   /// 无墓碑（冷启动窗口死亡 / flag 已清 / 墓碑面不可用）——非快死。

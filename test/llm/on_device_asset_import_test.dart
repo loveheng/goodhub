@@ -78,12 +78,17 @@ void main() {
     expect(dir, isNull);
   });
 
-  test('合法 GGUF 头 → 拒（GGUF 通道首发关闸，2026-11-01 三闸）', () async {
+  test('合法 GGUF 头 → 收（runtime=llamaCpp；2026-11-01 关闸已按裁决放开，'
+      '仅保留魔数硬拒与三闸结构）', () async {
     final gguf = File('${tmp.path}/model.gguf');
     await gguf.writeAsBytes(
         [0x47, 0x47, 0x55, 0x46, ...List.filled(60, 0)]); // "GGUF" + padding
     final dir = await mgr.importFromPickedFiles([gguf.path], target: target);
-    expect(dir, isNull);
+    expect(dir, isNotNull);
+    final meta =
+        jsonDecode(await File('${dir!.path}/.asset-meta.json').readAsString())
+            as Map<String, dynamic>;
+    expect(meta['runtime'], OnDeviceRuntime.llamaCpp);
   });
 
   test('.litertlm 资产 → 收（runtime=litertlm，family=litertlm）', () async {

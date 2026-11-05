@@ -7,6 +7,7 @@ import android.util.Log
 import com.zzh.goodhub.engine.GenieXRuntime
 import com.zzh.goodhub.engine.MemoryGuardEvaluator
 import com.zzh.goodhub.engine.NpuCircuitBreaker
+import com.zzh.goodhub.engine.NpuFitStore
 import com.geniex.sdk.GenieXSdk
 import com.geniex.sdk.LlmWrapper
 import com.geniex.sdk.bean.ComputeUnitValue
@@ -87,6 +88,28 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
     @Volatile override var activeRuntime: String = GenieXSdk.PLUGIN_ID_QAIRT
         private set
 
+    /// 运行环境实况明细（票据透出，2026-11-05 用户裁决——资源中心列模型运行
+    /// 环境有助发现系统误判）：`runtime/计算单元[|unfit=原因]|sdk=版本`。
+    /// 负记忆 reason 只在 GGUF + llama_cpp 通路有意义（NpuFitStore 归因面）。
+    override val runtimeDetail: String
+        get() {
+            val unit = when (activeComputeUnit) {
+                ComputeUnitValue.NPU -> "NPU"
+                ComputeUnitValue.GPU -> "GPU"
+                ComputeUnitValue.CPU -> "CPU"
+                else -> null
+            }
+            val unfit = loadedModelDir?.let {
+                NpuFitStore.reason(context, it, activeSdkVersion)
+            }
+            return buildString {
+                append(activeRuntime)
+                unit?.let { append('/').append(it) }
+                unfit?.let { append("|unfit=").append(it) }
+                activeSdkVersion?.let { append("|sdk=").append(it) }
+            }
+        }
+
     /** 上轮 query 的真实生成 token 数（Completed profile；-1=不可用）。 */
     @Volatile private var lastGeneratedTokens: Int = -1
 
@@ -117,6 +140,14 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
     /// meta 单源）。null = meta 无块 / 解析失败，消费点按既有内建口径走。
     @Volatile var modelProfile: com.zzh.goodhub.engine.ModelProfile? = null
         private set
+
+    /// GGUF × llama.cpp NPU 负记忆消费面（2026-11-05，NpuFitStore doc）：
+    /// [loadedModelDir] = 当前模型目录（留痕落点）；[activeComputeUnit] =
+    /// 本会话 GGUF 通路实际选用的计算单元（NPU 时 query 收尾才做失配归因）；
+    /// [activeSdkVersion] = 会话创建时的 SDK 版本（留痕键，升版失效）。
+    @Volatile private var loadedModelDir: File? = null
+    @Volatile private var activeComputeUnit: ComputeUnitValue? = null
+    @Volatile private var activeSdkVersion: String? = null
 
     // ---- SDK 初始化（进程级一次）----
 
@@ -180,6 +211,7 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
         try {
             if (ready) return
             loadError = null
+            activeComputeUnit = null
             // 声明式解析元数据（2026-11-02）：装载期从自有 modelDir 读取，
             // 每次装载刷新（换模型即换 profile）。缺失/解析失败 = null 不阻断。
             modelProfile = com.zzh.goodhub.engine.ModelProfile.read(modelDir)
@@ -242,11 +274,18 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
             //   660 时报误导性 "Model loading failed"（实为 App uid 无读，
             //   mmap 失败），非 tokenizer 问题。
             val buildGguf = { unit: ComputeUnitValue ->
+                // 窗口规格（通用实现纪律，2026-11-04 真机实证）：纯 GGUF 的
+                // contextTokens 来自资产 .asset-meta.json（规格表回填链），
+                // 在场才收敛 llama_cpp n_ctx——缺位 = 0 = 模型默认，262144 级
+                // 大窗 GGUF 会按声明满窗分配 KV → 装载中 LMK 处决（Ace 6 两次
+                // 复现，availMem 5.3GB 仍死 = 分配峰值非系统余量问题）。
+                val ggufConfig = modelProfile?.contextTokens?.takeIf { it > 0 }
+                    ?.let { ModelConfig(nCtx = it, nGpuLayers = 0) } ?: config
                 LlmCreateInput(
                     model_path = ggufFiles.first().absolutePath,
                     tokenizer_path = if (tokenizerPath.isFile) tokenizerPath.absolutePath
                                     else ggufFiles.first().absolutePath,
-                    config = config,
+                    config = ggufConfig,
                     runtime_id = GenieXSdk.PLUGIN_ID_LLAMA_CPP,
                     compute_unit = unit.value,
                 )
@@ -270,9 +309,45 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
                 active = GenieXSdk.PLUGIN_ID_QAIRT
                 result = buildSession(buildInput(GenieXSdk.PLUGIN_ID_QAIRT, ComputeUnitValue.NPU))
             } else {
-                Log.i(TAG, "pure GGUF asset → llama_cpp GPU (no genie_config)")
+                // GGUF 计算单元首选 NPU（hexagon 后端，2026-11-05 用户裁决 +
+                // 同日真机 [Fact]）：**高通完整框架（增配运行库）在场才支持
+                // GGUF 的 NPU 档**；失败分两类——模型自身原因（DSP skel 在场
+                // 而 create 失败 / 零产出 / TTFT stall）→ NpuFitStore 落盘
+                // 留痕，后续装载跳 NPU 直 GPU 避免重试；系统/环境原因（skel
+                // 缺席 = 增配清单缺文件等）→ 只回退 GPU 不留痕。0.10.0 实测
+                // hexagon 劣于 GPU（Qwen3.5-2B：5.5 vs 9 tok/s，长上下文
+                // stall）——留痕机制让 GPU-first 车道在留痕后成为实际主路，
+                // 升版自动重评（留痕键 = SdkVersion）。
                 active = GenieXSdk.PLUGIN_ID_LLAMA_CPP
-                result = buildSession(buildGguf(ComputeUnitValue.GPU))
+                loadedModelDir = dir
+                val sdkVer: String? = runCatching {
+                    GenieXSdk.getInstance().getSdkVersion()
+                }.getOrNull()
+                activeSdkVersion = sdkVer
+                activeComputeUnit = ComputeUnitValue.GPU
+                if (sdkVer != null && NpuFitStore.isUnfit(context, dir, sdkVer)) {
+                    Log.i(TAG, "npu-unfit hit (sdk=$sdkVer) → skip NPU, GPU direct")
+                    result = buildSession(buildGguf(ComputeUnitValue.GPU))
+                } else {
+                    result = buildSession(buildGguf(ComputeUnitValue.NPU))
+                    result.fold(
+                        onSuccess = {
+                            activeComputeUnit = ComputeUnitValue.NPU
+                            Log.i(TAG, "llama_cpp NPU session created (compute_unit=HTP0)")
+                        },
+                        onFailure = { e ->
+                            if (NpuFitStore.htpSkelPresent(context, arch)) {
+                                // skel 在场而 create 失败 = 模型自身原因 → 留痕
+                                NpuFitStore.mark(context, dir, sdkVer, arch,
+                                    "llama_cpp_npu_create_failed:${e.javaClass.simpleName}")
+                            } else {
+                                Log.i(TAG, "llama_cpp NPU build failed w/o DSP skel " +
+                                    "(增配清单缺文件=系统原因) → GPU fallback, 不留痕")
+                            }
+                            result = buildSession(buildGguf(ComputeUnitValue.GPU))
+                        },
+                    )
+                }
             }
             activeRuntime = active
             result.fold(
@@ -554,6 +629,23 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
                     is LlmStreamResult.Error -> {
                         lastStreamError = result.throwable
                         Log.w(TAG, "[DEGRADE] genie stream error: ${result.throwable}")
+                    }
+                }
+            }
+        }
+        // GGUF × NPU 失配归因收尾（2026-11-05，NpuFitStore doc）：模型自身
+        // 原因（零产出 / TTFT stall）→ 落盘留痕，下次装载跳 NPU 直 GPU；
+        // abort/用户打断不算（非模型缺陷）。
+        if (activeComputeUnit == ComputeUnitValue.NPU && !abortRequested) {
+            loadedModelDir?.let { dir ->
+                val arch = GenieXRuntime.hexagonArch()
+                if (lastGeneratedTokens == 0) {
+                    NpuFitStore.mark(context, dir, activeSdkVersion, arch, "llama_cpp_npu_zero_output")
+                } else if (firstTokenAt != 0L) {
+                    val ttft = firstTokenAt - queryStart
+                    if (NpuFitStore.ttftStall(ttft)) {
+                        NpuFitStore.mark(context, dir, activeSdkVersion, arch,
+                            "llama_cpp_npu_ttft_stall:${ttft}ms")
                     }
                 }
             }

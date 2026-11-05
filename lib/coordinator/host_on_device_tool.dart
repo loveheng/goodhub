@@ -145,8 +145,14 @@ class HostOnDeviceToolExecutor implements ToolExecutor {
         }
       : const <String, Object?>{};
 
+  /// [callerKeyOverride] = S07b 平台侧已解析的调用方包名（内核 UID 推导，
+  /// Binder 反向路径传入）：优先于实例 [callerKey]（transport 元数据）——
+  /// 配额记账与死亡打断按内核身份裁决（主体可辨）。缺省 null = 既有行为。
   @override
-  Future<ToolExecutionResult> execute(AssembledToolCall call) async {
+  Future<ToolExecutionResult> execute(
+    AssembledToolCall call, {
+    String? callerKeyOverride,
+  }) async {
     if (call.name != toolName) {
       // 非本工具裸名透传兜底（与 HostStatusToolExecutor 同构：装配链约定）。
       return const ToolExecutionResult(
@@ -201,7 +207,7 @@ class HostOnDeviceToolExecutor implements ToolExecutor {
         // 协作式打断（completeStream 订阅取消 → 透传 cancel(requestId) 让槽）
         // 并作废本次调用（产出即弃，调用方已死不回程）。缺省 null = 不注册
         // （既有装配零行为变化）。
-        final callerKey = this.callerKey;
+        final callerKey = callerKeyOverride ?? this.callerKey;
         if (callerKey == null) {
           final out = await _primitive.complete(
             instruction: instruction,

@@ -4,4 +4,17 @@
          to allow setting breakpoints, to provide hot reload, etc.
     -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- AI 调试 Deep Link：仅 debug 构建合入，release 不具备该入口。
+         goodhub://debug/<page> → MainActivity.getInitialRoute / onNewIntent
+         → /debug/<page> → lib/ui/debug_routes.dart 白名单映射。 -->
+    <application>
+        <activity android:name=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="goodhub" android:host="debug"/>
+            </intent-filter>
+        </activity>
+    </application>
 </manifest>

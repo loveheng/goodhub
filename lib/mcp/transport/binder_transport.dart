@@ -196,6 +196,20 @@ class BinderTransport implements McpTransport {
   /// [answerReverse] 回程。由 [McpClient.binder] 工厂转发到 client 的处理器。
   Future<Map<String, Object?>?> Function(String method, Object? params)? onServerRequest;
 
+  /// Binder 专属反向请求处理器（S07/S07b，携带平台侧已解析调用方身份）：
+  /// 与 [onServerRequest] 二选一接线（本钩子优先）。设置后反向请求走本钩子，
+  /// [ResolvedCallerIdentity] 由平台侧经内核调用方 UID 解析、随事件信封到达
+  /// ——Dart 只接收已解析身份，**请求载荷不承载身份字段**（红线）。
+  ///
+  /// **帧未携带身份（平台侧解析失败）时本钩子不会被调用**：该请求按拒绝处置
+  /// 回 -32001（禁匿名放行——身份缺失若放行，信任白名单与授权矩阵同时失效）。
+  /// 非 Binder 面（HTTP）无内核身份，继续用 [onServerRequest]。
+  Future<Map<String, Object?>?> Function(
+    String method,
+    Object? params,
+    ResolvedCallerIdentity caller,
+  )? onServerRequestWithCaller;
+
   /// 调用方进程死亡通知钩子（W5 调用方进程死亡联动打断，K17，**新增链路**）。
   ///
   /// 触发源 = 平台侧**独立**死亡代理推来的 `onCallerDied` 事件（见
@@ -309,6 +323,9 @@ class BinderTransport implements McpTransport {
 
     final method = msg['method'];
     final id = msg['id'];
+    // S07/S07b：信封携带的平台侧已解析调用方身份（缺失 = 解析失败，仅反向
+    // 请求消费；缺省帧不带此字段 = 解析失败而非「无身份」语义）。
+    final caller = _resolvedCallerOf(event);
     if (method is String && method.isNotEmpty) {
       if (method == 'notifications/progress') {
         // 进度通知：仅喂广播，供在途 sendStream 的 callWithProgress 收侧兑现。
@@ -317,7 +334,7 @@ class BinderTransport implements McpTransport {
       }
       if (id != null) {
         // 反向请求（server→client，带 id）：处理并经 answerReverse 回程（§5 闭环）。
-        _handleReverseRequest(method, id, msg['params']);
+        _handleReverseRequest(method, id, msg['params'], caller);
         return;
       }
       // 其他 server 主动通知帧（非 progress / 非反向请求、且无 id）：经
@@ -334,25 +351,57 @@ class BinderTransport implements McpTransport {
     }
   }
 
+  /// 解析原生事件信封携带的调用方身份（S07/S07b）：Kotlin 侧经内核调用方
+  /// UID 解析成功才附 `caller` 字段——缺失/形状异常 = 解析失败（返回 null，
+  /// 反向请求按拒绝处置，禁兜底伪造）。
+  static ResolvedCallerIdentity? _resolvedCallerOf(dynamic event) {
+    final raw = event['caller'];
+    if (raw is! Map) return null;
+    final pkg = raw['packageName'];
+    final sha = raw['signatureSha256'];
+    if (pkg is! String || pkg.isEmpty || sha is! String) return null;
+    return ResolvedCallerIdentity(packageName: pkg, signatureSha256: sha);
+  }
+
   Future<void> _handleReverseRequest(
     String method,
     Object id,
     Object? params,
+    ResolvedCallerIdentity? caller,
   ) async {
-    final handler = onServerRequest;
-    // 单点构造反向响应帧（final 单一赋值，规避 multi-assign 红线）：未启用处理器 →
-    // -32601；否则处理器结果 → result，McpRpcException → error(code/message/data)，
-    // 其他异常 → -32603（与 McpClient._answerServerRequest 对齐）。
-    final frame = handler == null
-        ? <String, Object?>{
-            'jsonrpc': '2.0',
-            'id': id,
-            'error': <String, Object?>{
-              'code': -32601,
-              'message': '宿主未启用反向请求处理: $method',
-            },
-          }
-        : await _reverseFrame(handler, method, id, params);
+    final withCaller = onServerRequestWithCaller;
+    // 单点构造反向响应帧（final 单一赋值，规避 multi-assign 红线）：
+    // - 携带身份的钩子已接线 → 身份缺失（平台侧解析失败）= 拒绝 -32001（S07b
+    //   红线：禁匿名放行——身份缺失若放行，信任白名单与授权矩阵同时失效），
+    //   处理器不被调用；有身份 → 处理器消费已解析身份；
+    // - 否则既有处理器 → 结果 result / McpRpcException → error / 其他 → -32603；
+    // - 未启用任何处理器 → -32601（与 McpClient._answerServerRequest 对齐）。
+    final Map<String, Object?> frame;
+    if (withCaller != null) {
+      frame = caller == null
+          ? <String, Object?>{
+              'jsonrpc': '2.0',
+              'id': id,
+              'error': <String, Object?>{
+                'code': -32001,
+                'message': '调用方身份解析失败（平台侧内核 UID 无包名/签名），按拒绝处置',
+              },
+            }
+          : await _reverseFrame(
+              () => withCaller(method, params, caller), id);
+    } else {
+      final handler = onServerRequest;
+      frame = handler == null
+          ? <String, Object?>{
+              'jsonrpc': '2.0',
+              'id': id,
+              'error': <String, Object?>{
+                'code': -32601,
+                'message': '宿主未启用反向请求处理: $method',
+              },
+            }
+          : await _reverseFrame(() => handler(method, params), id);
+    }
     // 经 answerReverse（oneway）把响应回插件，插件按 id 关联原请求。
     _channel
         .invokeMethod<void>('answerReverse', <String, Object>{
@@ -363,14 +412,13 @@ class BinderTransport implements McpTransport {
   }
 
   /// 构造反向请求响应帧：与 [McpClient._answerServerRequest] 同语义。
+  /// [action] = 实际处理器调用（result / McpRpcException / 其他异常三态）。
   static Future<Map<String, Object?>> _reverseFrame(
-    Future<Map<String, Object?>?> Function(String, Object?) handler,
-    String method,
+    Future<Map<String, Object?>?> Function() action,
     Object id,
-    Object? params,
   ) async {
     try {
-      final result = await handler(method, params);
+      final result = await action();
       return <String, Object?>{
         'jsonrpc': '2.0',
         'id': id,
@@ -575,4 +623,36 @@ class BinderTransport implements McpTransport {
         .invokeMethod<void>('close', <String, Object>{'transportId': transportId})
         .ignore();
   }
+}
+
+/// 平台侧已解析的调用方身份（S07/S07b）：宿主作服务端接受同机 App 反向调用时，
+/// Kotlin 侧经 Binder 内核调用方 UID 解析包名 + 签名指纹（`CallerIdentityResolver`
+/// 单源），随事件信封的 `caller` 字段下发——Dart 侧只接收已解析结果。
+///
+/// 红线：**请求载荷不承载身份字段**（载荷自声明即允许冒充任意包名，使信任
+/// 白名单与授权矩阵同时失效）；本类型只能由 [_onNativeEvent] 从信封解析构造，
+/// 禁从请求 params 或 transport 元数据伪造。
+class ResolvedCallerIdentity {
+  const ResolvedCallerIdentity({
+    required this.packageName,
+    required this.signatureSha256,
+  });
+
+  /// 调用方包名（内核 `getPackagesForUid` 推导，物理主键）。
+  final String packageName;
+
+  /// 调用方签名证书 SHA-256 十六进制串（与信任白名单 PluginTrustGate 同口径）。
+  final String signatureSha256;
+
+  @override
+  String toString() => 'ResolvedCallerIdentity($packageName)';
+
+  @override
+  bool operator ==(Object other) =>
+      other is ResolvedCallerIdentity &&
+      other.packageName == packageName &&
+      other.signatureSha256 == signatureSha256;
+
+  @override
+  int get hashCode => Object.hash(packageName, signatureSha256);
 }
