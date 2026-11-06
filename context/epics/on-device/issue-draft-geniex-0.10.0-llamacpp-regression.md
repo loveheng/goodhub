@@ -1,7 +1,8 @@
-# Upstream Issue — geniex-android / Qualcomm GenieX (submission-ready)
+# Upstream Issue — geniex-android / Qualcomm GenieX (submission-ready, 2026-11-06 修正版)
 
-> 状态：提交就绪（2026-11-06）。目标 = https://github.com/qualcomm/GenieX/issues
-> 数据来源：goodhub on-device epic 2026-11-05/06 真机对照 + 版本二分（devlog 同日条目），全部为引擎上报 ProfilingData。
+> 状态：提交就绪（2026-11-06 归因修正版——初稿的「版本退化」定性已被 ngl 对照实验推翻）。
+> 目标 = https://github.com/qualcomm/GenieX/issues
+> 数据来源：goodhub on-device epic 2026-11-05/06 真机对照 + 版本二分 + ngl 变量隔离（devlog 同日条目），全部为引擎上报 ProfilingData。
 > 提交方式：无 GitHub 写权限凭据，由用户在上方 URL 粘贴「Title」+「Body」两段提交。
 
 ---
@@ -9,72 +10,61 @@
 ## Title（复制到 issue 标题栏）
 
 ```
-[llama_cpp / NPU+GPU] SM8750: decode 26.6 → 1.26 tok/s (21x) regression between v0.3.5 and v0.8.0, persists through v0.10.0 — and below the v0.8.0 figure reported in #1584
+[llama_cpp / Android SM8750] n_gpu_layers=0 on NPU silently runs every layer on CPU (despite HTP session opening), and that CPU-fallback decode path regressed 26.6 → 1.26 tok/s between v0.3.5 and v0.10.0
 ```
 
 ## Body（复制到 issue 正文）
 
 ### Environment
 
-- **Device:** OnePlus Ace 6 — Snapdragon 8 Elite, **SM8750**, Hexagon v79 (CDSP domain 3), ColorOS / Android 15
-- **SDK:** `com.qualcomm.qti:geniex-android` — bisected across **v0.3.5 / v0.8.0 / v0.9.3 / v0.10.0** (latest on Maven Central, 2026-10-29)
-- **Model:** Qwen3.5-2B Q4_0 GGUF (single identical file across every run), `runtime_id = llama_cpp`
-- **Params:** prompt ≈ 247 tokens, maxTokens = 128, n_ctx = 4096, n_gpu_layers = 0, nThreads = 0
-- **Harness:** ai-hub-apps `geniex_chat` sample `BenchActivity` (`LlmWrapper` + `generateStreamFlow`); identical Kotlin across versions, only the AAR dependency is changed between runs
-- **Compute unit verified on-HW via logcat:** `compute_unit = HTP0`, `libggml-htp-v79.so` loaded from the APK via adsprpc (cdsp session established). The NPU numbers are genuine HTP execution, not a CPU fallback.
+- **Device:** OnePlus Ace 6 — Snapdragon 8 Elite, SM8750, Hexagon v79 (CDSP domain 3), ColorOS / Android 15
+- **SDK:** `com.qualcomm.qti:geniex-android` — v0.3.5 / v0.8.0 / v0.9.3 / v0.10.0 (latest on Maven Central)
+- **Model:** Qwen3.5-2B Q4_0 GGUF (identical file in every run), `runtime_id = llama_cpp`
+- **Params:** prompt ≈ 247 tokens, maxTokens = 128, n_ctx = 4096, nThreads = 0
+- **Harness:** ai-hub-apps `geniex_chat` sample `BenchActivity` (`LlmWrapper` + `generateStreamFlow`); identical Kotlin across runs, only the AAR version and `n_gpu_layers` vary
 
-### Summary
+### Summary — two findings
 
-On SM8750 the `llama_cpp` backend decode throughput collapses from ~26.6 tok/s (v0.3.5) to ~1.26 tok/s (v0.10.0) — a **21× regression** — for the same GGUF, prompt, and calling code. Bisection: v0.8.0 = 6.20, v0.9.3 = 2.28, v0.10.0 = 1.26 tok/s (NPU); GPU OpenCL 29.6 → 1.47 tok/s. So the regression is **introduced between v0.3.5 and v0.8.0** and persists, roughly unchanged, through v0.10.0. Both compute units regress; prefill regresses ~9× as well.
+**1. `n_gpu_layers = 0` with `compute_unit = HTP0` silently runs every layer on CPU.** The HTP session still opens (`remote_handle64_open ... libggml-htp-v79.so ... domain 3 (cdsp)` appears in logcat), so downstream code cannot tell from logs that NPU is not actually used. This matches the behavior documented in `notes/run.md` for Windows; on Android it is just as easy to hit and just as invisible.
+
+**2. That CPU-fallback path regressed ~21× between v0.3.5 and v0.10.0** (decode 26.6 → 1.26 tok/s, prefill 534 → 60 tok/s, same device / model / prompt). With the correct `n_gpu_layers = -1`, the HTP path on v0.10.0 is **healthy and faster than v0.3.5** (33.1 vs 29.4 tok/s decode, prefill 590 → 2000 tok/s, TTFT 419 → 125 ms). So this is not a report that v0.10.0 is broken — the HTP path improved — but the CPU fallback became dramatically slower, and the silent fallback makes it easy to mistake for a broken NPU.
 
 ### Measurements (engine-reported ProfilingData; same device / model / prompt / n_ctx=4096)
 
-| Harness | AAR | Compute unit | TTFT | Prefill | Decode |
+| AAR | n_gpu_layers | Compute path | TTFT | Prefill | Decode |
 |---|---|---|---|---|---|
-| sample app | v0.3.5 | NPU (HTP0) | 463 ms | 534 tok/s | **26.6 tok/s** |
-| sample app | v0.3.5 | GPU (OpenCL) | 1510 ms | 164 tok/s | **29.6 tok/s** |
-| sample app | **v0.8.0** | NPU (HTP0) | 4019 ms | 61.5 tok/s | **6.20 tok/s** |
-| sample app | **v0.9.3** | NPU (HTP0) | 9619 ms | 25.7 tok/s | **2.28 tok/s** |
-| sample app | **v0.9.3** | GPU (OpenCL) | 4529 ms | 54.6 tok/s | **1.47 tok/s** |
-| sample app | **v0.10.0** | NPU (HTP0) | 4119 ms | 60 tok/s | **1.26 tok/s** |
-| sample app | **v0.10.0** | GPU (OpenCL) | 4330 ms | 57 tok/s | **3.16 tok/s** |
-| production app (tuned LlmCreateInput) | v0.10.0 | NPU (HTP0) | 4554 ms | ~54 tok/s | 5.65 tok/s |
-| production app (tuned LlmCreateInput) | v0.10.0 | GPU (OpenCL) | 5393 ms | ~55 tok/s | 5.77 tok/s |
-| Qualcomm AI Hub published (8 Elite) | — | NPU | — | 593 tok/s | 22.6 tok/s |
+| v0.3.5 | 0 | **CPU fallback** (HTP session open) | 463 ms | 534 tok/s | 26.6 tok/s |
+| v0.8.0 | 0 | CPU fallback | 4019 ms | 61.5 tok/s | 6.20 tok/s |
+| v0.9.3 | 0 | CPU fallback | 9619 ms | 25.7 tok/s | 2.28 tok/s |
+| v0.10.0 | 0 | CPU fallback | 4119 ms | 60 tok/s | **1.26 tok/s** |
+| v0.3.5 | **-1** | HTP0 | 419 ms | 590 tok/s | 29.4 tok/s |
+| v0.10.0 | **-1** | HTP0 | **125 ms** | **2000 tok/s** | **33.1 tok/s** |
 
-Decode worst case: NPU 26.6 → 1.26 tok/s (21×, at v0.10.0); GPU 29.6 → 1.47 tok/s (20×, at v0.9.3). Prefill ~9× on both units.
+CPU-fallback decode: 26.6 → 6.20 → 2.28 → 1.26 tok/s across v0.3.5 → v0.8.0 → v0.9.3 → v0.10.0. The regression window (v0.3.5 → v0.8.0) overlaps PRs #1367 (thread-count default fix) and #1376 (GGML_OPENMP=OFF, HTP worker pinning) — possibly related to how the CPU fallback schedules threads now.
 
-### Variables excluded (measured, not assumed)
+### Why this matters
 
-- **AAR self-contained:** v0.10.0 ships the full native set (QNN + `libggml-{cpu,opencl,hexagon}` + `libggml-htp-v{73,75,79,81,85}.so`); install docs require nothing beyond the AAR. No separate runtime package is missing.
-- **HTP actually engaged:** logcat shows `compute_unit = HTP0` + successful adsprpc load of `libggml-htp-v79.so` during the 1.26 tok/s run — not a silent CPU fallback.
-- **n_ctx:** re-ran 4096 vs 8192 — halving the context window does not recover speed.
-- **Plugin layout (cf. #1507):** every run below opens the HTP session and emits valid tokens, so the flattened-layout failure mode from #1507 is **not** the cause here.
-- **App-side config:** reproduces in the untouched sample harness, so downstream app configuration is not the variable.
-
-### Related / prior art
-
-- **#1584** reports v0.8.0 `llama_cpp` on the **same SoC (SM8750, Z Fold 7)** at **15.59 tok/s decode for Qwen3.5-4B Q4_0** (author rebuilt only `libgeniex_plugin_llama_cpp.so`). Our v0.8.0 figure is **6.20 tok/s for a smaller 2B model** — i.e. well below a reported 4B number. Before concluding a pure version regression I want to rule out a harness/model/config artifact on my side.
-- **#1507:** `-100201` can also be a plugin-layout issue; noted as excluded above.
+- Our production app passed `n_gpu_layers = 0` (copying the sample's default) and got 5.65 tok/s for months; a one-line change to `-1` gives 33 tok/s (6×). The only observable difference from the app's perspective was speed — nothing in the logs or errors distinguishes "NPU session open but running on CPU" from real offload.
+- On the CPU-fallback path, v0.10.0 at 1.26 tok/s is unusably slow even as a fallback — below CPU-only llama.cpp on a phone flagship by a wide margin.
 
 ### Reproduction
 
-1. Build the `geniex_chat_android` sample from `qualcomm/ai-hub-apps`, pin `com.qualcomm.qti:geniex-android:0.3.5`, run a 2B-class GGUF on any 8 Elite (SM8750) device with `compute_unit = npu` and `gpu` — record decode speed (baseline ≈ 26–29 tok/s).
-2. Change only the dependency to `v0.8.0` / `v0.9.3` / `v0.10.0`, adapting for the API breaks (`model_name` removed from `LlmCreateInput`; `enable_thinking`/`verbose` removed from `ModelConfig`; `generateStreamFlow` signature), and re-run unchanged otherwise.
-3. Observe decode drop to ~1–6 tok/s and prefill to ~25–60 tok/s.
+1. Build the `geniex_chat_android` sample, pin `v0.10.0`, load any 2B-class GGUF with `runtime_id = llama_cpp`, `compute_unit = npu`, and **`n_gpu_layers = 0`**. Observe: HTP session opens in logcat, generation succeeds — at ~1.3 tok/s decode.
+2. Re-run with `n_gpu_layers = -1`: ~33 tok/s.
+3. Repeat step 1 with `v0.3.5`: same silent CPU fallback, but ~26.6 tok/s.
 
 ### Expected
 
-v0.10.0 should match or exceed the AI Hub published figure for the same SoC (≈ 22.6 tok/s decode / ≈ 593 tok/s prefill), which v0.3.5 already approaches on-device.
+1. `n_gpu_layers = 0` with an NPU compute unit should either warn loudly (or fail fast) instead of silently falling back — the open HTP session makes the fallback look like real offload.
+2. The CPU fallback itself should not have regressed 21× across versions; v0.3.5's fallback (26.6 tok/s) shows the hardware is capable of it.
 
 ### Questions
 
-1. Is this a known `llama_cpp` backend regression between v0.3.5 and v0.8.0 (kernel scheduling, quantized-matmul path, or HTP skel change)?
-2. Is there a configuration knob on v0.10.0 (sampler/session flags, `ModelConfig` fields) known to restore v0.3.5-level performance?
-3. Given #1584's higher numbers on the same SoC — is our harness missing a fast-path flag? What exact `geniex-bench` invocation / device config produced 15.59 tok/s for 4B on SM8750, so we can align our harness?
-4. If confirmed a regression, is a v0.10.x / v0.11 patch release planned?
+1. Is `n_gpu_layers = 0` → full-CPU-on-NPU-device the intended semantic, or should it fall back to `-1` / refuse?
+2. Could the CPU-fallback regression (26.6 → 1.26 tok/s across v0.3.5 → v0.10.0) be related to the thread-handling changes in the v0.3.5 → v0.8.0 window (#1367, #1376)? Strict HTP worker pinning / OpenMP interplay?
+3. Is a config knob available on v0.10.0 to restore v0.3.5-level CPU-fallback performance?
 
 ### Attachments (available on request)
 
-- Per-run logcat: `[extract] compute_unit = HTP0`, adsprpc skel-load lines, and `PROFILE ttft/promptTime/decodeTime/prefillSpeed/decodingSpeed` for all eight runs.
-- GGUF sha256 + the sample-app `build.gradle` dependency diff across versions.
+- Per-run logcat: adsprpc `remote_handle64_open ... libggml-htp-v79.so ... domain 3` lines (session open during CPU-fallback runs), `PROFILE ttft/promptTime/decodeTime/prefillSpeed/decodingSpeed` for all six runs.
+- GGUF sha256 + the sample-app `build.gradle` dependency diff.

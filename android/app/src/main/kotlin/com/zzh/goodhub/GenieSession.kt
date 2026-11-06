@@ -257,6 +257,14 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
             // 期固定，非零值被拒绝——显式置 0。thinking 关闭移至 applyChatTemplate
             // 的 enableThinking 参数（0.10 起模板层承载，ModelConfig 不再有该字段）。
             val config = ModelConfig(nCtx = 0, nGpuLayers = 0)
+            // llama_cpp（纯 GGUF）n_gpu_layers=-1 = 全层卸载到指定计算单元。
+            // ngl=0 是静默 CPU 兜底（上游 notes/run.md：HTP session 照常打开
+            // 但全层落 CPU，日志不可见）——2026-11-05 判定的「9~21× 版本退化」
+            // 实为该兜底路径跨版本劣化，生产 5.65 tok/s 亦同因（2026-11-06 真机
+            // [Fact]：ngl=-1 后 0.10.0 NPU 33.1 / GPU 31.7 tok/s，且快于 0.3.5
+            // 的 29.4/29.6；ngl=0 档 0.3.5=26.6/29.6 → 0.10.0=1.26/3.16）。
+            // qairt 路径仍用上面的 config（nCtx/nGpuLayers 编译期固定，非零被拒）。
+            val ggufConfigBase = ModelConfig(nCtx = 0, nGpuLayers = -1)
             val buildInput = { runtimeId: String, unit: ComputeUnitValue ->
                 LlmCreateInput(
                     model_path = configPath.absolutePath,
@@ -280,7 +288,7 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
                 // 大窗 GGUF 会按声明满窗分配 KV → 装载中 LMK 处决（Ace 6 两次
                 // 复现，availMem 5.3GB 仍死 = 分配峰值非系统余量问题）。
                 val ggufConfig = modelProfile?.contextTokens?.takeIf { it > 0 }
-                    ?.let { ModelConfig(nCtx = it, nGpuLayers = 0) } ?: config
+                    ?.let { ModelConfig(nCtx = it, nGpuLayers = -1) } ?: ggufConfigBase
                 LlmCreateInput(
                     model_path = ggufFiles.first().absolutePath,
                     tokenizer_path = if (tokenizerPath.isFile) tokenizerPath.absolutePath
@@ -314,10 +322,12 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
                 // GGUF 的 NPU 档**；失败分两类——模型自身原因（DSP skel 在场
                 // 而 create 失败 / 零产出 / TTFT stall）→ NpuFitStore 落盘
                 // 留痕，后续装载跳 NPU 直 GPU 避免重试；系统/环境原因（skel
-                // 缺席 = 增配清单缺文件等）→ 只回退 GPU 不留痕。0.10.0 实测
-                // hexagon 劣于 GPU（Qwen3.5-2B：5.5 vs 9 tok/s，长上下文
-                // stall）——留痕机制让 GPU-first 车道在留痕后成为实际主路，
-                // 升版自动重评（留痕键 = SdkVersion）。
+                // 缺席 = 增配清单缺文件等）→ 只回退 GPU 不留痕。
+                // ⚠ 2026-11-06 [Fact] 更正：旧记「0.10.0 实测 hexagon 劣于 GPU
+                // （5.5 vs 9 tok/s，长上下文 stall）」是 ngl=0 静默 CPU 兜底下
+                // 的误测（见 ggufConfigBase 注）——ngl=-1 真卸载后 0.10.0 同机
+                // NPU 33.1 vs GPU 31.7 tok/s，NPU-first 阶梯成立；升版自动重评
+                // （留痕键 = SdkVersion）机制不变。
                 active = GenieXSdk.PLUGIN_ID_LLAMA_CPP
                 loadedModelDir = dir
                 val sdkVer: String? = runCatching {
