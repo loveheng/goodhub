@@ -171,7 +171,7 @@ void main() {
     await tapVisible(tester, find.byKey(const Key('nodes-probe-all')));
     await settleIo(tester);
 
-    expect(find.textContaining('⚠ 待授权(403)'), findsNWidgets(2));
+    expect(find.textContaining('⚠ 服务拒绝了访问'), findsNWidgets(2));
   });
 
   testWidgets('离线 → 非待授权口径（错误态不冒充鉴权被拒）', (tester) async {

@@ -80,6 +80,8 @@ class SessionContextSheetBody extends StatelessWidget {
     this.bindLocked = false,
     this.planArmed = false,
     this.onTogglePlanArmed,
+    this.modelSummary,
+    this.onOpenModelPicker,
   });
 
   final ConsoleTokens t;
@@ -106,6 +108,12 @@ class SessionContextSheetBody extends StatelessWidget {
 
   /// 跳转资源中心管理页（导入/改名/删除/外部打开）；null = 不渲染该项。
   final VoidCallback? onManageResources;
+
+  /// 模型选择入口（2026-11-07 输入行瘦身：从独立钮收编进本菜单；null =
+  /// 不渲染该项）。[modelSummary] = 当前来源/模型短名（可发现性补偿——
+  /// 菜单项副标题常显「云端引擎 · xx」/「优先端侧 · xx」/「自动」）。
+  final String? modelSummary;
+  final VoidCallback? onOpenModelPicker;
 
   /// P1-8（承 A5）：运行中**只锁会话绑定**——它会改写会话 slot、扰动在途 Run
   /// 的装配语义。true = 绑定项置灰 + 说明行；「查看」与「挂载资源/管理资源」
@@ -270,6 +278,27 @@ class SessionContextSheetBody extends StatelessWidget {
                 onTap: () {
                   Navigator.pop(context);
                   onManageResources?.call();
+                },
+              ),
+            ],
+            // —— 组 3.5：推理来源/模型选择（输入行瘦身收编，2026-11-07）——
+            if (onOpenModelPicker != null) ...[
+              const Divider(height: 16),
+              const _GroupHeader(
+                title: '推理引擎',
+                hint: '端侧 / 云端来源与模型切换 · 即时生效',
+              ),
+              ListTile(
+                key: const ValueKey('menu-model-picker'),
+                leading: const Icon(Icons.memory),
+                title: const Text('模型与推理来源…'),
+                subtitle: Text(
+                  modelSummary ?? '自动（云端优先）',
+                  style: TextStyle(fontSize: Fsz.note, color: t.terminalMuted),
+                ),
+                onTap: () {
+                  Navigator.pop(context);
+                  onOpenModelPicker?.call();
                 },
               ),
             ],

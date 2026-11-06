@@ -26,6 +26,7 @@ import '../app/task_consume_bootstrap.dart';
 import '../coordinator/agent_loop.dart';
 import '../coordinator/conversation_archive.dart';
 import '../coordinator/chat_session_service.dart';
+import '../coordinator/on_device_admin.dart';
 
 import '../coordinator/chat_run_orchestrator.dart';
 import '../coordinator/mcp_runtime.dart';
@@ -48,6 +49,7 @@ import '../sandbox/conversation_store.dart';
 import 'components/call_card.dart';
 import 'components/cross_source_consent_card.dart';
 import 'components/conversation_drawer.dart';
+import 'components/model_picker_sheet.dart';
 import '../core/notice_category.dart';
 import 'components/dual_track_stream.dart';
 import 'components/session_context_sheet.dart';
@@ -172,6 +174,18 @@ class _ChatPageState extends State<ChatPage>
   TrackThinking? _activeThinkingEntry;
   StuckWatcher? _watcher;
 
+  /// 模型入口入口态（2026-11-06：端侧/云端在对话界面选择）——路由每次 send
+  /// 实时读持久化值，此处只存展示数据；写入走 [_openModelPicker] 回调。
+  bool _preferOnDevice = false;
+  List<({String dirName, String displayName})> _pickerDeviceModels = const [];
+  String? _selectedDeviceDir;
+  List<({String id, String name, String model})> _pickerCloudEngines = const [];
+  String? _preferredCloudId;
+
+  /// 模型切换主动驱逐中（B+ 2026-11-07）：抑制装载态监听的「空闲回收」
+  /// 误报——驱逐由切换回调自报准确口径。
+  bool _modelSwitchEvicting = false;
+
   @override
   void initState() {
     super.initState();
@@ -196,6 +210,7 @@ class _ChatPageState extends State<ChatPage>
     unawaited(_loadConfig());
     unawaited(_initConversations());
     unawaited(_loadEndpoints());
+    unawaited(_refreshModelEntry()); // 模型选择入口首帧数据（纯展示态）
   }
 
   @override
@@ -285,9 +300,13 @@ class _ChatPageState extends State<ChatPage>
     // ready → unloaded = 空闲驱逐/释放（TTL 3~5min 是常态）——不提示会让用户
     // 以为端侧「悄悄没了」；loading → failed = 装载终态失败（错误卡之外补
     // 一句去向，避免「端侧消失了且不知为何」）。
+    // 模型切换主动驱逐（B+ 2026-11-07）时跳过本通告——切换回调自报更准确的
+    // 口径，「空闲回收」字样会误导（非空闲，是主动让位）。
     if (prev == OnDeviceLoadState.ready &&
         state == OnDeviceLoadState.unloaded) {
-      _showTransientNotice('端侧模型已释放（空闲回收）——下次提问自动重载', false);
+      if (!_modelSwitchEvicting) {
+        _showTransientNotice('端侧模型已释放（空闲回收）——下次提问自动重载', false);
+      }
     } else if (prev == OnDeviceLoadState.loading &&
         state == OnDeviceLoadState.failed) {
       _showTransientNotice('端侧暂不可用，本轮请求已按需转云端（详情见错误卡）', true);
@@ -339,6 +358,9 @@ class _ChatPageState extends State<ChatPage>
       trackJson: TrackEntryCodec.encode(
         _status.flushedTracks.where((e) => e is! TrackGuide).toList(),
       ),
+      // 草稿随所属会话存取（UX 修复 2026-11-06）：空串 = 清草稿（用户
+      // 清空输入/发送后草稿归零），切会话不串台。
+      draft: _inputCtrl.text,
     );
     if (!ok) _add(TrackNote('⚠ 会话快照保存失败（见日志）', danger: true, category: TrackNoticeCategory.fact));
   }
@@ -350,6 +372,7 @@ class _ChatPageState extends State<ChatPage>
       trackJson: TrackEntryCodec.encode(
         _status.flushedTracks.where((e) => e is! TrackGuide).toList(),
       ),
+      draft: _inputCtrl.text,
     );
   }
 
@@ -372,10 +395,12 @@ class _ChatPageState extends State<ChatPage>
 
   Future<void> _newConversation() async {
     if (!_guardRunning('新建会话')) return;
-    await _persistIfAny();
+    await _persistIfAny(); // 当前会话草稿随其快照存档
     if (!mounted) return;
     Navigator.pop(context); // 关抽屉
     _resetSessionState();
+    // UX 修复 2026-11-06：新会话 = 干净输入——旧草稿已归档给原会话，不带入。
+    if (_inputCtrl.text.isNotEmpty) _inputCtrl.clear();
   }
 
   Future<void> _loadConversation(ConversationMeta meta) async {
@@ -387,12 +412,20 @@ class _ChatPageState extends State<ChatPage>
       _toast('⚠ 会话「${meta.title}」文件损坏，无法恢复');
       return;
     }
-    await _persistIfAny(); // 保当前会话再切换
+    await _persistIfAny(); // 保当前会话（含草稿）再切换
     if (!mounted) return;
     Navigator.pop(context);
     _resetSessionState();
     await _sessionSvc.adoptSnapshot(snap); // 内核态恢复（id/title/绑定/transcript）
     _status.addEntries(TrackEntryCodec.decode(snap.track)); // 轨道卡解码在 UI 层
+    // UX 修复 2026-11-06：草稿随会话恢复——切回会话找回未发送内容；
+    // 无草稿则清空（防上一会话的输入串台）。
+    final draft = snap.draft ?? '';
+    if (_inputCtrl.text != draft) {
+      _inputCtrl.text = draft;
+      _inputCtrl.selection =
+          TextSelection.collapsed(offset: draft.length);
+    }
     // MO6 阶段一：切换会话 → 网关投影同步宿主当前激活私有域（PC 只读镜像）。
     syncGatewayActivePrivate(_session.activePrivateServerId);
     _pinToBottom();
@@ -421,9 +454,13 @@ class _ChatPageState extends State<ChatPage>
       ),
     );
     if (confirmed != true) return;
-    await _sessionSvc.delete(meta.id);
+    final ok = await _sessionSvc.delete(meta.id);
     if (_sessionSvc.archive?.currentId == meta.id) _resetSessionState();
     if (mounted) setState(() {}); // 侧边栏列表随服务刷新
+    if (!ok) {
+      // 删除失败必须可见：否则确认框承诺「不可恢复」而会话刷新后复活。
+      _showTransientNotice('删除失败：会话文件可能被占用，请稍后重试', true);
+    }
   }
 
   void _add(TrackEntry entry) {
@@ -593,6 +630,10 @@ class _ChatPageState extends State<ChatPage>
     _status.pinToBottom();
   }
 
+  /// 撤销 bar 在场标志（盘点 2026-11-06 #6）：资源收集撤销窗口不可被后续
+  /// toast 的 clearSnackBars 掐断——在场期间 _toast 跳过清栈（排队展示）。
+  bool _undoSnackBarActive = false;
+
   /// 轻量反馈（SnackBar）：运行中共用守卫——给原因而非静默禁用。
   ///
   /// B5（page-beautify P3）：token 化 + 时长 2→4s——原默认 SnackBar
@@ -602,7 +643,7 @@ class _ChatPageState extends State<ChatPage>
     if (!mounted) return;
     final t = consoleTokens(context);
     final messenger = ScaffoldMessenger.of(context);
-    messenger.clearSnackBars();
+    if (!_undoSnackBarActive) messenger.clearSnackBars();
     messenger.showSnackBar(
       SnackBar(
         content: Text(msg),
@@ -797,12 +838,155 @@ class _ChatPageState extends State<ChatPage>
             // 空态无独立附件行，靠本菜单发现（消「功能堆砌」的物理痕迹）。
             onPickResource: _pickResource,
             onManageResources: _openResourceCenter,
+            // 模型选择入口（2026-11-07 输入行瘦身）：收编进「+」统一挂载
+            // 菜单；副标题常显当前来源/模型短名补可发现性。
+            modelSummary: _modelSummary(),
+            onOpenModelPicker: _openModelPicker,
             planArmed: _runOrchestrator.planState.armed,
             onTogglePlanArmed: () =>
                 _togglePlanArmed(refreshSheet: () => setSheet(() {})),
           ),
         ),
       ),
+    );
+  }
+
+  /// 模型入口副标题（可发现性补偿）：当前来源 + 模型短名。
+  String _modelSummary() {
+    final cloud = _pickerCloudEngines
+        .where((e) => e.id == _preferredCloudId)
+        .map((e) => e.name)
+        .firstWhere((_) => true, orElse: () => '未配置');
+    if (_preferOnDevice) {
+      final device = _pickerDeviceModels
+          .where((m) => m.dirName == _selectedDeviceDir)
+          .map((m) => m.displayName)
+          .firstWhere((_) => true, orElse: () => '未选择模型');
+      return '优先端侧 · $device';
+    }
+    return '自动（云端优先）· $cloud';
+  }
+
+  /// 模型选择入口数据刷新（纯展示态；路由每次 send 实时读持久化值，此处
+  /// 只负责 sheet 与入口按钮的呈现）。
+  Future<void> _refreshModelEntry() async {
+    try {
+      final gate = await OnDeviceAdmin.readGateOverride();
+      final installed = await OnDeviceAdmin.assets.listInstalled();
+      final selected = await OnDeviceAdmin.readSelectedModel();
+      final profiles = await byokStore().load();
+      final preferredId = await byokStore().preferredProfileId();
+      if (!mounted) return;
+      setState(() {
+        _preferOnDevice = gate.preferOnDevice;
+        _pickerDeviceModels = [
+          for (final m in installed) (dirName: m.dirName, displayName: m.displayName),
+        ];
+        _selectedDeviceDir = selected?.dirName;
+        _pickerCloudEngines = [
+          for (final p in profiles) (id: p.id, name: p.name, model: p.model),
+        ];
+        _preferredCloudId = preferredId ??
+            (profiles.isNotEmpty ? profiles.first.id : null);
+      });
+    } catch (e) {
+      // 入口数据拉取失败不影响对话主流程（DEGRADE 留痕；sheet 打开时重拉）。
+      debugPrint('[DEGRADE] chat model-picker data: $e');
+    }
+  }
+
+  /// 打开模型选择 sheet（端侧/云端 + 路由来源）。选中即写持久化并 toast——
+  /// 生效时机差异必须可见：端侧模型切换后引擎若驻留旧模型，下次提问冷装载。
+  Future<void> _openModelPicker() async {
+    await _refreshModelEntry(); // 打开前重拉，避免陈旧列表
+    if (!mounted) return;
+    await showModelPickerSheet(
+      context,
+      data: ModelPickerData(
+        preferOnDevice: _preferOnDevice,
+        deviceModels: _pickerDeviceModels,
+        selectedDeviceDir: _selectedDeviceDir,
+        cloudEngines: _pickerCloudEngines,
+        preferredCloudId: _preferredCloudId,
+      ),
+      onSourceChanged: (prefer) async {
+        await OnDeviceAdmin.writePreferOnDevice(prefer);
+        await _refreshModelEntry();
+        _toast(prefer ? '已设为优先端侧' : '已恢复自动（云端优先）');
+      },
+      onDeviceModelSelected: (dirName) async {
+        // B+（2026-11-07 用户裁决）：确认即切换语义——重型操作显式授权。
+        if (!_guardRunning('切换端侧模型')) return;
+        if (dirName == _selectedDeviceDir) {
+          _toast('已是当前端侧模型');
+          return;
+        }
+        final name = _pickerDeviceModels
+            .firstWhere((m) => m.dirName == dirName,
+                orElse: () => (dirName: dirName, displayName: dirName))
+            .displayName;
+        // 确认卡：明示驱逐代价（旧驻留 ~1.9GB 释放）与装载时机——默认懒
+        // 装载（轻量），「立即装载」为显式授权的重操作选项。
+        final choice = await showDialog<String>(
+          context: context,
+          builder: (dialogCtx) => AlertDialog(
+            title: const Text('切换端侧模型'),
+            content: Text(
+                '将释放当前驻留模型并切换至「$name」。\n\n'
+                '默认在下次提问时自动装载（约数秒）；也可立即装载（重型：'
+                '冷启动 + 装载，期间勿发送消息）。'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogCtx),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(dialogCtx, 'lazy'),
+                child: const Text('下次提问装载'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogCtx, 'now'),
+                child: const Text('立即装载'),
+              ),
+            ],
+          ),
+        );
+        if (choice == null || !mounted) return; // 取消
+        await OnDeviceAdmin.selectModel(dirName);
+        // 主动驱逐旧驻留（B+ 核心）：旧模型不再占 ~1.9GB 内存、不再被继续
+        // 使用——「切换没生效」的最痛误解在此消除。disable 幂等且会作废
+        // 在途装载（_loadGen++），安全。
+        if (onDeviceEngine.loadState.value != OnDeviceLoadState.unloaded) {
+          _modelSwitchEvicting = true; // 抑制监听的「空闲回收」误报
+          try {
+            await onDeviceEngine.disable();
+          } finally {
+            _modelSwitchEvicting = false;
+          }
+        }
+        await _refreshModelEntry();
+        if (!mounted) return;
+        if (choice == 'now') {
+          // 显式授权的重型预装载：后台执行不挡 UI，进度走既有装载 pill /
+          // 阶段文案链（loading 态监听已在）；完成/失败各给一条回执。
+          final option = OnDeviceModelOption.fromInstalled(dirName);
+          _toast('正在装载「$name」…');
+          unawaited(onDeviceEngine.enable(model: option).then((_) {
+            if (mounted) _toast('✓ 「$name」已装载，端侧就绪');
+          }).catchError((Object e) {
+            if (mounted) {
+              _toast('⚠ 「$name」装载失败：$e（下次提问会自动重试）');
+            }
+          }));
+        } else {
+          _toast('已切换至「$name」，首次提问自动装载');
+        }
+      },
+      onCloudEngineSelected: (id) async {
+        await byokStore().setPreferredProfileId(id);
+        await _refreshModelEntry();
+        _toast('云端引擎已切换，下次发送生效');
+      },
     );
   }
 
@@ -838,21 +1022,26 @@ class _ChatPageState extends State<ChatPage>
   /// 收集明示 + 撤销通道——复用记忆胶囊「已记录 · 撤销」的既有交互语法
   /// （page-beautify B2 先例），不新造反馈模式。
   void _flashCollected(String id, String name) {
+    // 撤销窗口 4→8s + 在场期间 toast 不清栈（盘点 #6）：错过窗口即需去
+    // 资源中心手动删，撤销通道要给足时间且不被后续反馈掐断。
+    _undoSnackBarActive = true;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
         SnackBar(
           content: Text('已收入资源中心：$name'),
-          duration: const Duration(seconds: 4),
+          duration: const Duration(seconds: 8),
           action: SnackBarAction(
             label: '撤销',
             onPressed: () {
-              setState(() => _pendingResources.removeWhere((r) => r.id == id));
+              _undoSnackBarActive = false;
+              setState(() =>
+                  _pendingResources.removeWhere((r) => r.id == id));
               unawaited(undoResourceCollect(id));
             },
           ),
         ),
-      );
+      ).closed.then((_) => _undoSnackBarActive = false);
   }
 
   /// M4-T3 发送（D11 多轮）：上轮 transcript 作 history 续接；一次一个 Run。
@@ -1237,6 +1426,10 @@ class _ChatPageState extends State<ChatPage>
         progressNote: '已中止（在途调用结果仍会回填）',
       );
     }
+    // 中止终态入轨（盘点 2026-11-06 #7）：纯生成期中止时无在途工具卡，轨道
+    // 该轮戛然而止——用户无法从流里确认「是我按停的」。
+    _add(TrackNote('⊘ 已手动中止本轮任务',
+        danger: false, category: TrackNoticeCategory.fact));
     _setPill('idle', CapsuleTone.idle);
   }
 
@@ -1260,14 +1453,22 @@ class _ChatPageState extends State<ChatPage>
   }
 
   /// 总管模式开关（上下文菜单入口；开启即状态带琥珀提示）。
+  /// 运行守卫（盘点 2026-11-06 #2）：armed 影响写操作确认路径，在途 Run
+  /// 期间切换会扰动其确认语义——与同菜单绑定/清空项同口径。
   void _togglePlanArmed({required void Function() refreshSheet}) {
+    if (!_guardRunning('切换总管模式')) return;
     final state = _runOrchestrator.planState;
     state.armed = !state.armed;
     setState(() {});
     refreshSheet();
-    if (state.armed) {
-      _add(const TrackNote('总管模式已开启：跨插件写操作将先出计划再一次确认', danger: false, category: TrackNoticeCategory.fact));
-    }
+    // 开/关反馈对称（盘点 #11）：关闭此前零反馈，用户无法确认操作生效。
+    _add(TrackNote(
+      state.armed
+          ? '总管模式已开启：跨插件写操作将先出计划再一次确认'
+          : '总管模式已关闭',
+      danger: false,
+      category: TrackNoticeCategory.fact,
+    ));
   }
 
   /// D13 侧边栏（会话维度）：布局体外提 ConversationDrawer（步 4 Epic C），
@@ -1437,6 +1638,17 @@ class _ChatPageState extends State<ChatPage>
                       // 未配置时的可操作引导在轨道内引导卡（ux-hardening P0-1，
                       // _ensureGuide），空态提示只承担已配置用户的首次指引。
                       emptyHint: '下达自然语言任务，宿主调度已挂载服务完成',
+                      // 空态示例任务（盘点 #10）：点击即填输入框，不直接发送
+                      // （用户可改写后再发）。
+                      emptyExamples: const [
+                        '总结一下今天的重要消息',
+                        '帮我查一下天气并安排出行',
+                      ],
+                      onExampleTap: (example) {
+                        _inputCtrl.text = example;
+                        _inputCtrl.selection = TextSelection.collapsed(
+                            offset: example.length);
+                      },
                     ),
                     // B2：唯一悬浮钮出场/退场包 AnimatedSwitcher（180ms 淡入，
                     // ui-design §4.2 紧凑减速；替代原瞬时出现——离底事件应有
@@ -1500,6 +1712,9 @@ class _ChatPageState extends State<ChatPage>
                 onRemoveResource: (id) => setState(
                   () => _pendingResources.removeWhere((r) => r.id == id),
                 ),
+                // 模型入口（方案 B 底栏药丸）：来源短名常显 + 点击弹选择面板。
+                modelSummary: _modelSummary(),
+                onOpenModelPicker: _openModelPicker,
                 // 回车与发送钮统一走本分支（composer 不判 emptiness）：
                 // running 时按钮已变中止键，此处拦下并给 SnackBar；空输入同样
                 // 给一次性反馈（P1-9——桌面端 Enter 曾静默无反应，等同死控件）。
@@ -1553,8 +1768,8 @@ class _OnDeviceStateChip extends StatelessWidget {
       OnDeviceLoadState.unloaded => ('端侧已释放', t.terminalMuted),
     };
     final tooltip = switch (state) {
-      OnDeviceLoadState.ready => '端侧模型已加载，命中端侧路径时本地推理',
-      OnDeviceLoadState.loading => '端侧模型装载/重载中，完成后自动恢复本地推理',
+      OnDeviceLoadState.ready => '端侧模型已加载，命中端侧路径时端侧推理',
+      OnDeviceLoadState.loading => '端侧模型装载/重载中，完成后自动恢复端侧推理',
       OnDeviceLoadState.failed => '端侧装载失败，请求转云端（可在设置页重试）',
       OnDeviceLoadState.unloaded => '端侧权重已释放（空闲回收）——下次提问自动重载',
     };

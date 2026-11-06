@@ -297,7 +297,7 @@ class _MemoryBoardPageState extends State<MemoryBoardPage>
       _flash('条目不存在（可能已被删除）');
     }
     await _reload(_store!);
-    _flash(ok ? '✓ 已更新 ${e.id}' : '⚠ 更新失败');
+    _flash(ok ? '✓ 已更新这条${lessons ? '教训' : '记忆'}' : '⚠ 更新失败');
   }
 
   Future<void> _deleteEntry(MemoryEntry e, {required bool lessons}) async {
@@ -321,9 +321,13 @@ class _MemoryBoardPageState extends State<MemoryBoardPage>
       ),
     );
     if (confirmed != true || _store == null) return;
-    final ok = await _store!.deleteEntry(e.id!, lessons: lessons);
-    await _reload(_store!);
-    _flash(ok ? '✓ 已删除 ${e.id}' : '⚠ 条目不存在');
+    try {
+      final ok = await _store!.deleteEntry(e.id!, lessons: lessons);
+      await _reload(_store!);
+      _flash(ok ? '✓ 已删除这条${lessons ? '教训' : '记忆'}' : '⚠ 条目不存在');
+    } catch (e) {
+      _flash('⚠ 删除失败：写盘未完成，请稍后重试');
+    }
   }
 
   // —— Tab ③：操作审计面（D7 JSONL → 人类可读行；P1-7 补筛选） ——

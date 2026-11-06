@@ -19,6 +19,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/security/flutter_secure_key_value.dart';
 import '../../core/security/secure_key_value.dart';
 import '../../gateway_api/gateway_control.dart';
+import '../error_copy.dart';
 import '../tokens/console_tokens.dart';
 
 /// 网关起服注入位（测试替换 → 不真绑端口）。
@@ -273,7 +274,10 @@ class _GatewaySectionState extends State<GatewaySection>
         await (widget.stopOverride ?? stopGateway)();
       }
     } on Object catch (e) {
-      if (mounted) widget.onFlash('⚠ 网关${value ? '起服' : '停服'}失败: $e');
+      final c = humanizeError(e);
+      if (mounted) {
+        widget.onFlash('⚠ 网关${value ? '起服' : '停服'}失败：${c.title}（${c.advice}）');
+      }
     }
     await _reloadGateway();
   }

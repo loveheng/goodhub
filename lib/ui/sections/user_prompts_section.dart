@@ -134,7 +134,7 @@ class _UserPromptsSectionState extends State<UserPromptsSection>
     }
     // §8.2.4：超限禁用保存已由按钮 onPressed 承守；此处双闸防竞态。
     if (estimateTokens(content.trim()) > kGlobalSkillBudgetTokens) {
-      widget.onFlash('超 $kGlobalSkillBudgetTokens Tokens 常驻预算，注册将被拒绝');
+      widget.onFlash('Prompt 正文超过常驻预算（约 $kGlobalSkillBudgetTokens tokens），请精简后再保存');
       return;
     }
     try {
@@ -164,7 +164,7 @@ class _UserPromptsSectionState extends State<UserPromptsSection>
       return;
     }
     if (estimateTokens(content.trim()) > kGlobalSkillBudgetTokens) {
-      widget.onFlash('超 $kGlobalSkillBudgetTokens Tokens 常驻预算，注册将被拒绝');
+      widget.onFlash('Prompt 正文超过常驻预算（约 $kGlobalSkillBudgetTokens tokens），请精简后再保存');
       return;
     }
     final desc = _entries
@@ -209,9 +209,13 @@ class _UserPromptsSectionState extends State<UserPromptsSection>
       ),
     );
     if (confirmed != true) return;
-    await store.delete(name);
-    await _reload(store);
-    widget.onFlash('✓ 已删除 user/$name');
+    try {
+      await store.delete(name);
+      await _reload(store);
+      widget.onFlash('✓ 已删除 user/$name');
+    } catch (e) {
+      widget.onFlash('⚠ 删除失败：保存未落盘，请稍后重试');
+    }
   }
 
   Future<void> _loadForEdit(String name) async {

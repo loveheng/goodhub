@@ -263,9 +263,11 @@ class OnDeviceAssetManager {
   /// 漂移）时由调用方触发——脏删本地资产（静默、不重试旧产物），下轮
   /// [ensureAssets] 整包重拉。**不计入熔断**（§6.5 口径），本件不触碰
   /// EngineCircuitBreaker。
-  Future<void> markDirty({OnDeviceModelOption? model}) async {
+  /// 返回删除是否成功：false = 删除失败（句柄占用/权限等），调用方须提示
+  /// 用户而非照常报「已删除」。
+  Future<bool> markDirty({OnDeviceModelOption? model}) async {
     final dirName = _dirOf(model);
-    if (dirName == null) return; // 无目标（未选模型）→ no-op
+    if (dirName == null) return true; // 无目标（未选模型）→ no-op，视为成功
     try {
       final support =
           await (supportDirResolver ?? getApplicationSupportDirectory)();
@@ -274,8 +276,10 @@ class OnDeviceAssetManager {
         await _rmdirQuiet(target);
         debugPrint('[on-device] asset marked dirty (removed for re-fetch)');
       }
+      return true;
     } catch (e) {
       debugPrint('[DEGRADE] asset markDirty: $e');
+      return false;
     }
   }
 

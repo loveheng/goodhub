@@ -29,6 +29,7 @@ class _FailingStore extends ConversationStore {
     required List<Map<String, Object?>> track,
     required List<Map<String, Object?>> messages,
     required String? activePrivateServerId,
+    String? draft,
   }) async => throw const FileSystemException('模拟落盘失败');
 }
 

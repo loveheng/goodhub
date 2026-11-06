@@ -90,6 +90,10 @@ class _SettingsPageState extends State<SettingsPage> {
   /// 安全存储升级健康（null = 检查中/未检查；不占加载态，正常态无渲染痕迹）。
   SecureStorageHealth? _secureHealth;
 
+  /// 检查本身失败（插件异常/存储不可达）：无法确认密钥存储健康，按「未知」
+  /// 展示并给重试——不再静默按正常，避免用户在假健康态下录入密钥。
+  bool _secureCheckFailed = false;
+
   @override
   void initState() {
     super.initState();
@@ -102,9 +106,15 @@ class _SettingsPageState extends State<SettingsPage> {
     try {
       final check = widget.secureHealthOverride ?? checkSecureStorageHealth;
       final health = await check();
-      if (mounted) setState(() => _secureHealth = health);
+      if (mounted) {
+        setState(() {
+          _secureHealth = health;
+          _secureCheckFailed = false;
+        });
+      }
     } on Object catch (e) {
-      debugPrint('[DEGRADE] secure-storage-health: 设置页检查失败按正常: $e');
+      debugPrint('[DEGRADE] secure-storage-health: 设置页检查失败按未知展示: $e');
+      if (mounted) setState(() => _secureCheckFailed = true);
     }
   }
 
@@ -143,6 +153,14 @@ class _SettingsPageState extends State<SettingsPage> {
               '应用升级导致安全存储旧密钥不可读：MCP 服务令牌与云端模型密钥需重新录入',
               () => unawaited(_checkSecureHealth()),
               key: const ValueKey('secure-storage-notice'),
+            ),
+            const SizedBox(height: 12),
+          ] else if (_secureCheckFailed) ...[
+            panelErrorRow(
+              consoleTokens(context),
+              '安全存储健康检查失败：无法确认密钥存储状态，若密钥读取持续异常请重新录入',
+              () => unawaited(_checkSecureHealth()),
+              key: const ValueKey('secure-storage-unknown'),
             ),
             const SizedBox(height: 12),
           ],

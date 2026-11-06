@@ -332,6 +332,11 @@ class EngineService : Service() {
         val reason = com.zzh.goodhub.engine.MemoryGuardEvaluator.evaluate(
             baselineAvailMemBytes = warmupBaselineAvailMem,
             currentAvailMemBytes = readAvailMem(),
+            // 地板线仅在冷进程（本进程未装载过）生效（2026-11-07 真机两连击
+            // 实证：常驻 ~2GB 使 availMem ≈930MB 成稳态，生成期/收尾检查点
+            // 每次必击穿 1GB 地板 → 纯 thrash）。暖机常驻态地板职责让位给
+            // TTL 回收 + LMK 兜底；足迹增量线恒生效。
+            floorLineEnforced = !loadedOnce,
         ) ?: return
         lifecycle.onGuardBreached(reason)
     }

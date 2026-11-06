@@ -50,6 +50,7 @@ class ConversationSnapshot {
     required this.track,
     required this.messages,
     required this.activePrivateServerId,
+    this.draft,
   });
 
   final String id;
@@ -65,6 +66,10 @@ class ConversationSnapshot {
   /// 本会话锁定的私有 MCP 服务（v1 会话绑定）：null=未设定（按默认回退）/
   /// ''=显式纯公共 / 否则为 serverId。
   final String? activePrivateServerId;
+
+  /// 输入框未发送草稿（UX 修复 2026-11-06：切会话不丢草稿、不串台——随
+  /// 所属会话存取；null/空 = 无草稿）。旧快照缺省 null。
+  final String? draft;
 }
 
 class ConversationStore {
@@ -115,6 +120,7 @@ class ConversationStore {
     required List<Map<String, Object?>> track,
     required List<Map<String, Object?>> messages,
     required String? activePrivateServerId,
+    String? draft,
   }) async {
     if (id.isEmpty) throw ArgumentError('conversation id 不能为空');
     await dir.create(recursive: true);
@@ -125,6 +131,7 @@ class ConversationStore {
       'track': track,
       'messages': messages,
       'activePrivateServerId': activePrivateServerId,
+      'draft': (draft == null || draft.isEmpty) ? null : draft,
     }));
   }
 
@@ -172,6 +179,7 @@ class ConversationStore {
             if (m is Map) Map<String, Object?>.from(m),
         ],
         activePrivateServerId: data['activePrivateServerId'] as String?,
+        draft: data['draft'] as String?,
       );
     } on Object catch (e) {
       debugPrint('[DEGRADE] conversation-store: 会话损坏无法恢复 $id: $e');
@@ -179,14 +187,18 @@ class ConversationStore {
     }
   }
 
-  /// 删除会话（文件缺失幂等）。
-  Future<void> delete(String id) async {
+  /// 删除会话（文件缺失幂等）。返回删除是否成功：false = 文件删除失败
+  /// （句柄占用/权限等），调用方须提示用户——否则确认框承诺「不可恢复」
+  /// 而会话刷新后复活，构成误导。
+  Future<bool> delete(String id) async {
     final f = _file(id);
     try {
       if (await f.exists()) await f.delete();
+      return true;
     } catch (e) {
-      // DEGRADE: 单文件删除失败不阻断列表刷新（下次删除重试），留痕。
+      // DEGRADE: 单文件删除失败不阻断列表刷新（下次删除重试），留痕并上报。
       debugPrint('[DEGRADE] conversation-store: delete failed $id: $e');
+      return false;
     }
   }
 

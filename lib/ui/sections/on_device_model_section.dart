@@ -126,8 +126,13 @@ class _OnDeviceModelSectionState extends State<OnDeviceModelSection>
       _error = null;
     });
     try {
-      await _assets.markDirty(model: m.toOption());
+      final removed = await _assets.markDirty(model: m.toOption());
       if (!mounted) return;
+      if (!removed) {
+        setState(() => _error =
+            '删除失败：模型文件可能被占用，请关闭相关会话后重试');
+        return;
+      }
       await _refresh();
       if (!mounted) return;
       widget.onFlash?.call('${m.displayName} 已删除');

@@ -67,3 +67,27 @@ last-merge: 2026-10-22
 - [2026-11-06] [验证]: flutter analyze → No issues found；flutter test test/llm → 351 全过（含 data_plane 断言改 breaker 公共面 3 处）；:app:compileDebugKotlin → exit 0（EngineService hex 撤除 + engineExitReason 桥）；docs-lint → 全部通过；F5 复核 = 撤除目标代码残留 0（仅退役注记提及）；dscan → 零静默降级
 - [2026-11-06] [变更]: 真机验证批（手机在位，用户授权开工）：①出包冒烟 = 本轮四批改动上真机，F5 撤除面/性能读数行（设置页 on-device-last-gen-perf 节点实抓命中）/端侧链/gemma 主路全过；②L1 capture 全链路验收六步逐项绿（§11：六步 + 洪泛上限机制在案）；③chaos 断言框架落地：kill/rebind 断言逻辑写入驱动器 + 注入受限实证（非 root 三路全拒：kill -9 SELinux / run-as seapp_context / am kill FGS 豁免）——注入位 = debug action kill_engine（复用 cold-reload-restart 自杀契约）待扩面，严禁假绿如实登记；④per-plugin 开关机制面（面板 18 例 + 网关闸门单测）绿，UI 走查需 PC 侧 tools/list_changed 对账留用户手动；⑤后续注入面 = debug action kill_engine 扩面（新编码，未做）
 - [2026-11-06] [验证]: 真机实测（Ace 6/PLQ110，usb）：构建 BUILD SUCCESSFUL + install Success + 冷启动 logcat 干净（FATAL 0）；F5 撤除面真机日志零命中（breaker-diag/flush hex/worker started 三锚点 grep 0）；端侧生成链健康（Gemma3-1B TTFT 90ms 产出正常）；性能读数行真机渲染 = TTFT 87ms·141.5 tok/s·输入约 30 tok（与 query_on_device 口径一致）；capture §11 六步全绿（state/ui-tree/tap_node/set_text type=EditableText/navigate/logs --since）+ 落盘在位 + CAP_MAX_LINES=50000 上限机制确认
+- [2026-11-06] [变更]: 易误解点修复批（用户裁决 H1-H5+M1+M3+M5）：markDirty/会话删除返回 bool 失败可见化、导入 done 帧改收尾中、安全存储检查失败改未知态、五处删除/重置补 try/catch、9 处裸 $e 走 humanizeError 白话化、403 与更新安装文案人话重排、L2 确认卡超时先示因再关闭
+- [2026-11-06] [验证]: flutter analyze: No issues found
+- [2026-11-06] [变更]: 易误解点修复第二批（用户拍板 M2+L1）：memory_board 更新/删除提示去 mb 内部 ID 改「这条记忆/教训」（对齐 P1-7）；术语口径统一——本地推理/生成→端侧、status_strip 本地×N→本地插件×N、更新页「远程」→「服务端」为 MCP 远程让词（模型=端侧/引擎=云端/MCP=远程·本地插件）
+- [2026-11-06] [变更]: 易误解点修复第三批（低优先 L2-L5）：status_strip failed 态补「详情见下方错误卡」、Prompt 预算文案去「注册将被拒绝」内部腔调、更新串包拒绝人话在前 ID 折详情、准入探针 fail-open 经新增 onFact 通道接 AppLog 留痕
+- [2026-11-06] [变更]: 对话界面模型选择入口（2026-11-06 用户需求）：新增 components/model_picker_sheet.dart（路由来源 自动/优先端侧 + 云端引擎单选 BYOK 生效位 + 端侧模型单选，选中即写持久化即时生效）；chat_composer 输入行加 48dp 模型入口钮（onOpenModelPicker 可空参数）；chat_page 接线 OnDeviceAdmin/ByokStore 读写 + 切换 toast（端侧切换提示下次提问生效）；附 UX 盘点 12 条留待下一轮美化批
+- [2026-11-06] [验证]: flutter analyze: No issues found + arch-guard OK + keepalive 测试 1/1 全绿
+- [2026-11-07] [变更]: 对话界面美化批（UX 盘点 12 条落地）：会话草稿随快照存取（ConversationSnapshot 新增 draft 字段，切会话不丢不串台）；总管模式补运行守卫+开关对称反馈；ContextChip 热区外扩 44dp；附件删除改长按 chip；错误卡堆栈限 3 行可展开；资源撤销窗口 4→8s 且在场期间 toast 不清栈；中止补「已手动中止」轨道终态；模型钮图标改 memory；会话删除改长按（防误触）；空态示例任务 chip 点击填输入框；测试钉同步 3 处（403 文案/故障假件签名）
+- [2026-11-07] [验证]: flutter analyze 0 issue + arch-guard OK + 全量 flutter test -1775 通过（3 处旧钉已对齐修复后复验受影响 31/31 绿）
+- [2026-11-07] [变更]: 输入区重设计方案 B 落地（用户裁决）：药丸内部改双行——TextField 独占全宽 + 底栏动作行（左 [+ 挂载][模型药丸（来源短名常显）] 右 [发送/中止]）；B6 三件式拍板修订留痕；模型入口双入口（底栏药丸 + 挂载菜单「推理引擎」组均保留）；首轮 6 测失败为提示文案平台分支误写死，恢复条件化后全绿
+- [2026-11-07] [验证]: flutter analyze 0 issue + 受影响 UI 测试 23/23 绿 + 真机重装 Success + MainActivity 前台无崩溃
+- [2026-11-07] [变更]: 底栏方案 1 美学精修（用户裁决）：主操作槽实底化 40×36 胶囊（可发送=l1Info 白箭头/中止=danger/空输入=hairline 灰，热区透明 padding 补 44dp）；左簇同形同轴（+ 改 hairline 容器与模型药丸等高 8dp 间距）；模型药丸弹性收缩（Flexible+ellipsis，修窄视口 46px 顶爆 Row——smoke 实证）+ 来源切换 crossfade；测试钉同步 2 处（B3 手势区量法/三态强调位）
+- [2026-11-07] [验证]: flutter analyze 0 issue + 受影响测试 23/23 绿 + 真机重装 Success 前台无崩溃
+- [2026-11-07] [变更]: 底栏 Gemini 对齐精修（用户裁决，附参照截图）：+ 钮去 hairline 容器改裸图标（去双框叠弧贴边感）；模型药丸/主钮全胶囊统一（半径=高一半，Flash 药丸同语言）；底栏行内 6dp 边距离弧不贴边；本轮评估否决直角方案（圆中有方冲突+规范无直角档）
+- [2026-11-07] [变更]: 发送/中止键热区扩至 48×48 满规格（用户反馈有点小；视觉胶囊 40×36 不变，透明 padding 纵向 4→6）
+- [2026-11-07] [验证]: flutter analyze 0 issue + composer 测试 7/7 绿 + 真机重装 Success 前台无崩溃
+- [2026-11-07] [变更]: 发送键视觉升级 52×36 药丸（用户反馈面积要更大更醒目；全胶囊半径 18 不变，热区 60×48 超规格）
+- [2026-11-07] [变更]: + 钮图标上色 l1Info 与模型药丸同色族（用户反馈底栏要有点颜色；不套底防双框贴边复发，主钮实底仍最重）
+- [2026-11-07] [变更]: 端侧模型切换语义 B+ 落地（用户裁决）：picker 确认卡明示驱逐代价与装载时机（取消/下次提问装载/立即装载三选）；确认即驱逐旧驻留（disable 幂等，_loadGen++ 作废在途装载）消除「切换没生效」误解；「立即装载」= 显式授权重型预装载（enable(model:) 后台走既有装载 pill/阶段链，完成/失败回执）；手动驱逐抑制监听「空闲回收」误报（_modelSwitchEvicting 标记）；picker 端侧选择补运行守卫
+- [2026-11-07] [验证]: flutter analyze 0 issue + 受影响 UI 测试 23/23 绿 + 真机重装 Success 前台无崩溃（切换链真机走查交用户）
+- [2026-11-07] [验证]: 真机测试轮: UI 链部分实证（模型药丸弹面板/确认 toast/Gemini 对齐截图 5 张）；切换链未走查成——integration_test 卸载宿主清数据事故，应用已恢复（正式包重装 Success 前台无崩溃），模型资产/会话待用户重新导入；e2e 用例 integration_test/model_switch_e2e_test.dart 留档待有状态安全路径后复用
+- [2026-11-07] [变更]: 端侧模型切换 B+ 链路真机走查完成（adb input 驱动正式包，截图 m0-m12 留档）：①修复真 Bug——picker _OptionRow 回调先于 _pop 执行，回调内 showDialog 入栈后被 _pop 顶掉（确认卡闪现即消失，用户表现为点了没反应）；修复=先关面板再回调（三行选项同修）②链路 A 下次提问装载：确认卡驻留→toast 已切换→选择落盘 ✓ ③链路 B 立即装载：芯片端侧重载中→约 1min 端侧就绪→发送走 Qwen 端侧推理出正文 ✓；附带发现：生成中途 InferenceException 引擎中断（云端引擎未重配无兜底可达，如实报错非谎报，另行观察）
+- [2026-11-07] [验证]: 真机全链截图 m2(确认卡)/m5(链路A toast)/m9(重载中)/mp6(就绪)/m12(端侧推理正文+中断卡)；flutter analyze 0 issue
+- [2026-11-07] [变更]: 端侧输出后自动报错修复（用户报障，真机 logcat 实证）：根因=memory-guard 绝对地板线（1GB）在常驻稳态自锁——Qwen ~2GB 驻留使 availMem 恒 ≈930MB，生成期采样（P2-11）与收尾检查点（slot 已释放）每次必击穿 → mid-generation 驱逐在途流，用户每次长输出必报「引擎中断」；驱逐→重载回到同一 availMem 水平=纯 thrash，与「护栏是兜底不是限制」（2026-10-30 拍板）及 S2 常驻豁免先例冲突。修复=地板线仅在冷进程（loadedOnce=false）生效，暖机常驻态地板职责让位 TTL 回收+LMK 兜底（:engine FGS 前挂）；足迹增量线（6GB）恒生效。单测 3 例补齐（豁免/增量线不豁免/冷进程恢复）
+- [2026-11-07] [验证]: JVM 单测 MemoryGuardEvaluatorTest 全绿 + 真机复测：长输出完整无报错、无 evicted 日志、芯片保持端侧就绪（截图 f2/logcat 无 evict）

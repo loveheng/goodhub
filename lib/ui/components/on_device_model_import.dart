@@ -136,7 +136,9 @@ abstract final class OnDeviceModelImport {
             progress.value =
                 '导入中 $pct%（${p.receivedBytes ~/ 1048576}/${p.totalBytes ~/ 1048576}MB）';
           case 'done':
-            progress.value = '导入完成';
+            // 不在此帧说「完成」：后续仍有选择持久化/准入探针收尾，收尾失败
+            // 会紧跟着报「导入失败」——先成功后失败的自相矛盾时序（P0 修复）。
+            progress.value = '校验通过，收尾中…';
           default:
             progress.value = p.detail ?? '处理中…';
         }
@@ -149,14 +151,17 @@ abstract final class OnDeviceModelImport {
               target: target, onProgress: onProgress);
       if (context.mounted) Navigator.of(context, rootNavigator: true).pop();
       if (dir == null) {
-        onFlash?.call('导入失败（磁盘门禁/文件读取/重名冲突/资产校验），见日志');
+        // 区分失败阶段：压缩包导入可能已部分落盘（孤儿由 ensureAssets 对账
+        // 清理）——提示用户重导即可，但别谎称「失败」到像是毫无进展。
+        onFlash?.call(
+            '导入未完成：磁盘空间不足 / 文件读取失败 / 重名冲突 / 资产校验未通过，请排查后重试');
         return false;
       }
       await OnDeviceAdmin.selectModel(target.dirName);
       return true;
     } catch (e) {
       if (context.mounted) Navigator.of(context, rootNavigator: true).pop();
-      onFlash?.call('导入失败：$e');
+      onFlash?.call('导入失败：$e（若文件较大，可能已部分落盘，重复导入请换名称或先重试一次）');
       return false;
     }
   }

@@ -370,7 +370,7 @@ class _OnDeviceConfigSectionState extends State<OnDeviceConfigSection>
         Expanded(
           child: Text(
             '⚡ 长生成保活：尚未加入电池优化白名单——厂商省电机制可能'
-            '冻结/强杀后台 :engine 进程，中断本地生成',
+            '冻结/强杀后台 :engine 进程，中断端侧生成',
             style: TextStyle(fontSize: Fsz.telemetrySm, color: t.danger),
           ),
         ),

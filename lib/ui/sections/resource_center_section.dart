@@ -23,6 +23,7 @@ import 'package:path_provider/path_provider.dart';
 import '../../app/external_open.dart';
 import '../../app/service_directory.dart';
 import '../../resources/resource_store.dart';
+import '../error_copy.dart';
 import '../tokens/console_tokens.dart';
 
 /// 字节量展示（RC5 占用 / 条目副标题 / picker 共用）。
@@ -325,7 +326,8 @@ class _ResourceCenterSectionState extends State<ResourceCenterSection>
         '⚠ 导入失败：${e.message}${e.hint == null ? '' : '（${e.hint}）'}',
       );
     } on Object catch (e) {
-      widget.onFlash('⚠ 导入失败: $e');
+      final c = humanizeError(e);
+      widget.onFlash('⚠ 导入失败：${c.title}（${c.advice}）');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -397,7 +399,8 @@ class _ResourceCenterSectionState extends State<ResourceCenterSection>
       await _reload();
       widget.onFlash('✓ 已删除：${entry.name}');
     } on Object catch (e) {
-      widget.onFlash('⚠ 删除失败: $e');
+      final c = humanizeError(e);
+      widget.onFlash('⚠ 删除失败：${c.title}（${c.advice}）');
     }
   }
 
@@ -415,7 +418,8 @@ class _ResourceCenterSectionState extends State<ResourceCenterSection>
     } on ResourceStoreException catch (e) {
       widget.onFlash('⚠ 打开失败：${e.message}');
     } on Object catch (e) {
-      widget.onFlash('⚠ 打开失败: $e');
+      final c = humanizeError(e);
+      widget.onFlash('⚠ 打开失败：${c.title}（${c.advice}）');
     }
   }
 

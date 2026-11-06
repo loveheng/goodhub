@@ -62,4 +62,37 @@ class MemoryGuardEvaluatorTest {
         )
         assertTrue(reason != null && reason.contains("availMem-delta"))
     }
+
+    @Test
+    fun `暖机常驻态停用地板线——稳态均衡下不 thrash（2026-11-07 真机实证）`() {
+        // 常驻 ~2GB 把 availMem 压到 956MB（稳态均衡）：floorLineEnforced=false
+        // 时地板线跳过、足迹增量线照判。
+        assertNull(
+            MemoryGuardEvaluator.evaluate(
+                1638L * 1024 * 1024, 819L * 1024 * 1024,
+                floorLineEnforced = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `地板停用不豁免足迹增量线——引擎自身吃内存照判`() {
+        // 持有 6.5GB ≥ 预算：即使地板停用也触发（delta 线不受豁免）。
+        val reason = MemoryGuardEvaluator.evaluate(
+            baselineAvailMemBytes = 8 * gb,
+            currentAvailMemBytes = gb + gb / 2,
+            floorLineEnforced = false,
+        )
+        assertTrue(reason != null && reason.contains("availMem-delta"))
+    }
+
+    @Test
+    fun `冷进程（默认）恢复地板全量判定`() {
+        // 冷进程未装载过：地板线默认生效，触地板即驱逐（系统饥饿防护）。
+        val reason = MemoryGuardEvaluator.evaluate(
+            1638L * 1024 * 1024, 819L * 1024 * 1024,
+            floorLineEnforced = true,
+        )
+        assertTrue(reason != null && reason.contains("floor"))
+    }
 }

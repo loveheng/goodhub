@@ -84,6 +84,8 @@ last-merge: 2026-10-24
 
 ## 待归并（inbox）
 
+- [真机测试] 现象: integration_test 真机跑完后 com.zzh.goodhub 被 pm 卸载、prefs/已装模型资产/会话全部清空（e2e 进程读 prefs=null、listInstalled=[] 即其果） ➔ 根因: flutter test integration_test 的设备适配器在测试结束后 uninstall 宿主调试应用，Android 卸载即清 data——对有本地持久状态的宿主，集成测试是破坏性操作 ➔ 规则: 真机 e2e 立项前必评宿主数据副作用——有状态宿主改用 adb input 驱动已装正式包、或测试壳用独立 applicationId+数据备份恢复；跑完必须重建正式入口重装（有机体残留引用回归钉 test/ui/chat_page_smoke_test.dart 与本条目） (Ref: model-switch-e2e) (Ref: misc)
+
 - [flutter] 现象: 零尺寸节点的替代矩形宽仍为 0（借来的 bounds 照样点不中） | 根因: findAncestorRenderObjectOfType 只返回最近的 RenderBox 祖先，而该祖先自身可能是零尺寸容器（如宽度为 0 的 Column），只查一层即误判无可借 | 处置: 改用 visitAncestorElements 沿祖先链继续上溯找第一个可用矩形；零尺寸一律不返回 0 宽高坐标并标注 boundsSource | 回归: test/ui/debug_ui_tree_test.dart「零尺寸容器借后代矩形并标注 boundsSource」+ 真机首页零尺寸数须为 0 (Ref: misc)
 
 - [flutter] 现象: /debug/action navigate 请求永不返回、navigate widget 测试 10min TimeoutException | 根因: Navigator.pushNamed 返回的 Future 在路由 pop 时才 complete，await 它等于等到页面关闭，而调试动作只关心路由已入栈 | 处置: unawaited(nav.pushNamed<Object?>(route)) 显式丢弃结果 Future，动作立即回结构化 ok | 回归: test/ui/debug_actions_test.dart「navigate 走白名单路由直达目标页」+ 真机 toolbox run debug-bridge --device <SERIAL> navigate logs 须 15s 内返回 (Ref: misc)

@@ -259,13 +259,17 @@ class _NodesSectionState extends State<NodesSection>
       ),
     );
     if (confirmed != true) return;
-    await store.save([
-      for (final e in _endpoints)
-        if (e.id != ep.id) e,
-    ]);
-    await store.setApiKey(ep.id, null);
-    await _reloadEndpoints(store);
-    widget.onFlash('✓ 已删除服务 ${ep.name}');
+    try {
+      await store.save([
+        for (final e in _endpoints)
+          if (e.id != ep.id) e,
+      ]);
+      await store.setApiKey(ep.id, null);
+      await _reloadEndpoints(store);
+      widget.onFlash('✓ 已删除服务 ${ep.name}');
+    } catch (e) {
+      widget.onFlash('⚠ 删除失败：配置或令牌清除未完成，请稍后重试');
+    }
   }
 
   /// 挂载开关（ui-design §3.3 物理开关质感语义）：卸载只摘出连接池
@@ -624,7 +628,7 @@ class _NodesSectionState extends State<NodesSection>
   String _authLabel(ServerEndpoint ep, NodeProbeResult? probe, bool tokenStored) {
     if (probe != null && probe.online) return '已授权';
     if (ep.hasKey && !tokenStored) return '⚠ 令牌需重新录入';
-    if (probe != null && probe.authDenied) return '⚠ 待授权(403)';
+    if (probe != null && probe.authDenied) return '⚠ 服务拒绝了访问（请检查令牌授权）';
     if (probe != null) return '离线';
     return ep.hasKey ? '未探测 · 已存令牌' : '未探测 · 无令牌';
   }

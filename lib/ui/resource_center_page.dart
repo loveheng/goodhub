@@ -33,6 +33,7 @@ import '../coordinator/tool_catalog.dart';
 import '../mcp/default_private_server.dart';
 import '../mcp/local_plugin_discovery.dart';
 import 'components/panel_error_row.dart';
+import 'error_copy.dart';
 import 'sections/byok_section.dart';
 import 'sections/local_plugins_section.dart';
 import 'sections/nodes_section.dart';
@@ -96,7 +97,7 @@ class _ResourceCenterPageState extends State<ResourceCenterPage>
       if (mounted) setState(() => _defaultPrivateId = id);
       _flash('✓ 已设默认私有服务：$label');
     } on Object catch (e) {
-      _flash('⚠ 默认私有服务保存失败: $e');
+      _flash('⚠ 默认私有服务保存失败：${humanizeError(e).title}，请稍后重试');
     }
   }
 
@@ -106,7 +107,7 @@ class _ResourceCenterPageState extends State<ResourceCenterPage>
       if (mounted) setState(() => _defaultPrivateId = '');
       _flash('✓ 已取消默认私有服务（新会话按纯公共/首私有回退）');
     } on Object catch (e) {
-      _flash('⚠ 默认私有服务保存失败: $e');
+      _flash('⚠ 默认私有服务保存失败：${humanizeError(e).title}，请稍后重试');
     }
   }
 

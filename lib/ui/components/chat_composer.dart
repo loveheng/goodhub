@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../tokens/console_tokens.dart';
 import 'status_capsule.dart';
@@ -26,6 +29,8 @@ class ChatComposer extends StatefulWidget {
     this.pendingResources = const [],
     this.onPickResource,
     this.onRemoveResource,
+    this.modelSummary,
+    this.onOpenModelPicker,
   });
 
   final TextEditingController inputCtrl;
@@ -50,6 +55,12 @@ class ChatComposer extends StatefulWidget {
 
   /// 移除附件（仅注销本次会话的附件待发项，严禁触资源库删除）。
   final ValueChanged<String>? onRemoveResource;
+
+  /// 模型入口（2026-11-07 方案 B 输入区双行重设计）：底栏左侧动作行，
+  /// [modelSummary] = 当前来源/模型短名（药丸常显，可发现性优于藏菜单）。
+  /// null 回调 = 不渲染模型药丸。
+  final String? modelSummary;
+  final VoidCallback? onOpenModelPicker;
 
   @override
   State<ChatComposer> createState() => _ChatComposerState();
@@ -239,63 +250,153 @@ class _ChatComposerState extends State<ChatComposer> {
                             ],
                           ),
                         ),
-                        Row(
-                          children: [
-                            // B3（page-beautify P2）：触达区 36→48dp——原 36dp
-                            // 低于 48dp 推荐值，单手盲打误触相邻输入区/发送钮
-                            // 概率高；视觉不变（图标 24 居中，仅热区外扩）。
-                            IconButton(
-                              icon: const Icon(Icons.add),
-                              tooltip: '会话上下文（绑定 MCP 服务）',
-                              onPressed: onOpenMenu,
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(
-                                  minWidth: 48, minHeight: 48),
-                            ),
-                            // [SSOT 修正] 回退 B6：输入行不再嵌入上下文胶囊
-                            // （信息在上方状态带），保持「+ + 文本 + 发送」。
-                            Expanded(
-                              child: TextField(
-                                controller: inputCtrl,
-                                focusNode: _focusNode,
-                                // 运行中保持可预输入（发送由按钮/_guard 挡 running）。
-                                minLines: 1,
-                                maxLines: 4,
-                                // B1：见 build 头部注释——移动 Enter=换行 /
-                                // 桌面 Enter=发送（onSubmitted 仅桌面 send
-                                // 动作触发；移动 newline 由平台直接插入）。
-                                textInputAction: mobileEnterInsertsNewline
-                                    ? TextInputAction.newline
-                                    : TextInputAction.send,
-                                decoration: InputDecoration(
-                                  hintText: running
-                                      ? '生成中…可先预输入下一轮'
-                                      : (mobileEnterInsertsNewline
-                                          ? '描述任务…（Enter 换行；如：列出今天的待办）'
-                                          : '描述任务…（Enter 发送；如：列出今天的待办）'),
-                                  border: InputBorder.none,
-                                  contentPadding:
-                                      const EdgeInsets.fromLTRB(14, 12, 6, 12),
+                        // —— 方案 B（2026-11-07 用户裁决）输入区双行重设计：——
+                        // 上行 = TextField 独占全宽（原左右两枚 48dp 动作钮
+                        // 吃掉约 120dp 横向面积）；下行 = 底栏动作行：左
+                        // [+ 挂载] [模型药丸（来源短名常显）]，右 [发送/中止]。
+                        // [SSOT 修正] B6「+ + 文本 + 发送」三件式随之修订——
+                        // 其本意（药丸不因新增能力占行）经方案 B 评审保留：
+                        // 动作聚一行、文本不与之混排，且模型短名属有效状态
+                        // 信息（菜单入口同步保留，双入口不冲突）。
+                        TextField(
+                          controller: inputCtrl,
+                          focusNode: _focusNode,
+                          // 运行中保持可预输入（发送由按钮/_guard 挡 running）。
+                          minLines: 1,
+                          maxLines: 4,
+                          // B1：移动 Enter=换行 / 桌面 Enter=发送（onSubmitted
+                          // 仅桌面 send 动作触发；移动 newline 由平台直接插入）。
+                          textInputAction: mobileEnterInsertsNewline
+                              ? TextInputAction.newline
+                              : TextInputAction.send,
+                          decoration: InputDecoration(
+                            hintText: running
+                                ? '生成中…可先预输入下一轮'
+                                : (mobileEnterInsertsNewline
+                                    ? '描述任务…（Enter 换行；如：列出今天的待办）'
+                                    : '描述任务…（Enter 发送；如：列出今天的待办）'),
+                            border: InputBorder.none,
+                            contentPadding:
+                                const EdgeInsets.fromLTRB(14, 12, 14, 6),
+                          ),
+                          onSubmitted: (_) => onSend(),
+                        ),
+                        // 底栏动作行（Gemini 对齐精修 2026-11-07）：左簇去
+                        // 容器（裸图标，去双框叠弧的贴边感）；模型药丸/主钮
+                        // 全胶囊统一（半径=高一半）；行内 10dp 边距离弧不贴边。
+                        Padding(
+                          padding:
+                              const EdgeInsets.fromLTRB(6, 4, 6, 4),
+                          child: Row(
+                            children: [
+                              // 左簇①：「+」裸图标（Gemini 同款）——去 hairline
+                              // 容器；热区 48×44（透明 padding 补足红线）。
+                              GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onTap: onOpenMenu,
+                                child: Tooltip(
+                                  message: '会话上下文（绑定 MCP 服务）',
+                                  child: SizedBox(
+                                    width: 48,
+                                    height: 44,
+                                    // 图标 l1Info：与模型药丸同色族（2026-11-07
+                                    // 用户反馈底栏要有点颜色）——不套底，避免
+                                    // 复发双框贴边；主钮实底仍是最重一档。
+                                    child: Icon(Icons.add,
+                                        size: 22, color: t.l1Info),
+                                  ),
                                 ),
-                                onSubmitted: (_) => onSend(),
                               ),
-                            ),
-                            const SizedBox(width: 4),
-                            // §3.1（2026-10-18 二次修订，用户拍板）：主操作槽
-                            // 与左端「+」对称——无独立容器，图标融入药丸
-                            //（同 48×48 热区）。三态只换图标与颜色：
-                            // 空输入=terminalMuted（不可发送）、有输入=l1Info
-                            //（可发送）、运行=danger（中止）。色彩 180ms 紧凑
-                            // 过渡确认相位（作废 P1-4 Crimson 实底高反差拍板）。
-                            IconButton(
-                              tooltip: running ? '中止' : '发送',
-                              icon: _MainActionIcon(abort: running, ready: _hasText),
-                              onPressed: running ? onAbort : onSend,
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(
-                                  minWidth: 48, minHeight: 48),
-                            ),
-                          ],
+                              const SizedBox(width: 2),
+                              // 左簇②：模型入口药丸——icon + 来源短名常显，
+                              // 长名 maxWidth 140 + ellipsis 防顶穿 Spacer。
+                              if (widget.onOpenModelPicker != null)
+                                // 弹性占位：窄视口下药丸随父宽收缩（140 只是
+                                // 上限），防长名顶爆底栏 Row（smoke 测试实证）。
+                                Flexible(
+                                  child: GestureDetector(
+                                  key: const ValueKey('composer-model-picker'),
+                                  behavior: HitTestBehavior.opaque,
+                                  onTap: () {
+                                    unawaited(HapticFeedback.selectionClick());
+                                    widget.onOpenModelPicker!();
+                                  },
+                                  child: Tooltip(
+                                    message: '切换模型（端侧 / 云端）',
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                          vertical: 4),
+                                      child: Container(
+                                      height: 36,
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 12),
+                                      decoration: BoxDecoration(
+                                        // 全胶囊（半径=高一半）：与外框同形状
+                                        // 语言，Material chip 语义（Gemini
+                                        // Flash 药丸同款）。
+                                        borderRadius:
+                                            BorderRadius.circular(18),
+                                        border:
+                                            Border.all(color: t.hairline),
+                                        color: t.l1Info.withValues(alpha: 0.14),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(Icons.memory,
+                                              size: 14, color: t.l1Info),
+                                          const SizedBox(width: 4),
+                                          // 来源切换 crossfade（180ms 紧凑
+                                          // 减速，同 §4.2 相位过渡口径）；
+                                          // 文本随父宽收缩 + ellipsis。
+                                          Flexible(
+                                            child: AnimatedSwitcher(
+                                            duration: t.fastDuration,
+                                            child: Text(
+                                              widget.modelSummary ?? '模型',
+                                              key: ValueKey(
+                                                  widget.modelSummary),
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(
+                                                fontFamily: t.monoFamily,
+                                                fontSize: Fsz.micro,
+                                                color: t.l1Info,
+                                              ),
+                                            ),
+                                          ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              ),
+                              const Spacer(),
+                              // 主操作槽（方案 1 实底化）：全屏最常用单一动
+                              // 作落拇指热区，视觉权重回归——可发送=l1Info
+                              // 实底白箭头、运行=danger 实底、空输入=
+                              // hairline 灰（禁用双通道保留）。视觉 40×36，
+                              // 透明 padding 补足 44dp 热区。
+                              GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onTap: running ? onAbort : onSend,
+                                child: Padding(
+                                  // 热区 48×48 满规格（视觉胶囊 40×36 不变）：
+                                  // 发送/中止是全屏最高频单动作，热区给满
+                                  // §4.4 上限——2026-11-07 用户反馈「有点小」。
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 4, vertical: 6),
+                                  child: Tooltip(
+                                    message: running ? '中止' : '发送',
+                                    child: _MainActionButton(
+                                        abort: running, ready: _hasText),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ],
                     ),
@@ -310,13 +411,13 @@ class _ChatComposerState extends State<ChatComposer> {
   }
 }
 
-/// §3.1（2026-10-18 二次修订）主操作槽图标：无独立容器融入药丸，与「+」
-/// 对称（同 48×48 热区）；三态只换色与图标——空输入=terminalMuted（不可
-/// 发送）、有输入=l1Info（可发送）、运行=danger（中止）。中止↔发送交叉
-/// 缩放淡入（180ms）；空输入⇄可发送仅色过渡（glyph 不变，无缩放脉冲）。
-/// 双通道（§6）：图标形状即第二通道，禁用态另有置灰。
-class _MainActionIcon extends StatelessWidget {
-  const _MainActionIcon({required this.abort, required this.ready});
+/// 主操作槽（方案 1 实底化，2026-11-07）：40×40 圆角胶囊——全屏最常用
+/// 单一动作落拇指热区，视觉权重回归主次层级。三态：
+/// 可发送 = l1Info 实底白箭头 / 运行 = danger 实底 / 空输入 = hairline
+/// 边框灰图标（禁用双通道：形状 + 置灰，§6）。中止↔发送交叉缩放淡入
+/// （180ms）；空输入⇄可发送容器色/glyph 平滑过渡。
+class _MainActionButton extends StatelessWidget {
+  const _MainActionButton({required this.abort, required this.ready});
 
   final bool abort;
   final bool ready;
@@ -324,14 +425,23 @@ class _MainActionIcon extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = consoleTokens(context);
-    final color = abort
-        ? t.danger
-        : (ready ? t.l1Info : t.terminalMuted);
+    final Color bg;
+    final Color fg;
+    if (abort) {
+      bg = t.danger;
+      fg = Colors.white;
+    } else if (ready) {
+      bg = t.l1Info;
+      fg = Colors.white;
+    } else {
+      bg = Colors.transparent;
+      fg = t.terminalMuted;
+    }
     return TweenAnimationBuilder<Color?>(
-      tween: ColorTween(end: color),
+      tween: ColorTween(end: bg),
       duration: t.fastDuration,
       curve: Curves.easeOut,
-      builder: (context, c, _) => AnimatedSwitcher(
+      builder: (context, bgc, _) => AnimatedSwitcher(
         duration: t.fastDuration,
         transitionBuilder: (child, animation) => FadeTransition(
           opacity: animation,
@@ -340,11 +450,25 @@ class _MainActionIcon extends StatelessWidget {
             child: child,
           ),
         ),
-        child: Icon(
-          abort ? Icons.stop : Icons.arrow_upward,
+        child: Container(
           key: ValueKey(abort), // 仅中止↔发送换 glyph 时交叉过渡
-          size: 20,
-          color: c,
+          // 视觉 52×36 药丸（2026-11-07 用户反馈：面积要更大更醒目）——
+          // 主操作槽权重再升一档，宽度给 glyph 左右呼吸。
+          width: 52,
+          height: 36,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            // 全胶囊（半径=高一半）：与模型药丸/外框同形状语言。
+            borderRadius: BorderRadius.circular(18),
+            color: bgc,
+            border: Border.all(
+                color: ready || abort ? (bgc ?? bg) : t.hairline),
+          ),
+          child: Icon(
+            abort ? Icons.stop : Icons.arrow_upward,
+            size: 20,
+            color: fg,
+          ),
         ),
       ),
     );
@@ -390,16 +514,18 @@ class _ResourceChip extends StatelessWidget {
               style: TextStyle(fontSize: Fsz.telemetry, color: fg),
             ),
           ),
-          // 热区 32×32：受 44dp 行高约束，未达 §4.4 的 44 红线——偏差已
-          // 登记（待办：改长按或行内菜单删除，勿再单独提行高）。
-          SizedBox(
-            width: 32,
-            height: 32,
-            child: IconButton(
-              tooltip: '移除附件（不删资源库）',
-              onPressed: onDelete,
-              padding: EdgeInsets.zero,
-              icon: Icon(Icons.close, size: 14, color: t.terminalMuted),
+          // 删除交互按既定待办落地（盘点 2026-11-06 #12）：长按 chip 移除——
+          // 原 32×32 删除钮低于 44dp 红线且与文件名相邻易误触；×仅作视觉
+          // 指示（非按钮），Tooltip 说明长按语义。
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onLongPress: onDelete,
+            child: Tooltip(
+              message: '长按移除附件（不删资源库）',
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: Icon(Icons.close, size: 14, color: t.terminalMuted),
+              ),
             ),
           ),
         ],

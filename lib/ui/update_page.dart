@@ -6,6 +6,7 @@ import '../update/app_settings.dart';
 import '../update/installer.dart';
 import '../update/update_manifest.dart';
 import '../update/update_service.dart';
+import 'error_copy.dart';
 import 'tokens/console_tokens.dart';
 
 /// 更新页（self-update epic）：应用内自更新入口——检查清单 → 下载（sha256 校验）→ 拉起安装器。
@@ -116,7 +117,7 @@ class _UpdatePageState extends State<UpdatePage> {
       _say(
         newer
             ? '发现新版本 v${manifest.versionName}（${manifest.changelog ?? '无更新说明'}）'
-            : '已是最新版本（远程 v${manifest.versionName}）',
+            : '已是最新版本（服务端 v${manifest.versionName}）',
         newer ? _MsgTone.success : _MsgTone.info,
       );
     } on UpdateException catch (e) {
@@ -176,7 +177,8 @@ class _UpdatePageState extends State<UpdatePage> {
         currentId != null &&
         manifest.applicationId != currentId) {
       _say(
-        '更新包身份不符（疑似串包，已拒绝安装）：清单=${manifest.applicationId} 本机=$currentId',
+        '更新包与当前应用身份不符，已拒绝安装（疑似装错安装包）。请从官方渠道重新下载对应更新。\n'
+            '详情：清单=${manifest.applicationId} 本机=$currentId',
         _MsgTone.error,
       );
       return;
@@ -211,7 +213,9 @@ class _UpdatePageState extends State<UpdatePage> {
       _say('已拉起系统安装器', _MsgTone.info);
     } catch (e) {
       _needUnknownSourceSetting = true;
-      _say('$e（首次安装需允许「安装未知应用」，可点下方「去设置」直达授权页）',
+      final c = humanizeError(e);
+      // 人话结论在前，原始异常折进括号留痕（用户第一眼读到的是可行动信息）。
+      _say('安装未能完成：${c.title}（${c.advice}）。首次安装需允许「安装未知应用」，可点下方「去设置」直达授权页。详情：$e',
           _MsgTone.error);
     }
   }
@@ -246,11 +250,11 @@ class _UpdatePageState extends State<UpdatePage> {
                     style: TextStyle(fontFamily: t.monoFamily, fontSize: Fsz.telemetry),
                   ),
                   const SizedBox(height: 12),
-                  Text('远程更新', style: Theme.of(context).textTheme.titleSmall),
+                  Text('服务端更新', style: Theme.of(context).textTheme.titleSmall),
                   const SizedBox(height: 4),
                   if (manifest != null)
                     Text(
-                      '远程版本 v${manifest.versionName}（build ${manifest.versionCode}）',
+                      '服务端版本 v${manifest.versionName}（build ${manifest.versionCode}）',
                       style: TextStyle(fontFamily: t.monoFamily, fontSize: Fsz.telemetry),
                     ),
                   // 初始化失败态（ux-hardening P0-3）：Rose 文案 + 重试——

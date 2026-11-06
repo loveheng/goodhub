@@ -55,10 +55,10 @@ class ChatSessionService {
   /// 保存失败——窗口会出红色 DEGRADE 提示，而日志并无实错（从未发起落盘，
   /// 「见日志」无可查，2026-10-17 用户报障回归）。
   Future<bool> persistCurrent(
-      {required List<Map<String, Object?>> trackJson}) async {
+      {required List<Map<String, Object?>> trackJson, String? draft}) async {
     final a = _archive;
     if (a == null || !a.hasCurrent) return true;
-    final ok = await a.saveCurrent(trackJson: trackJson, session: _session);
+    final ok = await a.saveCurrent(trackJson: trackJson, session: _session, draft: draft);
     if (ok) await a.saveQuota(_session.samplingQuota);
     await refresh();
     return ok;
@@ -66,8 +66,8 @@ class ChatSessionService {
 
   /// 切换/删除前的当前会话保底（无当前会话时 [persistCurrent] 自身 no-op）。
   Future<void> persistIfAny(
-      {required List<Map<String, Object?>> trackJson}) async {
-    await persistCurrent(trackJson: trackJson);
+      {required List<Map<String, Object?>> trackJson, String? draft}) async {
+    await persistCurrent(trackJson: trackJson, draft: draft);
   }
 
   /// 会话内核态重置（**不含** UI/Run 态——由调用方负责清轨道/卡死监视/状态带）。
@@ -87,9 +87,10 @@ class ChatSessionService {
     _session.replaceTranscript(ChatMessageCodec.decodeCloud(snap.messages));
   }
 
-  Future<void> delete(String id) async {
-    await _archive?.delete(id);
+  Future<bool> delete(String id) async {
+    final ok = await _archive?.delete(id) ?? true;
     await refresh();
+    return ok;
   }
 
   Future<bool> rename(String id, String title) async {

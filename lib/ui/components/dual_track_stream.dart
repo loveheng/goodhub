@@ -330,6 +330,8 @@ class DualTrackStream extends StatelessWidget {
     this.controller,
     this.listenable,
     this.emptyHint = '',
+    this.emptyExamples = const [],
+    this.onExampleTap,
   });
 
   final List<TrackEntry> entries;
@@ -343,6 +345,11 @@ class DualTrackStream extends StatelessWidget {
 
   /// 空轨道提示（会话起始态）。
   final String emptyHint;
+
+  /// 空态示例任务 chip（盘点 2026-11-06 #10）：已配置用户的空态此前仅静态
+  /// 文字无下一步动作——补示例任务，点击即填入输入框（填充归调用方）。
+  final List<String> emptyExamples;
+  final ValueChanged<String>? onExampleTap;
 
   @override
   Widget build(BuildContext context) {
@@ -361,13 +368,41 @@ class DualTrackStream extends StatelessWidget {
           constraints: const BoxConstraints(maxWidth: 560),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24),
-            child: Text(
-              emptyHint,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: consoleTokens(context).terminalMuted,
-                fontSize: Fsz.body,
-              ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  emptyHint,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: consoleTokens(context).terminalMuted,
+                    fontSize: Fsz.body,
+                  ),
+                ),
+                // 示例任务 chip（盘点 #10）：空态从「只读提示」变「可操作
+                // 起点」——点击即填入输入框，回车/发送键即达。
+                if (emptyExamples.isNotEmpty && onExampleTap != null) ...[
+                  const SizedBox(height: 16),
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final example in emptyExamples)
+                        ActionChip(
+                          label: Text(
+                            example,
+                            style: TextStyle(
+                              fontSize: Fsz.note,
+                              color: consoleTokens(context).l1Info,
+                            ),
+                          ),
+                          onPressed: () => onExampleTap!(example),
+                        ),
+                    ],
+                  ),
+                ],
+              ],
             ),
           ),
         ),
@@ -996,17 +1031,58 @@ class _TrackErrorEntry extends StatelessWidget {
             advice,
             style: const TextStyle(fontSize: Fsz.note, height: 1.4),
           ),
-          if (detail.isNotEmpty)
-            SelectableText(
-              detail,
-              style: TextStyle(
-                fontFamily: t.monoFamily,
-                fontSize: Fsz.telemetrySm,
-                color: t.terminalMuted,
-              ),
-            ),
+          if (detail.isNotEmpty) _ErrorDetail(t: t, detail: detail),
         ],
       ),
+    );
+  }
+}
+
+/// 错误卡原始异常详情（盘点 2026-11-06 #5）：默认限 3 行——长堆栈此前全文
+/// 展开，把标题+建议（用户真正该读的）顶出视口；等宽留痕口径不变（可
+/// 选择复制），点「查看详情」展开/收起。
+class _ErrorDetail extends StatefulWidget {
+  const _ErrorDetail({required this.t, required this.detail});
+
+  final ConsoleTokens t;
+  final String detail;
+
+  @override
+  State<_ErrorDetail> createState() => _ErrorDetailState();
+}
+
+class _ErrorDetailState extends State<_ErrorDetail> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = widget.t;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SelectableText(
+          widget.detail,
+          maxLines: _expanded ? null : 3,
+          style: TextStyle(
+            fontFamily: t.monoFamily,
+            fontSize: Fsz.telemetrySm,
+            color: t.terminalMuted,
+          ),
+        ),
+        if (!_expanded)
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => setState(() => _expanded = true),
+            child: Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                '▼ 查看详情',
+                style: TextStyle(fontSize: Fsz.telemetry, color: t.l1Info),
+              ),
+            ),
+          ),
+      ],
     );
   }
 }

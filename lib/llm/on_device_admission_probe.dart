@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../core/app_log.dart';
 import 'device_tier.dart';
 import 'llm.dart';
 import 'on_device_asset_manager.dart';
@@ -36,6 +37,7 @@ class AdmissionProbe {
     required this.onDeviceProbe,
     required this.assetManager,
     this.isEngineBusy,
+    this.onFact,
     this.hardTimeout = const Duration(seconds: 10),
     this.probeMaxTokens = 32,
     this.now,
@@ -60,6 +62,11 @@ class AdmissionProbe {
   /// 引擎装载链占用判定（W1-2 让位：true = 用户请求在途，探针 load 前止步）。
   /// 生产装配 = `loadState == loading`；null = 未接线（跳过止步检查）。
   final bool Function()? isEngineBusy;
+
+  /// 事实留痕通道（fail-open 显性化）：门禁判定链异常按可用放行时回调一条
+  /// fact（默认 null = 静默）。生产装配接 [AppLog]，让「端侧为何异常变慢」
+  /// 的真实原因（探针失败放行）可在日志页可查，而非零感知。
+  final void Function(String message)? onFact;
 
   final Duration hardTimeout;
 
@@ -151,6 +158,9 @@ class AdmissionProbe {
       return verdict.pass;
     } catch (e) {
       debugPrint('[DEGRADE] admission probe gate: $e');
+      // fail-open 显性化（P0 修复）：放行决策留痕一条 fact，设备能力存疑时
+      // 「端侧为何异常/变慢」的真实原因不再零感知。
+      onFact?.call('端侧准入探针：设备门禁检查异常，本次按可用放行');
       return true;
     }
   }
@@ -301,6 +311,7 @@ final AdmissionProbe sharedAdmissionProbe = AdmissionProbe(
   assetManager: OnDeviceAssetManager.instance,
   isEngineBusy: () =>
       sharedOnDeviceEngine.loadState.value == OnDeviceLoadState.loading,
+  onFact: (m) => AppLog.instance.i(m),
 );
 
 /// 运行时坏后端记账（DispatchProfile 第二写入方，设计稿 §7）：生成链路运行时

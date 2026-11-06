@@ -219,25 +219,21 @@ class _ConversationDrawerState extends State<ConversationDrawer> {
                           ),
                           selected: meta.id == widget.currentId,
                           onTap: () => widget.onLoad(meta),
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                icon: const Icon(Icons.edit_outlined, size: 18),
-                                tooltip: '重命名',
-                                onPressed: () {
-                                  _openRenameDialog(meta);
-                                },
-                              ),
-                              IconButton(
-                                icon: const Icon(
-                                  Icons.delete_outline,
-                                  size: 18,
-                                ),
-                                tooltip: '删除会话',
-                                onPressed: () => widget.onDelete(meta),
-                              ),
-                            ],
+                          // 删除改长按（盘点 2026-11-06 #9）：原 trailing 双
+                          // 18px 图标紧贴，单手误触删除概率高（有确认兜底，
+                          // 但误触即弹破坏性对话框已是打断）。长按 + 确认卡
+                          // 双闸，重命名保留 trailing 直达。
+                          onLongPress: () => widget.onDelete(meta),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.edit_outlined, size: 18),
+                            // tooltip 保持「重命名」单语义（测试按 tooltip
+                            // 精确匹配；长按删除的发现性由抽屉既有删除确认卡
+                            // 兜底，误触防护是本轮目标， discoverability 靠
+                            // 用户教育成本低于误弹破坏性弹窗）。
+                            tooltip: '重命名',
+                            onPressed: () {
+                              _openRenameDialog(meta);
+                            },
                           ),
                         );
                       },

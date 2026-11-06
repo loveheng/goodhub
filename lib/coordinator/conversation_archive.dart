@@ -188,6 +188,7 @@ class ConversationArchive {
   Future<bool> saveCurrent({
     required List<Map<String, Object?>> trackJson,
     required ConversationSession session,
+    String? draft,
   }) async {
     final id = _currentId;
     if (id == null) return true; // 无当前会话：无需落盘（原替身早退口径）
@@ -198,6 +199,7 @@ class ConversationArchive {
         track: trackJson,
         messages: ChatMessageCodec.encodeCloud(session.transcript),
         activePrivateServerId: session.activePrivateServerId,
+        draft: draft,
       );
       return true;
     } on Object catch (e) {
@@ -220,8 +222,8 @@ class ConversationArchive {
     _currentTitle = snap.title;
   }
 
-  /// 删除会话（文件缺失幂等，透传 store）。
-  Future<void> delete(String id) => store.delete(id);
+  /// 删除会话（文件缺失幂等，透传 store；返回删除是否成功）。
+  Future<bool> delete(String id) => store.delete(id);
 
   /// 重命名（ux-hardening P1-5，透传 store）：当前会话同名时同步
   /// [_currentTitle]——否则下次 [saveCurrent] 会把旧标题写回，重命名被覆盖。

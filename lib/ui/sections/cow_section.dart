@@ -148,8 +148,12 @@ class _CowSectionState extends State<CowSection>
       ),
     );
     if (confirmed != true) return;
-    await store.reset(name);
-    await _reload(store);
+    try {
+      await store.reset(name);
+      await _reload(store);
+    } catch (e) {
+      widget.onFlash('⚠ 重置失败：覆写未清除，请稍后重试');
+    }
   }
 
   Future<void> _loadForEdit(String name) async {

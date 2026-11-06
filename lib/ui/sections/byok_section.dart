@@ -545,9 +545,13 @@ class _ByokSectionState extends State<ByokSection>
       ),
     );
     if (confirmed != true) return;
-    // save 自带孤儿密钥连带清理（被移除 profile 的密钥删除）。
-    await widget.store.save(_profiles.where((e) => e.id != p.id).toList());
-    await _reload();
-    widget.onFlash('✓ 已删除 ${p.name}');
+    try {
+      // save 自带孤儿密钥连带清理（被移除 profile 的密钥删除）。
+      await widget.store.save(_profiles.where((e) => e.id != p.id).toList());
+      await _reload();
+      widget.onFlash('✓ 已删除 ${p.name}');
+    } catch (e) {
+      widget.onFlash('⚠ 删除失败：配置或密钥清除未完成，请稍后重试');
+    }
   }
 }

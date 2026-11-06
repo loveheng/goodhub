@@ -93,44 +93,76 @@ void main() {
     debugDefaultTargetPlatformOverride = null; // 体内复位（见 main 头注）
   });
 
-  testWidgets('B3：+ 钮触达区 48×48（原 36dp 低于推荐误触率高）', (tester) async {
+  testWidgets('B3：+ 钮触达区 ≥44dp（方案 1 视觉 36 + 透明 padding 补足）', (tester) async {
     await tester.pumpWidget(
       harness(onSend: () {}, onAbort: () {}),
     );
-    // 2026-10-18 融合药丸后主操作钮也是 IconButton——按图标定位「+」钮。
-    final addBtn = tester.widget<IconButton>(
-      find.widgetWithIcon(IconButton, Icons.add),
-    );
-    expect(addBtn.constraints, const BoxConstraints(minWidth: 48, minHeight: 48));
+    // 方案 1：「+」从 IconButton 改 GestureDetector+Container（左簇同形化）。
+    // 热区 = GestureDetector 渲染尺寸（opaque 含透明 padding）。
+    final addIcon = find.byIcon(Icons.add);
+    final gestureFinder = find
+        .ancestor(of: addIcon, matching: find.byType(GestureDetector))
+        .first;
+    final gesture = tester.widget<GestureDetector>(gestureFinder);
+    expect(gesture.behavior, HitTestBehavior.opaque);
+    final hitSize = tester.getSize(gestureFinder);
+    expect(hitSize.height, greaterThanOrEqualTo(44),
+        reason: '视觉 36 + 透明 padding 补足 44dp 热区红线');
   });
 
-  testWidgets('三态换色（融入药丸，2026-10-18）：空输入灰 / 有输入 l1Info / 运行 danger',
+  testWidgets('三态换色（方案 1 实底化）：空输入灰 / 有输入 l1Info 实底 / 运行 danger 实底',
       (tester) async {
     final t = ConsoleTokens.fallback;
     await tester.pumpWidget(harness(onSend: () {}, onAbort: () {}));
 
-    Color sendIconColor() => tester
-        .widget<Icon>(find.byIcon(Icons.arrow_upward))
-        .color!;
-    expect(sendIconColor(), t.terminalMuted, reason: '空输入=禁用置灰');
+    // 方案 1：强调从图标色移到容器实底——图标恒白（实底态）或灰（禁用态）。
+    Color? sendBg() {
+      final containers = tester.widgetList<Container>(
+        find.ancestor(
+            of: find.byIcon(Icons.arrow_upward),
+            matching: find.byType(Container)),
+      );
+      for (final c in containers) {
+        final d = c.decoration;
+        if (d is BoxDecoration && d.color != null) return d.color;
+      }
+      return null;
+    }
+
+    Color iconColor() =>
+        tester.widget<Icon>(find.byIcon(Icons.arrow_upward)).color!;
+
+    expect(iconColor(), t.terminalMuted, reason: '空输入=禁用置灰（hairline 态）');
+    expect(sendBg(), Colors.transparent, reason: '空输入无实底');
 
     await tester.enterText(find.byType(TextField), '你好');
     await tester.pumpAndSettle();
-    expect(sendIconColor(), t.l1Info, reason: '有输入=可发送强调');
+    expect(sendBg(), t.l1Info, reason: '有输入=l1Info 实底强调');
+    expect(iconColor(), Colors.white, reason: '实底上图标恒白');
 
     // 清空回灰（跟随输入双向）。
     await tester.enterText(find.byType(TextField), '');
     await tester.pumpAndSettle();
-    expect(sendIconColor(), t.terminalMuted);
+    expect(iconColor(), t.terminalMuted);
 
-    // running 态：glyph 换 stop、色转 danger。
+    // running 态：glyph 换 stop、容器转 danger 实底。
     await tester.pumpWidget(harness(onSend: () {}, onAbort: () {}, running: true));
     await tester.pump(const Duration(milliseconds: 200));
     expect(
       tester.widget<Icon>(find.byIcon(Icons.stop)).color!,
-      t.danger,
-      reason: '运行=中止警示色',
+      Colors.white,
+      reason: '实底上图标恒白',
     );
+    final stopContainers = tester.widgetList<Container>(
+      find.ancestor(
+          of: find.byIcon(Icons.stop), matching: find.byType(Container)),
+    );
+    var dangerBg = false;
+    for (final c in stopContainers) {
+      final d = c.decoration;
+      if (d is BoxDecoration && d.color == t.danger) dangerBg = true;
+    }
+    expect(dangerBg, isTrue, reason: '运行=danger 实底');
   });
 
   testWidgets('B4：主操作钮单槽形变——idle 发送 / running 中止，图标随相位切换',

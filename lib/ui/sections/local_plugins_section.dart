@@ -18,6 +18,7 @@ import '../../mcp/local_plugin_discovery.dart';
 import '../../mcp/local_plugin_switches.dart';
 import '../../mcp/trusted_plugins.dart';
 import '../components/server_tools_list.dart';
+import '../error_copy.dart';
 import '../tokens/console_tokens.dart';
 import '../trust_plugin_dialog.dart';
 
@@ -138,7 +139,8 @@ class _LocalPluginsSectionState extends State<LocalPluginsSection>
           ? '✓ 已启用 ${info.serverTitle}（网关与下次装配生效）'
           : '✓ 已停用 ${info.serverTitle}（本机与网关均不再挂载）');
     } on Object catch (e) {
-      widget.onFlash('⚠ 切换失败: $e');
+      final c = humanizeError(e);
+      widget.onFlash('⚠ 切换失败：${c.title}（${c.advice}）');
     }
   }
 
@@ -184,7 +186,8 @@ class _LocalPluginsSectionState extends State<LocalPluginsSection>
       await _reload();
       widget.onFlash('✓ 已撤销对 ${info.serverTitle} 的信任');
     } on Object catch (e) {
-      widget.onFlash('⚠ 撤销信任失败: $e');
+      final c = humanizeError(e);
+      widget.onFlash('⚠ 撤销信任失败：${c.title}（${c.advice}）');
     }
   }
 

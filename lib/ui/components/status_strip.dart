@@ -49,14 +49,19 @@ class ContextChip extends StatelessWidget {
     final chipIcon = isPrivate ? Icons.lock_outline : Icons.public;
     final chipText = hasCtx
         ? endpointName(contextId!)
-        : (hasLocal ? '本地×$localPluginCount · 未锁定' : '公共');
+        : (hasLocal ? '本地插件×$localPluginCount · 未锁定' : '公共');
     return GestureDetector(
       // B3：轻触觉确认（点击已被接收的确定感）。
       onTap: () {
         unawaited(HapticFeedback.selectionClick());
         onTap();
       },
+      // 触达区红线（盘点 2026-11-06 #4）：视觉胶囊 ~25dp 高，热区外扩至
+      // ≥44dp——「切服务」是 idle 期唯一入口，误触/点不中成本高。
+      behavior: HitTestBehavior.opaque,
       child: Container(
+        constraints: const BoxConstraints(minHeight: 44),
+        alignment: Alignment.center,
         margin: const EdgeInsets.only(right: 8),
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
         decoration: BoxDecoration(
@@ -118,7 +123,7 @@ class StatusStrip extends StatelessWidget {
     'connecting' => '连接中',
     'thinking' => '思考中',
     'done' => '已完成',
-    'failed' => '失败',
+    'failed' => '失败，详情见下方错误卡',
     'rejected' => '已拒绝',
     'breaker' => '工具报错，待处理',
     'fence' => '敏感信息，待确认',

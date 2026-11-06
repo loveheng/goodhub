@@ -44,12 +44,22 @@ object MemoryGuardEvaluator {
      * [currentAvailMemBytes] = 当前 availMem；
      * [heldBudgetBytes] / [floorBytes] 由接线方注入（默认取本对象常量），
      * 保持状态机/评估器无魔法数纪律。
+     *
+     * [floorLineEnforced] = 绝对地板线是否生效（2026-11-07 真机实证 PLQ110
+     * 两连击：①生成期 956MB 触地板 mid-generation 杀在途流；②收尾检查点
+     * slot 已释放照样击穿——常驻 ~2GB 使 availMem ≈930MB 成**稳态均衡**，
+     * 地板线在暖机态每次必击穿，驱逐→重载回到同一水平 = 纯 thrash，与
+     * 「护栏是兜底不是限制」（2026-10-30 拍板）和 S2 常驻豁免（自锁先例）
+     * 直接冲突）。暖机常驻态接线方传 false：地板职责让位给 TTL 回收
+     * （5min 自然释放 2GB）+ LMK 最后防线（:engine 有 FGS 前挂保护）；
+     * 冷进程（未装载过）传 true 保留系统饥饿防护。**足迹增量线恒生效**。
      */
     fun evaluate(
         baselineAvailMemBytes: Long,
         currentAvailMemBytes: Long,
         heldBudgetBytes: Long = HELD_BUDGET_BYTES,
         floorBytes: Long = ABSOLUTE_FLOOR_BYTES,
+        floorLineEnforced: Boolean = true,
     ): String? {
         if (currentAvailMemBytes <= 0 || baselineAvailMemBytes <= 0) return null
         // 采样噪声容忍：availMem 抖动（其他进程分配/回收）不应触发误杀，
@@ -59,7 +69,7 @@ object MemoryGuardEvaluator {
         if (held >= heldBudgetBytes) {
             return "memory-guard(availMem-delta=${held / 1048576}MB ≥ ${heldBudgetBytes / 1048576}MB)"
         }
-        if (currentAvailMemBytes + jitterTolerance <= floorBytes) {
+        if (floorLineEnforced && currentAvailMemBytes + jitterTolerance <= floorBytes) {
             return "memory-guard(availMem=${currentAvailMemBytes / 1048576}MB ≤ floor=${floorBytes / 1048576}MB)"
         }
         return null

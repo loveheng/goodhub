@@ -35,11 +35,14 @@ class DialogGateDelegate implements GateDelegate {
     }
     var settled = false;
     var remember = false;
+    var timedOut = false; // 超时后先在卡内示明原因再关闭，避免弹窗无声消失
+    void Function(void Function())? dialogSet; // builder 内捕获，供超时回调重建卡片
     final dialog = showDialog<GateDecision>(
       context: nav.context,
       barrierDismissible: false,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialog) {
+          dialogSet = setDialog; // 捕获重建柄：超时回调需在卡内示明原因
           // A09（review-fix-2026-10）：等宽/字号走 design tokens（全库唯一
           // 绕过 ConsoleTokens/Fsz 处，收口）。
           final t = consoleTokens(ctx);
@@ -50,6 +53,13 @@ class DialogGateDelegate implements GateDelegate {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  if (timedOut) ...[
+                    Text(
+                      '已超时，将自动拒绝并关闭',
+                      style: TextStyle(color: t.danger),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
                   Text(
                     '工具：${pending.toolName}',
                     style: TextStyle(
@@ -96,8 +106,13 @@ class DialogGateDelegate implements GateDelegate {
     unawaited(dialog.whenComplete(() => settled = true));
     final timer = Timer(timeout, () {
       if (!settled) {
-        settled = true;
-        nav.pop(const GateDecision(approved: false, reason: '确认超时（45s）'));
+        dialogSet?.call(() => timedOut = true); // 先示明「已超时自动拒绝」，延迟后再关
+        Future.delayed(const Duration(seconds: 2), () {
+          if (!settled) {
+            settled = true;
+            nav.pop(const GateDecision(approved: false, reason: '确认超时（45s）'));
+          }
+        });
       }
     });
     try {
