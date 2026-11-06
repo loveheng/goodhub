@@ -18,14 +18,25 @@ import '../llm/on_device_model_catalog.dart'
     show OnDeviceModelOption, OnDeviceModelSelection;
 import '../llm/on_device_session_ticket.dart' show SessionTicket;
 
+export '../llm/cloud/cloud_llm.dart'
+    show AssistantMessage, CloudChatMessage, SystemMessage, UserMessage;
 export '../llm/geniex_runtime_binding.dart'
     show GenieXStatus, LiteRtLmNpuStatus;
 export '../llm/on_device_asset_manager.dart'
     show AssetPullProgress, OnDeviceAssetManager;
+export '../llm/on_device_chat_prompt.dart' show buildOnDeviceChatPromptJsonAsync;
+export '../llm/on_device_engine.dart' show EngineStatus, GenerationConfig;
+export '../llm/on_device_engine_aidl.dart'
+    show OnDeviceGenPerf, sharedOnDeviceEngine;
 export '../llm/on_device_gate_override.dart' show GateOverride;
+export '../llm/on_device_history_policy.dart'
+    show AnchorAndRecentHistoryPolicy, BarePromptHistoryPolicy,
+    DropOldestHistoryPolicy, OnDeviceHistoryPolicy;
+export '../llm/on_device_history_policy_store.dart'
+    show HistoryPolicyIds, HistoryPolicySelection;
 export '../llm/on_device_model_catalog.dart'
-    show ImportTarget, kOnDeviceLlamaCppEnabled, OnDeviceModelOption,
-    OnDeviceModelSelection;
+    show ImportTarget, ModelRegistry, kOnDeviceLlamaCppEnabled,
+    OnDeviceModelOption, OnDeviceModelSelection;
 export '../llm/on_device_session_ticket.dart' show SessionTicket;
 
 /// 端侧管理面服务聚合（设置段 / 导入流共用的唯一出口）。

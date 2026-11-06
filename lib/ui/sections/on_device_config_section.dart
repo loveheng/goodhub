@@ -9,7 +9,14 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../tokens/console_tokens.dart';
-import '../../coordinator/on_device_admin.dart';
+import '../../coordinator/on_device_admin.dart'
+    show
+        GateOverride,
+        GenieXStatus,
+        LiteRtLmNpuStatus,
+        OnDeviceAdmin,
+        OnDeviceGenPerf,
+        sharedOnDeviceEngine;
 import '../../gateway_api/gateway_control.dart';
 
 /// 电池白名单查询/申请注入位（测试替换，范式同 on_device_model_section）。
@@ -410,6 +417,26 @@ class _OnDeviceConfigSectionState extends State<OnDeviceConfigSection>
             // GenieX 增配运行库（npu-geniex-runtime P2，设计稿 §7）
             _geniexBlock(t),
             const SizedBox(height: 6),
+            // 最近一次端侧生成性能（W bench 消费面：tok/s / TTFT / 上下文占用；
+            // 有过端侧产出才显，纯错误收口不写快照）。
+            ValueListenableBuilder<OnDeviceGenPerf?>(
+              valueListenable: sharedOnDeviceEngine.lastGenPerf,
+              builder: (context, perf, _) {
+                if (perf == null) return const SizedBox.shrink();
+                final ctxTok = (perf.promptChars / 1.3).round();
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text(
+                    '上次端侧生成：TTFT ${perf.ttftMs}ms · '
+                    '${perf.tokPerSec.toStringAsFixed(1)} tok/s · '
+                    '输入约 $ctxTok tok（估算）',
+                    key: const ValueKey('on-device-last-gen-perf'),
+                    style: TextStyle(
+                        fontSize: Fsz.telemetrySm, color: t.terminalMuted),
+                  ),
+                );
+              },
+            ),
             // 电池优化白名单（S3-5 OEM 冻结防护）：未加入时提示并一键跳转。
             if (_batteryExempt == false) ...[
               _batteryExemptRow(t),

@@ -1,11 +1,10 @@
-/// 端侧 LLM 模型目录（M2 自 goodshare 随迁，2026-10-10；原设计见
-/// goodshare 仓 docs/design/on-device-llm.md，随迁后 SSOT 移至本仓 docs/design/）。
+/// 端侧 LLM 模型目录类型与 manifest 解析面（M2 自 goodshare 随迁，2026-10-10；
+/// 原设计见 goodshare 仓 docs/design/on-device-llm.md，随迁后 SSOT 移至本仓 docs/design/）。
 ///
-/// 目录有两个来源：
-/// 1. **远端 manifest**（`llm_manifest.json`，经 RemoteConfigStore.flags 里的 URL 热更下发）
-///    ——名称/分类/描述/文件名/大小/下载地址/SoC 限定全部可云端调整，改配置不发版；
-/// 2. **内置默认目录**（下方 [llmModels]）——manifest 缺失/损坏/未配置时的兜底，
-///    同时是首次安装离线可用的初始目录。
+/// 目录事实源（2026-11-06 修订）：**远端 manifest**（`llm_manifest.json`，经
+/// RemoteConfigStore.flags 里的 URL 热更下发）+ 纯导入制模型资产（规格声明 =
+/// assets/model-specs.json per-bundle 规格表）。原「内置默认目录」随旧下载
+/// 通道退役（见文件尾注记），下载 UI 通道已不存在。
 ///
 /// 文件名均为 hf-mirror API/HEAD 实测（2026-09-29）：
 /// - Qwen 官方文件名带 `multi-prefill-seq_` 中缀（官网表格省略，凭表格转写会 404）；
@@ -118,46 +117,8 @@ List<LlmModel> llmModelsFromJson(Object? raw) {
   return out;
 }
 
-/// HuggingFace 基础地址（hf-mirror 口径；换 R2 自托管时只改这里，
-/// 或直接在 manifest 条目里写绝对 url）。
-const String llmModelBase = 'https://hf-mirror.com';
-
-/// 内置默认目录（manifest 未配置/不可用时的兜底）。条目事实源仍以线上 manifest 为准。
-const List<LlmModel> llmModels = [
-  LlmModel(
-    id: 'qwen25-1.5b-q8',
-    name: '通用 · Qwen2.5-1.5B',
-    desc: '中文原生，摘要/关键词质量优先（约 1.5GB，4096 上下文）',
-    repo: 'litert-community/Qwen2.5-1.5B-Instruct',
-    file: 'Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm',
-    sizeBytes: 1597931520, // hf-mirror HEAD 实测 2026-09-29
-  ),
-  LlmModel(
-    id: 'gemma3-1b-npu-sm8750',
-    name: 'NPU · 骁龙8至尊版',
-    desc: 'Gemma3-1B 4bit NPU 专包（约 658MB，仅骁龙 8 Elite 设备可见；'
-        'gated 仓库，经 R2 中转后由 manifest 下发）',
-    repo: 'litert-community/Gemma3-1B-IT',
-    file: 'Gemma3-1B-IT_q4_ekv1280_sm8750.litertlm',
-    sizeBytes: 690000000,
-    socModel: 'SM8750',
-  ),
-  LlmModel(
-    id: 'gemma3-1b-npu-mt6991',
-    name: 'NPU · 天玑9400',
-    desc: 'Gemma3-1B 4bit NPU 专包（约 986MB，仅天玑 9400 设备可见；'
-        'gated 仓库，经 R2 中转后由 manifest 下发）',
-    repo: 'litert-community/Gemma3-1B-IT',
-    file: 'Gemma3-1B-IT_q4_ekv1280_mt6991.litertlm',
-    sizeBytes: 1034000000,
-    socModel: 'MT6991',
-  ),
-];
-
-LlmModel? llmModelById(String? id) {
-  if (id == null) return null;
-  for (final m in llmModels) {
-    if (m.id == id) return m;
-  }
-  return null;
-}
+/// 2026-11-06 旧下载通道退役（m4 ②⑤ 清理）：原内置默认目录 `llmModels`
+///（三模型条目）/ `llmModelBase` / `llmModelById` 全仓零消费，随旧下载
+/// 通道一并退役——纯导入制后目录事实源 = 导入的模型资产 + model-specs.json
+/// 规格表（通用实现纪律，2026-11-03），本文件只保留 [LlmModel] 类型与
+/// [llmModelsFromJson] manifest 解析面。

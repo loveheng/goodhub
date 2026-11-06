@@ -18,6 +18,8 @@ library;
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
 import '../llm/cloud/cloud_llm.dart';
 import '../llm/on_device_capability.dart';
 import 'agent_loop.dart';
@@ -179,12 +181,20 @@ class HostOnDeviceToolExecutor implements ToolExecutor {
       return const ToolExecutionResult(
           content: '缺少 input（待处理原文）', isError: true);
     }
+    // 逐调用留痕（debug 桥取证）：[AI-CAP] 行进 AppLog（debugPrint 自动捕获）
+    // ——PC 侧经 host__on_device_complete 的每次承接，宿主侧留调用方/耗时/产出。
+    final sw = Stopwatch()..start();
+    final caller = callerKeyOverride ?? callerKey ?? 'unknown';
+    void capLog(String outcome) =>
+        debugPrint('[AI-CAP] caller=$caller skill=on_device_complete '
+            'engine=on-device ms=${sw.elapsedMilliseconds} $outcome');
     try {
       // K22 事务语义收口：并发占用 → 频次预检（产出前）→ 产出 → 计入 →
       // finally 释放（无论成败一律让槽）。频次仅在实际开始产出时计入
       // （complete 成功返回）；受理段/推理失败不计。
       final quota = this.quota;
       if (quota != null && !quota.acquire()) {
+        capLog('deny=concurrency');
         return const ToolExecutionResult(
           content: '端侧算力并发已达上限（稍后重试）',
           isError: true,
@@ -194,6 +204,7 @@ class HostOnDeviceToolExecutor implements ToolExecutor {
         if (quota != null) {
           final denial = quota.checkFrequency(DateTime.now());
           if (denial != null) {
+            capLog('deny=frequency retryAfter=${denial.inSeconds}s');
             return ToolExecutionResult(
               content: '端侧算力频次超限（滑动窗口次数制），'
                   '建议 ${denial.inSeconds}s 后重试',
@@ -215,6 +226,7 @@ class HostOnDeviceToolExecutor implements ToolExecutor {
             fallback: PrimitiveFallbackPolicy.failFast,
             traceId: 'host_export',
           );
+          capLog('ok outChars=${out.length}');
           quota?.countOutput(DateTime.now()); // 实际产出 → 频次计入
           return ToolExecutionResult(content: out);
         }
@@ -222,15 +234,18 @@ class HostOnDeviceToolExecutor implements ToolExecutor {
             instruction, input, callerKey);
         if (result == null) {
           // 调用方死亡作废：不扣频次（未产出交付）、执行槽经 finally 释放。
+          capLog('aborted=caller-death');
           return const ToolExecutionResult(
               content: '调用方已断开，本次端侧调用已作废', isError: true);
         }
+        capLog('ok outChars=${result.length}');
         quota?.countOutput(DateTime.now()); // 实际产出 → 频次计入
         return ToolExecutionResult(content: result);
       } finally {
         quota?.release(); // 退出无论成败一律释放执行槽占用
       }
     } on OnDevicePrimitiveException catch (e) {
+      capLog('err: ${e.message}');
       return ToolExecutionResult(
           content: '端侧推理失败（宿主不兜底云端，可重试或自行降级）：${e.message}',
           isError: true);

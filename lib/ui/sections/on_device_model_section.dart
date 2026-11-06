@@ -17,7 +17,6 @@ import '../components/on_device_model_import.dart';
 import '../tokens/console_tokens.dart';
 import '../../coordinator/on_device_admin.dart';
 import '../../llm/on_device_model_catalog.dart';
-import '../../llm/on_device_history_policy_store.dart';
 
 /// 段 widget：注入 [assetManager]（生产 = 单例，测试传假件）、[onFlash]
 /// （页面级 toast 口径）、[errorRowBuilder]（面板级错误态统一件）。

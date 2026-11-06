@@ -9,6 +9,8 @@
 /// - 「原文退化为引用」M2 以「宿主注」标记落位，$ref 暂存池引用归 M3 Skill 编排。
 library;
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
 import '../core/tokens.dart';
 import '../llm/cloud/cloud_llm.dart';
 import '../llm/on_device_capability.dart';
@@ -141,6 +143,9 @@ class OnDeviceResultSummarizer {
   static const _config = OnDevicePrimitiveConfig(maxTokens: summaryMaxTokens);
 
   Future<String> call(String original) async {
+    // 逐调用留痕（debug 桥取证）：[AI-CAP] 行进 AppLog（debugPrint 自动捕获），
+    // goodshare 联调不必再只靠调用方侧 job 证据还原宿主侧承接情况。
+    final sw = Stopwatch()..start();
     try {
       final out = await _primitive.complete(
         instruction: instruction,
@@ -149,6 +154,9 @@ class OnDeviceResultSummarizer {
         traceId: 'result_summarize',
       );
       final t = out.trim();
+      debugPrint('[AI-CAP] caller=agent-loop skill=supply/summarize '
+          'engine=on-device ms=${sw.elapsedMilliseconds} '
+          'outChars=${t.length} ok');
       if (t.isEmpty) {
         throw SummarizeException('端侧摘要产出为空');
       }
@@ -156,6 +164,8 @@ class OnDeviceResultSummarizer {
     } on SummarizeException {
       rethrow;
     } catch (e) {
+      debugPrint('[AI-CAP] caller=agent-loop skill=supply/summarize '
+          'engine=on-device ms=${sw.elapsedMilliseconds} err: $e');
       throw SummarizeException('端侧摘要失败: $e');
     }
   }
