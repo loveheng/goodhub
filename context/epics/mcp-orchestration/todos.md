@@ -4,7 +4,6 @@ format: v2
 epic: mcp-orchestration
 ---
 # mcp-orchestration · 域内待办
-- [ ] [2026-10-19] (优化) (重:重) 存量债归本窗口处理（触发=本 epic 下次 ::bind / 恢复窗口时）：挂载行 3 条（现报 error，应恒 1 条）——去重保留一条，或经确认修订 dev-loop §3 允许多锚点；待办行格式违规 1 处；6 条人工打勾 [x] 已被 ctx-fix 回收进 done.md，须抽查 (域: mcp-orchestration) 行内容与源一致性 (src: ai, 存量债专项 QC3-a)
 
 ## mcp-orchestration 待办（MO）
 

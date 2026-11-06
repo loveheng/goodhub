@@ -5,7 +5,6 @@ epic: system-assessment
 ---
 
 # system-assessment · 域内待办
-- [ ] [2026-10-19] (优化) (重:重) 存量债归本窗口处理（触发=本 epic 下次 ::bind / 恢复窗口时）：devlog 20 条待归并提炼进 memory.md 并清空追加区；todos.md 13 条人工打勾 [x] 已被 ctx-fix 回收进 done.md，须抽查 (域: system-assessment) 行内容与源一致性 (src: ai, 存量债专项 QC3-a)
 
 > 2026-10-15 全仓「文档面↔代码层」对账产出（结论与证据见 `memory.md`）。
 >

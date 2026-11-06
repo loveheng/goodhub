@@ -296,3 +296,46 @@ format: v2
 - [2026-11-05] [5/5] 验证分层下压：integration_test 驱动命令收进 workflow skill，真机只留 L2 FSI/电池白名单/跨进程 Binder 等系统级项 (src: ai) (域: misc)
 - [2026-11-05] 调试桥语义树：治理真机实证的 7/34 零尺寸 bounds（改取最近有尺寸的 RenderBox）+ 给关键控件补 ValueKey / Semantics label，为 [4/5] tap_node 提供稳定寻址 (src: ai) (域: misc)
 - [2026-11-05] [6/5] 把 packages/app_debug_bridge 迁为独立仓（沿用 rich_text 同级仓范式：移动目录 + 改 pubspec 一行 path + 仓版本与 tag），并给其他 App 出接入清单（Deep Link scheme 与路由白名单按各自宿主配置、CLI 脚本随包分发） (src: ai) (域: misc)
+- [2026-11-06] 2026-11-06] (功能) goodshare 侧 debug 桥随机端口同型改动（用户执行，跨仓移交）：`lib/debug/debug_wiring.dart:16` 删 `kGoodshareDebugBridgePort = 8768` 常量、`lib/main.dart:198` 改 `bridge.start(port: 0)`（OS 随机分配，logcat [debug-bridge] 行唯一事实源，统一入口 CLI 零改动）；goodshare 全量测试后真机冷启动复验桥行与 ai-e2e (src: agent, goodhub 随机端口改造同型) ✓ 2026-11-06 用户授权代改，已落地（analyze 0 + 全量 839 绿）
+- [2026-11-06] 端侧超窗时 GenieX SDK 行为未实证 → 已收口：硬失败 RuntimeException + 空产出干净闭合，UNCERTAIN 删标 (域: misc)（人工打勾回收）
+- [2026-11-06] 端侧采样参数下发链：recommendedSampling 落地并下发 GenerationConfig，规格迁 model-specs.json (域: on-device)（人工打勾回收）
+- [2026-11-06] P2-12 Prefix Cache 幻影声称退役（11-03 KV 实证定谳，三处注释同轮修正）(域: on-device)（人工打勾回收）
+- [2026-11-06] GGUF hexagon NPU 通路清单补件：v79 补件完成，终态 = NPU 首选 + 按模型负记忆 NpuFitStore (域: on-device)（人工打勾回收）
+- [2026-11-06] 熔断 trip / 卸载 reason 随下次动作打日志（breaker lastEventReason 留痕 + 装载入口打上次事件）(域: on-device)（人工打勾回收）
+- [2026-11-06] qairt 主路 0.3.5 性能补测：前置门硬失败（0.3.5 QNN err 5000 加载不了新版 .bin），整包降版方案否决 (域: on-device)（人工打勾回收）
+- [2026-11-06] ngl=-1 修复 commit + push（5185542，真机 31.5~32.7 tok/s，5.6×）(域: on-device)（人工打勾回收）
+- [2026-11-06] lessons.md 13 条归并（QC5 已执行）+ 4 处待办行格式违规（ctx-fix 已修）——条目剩余部分（GROOM 洗盘持续）并入全局存量债专项总账 (域: misc)（洗盘合并）
+- [2026-11-06] mcp-orchestration 挂载行 3 条裁决项并入存量债专项总账子项② (域: misc)（洗盘合并）
+- [2026-11-06] chatmessage 存量债触发条回收：QC5 已归并（devlog 残剩 2 条为成对变更/验证），条目过时 (域: chatmessage)（域内体检回收）
+- [2026-11-06] m4 存量债触发条回收：QC5 已归并，条目过时 (域: m4)（域内体检回收）
+- [2026-11-06] mcp-orchestration 存量债触发条回收：QC5 已归并；挂载行裁决部分此前已并入 misc 总账子项②（重复登记） (域: mcp-orchestration)（域内体检回收）
+- [2026-11-06] page-revamp 存量债触发条回收：QC5 已归并（SSOT 修正与验证配对均已结清），条目过时 (域: page-revamp)（域内体检回收）
+- [2026-11-06] system-assessment 存量债触发条回收：QC5 已归并，条目过时 (域: system-assessment)（域内体检回收）
+- [2026-11-06] thirdconnect 存量债触发条回收：QC5 已归并，条目过时 (域: thirdconnect)（域内体检回收）
+- [2026-11-06] chatmessage「§2.4 投影平面按工作区隔离」依赖跟踪条删除：与 mcp-orchestration MO6-阶段二重复登记，归 MO6 主线域承载 (域: chatmessage)（重复合并）
+- [2026-11-06] m4「reverseDemo 暂缓（FC6）」删除：与 misc 全局反向 Server 裁决条重复，归 misc 承载 (域: m4)（重复合并）
+- [2026-11-06] on-device「复活端侧模型管理链」删除：被 11-03 用户盘点裁决 A1「现在不做（导入制已覆盖）」覆盖 (域: on-device)（域内体检回收）
+- [2026-11-06] on-device「QAIRT 运行库单源化」删除：标题已标 SSOT 修正但正文仍是被推翻的单源化描述（自相矛盾），实施语义由 #68 增配通道泛化条承载（已补取代注记） (域: on-device)（域内体检回收）
+- [2026-11-06] chatmessage「§10.1 G8 前后台生命周期探针」流转：被 on-device 生命周期线吸收（S14b 前台探测上移混合路由主体推导处 + trimMemory 护栏 + FGS 绑定防冻结） (域: chatmessage)（域内体检回收）
+- [2026-11-06] on-device「端侧机制审计 P3 清理五项」归并：五项中 ⑤已修（10-30）、③④已被后续轮消化（isWarmed/unavailableReason 无命中、fail-open 有意 DEGRADE 口径在案）、①② 残差并入 on-device F5 清账专项统一施工（避免双条目双标准） (域: misc)（域内体检归并）
+- [2026-11-06] on-device「session-mirror drift @generate」收口：核实 11-05 debug-bridge 轮已修（reconcileLoadStateFromTicket 权威对账 + bench 调用点，真机回归实证），条目滞后残留 (域: on-device)（域内体检回收）
+- [2026-11-06] on-device「端侧运行时性能统计透出 UI」落地：引擎流收口采集 TTFT/TPOT→tok/s（口径与 bench 同源）+ lastGenPerf 快照，设置·端侧模型配置段只读读数行（经 F16 门面 OnDeviceGenPerf 导出）；test/llm 349 全绿 + analyze 0 (域: on-device)（零星小改批）
+- [2026-11-06] L1 真机调试会话日志采集（挂 misc，ADR 2026-11-06）：在 scripts/agent-tools/debug-bridge.sh 加 capture start/stop/tail —— ①流式 logcat -v threadtime 按 pid 集（主进程 + :engine）过滤落 device.log，设大小上限与轮转（端侧实证单轮 290 万行）；②按 state.logRevision 变化触发 logs --since 0 全量重取 + 本地按 (at,level,message) 去重落 app.jsonl（绕开 AppLog 2000 条满后 since 索引恒失效）；③meta.json 存设备/包名/pid 集/端口/起始时间/构建态；④focus 只出 warning/error、关键词命中与时间线；复用 --app 分层防同机多 App 串台。边界：lib/、../app_debug_bridge/、MCP 工具面、/debug/logs 公共契约零改动。同轮同步 docs/design/ai-debug-bridge.md §9 + .agents/skills/goodhub-workflow/SKILL.md §2.2 + docs/project/index.md 落点行。验收 = debug-bridge.sh --self-test 参数金丝雀 + 真机一轮全链路（设计稿 §11 六步）+ 洪泛上限实证。红线：采集文件禁入 git 与 context/（含桥 token 与用户输入），默认 /tmp 落盘并定期清理；只按主 pid 过滤会丢 :engine 日志 (src: 用户, L1立项) (域: misc)
+- [2026-11-06] 跨仓只读评估：goodshare / shiguang / goodTemplate 三仓各持 scripts/agent-tools/debug-bridge.sh 副本（416 / 356 / 356 行，capture 命中均为 0，goodshare 副本另有 --package 定制），与 docs/design/ai-debug-bridge.md §11「消费仓无需自带 CLI 副本 / 禁双副本」漂移；沿用各仓副本将拿不到 L1 capture 且后续每次 CLI 改动需 ×4 同步（准入否决信号 #2 一票否决）。处置方向：统一走 goodhub 仓 CLI（--app / DEBUG_BRIDGE_APP_PACKAGE 按包名，三仓零改动可采），三仓副本退役或改一行薄指针——跨仓写入属移交件，待用户执行或显式授权；本仓仅可选在 map_app() 补 shiguang(app.shiguang.shiguang) / goodTemplate(com.goodhub.good_template) 两行别名（环境变量直传亦可零改动） (src: ai, 跨仓只读评估) (域: misc)
+- [2026-11-06] 存量 analyze info：lib/ui/gateway_loop_debug_page.dart:670 deprecated_member_use（'value'→'initialValue'，Flutter 3.33 弃用）——行号自 :635 漂移（2026-10-15 对账修正）；非 M4 范围，散修轮顺手清 (src: agent) (域: misc)
+- [2026-11-06] 本地插件发现通道（goodhub/binder_mcp discover）无响应时 chat_page _loadEndpoints 无限挂起：MethodChannel.invokeMethod 无超时，抛异常有 catch 兜底、挂起没有——宿主 Binder 服务假死（不崩也不回）时端点缓存/默认绑定/网关同步/引导卡全部不初始化，页面表现=永久空态无报错。收敛方向：scan() 或 _loadEndpoints 加超时兜底（超时按空目录继续） (src: ai, ux-hardening P0-1 实施发现) (域: misc)
+- [2026-11-06] 更新页安装失败提示「去系统设置允许安装未知应用」但无跳转：需 ACTION_MANAGE_UNKNOWN_APP_SOURCES 平台通道（或 app_settings 依赖——新依赖须先确认）；当前仅文案提示，用户须自己找系统设置 (src: ai, ux-hardening P0-3 收尾) (域: misc)
+- [2026-11-06] goodhub 侧 AI 能力承接无逐调用留痕：debug sink 仅启动级（warmup/ROUTE），goodshare 联调取证只能靠 goodshare 侧 job 证据——补 AppLog 逐调用事件（调用方/skill/引擎/耗时）进 debug 桥日志 (src: agent, 首次联调发现) (域: misc)
+- [2026-11-06] [short] (层:L2) (重:中) **P0-A 文件互斥实为对象互斥 → 跨实例并发静默丢数据**：core/storage/sequential_file_writer.dart:22 的 _tail 是**实例**字段（类名却自称 File Mutex 降格），而 memory_store.dart:138 / workspace_state_store.dart:43 / conversation_store.dart:80 的 underSupportDir 全是 factory 每次 new。生产装配点 main.dart:74、gateway_controller.dart:147、chat_page.dart:708+712（每 Run 一次）、memory_board_page.dart:60 各持独立队列，同写 memory.md / ops.log / workspace_states 下同一会话 JSON，读-改-写交错即丢失更新且无痕（同类隐患：memory_store.dart:146 与 workspace_state_store.dart:49 的复合单元队列同样实例级）。修法=按规范路径建**进程级 keyed 写队列**（新增 core/storage/keyed_write_queue.dart，SequentialFileWriter 与两个 store 的 _enqueue 一并委托同一 key）+ underSupportDir 同路径同实例；测试断言=两实例并发 append N 条最终行数恒为 N、两实例并发 upsert/addEntry 结果不丢、跨实例 settled 排空可见、队列 key 用后惰性回收不泄漏 (src: ai, 架构盘点 P0) (域: misc)
+- [2026-11-06] [short] (层:L1) (重:中) **GatewayController 无装配注入位 → 重扫与起服失败回滚两条路径无单测**：localPluginDiscovery 与 serverEndpointStore 在 gateway_controller.dart 内是顶层全局直引用（非字段），无法注入假件 → P0-B 落地的 _mounted 句柄释放与 start 失败 finally 回滚只能靠真机验收。修法=把两者提为可注入字段（默认取全局），再补「重扫 N 次 close 次数 == 旧 face 数」「绑端口失败后零残留」两条断言 (src: ai, P0-B 实施发现) (域: misc)
+- [2026-11-06] 直选路径严禁旁路 ResourceStore.import 校验闸门（存在性/10MB/utf8 严格解码/NUL 探测/tmp+rename 复制入库）：禁直接持原路径 attach——否则原文件改删致会话引用漂移，且击穿一期文本类与体积边界 (src: ai, 挂载点复盘) (域: misc)
+- [2026-11-06] [short] (层:L4) (重:轻) **测试 fixtures 时钟纪律（主体已修，剩普查尾巴）**：conversation_drawer_test 写死日期已改相对构造（2026-10-17）；纪律=凡「今天/昨天」类格式化断言一律相对构造，禁止写死绝对日期（注入时钟的 now 参数除外，属良性）。**剩余 = 同类普查**：test/ui/components_test.dart 多处写死 2026-10-11 的 lockedAt（现未与真实时钟比较故暂绿）——下次跑 UI 测试轮顺手改相对构造后收口 (src: ai, P0-C 全量测试发现；2026-11-06 洗盘收口改写) (域: misc)
+- [2026-11-06] (观测性) **session-mirror drift @generate**（2026-11-04 Qwen 轮新发现）：显式 loadModel 诊断路径（ON_DEVICE_BENCH_MODEL_DIR）装载后，主进程 loadState 镜像停在 unloaded 而 :engine=busy——每次 generate 刷 `[DEGRADE] session-mirror drift`，票据面兜底未断链（生成正常），观测债非阻塞 | 落点 `on_device_engine_aidl.dart` 显式装载链的 loadState 写回 (src: ai, Qwen 真机轮) (域: on-device)
+- [2026-11-06] 端侧运行时性能统计透出 UI：tok/s、TTFT、上下文占用（on_device_bench 数据已有，缺消费面）(层:L4)(重:轻) (src: ai) (域: on-device)
+- [2026-11-06] §9.4 多 Provider 缓存能力标记（Gemini 无状态，不建 `CachedContent` 生命周期） (域: chatmessage)
+- [2026-11-06] 按模型绑定的 chat template / 会话预设机制（Qwen/Gemma 模板差异大，换模型即换模板是端侧刚需；竞品按 HF 元数据自动选）(层:L3)(重:中) (src: ai) (域: on-device)
+- [2026-11-06] (long) llm_model.dart 内置目录三模型条目仍为代码数据（旧下载目录路径，有 manifest 云端覆盖通道；纯导入制后已边缘化）——随旧通道退役或迁配置时一并处置，暂登记防漂移 (src: ai) (src: ai) (域: on-device)
+- [2026-11-06] [P3] 本地插件 per-plugin 挂载开关：对齐远端节点 M4-T5 `enabled` 口径——`LocalPluginInfo` 增开关位 → 聊天页 ⚙ 面板开关（同签名也可摘）→ 装配/网关两处闸门加 `enabled` 过滤 → 摘除后向 PC 下行 `tools/list_changed`（§6 机制复用）；规范预留条款见 docs/design/local-plugin-access-trust.md §1.7 (src: agent, 建议序 #6) (域: m4)
+- [2026-11-06] **运行库增配通道泛化 + v79 合集包**（取代自 ~~#67 QAIRT 运行库单源化~~，2026-11-02 用户拍板推翻单源化 → 三下载点独立）：把 `GenieXInstaller` 下载骨架（双镜像 + sha256 pin + arch 抽取 + 旧版清理 + `recoverIfDriverChanged` 驱动指纹失效脏删重探）泛化为按「库族 × hexagonArch()」键控的通用增配通道，承载 GenieX AAR 与 LiteRT-LM NPU split 两个注册工件；v79 合集包 = 通道上的预组合工件（首发机零拼装）；`LiteRtLmRunner.NPU_VARIANT` 解绑（arch 键注入，非 v79 静默回落 GPU 的无感知降级改为显式提示）。与 DispatchProfile 准入探针轮合并施工（共享注册表结构与 arch 键） (src: 用户拍板 2026-11-02) (域: on-device)
+- [2026-11-06] (演进参考: IRIDIS 对比) Dart 侧熔断器演进 armed/disarm + exit-reason 状态机：装载前写 armed 标记，重启时 `getHistoricalProcessExitReasons`（REASON_CRASH_NATIVE/CRASH/SIGNALED/ANR）判定真崩溃才记坏，精确替代 onServiceDisconnected 启发式区分「真崩溃 vs LMK 处决」（对照 IRIDIS BackendCrashMemory，2026-11-02） (域: on-device)
+- [2026-11-06] **on-device 侧设计稿打断表述订正（跨 epic SSOT）**：`docs/design/on-device-capability.md` §2/§4（`EngineStatus.busy`「支持抢占」+ §4「绝不驳回用户」承诺）+ `docs/design/on-device-npu-deployment.md` §6.6（「前台对后台（抢占）…立即让出执行槽」+「原子抢占」）——订正为协作式打断口径（打断只在生成循环检查点生效、等待窗口耗尽 = 打断未生效、按策略性降级切云、不得重启引擎腾算力）；**红线 = 跨 epic SSOT 不单方改**，须与 on-device epic 排期对齐后同轮改（代码侧已在本轮 S14e 落地，文档侧滞后已登记） (src: ai) (域: misc)

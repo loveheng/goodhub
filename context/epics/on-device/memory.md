@@ -74,4 +74,4 @@ last-merge: none
 
 ## 断点
 
-- [断点] 下一步：① **观测债三件 + 采样 A/B 全收（2026-11-05 真机轮）**——drift 修复（reconcileLoadStateFromTicket）、归因过滤白名单扩充（session_loading 类不记 crash）、loadTimeoutSec 实现（§7 裁决 5，Qwen 声明 180 重导入落盘）、采样 A/B（A/C 干净零复读 → recommendedSampling 维持不写禁猜值；B 组长输入被 libggml-cpu 0.10.0 SIGSEGV 阻塞不可评）、tombstone 归因（libggml-cpu `ggml_cpu_extra_compute_forward` 两次复现，重评触发器 = geniex 升版 >0.10.0）。② 剩余待办：geniex 升版后重跑（hexagon NPU + libggml-cpu 崩溃 + B 组长输入复评三件合并触发）、session-mirror drift 已修待下次 bench 轮验证。③ debug-bridge 工具批两批全落地——批一（tap_bounds+前台守卫/wait_log/ui-tree NaN 容错/--file+stdin/device-log）；批二系统 UI 绕行（foreground 报前台包名+是否 GoodHub / system-ui 解析系统 UI 可点节点 / system-tap 系统级 tap）——**下次真机调试优先桥面语义端点，截图仅最后手段**：GoodHub 内 UI 用 tap_bounds（粘贴 ui-tree bounds），系统 UI（SAF/权限弹窗）先 foreground 判断再 system-ui 定位 + system-tap 驱动，等结果用 wait_log 非睡眠。已知限制：SAF 文件行仅 dump 出 click=false TextView，精确点选受系统 UI 交互限制（可后续增强 system-ui 输出 clickable 容器）。设备现态：干净包含全部修复 + Qwen 已重导入（meta 含 loadTimeoutSec=180）+ GenieX 增配 v0.10.0 已装
+- [断点] 下一步：验证批次 P0~P3 已收口（S11 classify 可迁移 / 12222 复评闭环 / P3 结论核验通过）——余项：P4 端侧 2B 工具调用质量实验（S2 前置，需写 bench tool-call 用例组）与 P5 ③摘要器接线待另行立项；上游 issue 提交待用户动作

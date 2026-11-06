@@ -10,6 +10,21 @@ last-merge: none
 
 ## misc
 
+### [2026-11-06] 真机调试日志采集：判 S2 能力补丁，按 L1 在 PC 侧 CLI 结构性引入（挂 misc） (src: 用户)
+
+**场景/痛点**：debug 调试时 adb logcat 与系统/其他 App 日志混杂、重点难找且易丢。真机取证（3B161700Y0600000）：main/system/crash/kernel 各 256 KiB 环形缓冲，main 已耗 250 KiB；当前缓冲 21220 行中目标 App 两进程（主 25531 + :engine 25575）仅约 54~65 行（≈0.3%）；`context/lessons.md` 端侧实证单轮 logcat 290 万行，目标日志被冲掉即不可恢复。CLI 现 `device-log` 是 `logcat -d | tail -N`、`wait_log` 每 2s 全量 dump，均无 pid 隔离、无流式采集、无落盘。App 侧已有 `AppLog`（2000 条 FIFO、内存不落盘、重启即清）+ `/debug/logs` since 游标，但 since 是「当前保留条数索引」，缓冲打满后 total 恒 2000 → 增量静默失效；崩溃/ANR/tombstone 只在 logcat 面可见，进程一死 AppLog 全丢。
+
+**可选方案（含否决理由）**：
+- A 在 App 内新增日志收集/落盘——**否决**：与 2026-10-30「内存态不落盘、重启即清」拍板冲突；要给 `DebugLogEntry` 加字段须改跨仓公共包 `../app_debug_bridge` 契约（准入否决信号 #4）。
+- B 每轮临时 `adb logcat > file` + 手写 grep——**否决（S2）**：命中 #1（会话状态跨命令共享）、#2（每轮/每 App/每子进程重写过滤与去重，一票否决）、#3（读会话文件 vs logcat -d 双路）、#5/#6。
+- C 在 `scripts/agent-tools/debug-bridge.sh` 引入 `capture` 会话采集子命令族——**采纳**。
+
+**最终决定**：判 **S2 能力补丁 → 结构性引入**，落点限 PC 侧 CLI：会话目录 = `meta.json`（设备/包名/pid 集含 `:engine`/端口/起始时间/构建态）+ `device.log`（**流式** `logcat -v threadtime` 按 pid 集过滤，从源头防环形覆盖；大小上限 + 轮转）+ `app.jsonl`（按 `state.logRevision` 变化触发 `logs --since 0` 全量重取 + 本地按 `(at,level,message)` 去重，绕开 since 索引失效）+ `focus`（只出 warning/error、关键词命中、时间线）。复用 `--app` 分层防同机多 App 串台。`lib/`、`../app_debug_bridge/`、MCP 工具面、公共 `/debug/logs` 契约 **零改动**。文档三处同轮同步 = `docs/design/ai-debug-bridge.md` §9 + `.agents/skills/goodhub-workflow/SKILL.md` §2.2 + `docs/project/index.md` 落点行；回归钉 = `debug-bridge.sh --self-test` + 真机一轮全链路（设计稿 §11 六步）。L2（改 `DebugLogEntry` 字段 / AppLog 落盘）暂不做，触发 = L1 暴露结构化面不够用且完成跨仓协调。
+
+**收敛条件**：立项触发 = 出现「日志被冲掉致排查失败」≥1 次，或需跨多轮 A/B 取证（当前 on-device P4 的 bench tool-call 用例组即属此类）；若仅偶发一次性排查，用 L0 流式 logcat + revision 触发重取即可，不立项。隐私/容量红线 = 采集文件禁入 git 与 `context/`（含桥 token 与用户输入，dev-loop 护栏 8）、默认 `/tmp` 并定期清理；端侧洪泛须设上限轮转；只按主 pid 过滤会丢 `:engine`。本轮未写任何代码。
+
+**AI 洞察**：真正让「收集」成立的不是 logcat 太吵，而是**两条通道都是易失态**——logcat 是 256 KiB 全系统环形缓冲，AppLog 是进程内 2000 条内存缓冲；一次性 `-d` 快照与 `since` 索引都建立在「缓冲没被覆盖」这个不成立的前提上。故正解是 PC 侧**流式读出 + 会话级落盘**，而非在 App 内再堆一层收集器；`/debug/logs` 满缓冲后 since 恒失效这个缺陷，只有把 revision 当触发信号、本地去重才能绕开。（约束后续工作：施工边界见 `context/todos.md` L1 立项条目 + `context/epics/misc/devlog.md` 立项 note；未走 `::remember`，memory 正文不改写）
+
 ### [2026-10-16] 窗口解耦（内核+多投影）准入判定：S2 结构性引入，Directory 优先于 Runtime (src: ai)
 
 **场景/痛点**：`mcp_servers.json` 被拼了 3 处（`chat_page:303` / `settings_page:268` / `gateway_controller:148`），其中网关那处不带旧 SharedPreferences 迁移参数——同一个「服务目录」三个消费点读到的内容可以不一致；装配逻辑 3 个调用点（chat / gateway / 联调页）各自重写；新增一个会话字段要改 3 处（声明/重置/持久化）。聊天页 `_send`(605-1110) 兼任装配中枢，`_GuardedExecutor`(65-80) 是 coordinator 件却住在 UI 文件。
