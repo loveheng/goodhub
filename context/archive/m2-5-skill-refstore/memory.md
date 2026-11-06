@@ -4,11 +4,13 @@ format: v1
 epic: m2-5-skill-refstore
 total-merged: 2
 last-merge: 2026-10-11
+kind: temp
+state: maintenance
 ---
 
-# m2-5-skill-refstore（已完结 2026-10-11 ::done）
+# m2-5-skill-refstore（临时 · 已完结 2026-10-11）
 
-- [挂载] docs/design/m2-5-skill-refstore.md（内容 SSOT：范围 / T1~T7 分解 / 各任务实现注记 / C-1~C-4 工程补齐）
+- [挂载] docs/design/m2-5-skill-refstore.md
 - 结论：M2.5 七任务（T1~T7）全完成并真机联调通过——契约 ai-app-split.md §3.6~§3.9（Tier 分类 / prompts CoW / resources 只读面 / progress SSE opt-in）+ goodshare prompts·resources·SSE 真实现；goodhub 协商垫片 / RefStore / 注水拦截 / 三级 Skill / CoW 继承 / callWithProgress 流式收侧
 - 关键拍板（ADR-006/007 随迁本目录 decisions.md）：D1 = goodshare 同程实现；D2 = Progress 走 POST 响应 SSE 帧流（opt-in）；C-2 查无 $ref 立即 isError 回填（AI 代决可推翻）
 - 联调修正：goodshare min_hub_version 1.0.0 → 0.1.0（占位错位致 CoW 全跳——单测只断言非不断言值的盲区，真机抓出）
@@ -17,5 +19,5 @@ last-merge: 2026-10-11
 
 ## 断点
 
-- [断点] 已完结（2026-10-11 ::done）——归档于 context/archive/m2-5-skill-refstore/，恢复流程不再读取；后继工作归 M3（UI 全量 + Subscriptions + Sampling）
+- [断点] 已完结：M2.5 T1~T7 全交付（双仓 240/792 绿 + 真机 CPH2767 联调过）；正式 epic 改判临时并终态归档，后继归 M3，4 处未结算标记转全局风险待办
 

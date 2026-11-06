@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-11-05
+updated: 2026-11-06
 ---
 
 # goodhub · 功能落点索引（数据）
@@ -87,7 +87,7 @@ updated: 2026-11-05
 | 端侧模型管理链（目录/下载/清单缓存） | `archive/local_model/`（**已归档，非 lib 代码**） | 零接线零测试，端侧推迟拍板未翻转前不复活；复活步骤见该目录 `README.md`；`lib/llm/llm_model.dart` 仍为活代码（被 `llm.dart` 引用） |
 | AI 真机调试桥（debug-only / loopback / Bearer；`/debug/state` · `/debug/logs` · `/debug/ui-tree` · `/debug/action` · `/debug/reset`） | **公共仓** `../app_debug_bridge`（同级独立仓，物理单副本；观测桥 + 控件语义树 + 动作面 + 路由注册表 + 日志端口；宿主薄适配 `lib/gateway/debug_bridge.dart` / `lib/ui/debug_ui_tree.dart` / `lib/ui/debug_actions.dart` / `lib/ui/debug_wiring.dart`） | 与 `:8766/mcp` 对外网关完全独立，不进 MCP 工具面；零宿主耦合：日志源 / 导航句柄 / 路由白名单三件全走注入端口，未注入回 501；日志 `since` 增量游标；bounds 现算逻辑像素 + `boundsSource` 标注 + 内部件收敛；迁独立仓时源码零改动（移动目录 + 改 pubspec 一行 path）；设计 SSOT = `docs/design/ai-debug-bridge.md` §7~§11；单测 `../app_debug_bridge/test/`（20 例）+ 宿主 `test/{gateway/debug_bridge_test,ui/debug_ui_tree_test}.dart` |
 | debug 直达路由（`goodhub://debug/<page>` → 白名单页面） | `android/app/src/{debug,profile}/AndroidManifest.xml` + `android/.../MainActivity.kt`（`getInitialRoute` / `onNewIntent`）+ `lib/ui/debug_routes.dart` + `lib/main.dart`（`onGenerateRoute` / `onGenerateInitialRoutes`） | 仅 debug/profile 有 scheme 入口，release 路由面编译期剔除；白名单 logs/gateway/settings，未知页不静默回落；单段初始路由避开 `/debug` 中间错误页与 `WidgetsApp` 的 `home` 断言；设计 SSOT = `docs/design/ai-debug-bridge.md` §8；单测 `test/ui/debug_routes_test.dart` |
-| AI 可调用调试工具（动作执行面 + CLI） | **公共仓** `../app_debug_bridge/lib/src/debug_actions.dart`（动作面）+ `lib/ui/debug_actions.dart`（宿主注入位映射）+ `lib/ui/debug_wiring.dart`（装配）+ `scripts/agent-tools/debug-bridge.sh`（toolbox 别名 `dbg`） | 动作 tap_node / set_text / navigate / ping；定位 key / label / text / type，失败回带候选节点；`set_text` 走 `EditableText.controller` 绕过 IME；`navigate` 显式丢弃结果 Future 防挂起；CLI 只做 forward + token + HTTP 透传（薄管道）；单测 `packages/app_debug_bridge/test/`（20 例）+ 宿主 `test/ui/debug_actions_test.dart`；设计 SSOT = `docs/design/ai-debug-bridge.md` §9~§10；命令出处 `.agents/skills/goodhub-workflow/SKILL.md` |
+| AI 可调用调试工具（动作执行面 + CLI） | **公共仓** `../app_debug_bridge/lib/src/debug_actions.dart`（动作面）+ `lib/ui/debug_actions.dart`（宿主注入位映射）+ `lib/ui/debug_wiring.dart`（装配）+ `scripts/agent-tools/debug-bridge.sh`（toolbox 别名 `dbg`；统一入口，`--app` 分层切换目标 App——按包名 pid 发现各自桥端口/token，防同机多 App 串台） | 动作 tap_node / set_text / navigate / ping；定位 key / label / text / type，失败回带候选节点；`set_text` 走 `EditableText.controller` 绕过 IME；`navigate` 显式丢弃结果 Future 防挂起；CLI 只做 forward + token + HTTP 透传（薄管道）；单测 `packages/app_debug_bridge/test/`（20 例）+ 宿主 `test/ui/debug_actions_test.dart`；设计 SSOT = `docs/design/ai-debug-bridge.md` §9~§10；`capture` 会话日志采集（双通道 / pid 集含 `:engine` / 分片轮转 / focus 重点，产物含 token 禁入 git 与 context，§12）；命令出处 `.agents/skills/goodhub-workflow/SKILL.md` |
 
 ## 文档落点
 

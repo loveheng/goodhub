@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-11
+updated: 2026-11-06
 ---
 
 > **名词映射（2026-10-16）**：本文件中的「服务大厅」= 现**设置页**（`lib/ui/settings_page.dart`）——聊天页 ⚙ 设置弹层已并入服务大厅并统一改名「设置」。历史决策/施工原文**保留不替换**，代码与现行文档以新名为准（合并记录见 [page-revamp.md](page-revamp.md)）。
@@ -65,3 +65,7 @@ updated: 2026-10-11
 - `flutter analyze` 0 issue + 单测全绿：RefStore（TTL/GC/启动清池/大 Payload 落盘）、能力协商降级矩阵（Tier 1/2 × prompts/resources/progress 有无）、Skill 分层加载、注水拦截挂起语义。
 - Tier 2 模拟 Server（仅 tools/list+call）全链路不抛异常、Skill 不注入、静态摘要标注「自动生成」。
 - 跨源 `$ref` 注水：未确认时请求挂起不下发；确认后目标 Server 收真实数据（日志断言 `$ref` 字符串零外泄）。
+
+## 决策日志
+
+- 前置拍板 D1/D2 见「前置决策」、工程补齐 C-1~C-4 见「工程补齐」；ADR-006/007 原文见 `context/archive/m2-5-skill-refstore/decisions.md`。

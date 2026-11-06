@@ -125,6 +125,7 @@ flutter run -d <DEVICE_ID> --debug       # 挂载真机联调
 adb logcat -s flutter:*                  # 过滤 Flutter 运行时日志（黑屏取证三件套查 lessons.md android-ops 节）
 toolbox run build-apk --install          # apk  # 构建 debug 包并 adb 安装（内置设备已装版本防降级守卫）
 toolbox run debug-bridge --device <ID> <state|logs|ui-tree|action|navigate|ping>  # dbg  # AI 调试桥 CLI（薄管道透传，端点契约见 docs/design/ai-debug-bridge.md）
+toolbox run debug-bridge --device <ID> capture <start|stop|tail|status> [--dir <path>]  # 会话级日志采集（流式 logcat + 桥结构化日志增量去重 + focus 重点；产物默认 /tmp/goodhub-capture，契约见 docs/design/ai-debug-bridge.md §12）
 ```
 
 > 装机纪律：`integration_test` 跑完后 `app-debug.apk` 会被测试壳入口覆盖，装机验证前必须先 `flutter build apk --debug` 重建正式入口（根因查 lessons.md android-ops 节）。
@@ -156,6 +157,8 @@ toolbox run build-apk --install                                     # ⚠️ 跑
 ```
 
 AI 自驱真机调试走 debug 桥（结构化观测 + 按锚点操作，替代截图猜坐标）：`toolbox run debug-bridge --device <ID> <state|logs|ui-tree|action|navigate|ping>`，契约见 `docs/design/ai-debug-bridge.md`。
+
+需跨多轮回看日志或做 A/B 对比时，先 `capture start` 起会话再操作，收尾 `capture tail` 看重点、`capture stop` 停采集。logcat 是全系统环形缓冲（各 256 KiB），一次性 `logcat -d` 只能拿到尚未被覆盖的尾部；采集原文含桥 token 与用户输入，禁止入库或写进 `context/`，用毕清理。
 
 ### 3. 打包与发布（Release Workflow）
 

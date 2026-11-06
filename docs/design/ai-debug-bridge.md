@@ -1,6 +1,6 @@
 ---
 status: draft
-updated: 2026-11-05
+updated: 2026-11-06
 ---
 
 # AI 真机调试桥（结构化观测替代截图猜测）
@@ -11,7 +11,7 @@ updated: 2026-11-05
 
 - 与 `McpGatewayServer`（:8766/mcp）**完全独立**：不共享会话、不复用投影与权限网关、不暴露 MCP 工具面，也不进对外契约面。
 - debug-only：`kReleaseMode` 启动硬拒；`main.dart` 以 `!kReleaseMode` 装配，release 编译期剔除，失败只留 DEGRADE 不阻断启动。
-- 恒绑 `127.0.0.1`，默认端口 8767；PC 经 `adb forward tcp:8767 tcp:8767` 访问。
+- 恒绑 `127.0.0.1`；端口由 OS 随机分配（`start(port: 0)`，杜绝跨 App 端口协调与被占静默起不来），实际端口随 token 打进 logcat `[debug-bridge] listening` 行（唯一事实源）；PC 经统一入口 CLI（`toolbox run debug-bridge`）访问，无需手工 forward。
 - 强制 `Bearer`：构造期 `Random.secure()` 生成 32B token，仅经 logcat 输出、每次启动轮换。Android loopback 对设备上其它 App 亦可见，回环本身不构成鉴权。
 
 ## 2. 端点契约
@@ -51,7 +51,7 @@ updated: 2026-11-05
 
 ## 7. 真机实证（PLQ110 / Android 17，2026-11-05）
 
-`build-apk --install` 装机 → `adb forward tcp:8767 tcp:8767` → logcat 取 token 后逐端点验证：
+`build-apk --install` 装机 → 统一入口 CLI（logcat 现取端口 + token）逐端点验证：
 
 - `/debug/state` 200（结构化元信息 + 端点清单）、无 token 401、`/debug/logs?since=0` 增量游标生效；`/debug/action` 与 `/debug/reset` 在端口未注入时 501 并回注端口名。
 - 同屏对照：`uiautomator dump` 16 节点；`/debug/ui-tree` 34 节点，34 个带 `bounds`、11 个带 `key`、19 个 `interactive`。结构化观测面成立。
@@ -71,9 +71,10 @@ updated: 2026-11-05
 
 - App 侧 `lib/ui/debug_actions.dart` 实现 `DebugBridge.actionHandler`：`tap_node` / `set_text` / `navigate` / `ping`。按 `key` / `label` / `text` / `type` 在 Element 树定位；优先调用控件自身点击回调（`via: callback`），无回调才按最近有效 RenderBox 中心派发指针事件（`via: pointer`）；`set_text` 经 `EditableText.controller` 注入，绕过 `adb input text` 的 IME 全角化。
 - 失败一律结构化：`node_not_found` 回带 12 个候选节点，`unknown_action` / `unknown_page` 回带可用项，不静默回落首页或假装成功。
-- 工具面 `scripts/agent-tools/debug-bridge.sh`（`toolbox run debug-bridge`，别名 `dbg`）：薄 CLI，只做 `adb forward` + logcat token 提取 + HTTP 透传，返回端点原始 JSON；`--json` 预检、`--self-test` 参数校验金丝雀。
+- 工具面 `scripts/agent-tools/debug-bridge.sh`（`toolbox run debug-bridge`，别名 `dbg`）：薄 CLI，只做 `adb forward` + 桥发现 + HTTP 透传，返回端点原始 JSON；`--json` 预检、`--self-test` 参数校验金丝雀。**统一入口 + `--app` 分层切换**：`--app goodhub`（默认）/ `--app goodshare`，按目标包名 pid 发现各自桥端口与 token（端口互异、token 隔离，防同机多 App 串台）；新 App 接入 = CLI 加一行别名映射，其他 App 可 `DEBUG_BRIDGE_APP_PACKAGE=<包名>` 直传。
 - `navigate` 显式丢弃 `pushNamed` 的结果 Future（该 Future 在路由 pop 才完成，等待会让 `/debug/action` 永不返回）。
 - 真机实证（PLQ110）：`ping` contextReady=true；`tap_node` 按 key 命中 `composer-attach` 且 `via=callback`；`set_text` 按 `type=EditableText` 注入成功；`navigate logs` 15s 内返回且语义树出现日志页；未命中与未知动作回带候选 / 可用项。回归钉 `test/ui/debug_actions_test.dart`（7 例）。
+- CLI 另提供 `capture` 会话级日志采集（`start` / `stop` / `tail` / `status`），把被测 App 日志外置成可回放会话文件，契约与边界见 §12。
 
 ## 10. 公共包抽取（多 App 复用）
 
@@ -89,6 +90,23 @@ updated: 2026-11-05
 2. **日志源**：实现 `DebugLogSink`（`length` / `revision` / `entries`）接到宿主自己的日志内核；不实现则 `/debug/logs` 回 501，其余端点不受影响。
 3. **装配**：设 `debugContextProvider` / `debugNavigatorProvider`（宿主 navigatorKey），建 `DebugRouteRegistry` 登记要直达的页面，`DebugBridge(logSink:, uiTreeProvider:, actionHandler: executeDebugAction)`，`if (!kReleaseMode)` 启动（失败只留痕，不阻断 App 启动）。
 4. **Deep Link**（可选）：宿主自定义 scheme（如 `<app>://debug/<page>`）+ Android 侧 `MainActivity.getInitialRoute()` / `onNewIntent` 翻成 `/debug/<page>`，`MaterialApp` 配 `onGenerateRoute` 映射同一批页面；冷启动与热启动两条路径都要验。
-5. **CLI**：把 `scripts/agent-tools/debug-bridge.sh`（或包内等价件）放进消费仓工具池，端口与 token 约定与本仓一致（8767 + logcat 取 token）。
+5. **CLI**：goodhub 仓 `scripts/agent-tools/debug-bridge.sh` 为统一入口（`--app <name>` 分层切换，按目标包名 pid 发现各自端口与 token；`DEBUG_BRIDGE_APP_PACKAGE=<包名>` 直传兜底）。`capture` 等通用能力只在统一入口实现，消费仓副本对 `capture` 转发到该入口并带各自默认包名，宿主专属命令（`discover` 等）留在各自仓；新 App 在统一入口加一行别名映射即可。
 6. **验收**：真机跑一轮「`state` → `ui-tree` → `action tap_node`（带 Key 的控件）→ `action set_text`（`type=EditableText`）→ `navigate` → `logs --since`」全链路，六步全绿才算接入完成。
 7. **不做**：不要在消费仓再复制一份实现（双副本分叉）——本仓 `rich_text` 的教训即此。
+
+## 12. 会话级日志采集（capture）
+
+CLI `capture` 把一次调试会话的日志外置为可回放文件。logcat 是全系统环形缓冲（真机实测 main / system / crash / kernel 各 256 KiB），`AppLog` 是进程内 2000 条 FIFO 内存缓冲，两者都易失；`/debug/logs` 的 `since` 是「当前保留条数索引」，缓冲打满后 `total` 恒为 2000，按 `since` 拉增量静默返回空。采集面因此落在 PC 侧 CLI，App 与公共包契约不变。
+
+| 命令 | 行为 |
+| --- | --- |
+| `capture start [--dir <path>] [--max-lines N] [--keep N] [--interval S]` | 取目标包名全部 pid（`ps -A`，主进程与 `:engine` 等子进程一并纳入），后台常驻采集器（`setsid` 起本脚本内部子命令），写会话元信息与桥凭据缓存 |
+| `capture status [--dir <path>]` | 采集器存活态、结构化日志条数、device 日志行数与分片数、目录体积 |
+| `capture tail [--dir <path>] [--lines N] [--all]` | 生成并打印 `focus.md`：结构化 warning / error、device 异常关键词命中、时间线首尾 |
+| `capture stop [--dir <path>]` | 按进程组 TERM 收尾（幂等），写 `stoppedAt` |
+
+**两条独立通道**：`device.NNN.log` = 流式 `adb logcat -v threadtime` 按 pid 集过滤、逐行 flush、每片 `max-lines` 行轮转并只留最近 `keep` 片（端侧洪泛实证单轮 290 万行，无上限会打爆磁盘）；`app.jsonl` = `/debug/state` 的 `logRevision` 变化时拉 `/debug/logs?since=0`，按 `(at, level, message)` 哈希本地去重追加。桥不可用时 device 通道继续采集，app 通道留 `[DEGRADE]` 并周期重试，不静默当空集合。
+
+**产物**：默认 `<DEBUG_BRIDGE_CAPTURE_DIR 或 /tmp/goodhub-capture>/session-*/`，含 `meta.json` / `pids` / `bridge.json`（600，缓存桥端口与 token）/ `app.jsonl` / `app.seen` / `device.NNN.log` / `focus.md` / `collector.log`。`focus` 输出对 `token=...` 脱敏；采集原文仍含桥 token 与用户输入，禁入 git 与 `context/`，用毕清理。
+
+**边界**：pid 集在 `start` 时固定，App 冷启动会换 pid 与 token，须重新 `capture start`；`bridge.json` 缓存使采集期间不依赖 logcat 里的桥启动行（该行会被环形缓冲冲掉）。`--json` 只回预检结论，不执行采集。回归钉 = `debug-bridge.sh --self-test` 参数金丝雀 + 真机 `start → 触发动作 → status → tail → stop` 全链路（含分片轮转与停后零残留进程）。
