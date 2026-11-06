@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-11-01
+updated: 2026-11-06
 ---
 
 # on-device-capability · 端侧能力公共服务设计
@@ -46,7 +46,7 @@ updated: 2026-11-01
   ```dart
   enum EngineStatus {
     ready,              // 就绪可用
-    busy,               // 执行中，支持抢占 / 策略 B 驳回
+    busy,               // 执行中（协作式打断：中断仅在生成循环检查点生效，见 §4 单任务互斥）
     assetMissing,       // 资产缺失（M4 起回归终态语义：真·未导入/校验不过）
     insufficientMemory, // 当前可用 RAM 低于门禁
     circuitBroken,      // 处于熔断保护期（引擎故障，需熔断器/人工介入）
@@ -95,7 +95,7 @@ updated: 2026-11-01
   - **在途 Token 清理（v2.5）**：`cancel` 触发后 Native 直接清空 RingBuffer 未消费在途 Token，下发单条 `finishReason: "cancelled"` 的 `EngineChunk` 后闭合流，避免序号不一致。
   - **KV-Cache 复用 = Prefix Cache 唯一主路线（v2.6 确认）**：多轮对话/固定上下文复用经 `truncateContext(keepTokens: n)` 回滚末轮 KV；**高频固定上下文（System Prompt / Agent 指令 / Tool 模板）截断对齐到固定分块（256/512 tokens），首次暖机跑完前缀将其 KV 保留在 NPU ION Buffer `[0, Prefix_Length)` 槽位，后续会话经 DMA 维持前缀 KV 指针不动、推理指针从 `Prefix_Length` 起写，免去重复 Prefill 算力**（详见 NPU 稿 §2.4）。**增量 Prefill 标记"未来探索项（需 SDK 动态图/Reshape 能力成熟）"，不作为本期验收标准**——NPU 静态图依赖编译期确定张量形状与 HTP 块对齐，动态长短增量 Prefill 易打乱 VTCM/SRAM Stationary 数据流、致编译失败或静默回退。
   - 平台实现经装配注入（沿用 `LlmBridge.kt` 范式）；`EngineChunk` 携带流式 `deltaText` / `finishReason` / `tokenUsage`。
-- **单任务互斥（v2.4 拍板，详见 NPU 稿 §6.6）**：端侧 NPU 引擎物理单重入，`:engine` **单执行槽 + 策略 B（后台任务快速驳回 `ServiceBusyException` 切云）**，**不维护堆积队列**；补充抢占规则——前台对后台可主动 `cancel` 让槽、前台连发新消息时对旧请求 `cancel(requestId)` 快速中断后执行最新请求，**绝不驳回用户**。
+- **单任务互斥（v2.4 拍板，详见 NPU 稿 §6.6）**：端侧 NPU 引擎物理单重入，`:engine` **单执行槽 + 策略 B（后台任务快速驳回 `ServiceBusyException` 切云）**，**不维护堆积队列**。~~补充抢占规则——前台对后台可主动 `cancel` 让槽、前台连发新消息时对旧请求 `cancel(requestId)` 快速中断后执行最新请求，**绝不驳回用户**。~~ **[SSOT 修正 2026-11-06：打断术语改协作式打断（打断语义实证收口，与 task-capability 评审修正同轮对齐）]**——底层算子阻塞不可切分，**中断只在生成循环检查点生效**：前台对后台、前台连发新消息仍对旧请求 `cancel(requestId)`，但取消请求须等旧生成到达检查点才被消费，**等待窗口耗尽不得假设打断已生效**（旧流继续占用执行槽，新请求按 `ServiceBusyException` 策略性降级切云）；**不得以重启引擎腾算力**（重启即冷装载，代价远超等待）。
 - **生命周期状态（v2.3，详见 NPU 稿 §4.1）**：引擎暴露 `ACTIVE → WARM-STANDBY(3~5min TTL) → COLD-EVICTED` 三态；`isAvailable()` 在熔断（§5 R7）或冷卸载未暖机时返回对应状态，调用方据其决定本地执行或云端降级。
 - **后端工厂**：`OnDeviceEngineFactory.resolve()` —— 先 `CapabilityProbe` 探测（`SoC 识别 → QNN/NeuroPilot 原生驱动与动态库可加载性 → NPU Delegate 初始化测试 → 系统可用 RAM 门禁`），再按芯片启发式（`Build.SOC_MANUFACTURER`：`qualcomm`→QNN；`mediatek`→NeuroPilot）选后端；**任一 NPU 后端不可用直接收口 `HybridCloudEngine` 纯云端，不回落 CPU 跑大模型**。
 - **复用既有**：`engineFor` 装配入口、`HybridCloudEngine` 云↔端路由、`OnDeviceResultSummarizer` 既有的「单一提取/分类 + 约束解码（Grammars/Regex）」职责（architecture §78 端侧职责硬约束不变）。
