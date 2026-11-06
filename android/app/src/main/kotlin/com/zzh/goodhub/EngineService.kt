@@ -682,13 +682,6 @@ class EngineService : Service() {
                     fun flush() {
                         val flushed = pending.size
                         try {
-                            // 诊断打点（S2-5 字节流腐化排查）：前三批 hex 采样。
-                            if (benchChunks <= 3 && pending.isNotEmpty()) {
-                                val hex = pending.take(16).joinToString(" ") {
-                                    "%02x".format(it)
-                                }
-                                Log.i(TAG, "flush #${benchChunks + 1} n=${pending.size} head=[$hex]")
-                            }
                             val payload = ByteArray(flushed)
                             for (i in 0 until flushed) payload[i] = pending[i].toByte()
                             dp.writer.writeToken(payload)

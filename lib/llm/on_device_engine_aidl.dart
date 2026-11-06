@@ -141,6 +141,11 @@ class AidlOnDeviceEngine
   @override
   ValueListenable<OnDeviceLoadState> get loadState => _loadState;
 
+  /// 最近一次端侧生成性能快照（W bench 消费面：tok/s / TTFT / 上下文占用
+  /// 透出 UI；收口时写入，见 [_closeWithFinish]；纯错误收口不写）。
+  final ValueNotifier<OnDeviceGenPerf?> lastGenPerf =
+      ValueNotifier<OnDeviceGenPerf?>(null);
+
   /// B-2 长时后台装载任务：运行中非 null；收口（ready/failed）经 whenComplete
   /// 置回 null，后续 enable 重新决策。disable 驱逐沿经代次号作废旧任务。
   /// 在途装载任务（单飞；§2.10 I7）与其去重键 = 目标 modelId（身份锚点
@@ -649,6 +654,13 @@ class AidlOnDeviceEngine
       table: _identityTable,
       onText: (delta) {
         self?.charsOut += delta.length;
+        // 性能透出（W 端侧 bench 消费面）：首块 = TTFT；分块计数供 TPOT 换算
+        //（口径与 on_device_bench 同源：tok/s = 1000/TPOT，TPOT = decodeSpan/(chunks-1)）。
+        final a = self;
+        if (a != null) {
+          a.ttft ??= a.sw.elapsed;
+          a.chunks++;
+        }
         if (!ctrl.isClosed) ctrl.add(EngineChunk(deltaText: delta));
       },
       onDecodeError: (error, id) {
@@ -662,7 +674,7 @@ class AidlOnDeviceEngine
     // EngineDiedException 快速失败——调用方（混合引擎）捕获即无缝切云，
     // 冷却窗口内绝不重初始化撞 FastRPC 僵尸通道。（检查在异步体内执行：
     // generate 保持同步签名返回流。）
-    final entry = _ActiveGenerate(requestId, ctrl, detok);
+    final entry = _ActiveGenerate(requestId, ctrl, detok, promptChars: prompt.length);
     self = entry;
     _active[requestId] = entry;
     Future<void>(() async {
@@ -864,10 +876,8 @@ class AidlOnDeviceEngine
   /// S2-5 熔断全链验证诊断面已退役（F5 清账 2026-10-31）：diagPanic PATCH
   /// 四处（AIDL/Service/Bridge/Dart）单 commit 摘除——熔断链已由
   /// kEngineInterruptCodes 消费路径与真机回归钉承载，不再保留模拟炸驱动口。
-
-  /// 熔断器状态观测（诊断用）：isBroken / inCooldown 快照。
-  Future<String> diagBreakerState() async =>
-      'broken=${await breaker.isBroken} cooldown=${breaker.inCooldown}';
+  /// diagBreakerState 快照面随 ON_DEVICE_BREAKER_RESET 开关一并退役
+  ///（F5 清账 2026-11-06：breaker 状态经 lastEventReason 留痕面可观测）。
 
   @override
   Future<void> cancel(String requestId) async {
@@ -926,7 +936,6 @@ class AidlOnDeviceEngine
   /// 同刻至多一个活跃生成（§6.6），喂给全部活跃流（幂等防御同旧口径）。
   void handleDataBatch(Uint8List batch) => _onDataBatch(batch);
 
-  int _batchDiagCount = 0;
   int _recvBytes = 0;
   bool _recvDiagDone = false;
 
@@ -941,15 +950,6 @@ class AidlOnDeviceEngine
     for (final active in _active.values) {
       _armWatchdog(active.requestId);
     }
-    // 诊断打点（S2-5 字节流腐化排查）：批次到达时的活跃流集合——§6.6 单执行
-    // 槽下恒应为 1，>1 即 stale 流残留（cancel 未清 _active / onFinished 丢失），
-    // stale 解码器先抛异常会中断 forEach 饿死活流。
-    if (_batchDiagCount < 6 && _active.length != 1) {
-      _batchDiagCount++; // C2 修正：原 `final int = 0` 恒真，每批必打（洪泛隐患）
-      // ignore: avoid_print
-      print('[diag] batch #$_batchDiagCount actives=${_active.keys.toList()} '
-          'len=${batch.length} head=${batch.take(16).map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}');
-    }
     for (final active in _active.values) {
       active.bytesIn += batch.length;
       try {
@@ -963,12 +963,12 @@ class AidlOnDeviceEngine
         // 的 listener → **整条数据面投递链就此饿死**（后续轮次永远收不到
         // 字节 = 「没有输出」）。首次失败打对账包：累计接收字节数 + 失败批
         // 前的 48B 现场——与写侧「flushed cum=NB」对账，区分「投递丢字节」
-        // 与「解码器状态」。
+        // 与「解码器状态」。F5 清账：诊断 print 改规范 DEGRADE 通道（一次性
+        // 取证钉保留，洪泛面 _batchDiagCount/batch 打点已退役）。
         if (!_recvDiagDone) {
           _recvDiagDone = true;
-          // ignore: avoid_print
-          print('[diag] first decode fail recvCum=$_recvBytes B head='
-              '${batch.take(48).map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')} $e');
+          debugPrint('[DEGRADE] on_device first decode fail recvCum=$_recvBytes B '
+              'head=${batch.take(48).map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')} $e');
         }
       }
     }
@@ -1028,6 +1028,21 @@ class AidlOnDeviceEngine
     debugPrint('[on_device] stream close accounting requestId=${active.requestId} '
         'bytesIn=${active.bytesIn} charsOut=${active.charsOut} '
         'decodeErrors=${active.detok.decodeErrors}');
+    // 性能透出（W bench 消费面）：有产出才算（纯错误收口不污染读数）。
+    if (active.ttft != null && active.charsOut > 0) {
+      final total = active.sw.elapsed;
+      final decodeSpan = total - active.ttft!;
+      final tpotMs = active.chunks > 1
+          ? decodeSpan.inMicroseconds / 1000 / (active.chunks - 1)
+          : 0.0;
+      lastGenPerf.value = OnDeviceGenPerf(
+        ttftMs: active.ttft!.inMilliseconds,
+        totalMs: total.inMilliseconds,
+        tokPerSec: tpotMs > 0 ? 1000 / tpotMs : 0.0,
+        outputChars: active.charsOut,
+        promptChars: active.promptChars,
+      );
+    }
     if (!active.ctrl.isClosed) {
       active.ctrl.add(EngineChunk(
         deltaText: '',
@@ -1080,7 +1095,28 @@ class AidlOnDeviceEngine
       final support = await getApplicationSupportDirectory();
       final evidence =
           await readTombstoneEvidence('${support.path}/tombstone');
-      final cause = classifyEngineDeath(evidence);
+      var cause = classifyEngineDeath(evidence);
+      // armed/disarm 演进（对照 IRIDIS，2026-11-06）：runtimeTerminated 是
+      // 墓碑排除法的模糊带（FLAG_READY 无栈 = LMK 处决与真崩溃同象）——
+      // 查系统权威退出理由（ApplicationExitInfo，API 30+；空 = 无增量证据
+      // 维持原判）细分：REASON_LOW_MEMORY(3) → lmkSigkill（软故障，归棘轮）；
+      // REASON_CRASH(4)/CRASH_NATIVE(5)/ANR(6) → hardCrash（硬故障，归熔断）。
+      // REASON_SIGNALED/OTHER 维持原判（自杀冷重载已由重启窗口豁免承载）。
+      if (cause == EngineDeathCause.runtimeTerminated) {
+        final raw = await _binding.engineExitReason();
+        final reason = int.tryParse(raw.split('|').first);
+        const lowMemory = 3, crash = 4, crashNative = 5, anr = 6;
+        final refined = switch (reason) {
+          lowMemory => EngineDeathCause.lmkSigkill,
+          crash || crashNative || anr => EngineDeathCause.hardCrash,
+          _ => null,
+        };
+        if (refined != null) {
+          debugPrint('[on-device] death cause refined by exit-reason: '
+              'runtimeTerminated → $refined (raw=$raw)');
+          cause = refined;
+        }
+      }
       _lastDeathCause = cause;
       _lastDeathCauseAt = DateTime.now();
       final probe = await ChannelLlmEngine().deviceProbe();
@@ -1182,12 +1218,44 @@ class AidlOnDeviceEngine
   }
 }
 
+/// 最近一次端侧生成性能快照（不可变；供配置页只读透出）。
+class OnDeviceGenPerf {
+  const OnDeviceGenPerf({
+    required this.ttftMs,
+    required this.totalMs,
+    required this.tokPerSec,
+    required this.outputChars,
+    required this.promptChars,
+  });
+
+  /// 首块到达时延（Dart 发起 generate → 首个流块，含全链）。
+  final int ttftMs;
+  final int totalMs;
+
+  /// 解码速率 = 1000/TPOT（口径与 on_device_bench 同源）。
+  final double tokPerSec;
+  final int outputChars;
+
+  /// 本流 prompt 字符数（上下文占用估算原料，中文 ≈1.3 字/token）。
+  final int promptChars;
+}
+
 class _ActiveGenerate {
-  _ActiveGenerate(this.requestId, this.ctrl, this.detok);
+  _ActiveGenerate(this.requestId, this.ctrl, this.detok,
+      {required this.promptChars});
 
   final String requestId;
   final StreamController<EngineChunk> ctrl;
   final StreamingDetokenizer detok;
+
+  /// 本流请求 prompt 字符数（性能透出：上下文占用读数的原料）。
+  final int promptChars;
+
+  /// 性能透出计时（W bench 消费面，口径与 on_device_bench 同源）：
+  /// sw = 流建立起总表；ttft = 首块到达；chunks = 分块计数（TPOT 换算）。
+  final Stopwatch sw = Stopwatch()..start();
+  Duration? ttft;
+  int chunks = 0;
 
   /// 每流对账计数（取证钉）：bytesIn = 本流解码器实收字节；charsOut =
   /// deltaText 累计字符。收口打点三值一分定位丢字节环节。

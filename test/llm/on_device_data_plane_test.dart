@@ -135,7 +135,9 @@ void main() {
 
     expect(s.errors.single, isA<EngineDiedException>());
     // 无任何 breaker.report(countable:true) 触发（onEngineDied 才计数）。
-    expect(await engine.diagBreakerState(), 'broken=false cooldown=false');
+    // 熔断面直查（diagBreakerState 已随 F5 退役）：broken/cooldown 双 false。
+    expect(await engine.breaker.isBroken, isFalse);
+    expect(engine.breaker.inCooldown, isFalse);
   });
 
   test('startDataWorker 先于 startGenerate（消费端先于生产端，防丢 token）', () async {
@@ -177,7 +179,9 @@ void main() {
 
     expect(errors.single, isA<EngineDiedException>());
     // 数据面缺失属引擎死亡类环境事件：不计熔断。
-    expect(await engine.diagBreakerState(), 'broken=false cooldown=false');
+    // 熔断面直查（diagBreakerState 已随 F5 退役）：broken/cooldown 双 false。
+    expect(await engine.breaker.isBroken, isFalse);
+    expect(engine.breaker.inCooldown, isFalse);
   });
 
   test('release：stopDataWorker 先于 releaseEngine（数据面先行收口）', () async {
@@ -220,7 +224,9 @@ void main() {
     // 流必须自行收口（EngineDiedException → 混合引擎切云），绝不能永挂。
     await done.future.timeout(const Duration(seconds: 5));
     expect(errors.single, isA<EngineDiedException>());
-    expect(await engine.diagBreakerState(), 'broken=false cooldown=false');
+    // 熔断面直查（diagBreakerState 已随 F5 退役）：broken/cooldown 双 false。
+    expect(await engine.breaker.isBroken, isFalse);
+    expect(engine.breaker.inCooldown, isFalse);
   });
 
   test('端侧流看门狗：字节到达即重置（长生成不被误杀）', () async {

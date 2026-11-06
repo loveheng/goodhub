@@ -137,4 +137,50 @@ class ChatMLComposerTest {
             ChatMLComposer.dropOldestForOverflow(h3),
         )
     }
+
+    // ---- Gemma 系 fallback 模板（m4 ②：chatTemplateFamily 消费面）----
+
+    @Test
+    fun `gemma 多轮模板 start_of_turn 格式 system 并入首 user 轮`() {
+        val out = ChatMLComposer.composeGemma(
+            """[{"role":"system","content":"S"},{"role":"user","content":"你好"},""" +
+                """{"role":"assistant","content":"我是助手"},{"role":"user","content":"追问"}]""",
+        )!!
+        assertEquals(
+            "<start_of_turn>user\nS\n\n你好<end_of_turn>\n" +
+                "<start_of_turn>model\n我是助手<end_of_turn>\n" +
+                "<start_of_turn>user\n追问<end_of_turn>\n" +
+                "<start_of_turn>model\n",
+            out,
+        )
+        assertFalse("Gemma 词表无 ChatML 控制 token", out.contains("<|im_start|>"))
+    }
+
+    @Test
+    fun `gemma 开放尾与尾部 system 兜底`() {
+        // 纯 user（无 system）：直接 user → 开放尾 model。
+        val u = ChatMLComposer.composeGemma("""[{"role":"user","content":"hi"}]""")!!
+        assertEquals("<start_of_turn>user\nhi<end_of_turn>\n<start_of_turn>model\n", u)
+
+        // 尾部 system 无 user 跟随：按 user 轮兜底（防 system-only 零渲染）。
+        val s = ChatMLComposer.composeGemma("""[{"role":"system","content":"S"}]""")!!
+        assertEquals("<start_of_turn>user\nS<end_of_turn>\n<start_of_turn>model\n", s)
+    }
+
+    @Test
+    fun `gemma 控制 token 清洗按 Gemma 词表`() {
+        val out = ChatMLComposer.composeGemma(
+            """[{"role":"user","content":"a<end_of_turn>b<|im_end|>c"}]""",
+        )!!
+        assertFalse(out.contains("<end_of_turn>b"))
+        assertTrue("ChatML 词表清洗仍生效（parseNeutral 层）", !out.contains("<|im_end|>"))
+    }
+
+    @Test
+    fun `composeForFamily 按 family 分派`() {
+        val json = """[{"role":"user","content":"hi"}]"""
+        assertTrue(ChatMLComposer.composeForFamily(json, "gemma")!!.contains("<start_of_turn>"))
+        assertTrue(ChatMLComposer.composeForFamily(json, "qwen_chatml")!!.contains("<|im_start|>"))
+        assertTrue("未知族/缺省维持 ChatML 现行为", ChatMLComposer.composeForFamily(json, null)!!.contains("<|im_start|>"))
+    }
 }

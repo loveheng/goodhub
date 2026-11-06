@@ -506,14 +506,15 @@ class GenieSession(private val context: Context) : com.zzh.goodhub.engine.OnDevi
                     Log.w(TAG, "[DEGRADE] applyChatTemplate failed → fallback: $it")
                 }.getOrNull()
             } else null
-        } ?: com.zzh.goodhub.engine.ChatMLComposer.compose(prompt)
+        } ?: com.zzh.goodhub.engine.ChatMLComposer
+            .composeForFamily(prompt, modelProfile?.chatTemplateFamily)
             .also { composed ->
                 if (composed != null) {
                     when (modelProfile?.chatTemplateFamily) {
-                        null, "unknown", "qwen_chatml" -> Unit
+                        null, "unknown", "qwen_chatml", "gemma" -> Unit
                         else -> Log.w(TAG, "[DEGRADE] ChatML fallback template vs " +
                             "model family=${modelProfile?.chatTemplateFamily} " +
-                            "（手写模板为 Qwen 假设，对该家族为 OOD——优先排查 applyChatTemplate）")
+                            "（手写模板无该族分派，OOD——优先排查 applyChatTemplate）")
                     }
                 }
             }

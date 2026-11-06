@@ -233,13 +233,9 @@ void* workerMain(void* arg) {
                     if (r == 0) postNull(w->port);
                     w->running.store(false, std::memory_order_relaxed);
                 } else {
-                    int calls = g_readCalls.fetch_add(1) + 1;
-                    static int lastLoggedPosted = -1;
-                    const int posted = g_postedBytes.load();
-                    if ((calls <= 3 || calls % 100 == 0) && posted != lastLoggedPosted) {
-                        lastLoggedPosted = posted;
-                        LOGW("drain #%d posted=%dB", calls, posted);
-                    }
+                    // F5 清账：drain 周期事件打点退役（post failed 等错误路径
+                    // LOGW 保留）。
+                    g_readCalls.fetch_add(1);
                 }
             }
         }
@@ -340,7 +336,7 @@ Java_com_zzh_goodhub_GdwNative_start(JNIEnv* env, jclass, jlong port,
         g_lastErrno.store(errno, std::memory_order_relaxed);
         return 0;
     }
-    LOGW("worker started sockFd=%d stopFd=%d epfd=%d", sockFd, stopFd, epfd);
+    // F5 清账：worker started 事件打点退役（启动失败路径 LOGW 保留）。
     w->running.store(true, std::memory_order_relaxed);
     // pthread_create 失败（EAGAIN/ENOMEM）在 Android 端侧进程（模型已占
     // ~1.9GB）下常为瞬时抖动或线程数瞬时触顶——有界重试（5ms 退避）。

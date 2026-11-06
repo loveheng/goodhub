@@ -147,6 +147,29 @@ object EngineServiceBridge {
 
     private fun handleMethodCall(activity: Activity, call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
+                // 熔断 armed/disarm 演进（对照 IRIDIS，2026-11-06）：系统权威退出
+                // 理由（ApplicationExitInfo，API 30+）——精确区分真崩溃
+                //（REASON_CRASH*/ANR）与 LMK 处决（REASON_LOW_MEMORY），细化
+                // 墓碑排除法的 runtimeTerminated 模糊带（FLAG_READY 无栈死亡）。
+                // <30 无此 API → 返回空串（调用方维持墓碑裁定原判）。
+                "engineExitReason" -> {
+                    if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) {
+                        result.success("")
+                    } else {
+                        runCatching {
+                            val am = activity.getSystemService(android.app.ActivityManager::class.java)
+                            val infos = am.getHistoricalProcessExitReasons(
+                                "${activity.packageName}:engine", 0, 1)
+                            if (infos.isEmpty()) ""
+                            else {
+                                val info = infos[0]
+                                // reason 名 + 附加状态（SIGKILL 时 description 带信号号）。
+                                "${info.reason}|${info.description ?: ""}"
+                            }
+                        }.onSuccess { result.success(it) }
+                            .onFailure { result.success("") } // 查询失败 = 无增量证据，维持墓碑原判
+                    }
+                }
                 "bind" -> {
                     bind(activity)
                     result.success(null)

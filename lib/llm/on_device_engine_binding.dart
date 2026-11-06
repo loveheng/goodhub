@@ -212,6 +212,19 @@ class OnDeviceEngineBinding {
     }
   }
 
+  /// `:engine` 上次退出的系统权威理由（熔断 armed/disarm 演进，
+  /// ApplicationExitInfo API 30+；native 桥 engineExitReason）。
+  ///
+  /// 返回 `reason|description`（reason = ApplicationExitInfo.reason 数值）；
+  /// API <30 / 无历史 / 查询失败 = 空串（调用方维持墓碑裁定原判）。
+  Future<String> engineExitReason() async {
+    try {
+      return await channel.invokeMethod<String>('engineExitReason') ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
+
   /// 绑定 `:engine` 独立进程（幂等：已绑定时为 no-op）。
   ///
   /// 失败不抛——端侧为可选加速路径，调用方（`HybridCloudEngine` 路由）

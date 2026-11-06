@@ -91,6 +91,65 @@ object ChatMLComposer {
         text.replace(Regex("<\\|(?:im_start|im_end|im_sep|endoftext)\\|>"), "")
 
     /**
+     * Gemma 系手写 fallback 模板（chatTemplateFamily = "gemma"；Gemma2/3 同构）：
+     * ```
+     * <start_of_turn>user
+     * …<end_of_turn>
+     * <start_of_turn>model
+     * …<end_of_turn>
+     * <start_of_turn>model        ← 开放尾：模型从此续写
+     * ```
+     * Gemma 官方模板**无 system 角色**——system 内容并入紧随其后的首个 user
+     * 轮（前缀 + 空行分隔，社区标准做法）；尾部 system 无 user 跟随时按 user
+     * 轮兜底（防御异常输入序列）。控制 token 清洗按 Gemma 词表
+     * （`<start_of_turn>`/`<end_of_turn>`）。
+     */
+    fun composeGemma(promptJson: String): String? {
+        val turns = parseNeutral(promptJson) ?: return null
+        val sb = StringBuilder()
+        var pendingSystem = StringBuilder()
+        for (t in turns) {
+            when (t.role) {
+                "system" -> {
+                    if (pendingSystem.isNotEmpty()) pendingSystem.append("\n\n")
+                    pendingSystem.append(t.content)
+                }
+                "user" -> {
+                    sb.append("<start_of_turn>user\n")
+                    if (pendingSystem.isNotEmpty()) {
+                        sb.append(pendingSystem).append("\n\n")
+                        pendingSystem = StringBuilder()
+                    }
+                    sb.append(sanitizeGemmaControlTokens(t.content))
+                        .append("<end_of_turn>\n")
+                }
+                else -> sb.append("<start_of_turn>model\n")
+                    .append(sanitizeGemmaControlTokens(t.content))
+                    .append("<end_of_turn>\n")
+            }
+        }
+        // 尾部 system 无 user 跟随：按 user 轮兜底（防 system-only 序列零渲染）。
+        if (pendingSystem.isNotEmpty()) {
+            sb.append("<start_of_turn>user\n").append(pendingSystem)
+                .append("<end_of_turn>\n")
+        }
+        sb.append("<start_of_turn>model\n")
+        return sb.toString()
+    }
+
+    /** 模板级清洗的 Gemma 侧（Gemma 词表控制 token；与 ChatML 侧同语义）。 */
+    fun sanitizeGemmaControlTokens(text: String): String =
+        text.replace(Regex("<(?:start|end)_of_turn>"), "")
+
+    /**
+     * 按 family 分派手写 fallback 模板（chatTemplateFamily 消费面，m4 ②）：
+     * gemma → [composeGemma]；null/unknown/qwen_chatml/其余未知族 → [compose]
+     * （ChatML 现行为，未知族 OOD 告警由调用方保留——分派只补已知族）。
+     */
+    fun composeForFamily(promptJson: String, family: String?): String? =
+        if (family == "gemma") composeGemma(promptJson) else compose(promptJson)
+
+    /**
      * 解析消息序列 JSON 为 SDK `ChatMessage[]`（官方 applyChatTemplate 入参）。
      * 中立解析之上的薄映射（2026-11-01 多栈构型：解析单源 = [parseNeutral]）。
      * 非法输入返回 null。清洗在 [parseNeutral] 层统一做（进 SDK 前最后一道）。
