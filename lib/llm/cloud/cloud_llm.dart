@@ -276,3 +276,23 @@ abstract interface class CloudLlmEngine {
     void Function()? onActivity,
   });
 }
+
+/// 多 Provider 缓存能力标记（SSOT §9.4，可选接口——零破坏：仅缓存语义
+/// 消费方按需查询，引擎抽象与既有实现/测试桩不加成员）。
+///
+/// - **Anthropic**：`supportsExplicitEphemeralCache = true`（ContentBlock 级
+///   显式 `cache_control: ephemeral` 打点，单请求断点硬性 ≤3，护栏见
+///   anthropic_chat_client）；`requiresDeterministicPrefixOnly = false`。
+/// - **OpenAI / DeepSeek**：全自动前缀匹配（门槛 1024 tokens）——
+///   `requiresDeterministicPrefixOnly = true`（仅需头部字节绝对恒定）；
+///   **绝不可发送 `cache_control` 字段**（`400`），supports 恒 false。
+/// - **Gemini**：无状态标准调用，不建 `CachedContent` 生命周期（§7.5 D-K ③，
+///   缓存收益主动舍去）——不并入本标记，无此接口 = 不参与缓存判定。
+abstract interface class ProviderCacheCapability {
+  /// 是否支持显式 ephemeral 缓存打点（仅 Anthropic = true）。
+  bool get supportsExplicitEphemeralCache;
+
+  /// 是否仅靠确定性前缀自动命中（OpenAI / DeepSeek = true；此类 provider
+  /// 客户端严禁序列化 cache_control 字段）。
+  bool get requiresDeterministicPrefixOnly;
+}

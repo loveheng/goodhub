@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../update/app_settings.dart';
 import '../update/installer.dart';
 import '../update/update_manifest.dart';
 import '../update/update_service.dart';
@@ -38,6 +39,9 @@ class _UpdatePageState extends State<UpdatePage> {
   String? _bootstrapError;
   // 下载取消标志（downloadApk 每 chunk 轮询；取消≠失败，中性呈现）。
   bool _downloadCancelled = false;
+  // 安装失败需「安装未知应用」授权（ux-hardening P0-3 收尾）：置位后展示
+  // 「去设置」直达按钮（Android 8+ 直达本包授权页），装完回来自动重试安装。
+  bool _needUnknownSourceSetting = false;
 
   void _say(String msg, _MsgTone tone) {
     if (!mounted) return;
@@ -200,10 +204,15 @@ class _UpdatePageState extends State<UpdatePage> {
       ),
     );
     if (confirmed != true) return;
+    setState(() => _needUnknownSourceSetting = false);
     try {
       await installApk(apkPath);
+      if (!mounted) return;
+      _say('已拉起系统安装器', _MsgTone.info);
     } catch (e) {
-      _say('$e（首次安装需在系统弹窗中允许「安装未知应用」）', _MsgTone.error);
+      _needUnknownSourceSetting = true;
+      _say('$e（首次安装需允许「安装未知应用」，可点下方「去设置」直达授权页）',
+          _MsgTone.error);
     }
   }
 
@@ -321,6 +330,14 @@ class _UpdatePageState extends State<UpdatePage> {
                           onPressed: _install,
                           icon: const Icon(Icons.system_update_alt),
                           label: const Text('安装'),
+                        ),
+                      // 安装失败且需「安装未知应用」授权：直达系统授权页
+                      //（Android 8+ 本包授权页，<8 应用详情页）。
+                      if (_needUnknownSourceSetting)
+                        OutlinedButton.icon(
+                          onPressed: AppSettings.openUnknownAppSourceSettings,
+                          icon: const Icon(Icons.settings_outlined),
+                          label: const Text('去设置'),
                         ),
                     ],
                   ),

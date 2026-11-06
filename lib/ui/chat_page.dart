@@ -39,6 +39,7 @@ import '../llm/on_device_engine.dart';
 
 import '../mcp/connection_manager.dart';
 import '../mcp/local_plugin_discovery.dart';
+import '../mcp/local_plugin_switches.dart';
 import '../mcp/trusted_plugins.dart';
 import '../mcp/server_endpoints.dart';
 import '../mcp/default_private_server.dart';
@@ -994,6 +995,9 @@ class _ChatPageState extends State<ChatPage>
             continue;
           }
         }
+        // per-plugin 挂载开关（m4 [P3]，§1.7）：用户主动摘除 = 静默跳过
+        //（无提示卡——主动关闭不是异常；重新开启走 ⚙ 设置 → 本地插件）。
+        if (!await localPluginMountAllowed(info, trusted)) continue;
         mountedLocals.add(info);
       }
       _watcher = StuckWatcher(onStuck: _markActiveCallStuck);

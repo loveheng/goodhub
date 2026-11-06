@@ -24,6 +24,8 @@ class MainActivity : FlutterActivity() {
         EngineServiceBridge.register(this, flutterEngine.dartExecutor.binaryMessenger)
         // GenieX 增配安装面通道（npu-geniex-runtime P2，设计稿 §7）
         GenieXBridge.register(this, flutterEngine.dartExecutor.binaryMessenger)
+        // 应用设置直达桥（ux-hardening P0-3 收尾）：goodhub/app_settings
+        AppSettingsBridge.register(flutterEngine.dartExecutor.binaryMessenger, this)
     }
 
     // AI 调试直达（仅 debug/profile Manifest 声明 goodhub://debug 入口）：

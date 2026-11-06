@@ -30,6 +30,7 @@ import '../llm/on_device_engine_aidl.dart' show sharedOnDeviceEngine;
 import '../mcp/local_plugin_discovery.dart';
 import '../mcp/mcp_client.dart';
 import '../mcp/server_endpoints.dart';
+import '../mcp/local_plugin_switches.dart';
 import '../mcp/trusted_plugins.dart';
 import '../mcp/sampling.dart';
 import '../mcp/transport/host_transport.dart';
@@ -124,6 +125,7 @@ class GatewayController {
 
   late final McpGatewayServer server;
   StreamSubscription<void>? _pkgSub;
+  StreamSubscription<void>? _switchSub;
   var _starting = false;
 
   /// 装配句柄表（serverId → [McpMount]；2026-10-17 P0-B）。
@@ -238,6 +240,9 @@ class GatewayController {
       await GatewayServiceChannel.start(); // G4：前台保活（失败 DEGRADE 不阻断）
       notifyToolsListChanged();
       _pkgSub ??= discovery.changes.listen((_) => rescan());
+      // per-plugin 挂载开关（m4 [P3]）：摘除/恢复 → 重扫 → facesChanged →
+      // tools/list_changed 下行（§6 机制复用，与包变更同构）。
+      _switchSub ??= localPluginSwitchChanges.listen((_) => rescan());
     } finally {
       _starting = false;
       // P0-B：起服失败零残留（装配成功但绑端口/后续步骤失败 → 回滚全部句柄）
@@ -248,6 +253,8 @@ class GatewayController {
   Future<void> stop() async {
     await _pkgSub?.cancel();
     _pkgSub = null;
+    await _switchSub?.cancel();
+    _switchSub = null;
     await server.stop();
     await _unmountAll(); // P0-B：停服释放全部装配句柄（client / connection）
     await GatewayServiceChannel.stop(); // G4：停保活（失败 DEGRADE 不阻断）
@@ -312,6 +319,13 @@ class GatewayController {
         debugPrint(
             '[DEGRADE] gateway: 跳过未信任第三方插件 ${info.serverId}'
             '（${info.packageName}）；请先在聊天页或 ⚙ 设置中信任');
+        continue;
+      }
+      // per-plugin 挂载开关（m4 [P3]，§1.7）：用户主动摘除（同签名也可摘）
+      // ——关 = 网关不再暴露该插件；记账进 blocked 段供 PC 排障。
+      if (!await localPluginMountAllowed(info, trusted)) {
+        blockedPlugins[info.serverId] = '已被用户停用（⚙ 设置 → 本地插件可重新开启）';
+        debugPrint('[DEGRADE] gateway: 跳过已停用插件 ${info.serverId}（${info.packageName}）');
         continue;
       }
       final client = discovery.createClient(info);

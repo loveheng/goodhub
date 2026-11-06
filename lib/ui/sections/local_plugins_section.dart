@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 
 import '../../coordinator/tool_catalog.dart';
 import '../../mcp/local_plugin_discovery.dart';
+import '../../mcp/local_plugin_switches.dart';
 import '../../mcp/trusted_plugins.dart';
 import '../components/server_tools_list.dart';
 import '../tokens/console_tokens.dart';
@@ -71,6 +72,8 @@ class _LocalPluginsSectionState extends State<LocalPluginsSection>
 
   var _plugins = const <LocalPluginInfo>[];
   var _trustedPackages = const <String>{}; // 已信任包名（同签名免确认仍显式标）
+  // per-plugin 挂载开关态（m4 [P3]：包名 → enabled；缺省 true）。
+  var _enabledMap = const <String, bool>{};
   StreamSubscription<void>? _changesSub;
   String? _error;
 
@@ -99,9 +102,14 @@ class _LocalPluginsSectionState extends State<LocalPluginsSection>
     try {
       final found = await widget.scan();
       var trusted = const <String>{};
+      final enabledMap = <String, bool>{};
       try {
         final tp = await TrustedPlugins.instance;
         trusted = tp.all().keys.toSet();
+        // per-plugin 挂载开关态缓存（m4 [P3]）：行内 Switch 渲染用。
+        for (final p in found) {
+          enabledMap[p.packageName] = await isLocalPluginEnabled(p.packageName);
+        }
       } on Object catch (e) {
         debugPrint('[DEGRADE] local-plugins-panel: 信任白名单读取失败按空: $e');
       }
@@ -109,11 +117,28 @@ class _LocalPluginsSectionState extends State<LocalPluginsSection>
       setState(() {
         _plugins = found;
         _trustedPackages = trusted;
+        _enabledMap = enabledMap;
         _error = null;
       });
     } catch (e) {
       debugPrint('[DEGRADE] local-plugins-panel: 初始化失败: $e');
       if (mounted) setState(() => _error = '本地插件读取失败：$e');
+    }
+  }
+
+  /// per-plugin 挂载开关切换（m4 [P3]，§1.7）：写持久 → 广播（网关重扫 →
+  /// tools/list_changed 下行，经 localPluginSwitchChanges 流，R4 断点保持）
+  /// → 刷新行内态。
+  Future<void> _togglePlugin(LocalPluginInfo info, bool enabled) async {
+    try {
+      await setLocalPluginEnabled(info.packageName, enabled);
+      if (!mounted) return;
+      setState(() => _enabledMap[info.packageName] = enabled);
+      widget.onFlash(enabled
+          ? '✓ 已启用 ${info.serverTitle}（网关与下次装配生效）'
+          : '✓ 已停用 ${info.serverTitle}（本机与网关均不再挂载）');
+    } on Object catch (e) {
+      widget.onFlash('⚠ 切换失败: $e');
     }
   }
 
@@ -301,11 +326,25 @@ class _LocalPluginsSectionState extends State<LocalPluginsSection>
                             runSpacing: 2,
                             crossAxisAlignment: WrapCrossAlignment.center,
                             children: [
+                              // per-plugin 挂载开关（m4 [P3]，§1.7）：关 =
+                              // 装配/网关均不挂载（同签名也可摘）。
+                              Switch(
+                                key: ValueKey('local-plugin-switch-${p.transportId}'),
+                                value: _enabledMap[p.packageName] ?? true,
+                                materialTapTargetSize:
+                                    MaterialTapTargetSize.shrinkWrap,
+                                onChanged: (v) =>
+                                    unawaited(_togglePlugin(p, v)),
+                              ),
                               Text(
-                                '已挂载（自动）',
+                                (_enabledMap[p.packageName] ?? true)
+                                    ? '已挂载（自动）'
+                                    : '已停用',
                                 style: TextStyle(
                                   fontSize: Fsz.microSm,
-                                  color: t.terminalMuted,
+                                  color: (_enabledMap[p.packageName] ?? true)
+                                      ? t.terminalMuted
+                                      : t.danger,
                                 ),
                               ),
                               // 默认私有 pill（方案 A：与节点卡同款行内态）。

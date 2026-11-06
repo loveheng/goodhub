@@ -113,10 +113,15 @@ class LocalPluginDiscovery implements LocalPluginSource {
 
   /// 拉扫已安装本地插件（宿主 PackageManager 扫描 + meta-data 解析）。
   /// 失败（通道不可用/宿主未就绪）→ 返回空目录，不抛（§1.2.4 零配置，失败即无）。
+  /// 超时兜底（ux-hardening P0-1）：宿主 Binder 服务假死（不崩也不回）时
+  /// invokeMethod 会无限挂起 → 端点缓存/默认绑定/网关同步全部不初始化；
+  /// 5s（与 BinderTransport 冷启等待窗口同量级）超时按空目录继续 + DEGRADE 留痕。
   @override
   Future<List<LocalPluginInfo>> scan() async {
     try {
-      final result = await _binderChannel.invokeMethod<String>('discover');
+      final result = await _binderChannel
+          .invokeMethod<String>('discover')
+          .timeout(const Duration(seconds: 5));
       if (result == null || result.isEmpty) return const [];
       final decoded = jsonDecode(result);
       if (decoded is! List) return const [];
@@ -124,6 +129,10 @@ class LocalPluginDiscovery implements LocalPluginSource {
         for (final e in decoded)
           if (e is Map<String, Object?>) LocalPluginInfo.fromJson(e),
       ];
+    } on TimeoutException {
+      debugPrint('[DEGRADE] local-plugin-discovery: scan timed out after 5s '
+          '(host binder unresponsive), continuing with empty catalog');
+      return const [];
     } on PlatformException catch (e) {
       debugPrint('[DEGRADE] local-plugin-discovery: scan failed: $e');
       return const [];

@@ -17,7 +17,13 @@ import 'cloud_http.dart';
 import 'cloud_llm.dart';
 import 'sse_parser.dart' show SseEvent;
 
-class AnthropicChatClient implements CloudLlmEngine {
+class AnthropicChatClient implements CloudLlmEngine, ProviderCacheCapability {
+  @override
+  bool get supportsExplicitEphemeralCache => true;
+
+  @override
+  bool get requiresDeterministicPrefixOnly => false;
+
   AnthropicChatClient({
     required this.baseUrl,
     required this.apiKey,

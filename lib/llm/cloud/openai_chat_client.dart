@@ -13,7 +13,13 @@ import 'cloud_http.dart';
 import 'cloud_llm.dart';
 import 'sse_parser.dart' show SseEvent;
 
-class OpenAiChatClient implements CloudLlmEngine {
+class OpenAiChatClient implements CloudLlmEngine, ProviderCacheCapability {
+  @override
+  bool get supportsExplicitEphemeralCache => false;
+
+  @override
+  bool get requiresDeterministicPrefixOnly => true;
+
   OpenAiChatClient({
     required this.baseUrl,
     required this.apiKey,
