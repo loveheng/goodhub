@@ -75,3 +75,9 @@ object MemoryGuardEvaluator {
         return null
     }
 }
+/*
+ * [配对阈值集 P1-c] 本文件两值（HELD_BUDGET 6GB / ABSOLUTE_FLOOR 1GB，:engine
+ * 运行期护栏）与主进程 Dart 侧 on_device_mem_gate.dart 三值（1.2/1.6/0.9GB，
+ * 装载前预检闸）为不同层、不同语义的配对阈值——重校准须两侧同步（对账数据 =
+ * [RESIDENCY] mem-gate / rss-sample 观测行）。跨进程强统一单源已评估否决。
+ */

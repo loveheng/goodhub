@@ -16,4 +16,4 @@ last-merge: 2026-11-07
 - P0 施工稿已定稿（文档第八节）：S-R0-a TTL 参数化（AIDL Bundle 缝，缺省零行为变化）/ S-R0-b Piggyback 观测面（驱逐四类+cold-reload+process-death 六分类，JSONL 账本 + logcat 镜像）/ S-R0-c 电池白名单独立入口。验证：docs-lint 通过；证据链 = initEngine Bundle 缝 / EngineLifecycle ttlMs 构造参数 / 驱逐原因四类规范串 / onEngineEvicted 汇入点三处（devlog 2026-11-07 归并）。
 
 ## 断点
-- [断点] 下一步：P1 施工稿定稿（文档第九节四批）；下一步 = 施工 P1-a（ResidencyPolicy 单源+TTL 矩阵）先行，P1-b 复用其策略对象
+- [断点] 下一步：P1 四批施工完毕（策略矩阵真机双档验证）；下一步 = ①观测面长期积累（policy 决策行 + 驻留样本）②W6 双模施工（依赖本批 Caller 分级，跨仓 §3.11.2 同轮立法前置）③P2/P3 按 ADR 触发

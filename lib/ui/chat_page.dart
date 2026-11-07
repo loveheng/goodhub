@@ -1713,6 +1713,7 @@ class _ChatPageState extends State<ChatPage>
                 // 模型入口（方案 B 底栏药丸）：来源短名常显 + 点击弹选择面板。
                 modelSummary: _modelSummary(),
                 onOpenModelPicker: _openModelPicker,
+                onFocusWarmup: OnDeviceAdmin.warmupTouch,
                 // 回车与发送钮统一走本分支（composer 不判 emptiness）：
                 // running 时按钮已变中止键，此处拦下并给 SnackBar；空输入同样
                 // 给一次性反馈（P1-9——桌面端 Enter 曾静默无反应，等同死控件）。

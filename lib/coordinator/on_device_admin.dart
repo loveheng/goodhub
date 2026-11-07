@@ -6,7 +6,8 @@ library;
 
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show ValueListenable, ValueNotifier;
+import 'package:flutter/foundation.dart'
+    show ValueListenable, ValueNotifier, debugPrint;
 
 import '../llm/geniex_runtime_binding.dart'
     show GenieXRuntimeControl, GenieXStatus, LiteRtLmNpuControl,
@@ -49,6 +50,17 @@ abstract final class OnDeviceAdmin {
 
   static final ValueNotifier<OnDeviceGenPerf?> _noGenPerf =
       ValueNotifier<OnDeviceGenPerf?>(null);
+
+  /// 聚焦 bind 预热（P1-d，on-device-residency）：输入框首聚焦触发
+  /// bind+waitReady（**不触权重装载**——懒加载立法不受影响）；预热失败静默
+  /// （首次请求自有快速暖机兜底）。
+  static Future<void> warmupTouch() async {
+    try {
+      await sharedOnDeviceEngine.warmup();
+    } on Object catch (e) {
+      debugPrint('[DEGRADE] warmup-touch: $e');
+    }
+  }
 
   /// 最近一次端侧生成性能透出（实现方未实现能力接口 = 恒 null 通知器）。
   static ValueListenable<OnDeviceGenPerf?> onDeviceLastGenPerf() {

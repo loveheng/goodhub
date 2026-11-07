@@ -310,9 +310,12 @@ class EngineService : Service() {
         isBusy = { slot.isBusy },
     )
 
-    /// R-P0 观测快照（S-R0-b）：电量/充电/省电/亮灭屏——驱逐沿事件瞬态随路
-    /// 采样（No Active Polling：sticky 广播同步读，零轮询零定时器）。
-    private fun residencyEnvSnapshot(): String {
+    /// R-P0 观测快照（S-R0-b）：电量/充电/省电/亮灭屏——事件沿同步读
+    /// （No Active Polling：sticky 广播 + PowerManager，零轮询零定时器）。
+    /// P1-a 升格：返回结构化 EnvSnapshot（策略矩阵消费同源）。
+    private fun residencyEnv(): com.zzh.goodhub.engine.ResidencyPolicy.EnvSnapshot {
+        val fallback = com.zzh.goodhub.engine.ResidencyPolicy.EnvSnapshot(
+            batteryPct = -1, charging = false, powerSave = false, interactive = true)
         return runCatching {
             val bm = getSystemService(android.content.Context.BATTERY_SERVICE) as? android.os.BatteryManager
             val pct = bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
@@ -323,8 +326,17 @@ class EngineService : Service() {
                     android.os.BatteryManager.BATTERY_STATUS_CHARGING
             } ?: false
             val pm = getSystemService(android.content.Context.POWER_SERVICE) as? android.os.PowerManager
-            "batt=$pct chg=$charging ps=${pm?.isPowerSaveMode} screen=${pm?.isInteractive}"
-        }.getOrElse { "snapshot-unavailable: $it" }
+            com.zzh.goodhub.engine.ResidencyPolicy.EnvSnapshot(
+                batteryPct = pct, charging = charging,
+                powerSave = pm?.isPowerSaveMode ?: false,
+                interactive = pm?.isInteractive ?: true)
+        }.getOrElse { fallback }
+    }
+
+    /// R-P0 观测快照字符串化（驱逐沿日志用——格式与 S-R0-b 账本对账）。
+    private fun residencyEnvSnapshot(): String {
+        val e = residencyEnv()
+        return "batt=${e.batteryPct} chg=${e.charging} ps=${e.powerSave} screen=${e.interactive}"
     }
 
     /// R-P0 软释放内存卫生采样：VmRSS/VmHWM（/proc/self/status 一次性读取）。
@@ -340,11 +352,36 @@ class EngineService : Service() {
     /// TTL 定时器（主线程 Handler；代次失配由状态机作废，防旧计时器杀新会话）。
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
+    // P1-a 驻留策略状态：末次请求主体（fg 标志回填）/ TRIM 让位 streak /
+    // 显式 TTL 覆盖（P0 诊断缝，>0 = 覆盖矩阵）。
+    private var lastGenerateForeground = false
+    private var trimPressure = false
+    private var trimPressureStreak = 0
+    private var residencyTtlOverrideMs = 0L
+
     private fun scheduleTtl(generation: Int) {
         mainHandler.removeCallbacksAndMessages(null)
+        // P1-a 驻留策略单源：TTL = 显式注入（P0 诊断缝）> ResidencyPolicy 矩阵
+        //（R7/R8：低电归零 / 压力让位 / 灭屏 1min / 充电 30min / external 搭便车 /
+        // 缺省 5min）——effectiveTtlMs 缺省值与矩阵缺省一致（缺省路径零变化）。
+        val caller = if (lastGenerateForeground)
+            com.zzh.goodhub.engine.ResidencyPolicy.CallerClass.hostForeground
+        else com.zzh.goodhub.engine.ResidencyPolicy.CallerClass.hostBackground
+        val env = residencyEnv()
+        val ttl = if (residencyTtlOverrideMs > 0) residencyTtlOverrideMs
+        else com.zzh.goodhub.engine.ResidencyPolicy.ttlMs(caller, env, trimPressure)
+        Log.i(TAG, "[RESIDENCY] policy caller=${caller.name} batt=${env.batteryPct} " +
+            "chg=${env.charging} ps=${env.powerSave} screen=${env.interactive} " +
+            "pressure=$trimPressure ttl=${ttl}ms")
+        if (ttl <= 0L) {
+            // 收尾即逐（低电/压力档）：本轮完成即让位，无待命窗口。
+            Log.i(TAG, "[RESIDENCY] evict-immediate reason=policy-ttl-zero")
+            lifecycle.onTtlElapsed(generation)
+            return
+        }
         mainHandler.postDelayed(
             { lifecycle.onTtlElapsed(generation) },
-            lifecycle.effectiveTtlMs,
+            ttl,
         )
     }
 
@@ -429,6 +466,7 @@ class EngineService : Service() {
             val residencyTtl = config?.getLong(
                 com.zzh.goodhub.engine.EngineLifecycle.KEY_RESIDENCY_TTL_MS, 0L) ?: 0L
             if (residencyTtl > 0) {
+                residencyTtlOverrideMs = residencyTtl
                 lifecycle.updateTtlMs(residencyTtl)
                 Log.i(TAG, "[RESIDENCY] ttl-configured: ${residencyTtl}ms")
             }
@@ -627,6 +665,7 @@ class EngineService : Service() {
             // 未生效，不得假设算力已腾出，按策略性降级切云完成本轮，不得重启
             // 引擎腾算力。
             val foreground = generationParams?.getBoolean("foreground", false) ?: false
+            lastGenerateForeground = foreground
             // 受理打点（诊断面，2026-10-30 真机实证「第二轮没有输出」）：
             // 「第二轮请求是否真的到达 :engine」是第一分叉点——未到达即主进程
             // 侧问题（通道/看门狗/熔断），到达但零产出即会话/模板侧问题。
@@ -939,8 +978,25 @@ class EngineService : Service() {
     /// RSS 压至 50MB 以下）；低等级留痕不动作。
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        val evicted = lifecycle.onTrimMemory(level)
-        Log.d(TAG, "trimMemory level=$level evicted=$evicted")
+        // P1-b TRIM 分档：CRITICAL/COMPLETE 才逐；BACKGROUND 降档为让位
+        //（envPressure + streak 超限升级驱逐——防永久赖驻）。
+        when (com.zzh.goodhub.engine.ResidencyPolicy.trimAction(level)) {
+            com.zzh.goodhub.engine.ResidencyPolicy.TrimAction.Defer -> {
+                trimPressure = true
+                trimPressureStreak++
+                Log.i(TAG, "[RESIDENCY] trim-defer level=$level " +
+                    "streak=$trimPressureStreak")
+                if (trimPressureStreak >=
+                    com.zzh.goodhub.engine.ResidencyPolicy.PRESSURE_STREAK_LIMIT) {
+                    Log.i(TAG, "[RESIDENCY] trim-streak-exhausted → evict")
+                    lifecycle.onTrimMemory(level)
+                }
+            }
+            com.zzh.goodhub.engine.ResidencyPolicy.TrimAction.Evict -> {
+                val evicted = lifecycle.onTrimMemory(level)
+                Log.d(TAG, "trimMemory level=$level evicted=$evicted")
+            }
+        }
     }
 
     /// `:engine` 侧自发驱逐上行（P0-3；oneway 广播不阻塞）。§2.8 I6：驱逐

@@ -15,3 +15,5 @@ last-merge: 2026-11-07
 - [2026-11-07] [验证]: 真机采样会话执行（PLQ110）：~45+ 装卸循环、10+ 完整遥测周期、screen/chg 字段真实变化捕获；发现 R4 级信号（重复装卸后装载挂起）已入证据档
 - [2026-11-07] [变更]: P1 施工稿定稿并落文档第九节（P1-a 驻留策略单源+TTL 矩阵 / P1-b TRIM 分档 / P1-c 水位单源 deviceProbe 携带 / P1-d 聚焦 bind 预热）——L1/L2 机制化，不翻任何现有拍板
 - [2026-11-07] [验证]: docs-lint 通过；矩阵值与现状锚点经本轮取证核对（TRIM 即逐现状 EngineLifecycle.kt:116/MemGate 本地常量:17-25/warmup 双调用点/fg 流 :634）
+- [2026-11-07] [变更]: P1 四批施工完成：a) ResidencyPolicy 单源（TTL 矩阵短路序 + TRIM 分档 + 常量唯一出处）+ scheduleTtl 接线（决策行 [RESIDENCY] policy 落账）+ fg 回填 lastCaller；b) TRIM 分档（CRITICAL/COMPLETE 才逐，BACKGROUND 降档 Defer + streak 超限升级）；c) 水位单 owner 降档为配对互指+观测对账（MemGate 装载闸与 :engine 护栏语义不同层，跨进程强统一单源评估否决——cargo-cult 规避，rationale 入 epic devlog）；d) 聚焦 bind 预热（composer 首聚焦去重 → warmupTouch → warmup 原语，不触权重装载）；真机验证缺口如实登记：低电/充电档需真实电源态（矩阵同函数覆盖）、TRIM BACKGROUND 需真机高压场景、P1-d 焦点去重靠 analyze+组件测试
+- [2026-11-07] [验证]: flutter analyze 0 issues；flutter test 全量 1808 绿；真机矩阵双档命中：screen=true→ttl=300000ms（缺省档，caller 双沿 hostBackground/hostForeground 分类正确）+ screen=false→ttl=60000ms（灭屏档）；显式覆盖优先级前轮已证（30000ms override 压过矩阵）

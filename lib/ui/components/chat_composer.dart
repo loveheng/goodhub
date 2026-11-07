@@ -31,6 +31,7 @@ class ChatComposer extends StatefulWidget {
     this.onRemoveResource,
     this.modelSummary,
     this.onOpenModelPicker,
+    this.onFocusWarmup,
   });
 
   final TextEditingController inputCtrl;
@@ -46,6 +47,10 @@ class ChatComposer extends StatefulWidget {
   final VoidCallback onOpenMenu;
   final VoidCallback onSend;
   final VoidCallback onAbort;
+
+  /// P1-d 聚焦 bind 预热（on-device-residency）：输入框首次获焦触发
+  /// bind+waitReady（不触权重装载——懒加载立法不受影响）；null = 不启用。
+  final VoidCallback? onFocusWarmup;
 
   /// 已附加资源药丸（resource-center M1-T3；record 类型零 resources 域依赖）。
   final List<({String id, String name})> pendingResources;
@@ -100,7 +105,17 @@ class _ChatComposerState extends State<ChatComposer> {
     super.dispose();
   }
 
-  void _onFocusChanged() => setState(() {});
+  /// P1-d：首次获焦去重标记（composer 挂载期一次——会话粒度由页面生命周期
+  /// 天然承载；预热失败静默，首次请求自有快速暖机）。
+  var _warmupFired = false;
+
+  void _onFocusChanged() {
+    if (_focusNode.hasFocus && !_warmupFired) {
+      _warmupFired = true;
+      widget.onFocusWarmup?.call();
+    }
+    setState(() {});
+  }
 
   /// 输入非空 ⇄ 空 → 主操作槽「不可发送 ⇄ 可发送」换色（只重绘本集群）。
   void _onInputChanged() {
