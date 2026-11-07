@@ -11,15 +11,18 @@ import 'package:path_provider/path_provider.dart';
 
 import 'app/task_consume_bootstrap.dart';
 import 'core/app_log.dart';
+import 'coordinator/on_device_admin.dart';
 import 'coordinator/ref_store.dart';
+import 'llm/llm.dart';
 import 'gateway/debug_bridge.dart';
 import 'task/task_consume_ledger.dart';
 import 'llm/on_device_bench.dart';
 import 'llm/on_device_engine.dart';
+
 import 'llm/on_device_engine_aidl.dart';
-import 'llm/on_device_asset_manager.dart';
+
 import 'mcp/connection_health.dart';
-import 'llm/on_device_model_catalog.dart';
+
 import 'sandbox/memory_store.dart';
 import 'ui/chat_page.dart';
 import 'ui/debug_routes.dart';
@@ -98,6 +101,9 @@ class _GoodHubAppState extends State<GoodHubApp> with WidgetsBindingObserver {
       case AppLifecycleState.paused:
       case AppLifecycleState.hidden:
       case AppLifecycleState.detached:
+        // W6-c 契机 B：后台 + 充电 → 夜间批处理触发（ADR 已立 2026-11-07，
+        // 用户开关默认关；分块循环由 drainSupplyPool maxTasks 承载）。
+        _maybeNightlyBatch();
         // D1：退后台摘掉全部周期心跳定时器（D16 电量纪律——Android paused
         // 下 Timer 不保证冻结，显式暂停替代侥幸）；状态机与重启资格保留，
         // resumed 经 resumeAll 原样续跑。
@@ -128,6 +134,28 @@ class _GoodHubAppState extends State<GoodHubApp> with WidgetsBindingObserver {
   Future<void> _warmEngine() async {
     await sharedOnDeviceEngine.warmup();
     debugPrint('[on-device] warmup requested');
+  }
+
+  /// W6-c 夜间批处理触发（on-device-residency 第七节契机 B）：App 进后台 +
+  /// 充电态 + 开关开启 → 延迟 2 分钟后批量排空任务池。Timer 单飞。
+  Timer? _nightlyBatchTimer;
+
+  void _maybeNightlyBatch() {
+    _nightlyBatchTimer?.cancel();
+    _nightlyBatchTimer = Timer(const Duration(minutes: 2), () async {
+      _nightlyBatchTimer = null;
+      try {
+        final enabled = await readNightlyBatchEnabled();
+        if (!enabled) return;
+        final probe = await ChannelLlmEngine().deviceProbe();
+        if (probe == null) return;
+        if (probe.isCharging != true) return;
+        debugPrint('[RESIDENCY] nightly-batch: charging confirmed, draining');
+        await OnDeviceAdmin.drainSupplyPool(maxTasks: 20);
+      } on Object catch (e) {
+        debugPrint('[DEGRADE] nightly-batch trigger: $e');
+      }
+    });
   }
 
   /// 端侧引擎启动引导（S2 正式接线，接替 S2-1 冒烟）：bind + 等就绪事件

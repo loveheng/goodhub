@@ -24,6 +24,11 @@ import '../llm/on_device_gate_override.dart'
 import '../llm/on_device_model_catalog.dart'
     show OnDeviceModelOption, OnDeviceModelSelection;
 import '../llm/on_device_session_ticket.dart' show SessionTicket;
+import '../llm/on_device_residency_policy.dart'
+    show readNightlyBatchEnabled, setNightlyBatchEnabled;
+
+export '../llm/on_device_residency_policy.dart'
+    show readNightlyBatchEnabled, setNightlyBatchEnabled;
 import 'host_on_device_tool.dart';
 import 'supply_quota.dart';
 import 'supply_task_pool.dart';
@@ -93,6 +98,52 @@ abstract final class OnDeviceAdmin {
       }
     }
   }
+
+  /// W6-c 夜间批处理（on-device-residency 第七节契机 B）：充电 + 后台 +
+  /// 开关开启时批量排空任务池（ADR 已立 2026-11-07）。调用方 = main.dart
+  /// 生命周期沿（paused/hidden + 充电检测）。分块语义由 [maxTasks] 上限 +
+  /// 逐任务 WAL 提交承载；拔线中断由调用方（main.dart Timer cancel）兜底。
+  static Future<void> runNightlyBatch({int maxTasks = 20}) async {
+    final enabled = await readNightlyBatchEnabled();
+    if (!enabled) return;
+    final pool = SupplyTaskPool.instance;
+    final executor = HostOnDeviceToolExecutor(
+      AidlOnDeviceCapabilityService(sharedOnDeviceEngine),
+      quota: SupplyQuota(),
+      taskPool: pool,
+    );
+    var done = 0;
+    for (var i = 0; i < maxTasks; i++) {
+      final entry = await pool.claimNext();
+      if (entry == null) break;
+      try {
+        final r = await executor.execute(AssembledToolCall(
+          id: 'nightly-${entry.taskId}',
+          name: HostOnDeviceToolExecutor.toolName,
+          argumentsJson: jsonEncode({
+            'instruction': entry.instruction,
+            'input': entry.input,
+          }),
+        ), callerKeyOverride: entry.callerKey);
+        if (r.isError) {
+          await pool.requeue(entry.taskId);
+          debugPrint('[DEGRADE] nightly-batch: ${r.content}');
+          continue;
+        }
+        await pool.completeTask(entry.taskId, r.content);
+        done++;
+      } on Object catch (e) {
+        await pool.requeue(entry.taskId);
+        debugPrint('[DEGRADE] nightly-batch: $e');
+      }
+    }
+    debugPrint('[RESIDENCY] nightly-batch done=$done');
+  }
+
+  // ---- W6-c 夜间批处理开关（on-device-residency 第七节契机 B）----
+
+  static Future<bool> nightlyBatchEnabled() => readNightlyBatchEnabled();
+  static Future<void> setNightlyBatch(bool v) => setNightlyBatchEnabled(v);
 
   /// 聚焦 bind 预热（P1-d，on-device-residency）：输入框首聚焦触发
   /// bind+waitReady（**不触权重装载**——懒加载立法不受影响）；预热失败静默

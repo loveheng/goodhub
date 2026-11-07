@@ -291,6 +291,18 @@ class _OnDeviceConfigSectionState extends State<OnDeviceConfigSection>
     }
   }
 
+  bool? _nightlyBatchEnabled;
+  Future<void> _loadNightlyBatch() async {
+    final v = await OnDeviceAdmin.nightlyBatchEnabled();
+    if (!mounted) return;
+    setState(() => _nightlyBatchEnabled = v);
+  }
+  Future<void> _toggleNightlyBatch(bool v) async {
+    await OnDeviceAdmin.setNightlyBatch(v);
+    if (!mounted) return;
+    setState(() => _nightlyBatchEnabled = v);
+  }
+
   /// 复查电池白名单状态（查询失败按未知处理，不阻断配置段主功能）。
   Future<void> _refreshBatteryExemption() async {
     try {
@@ -312,6 +324,7 @@ class _OnDeviceConfigSectionState extends State<OnDeviceConfigSection>
       // 系统弹窗返回后当场复查（弹窗里点「允许」不会回传结果）。
       widget.onFlash?.call(ok ? '已加入电池优化白名单' : '申请弹窗已发起——请在系统弹窗确认「允许」');
       await _refreshBatteryExemption();
+    _loadNightlyBatch();
     } on Object catch (e) {
       debugPrint('[DEGRADE] on-device-config: 电池白名单申请失败: $e');
       if (mounted) widget.onFlash?.call('白名单申请失败：$e');
@@ -439,6 +452,17 @@ class _OnDeviceConfigSectionState extends State<OnDeviceConfigSection>
             // 电池优化白名单（S3-5 OEM 冻结防护）：未加入时提示并一键跳转。
             if (_batteryExempt == false) ...[
               _batteryExemptRow(t),
+              // W6-c 夜间批处理开关（on-device-residency 第七节契机 B）。
+              SwitchListTile(
+                dense: true,
+                title: Text('夜间算力批处理',
+                    style: TextStyle(fontSize: Fsz.body, color: t.l2Accent)),
+                subtitle: Text('充电且空闲时批量处理积压的端侧任务',
+                    style: TextStyle(fontSize: Fsz.note, color: t.terminalMuted)),
+                value: _nightlyBatchEnabled ?? false,
+                onChanged: (v) => _toggleNightlyBatch(v),
+                activeThumbColor: t.l1Info,
+              ),
               const SizedBox(height: 6),
             ],
           ],

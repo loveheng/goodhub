@@ -12,6 +12,30 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// dart-define 诊断钩子键：`--dart-define=ON_DEVICE_RESIDENCY_TTL_MS=30000`。
 const String kOnDeviceResidencyTtlMsEnv = 'ON_DEVICE_RESIDENCY_TTL_MS';
 
+/// W6-c 夜间批处理用户开关键（SharedPreferences，默认关闭）。
+const String _kNightlyBatchEnabled = 'on_device.nightly_batch_enabled';
+
+/// W6-c：读取夜间批处理开关（默认 false——ADR 拍板"用户可见开关默认关"）。
+Future<bool> readNightlyBatchEnabled() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_kNightlyBatchEnabled) ?? false;
+  } on Object catch (e) {
+    debugPrint('[DEGRADE] residency-policy nightly read: $e');
+    return false;
+  }
+}
+
+/// W6-c：写入夜间批处理开关（设置面 toggle 调用）。
+Future<void> setNightlyBatchEnabled(bool enabled) async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kNightlyBatchEnabled, enabled);
+  } on Object catch (e) {
+    debugPrint('[DEGRADE] residency-policy nightly write: $e');
+  }
+}
+
 const String _kPrefKey = 'on_device.residency_ttl_ms';
 
 /// 读取驻留 TTL（毫秒；0 = 不下发）。
