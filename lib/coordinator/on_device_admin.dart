@@ -67,6 +67,7 @@ abstract final class OnDeviceAdmin {
   /// 由页面调用（用户阅读空闲期）；失败逐条留痕不反噬主路径。
   static Future<void> drainSupplyPool({int maxTasks = 3}) async {
     final pool = SupplyTaskPool.instance;
+    pool.debugDump('drain-entry');
     final executor = HostOnDeviceToolExecutor(
       AidlOnDeviceCapabilityService(sharedOnDeviceEngine),
       quota: SupplyQuota(),
@@ -74,6 +75,7 @@ abstract final class OnDeviceAdmin {
     );
     for (var i = 0; i < maxTasks; i++) {
       final entry = await pool.claimNext();
+      debugPrint('[RESIDENCY] drain claimNext[${i}]: ${entry?.taskId ?? "null"} status=${entry?.status.name ?? "-"}');
       if (entry == null) return;
       try {
         final r = await executor.execute(AssembledToolCall(

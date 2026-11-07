@@ -312,6 +312,13 @@ class SupplyTaskPool {
   SupplyTaskEntry? _byId(String taskId) =>
       _entries.where((e) => e.taskId == taskId).firstOrNull;
 
+  /// 诊断：dump 内存态（排障用）。
+  void debugDump(String tag) {
+    debugPrint('[RESIDENCY] pool-dump[$tag]: entries=${_entries.length} '
+        'loaded=$_loaded '
+        '${_entries.map((e) => "${e.taskId.substring(0, 16)}…=${e.status.name}").join(", ")}');
+  }
+
   /// 测试/诊断：重置内存态（不删盘文件）。
   void resetForTest() {
     _entries.clear();

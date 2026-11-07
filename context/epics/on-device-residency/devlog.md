@@ -25,3 +25,5 @@ last-merge: 2026-11-07
 - [2026-11-07] [验证]: 真机端到端联调通过（PLQ110）：Round1 冷态+allow_deferred=true→入池回执 task_1794046330034_0；Round2 Run 收口→顺风车排空消费（AI-CAP deferred ms=7）；Round3 WARM 态 simulate→同步直出（Fast-Path 温热红利）——双模全链真机确认
 - [2026-11-07] [变更]: W6 联调发现真 bug：drainSupplyPool 的 unawaited() 在 Run finally 中触发，但真机无消费证据（claimNext 可能因 pool 状态/时序返回 null）。已定位排查方向：①drain 创建的 executor._primitive 在 assembly.close() 后可能不可用 ②claimNext 的 _load 时序 ③SupplyQuota() 新实例的 checkFrequency。修复 = 在 drainSupplyPool 入口加 debugPrint 追踪（claimNext 返回值/pool._entries.length/executor 可用性）后真机复测
 - [2026-11-07] [验证]: flutter analyze 0 issues；flutter test 全量 1816 绿（W6 8 例含联合态+M5+毒丸+持久化恢复均过）；真机 Round1 冷态入池命中（task_id 回执）；Round2 顺风车消费未命中（logcat 无 supply-drain 行）→ 真实 bug 需排查
+- [2026-11-07] [变更]: W6 联调纠偏：drainSupplyPool 从第一天就正常工作——'消费❌'是 grep 模式错配的观测盲区（代码无 bug）。pool-dump 揭示 4 条目真实分布：3 条 pendingDelivery（历史轮产物等 Pull）+ 1 条 queued（本轮）；drain claimNext 正确认领并执行。移除 debugDump 追踪代码（诊断完毕），保留 supply_task_pool 生产代码
+- [2026-11-07] [验证]: 真机 pool-dump 揭示 drain 正常工作（claimNext[0] 认领 running + claimNext[1] null 排空完毕）；3 条 pendingDelivery 为前几轮测试产物（by design 等 Pull，24h 过期清账）；之前误判 '消费❌' 原因 = grep 模式错配（supply-drain vs pool-dump 前缀）
