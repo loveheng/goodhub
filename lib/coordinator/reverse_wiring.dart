@@ -20,6 +20,7 @@ import '../mcp/transport/binder_transport.dart';
 import 'caller_death_interrupt.dart';
 import 'host_on_device_tool.dart';
 import 'supply_quota.dart';
+import 'supply_task_pool.dart';
 import 'mcp_tool_face.dart';
 
 /// 逐 face 接线 sampling 反向请求（serverKey = serverId）。
@@ -86,6 +87,10 @@ void wireSampling({
           callerKeyOverride: caller?.packageName,
         );
       }
+      if (method == HostSupplyTaskStatusExecutor.reverseMethodName) {
+        return _forwardSupplyTaskStatus(params,
+            callerKeyOverride: caller?.packageName);
+      }
       onSamplingBegin?.call();
       return sampling(method, params).whenComplete(() => onSamplingEnd?.call());
     }
@@ -116,6 +121,34 @@ String _callerIdentityOf(McpToolFace face) {
   final transport = face.client.transport;
   if (transport is CallerIdentityTransport) return transport.callerKey;
   return face.serverId;
+}
+
+/// host/onDeviceTaskStatus 反向请求转发（W6-a 拉取接缝）：Pull = 交付
+/// 真理源——pendingDelivery 查询即置 delivered 回结果；M5 身份过滤。
+Future<Map<String, Object?>?> _forwardSupplyTaskStatus(
+    Object? params,
+    {String? callerKeyOverride}) async {
+  final p = params is Map<String, Object?> ? params : <String, Object?>{};
+  final taskId = p['task_id'] as String?;
+  if (taskId == null || taskId.isEmpty) {
+    throw McpRpcException(-32000, '缺少 task_id');
+  }
+  if (callerKeyOverride == null || callerKeyOverride.isEmpty) {
+    throw McpRpcException(-32000, '调用方身份不可辨（M5：无内核身份不受理）');
+  }
+  final entry = await SupplyTaskPool.instance
+      .statusFor(taskId, callerKey: callerKeyOverride);
+  if (entry == null) {
+    return {'role': 'assistant', 'model': 'goodhub-on-device',
+        'content': {'type': 'text',
+            'text': jsonEncode({'task_id': taskId, 'status': 'not_found'})}};
+  }
+  if (entry.status == SupplyTaskStatus.pendingDelivery) {
+    await SupplyTaskPool.instance.markDelivered(taskId,
+        callerKey: callerKeyOverride);
+  }
+  return {'role': 'assistant', 'model': 'goodhub-on-device',
+      'content': {'type': 'text', 'text': jsonEncode(entry.projection())}};
 }
 
 /// host/onDeviceComplete 反向请求处理：转发到导出执行器（K22 配额 + 降级

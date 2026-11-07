@@ -325,6 +325,9 @@ class HostSupplyTaskStatusExecutor implements ToolExecutor {
 
   static const toolName = 'on_device_task_status';
 
+  /// 宿主私有反向 method（Tier 1，与 `host/onDeviceComplete` 并列——W6-a 拉取接缝）。
+  static const reverseMethodName = 'host/onDeviceTaskStatus';
+
   /// schema 单源（toolSchemas 清单内同形；owner = 执行面禁 Allowlist 复制）。
   static Map<String, Object?> schemaOf(String tool) => tool == toolName
       ? <String, Object?>{
