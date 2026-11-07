@@ -2,8 +2,8 @@
 dev-loop: memory
 format: v1
 epic: self-update
-total-merged: 1
-last-merge: 2026-10-14
+total-merged: 2
+last-merge: 2026-11-07
 ---
 
 # self-update
@@ -16,6 +16,7 @@ last-merge: 2026-10-14
 - [结论] 首发 v1.0.0+2002 推 R2 成功：release-r2.sh 被 analyze 存量 info 阻断问题修复（降为 WARN 不阻断）；产物 goodhub-update.json + app-release.apk（42.7MB）公网可达
 - [结论] 调试入口按构建形态拆分：AppBar 按钮全构建保留（debug=虫子图标/调试入口，release=更新图标/检查更新）；菜单内服务大厅/网关联调/M1 任务循环三项加 kDebugMode 门禁；检查更新为正式功能全构建保留
   - **2026-10-16 修正（入口位置变迁）**：聊天页 AppBar 已**不再保留任何按钮**——⚙ 设置移到侧边栏唯一入口；debug 入口收进设置页「关于」段：检查更新**常驻可见**（正式功能，全构建），网关联调 / M1 任务循环经**长按「关于」标题**唤出（kDebugMode 内自闸）。结论主体（构建形态门禁口径）不变，只是落点迁移
+- 2026-10-14 串包防御对齐 shiguang 方案（commit cbd0ecb 同款）：UpdateManifest 增 applicationId 可空字段 + update_service.check() 拉清单后比对本机包名（package_info_plus）不一致抛 UpdateException 拒更 + update_page._install() 安装前二次比对（纵深防御）；release-r2.sh 从 build.gradle.kts 提取 applicationId 写入清单；测试钉 test/update/update_manifest_test.dart 2 例；设计稿同步。同日 .env REMOTE_PREFIX `updates`→`updates/goodhub`（与 shiguang 的 updates/shiguang 各占子目录，根治共用桶根目录的覆盖与串包）——纯配置路径收敛，无代码逻辑变更；该轮验证账本历史缺失已补记「未执行」，机械规则=后续触及 update_service 补 analyze/test 自证、触及发布链以 release-r2 --json 预检自证
 - [结论] 聊天输入区桌面端美化：Center+ConstrainedBox maxWidth 720 限宽居中；输入框圆角(24)填充无边框 + contentPadding 16/10；发送按钮改圆形 IconButton.filledTonal（arrow_upward）；textInputAction newline 桌面 Enter 语义修正
 - [结论] 云端模型多配置生效位：ByokStore 增 preferredProfileId 持久化（save 清理孤儿生效位）；hybrid_assembly 优先取生效 profile（未选回退首位）；服务大厅置顶同步写生效位；聊天页 ⚙ 设置加「云端模型(生效)」单选区（点选即切换，下个 Run 装配生效）——**2026-10-16 修正**：该单选区随 ⚙ 弹层并入设置页并删除（BYOK 面板已能切生效位，属重复入口）；生效位机制本身（preferredProfileId / hybrid_assembly 取生效）不变
 - [结论] 2026-10-14 串包防御对齐 shiguang（commit cbd0ecb 同款思路，本仓落地）：UpdateManifest 增 applicationId 可空字段（旧清单宽容跳过）；update_service.check() 拉清单后比对本机包名（package_info_plus），不一致抛 UpdateException 拒更；update_page._install() 安装前二次比对（纵深防御）；release-r2.sh 从 build.gradle.kts 提取 applicationId 写入清单；.env REMOTE_PREFIX 收敛 updates/goodhub（与 shiguang 的 updates/shiguang 各占子目录）；新增 test/update/update_manifest_test.dart 2 例；release-r2.sh --commit 因 updates/ 被 gitignore 改用 git add -f
@@ -26,4 +27,4 @@ last-merge: 2026-10-14
 - 残留风险（未处理）：桶根目录旧对象 updates/app-release.apk + 两份旧清单（goodhub 2002 / shiguang 28019）仍在，旧源客户端按 sha256 失配 fail-closed；upload-r2.mjs 无删除能力，建议后续补 delete 或后台手工清理
 
 ## 断点
-- [断点] 下一步：真机侧载 v1.0.1+2003（或 App 内把更新源改为 https://r2.oklhj.eu.org/updates/goodhub 后走「检查更新」）；设备端验证串包防御（把更新源临时指向 updates/shiguang 应被拒）
+- [断点] 下一步：devlog 已归并（total-merged 2）；下一步 = 真机验证自更新链（真机在位时）：侧载后走「检查更新」下载→sha256→安装 + 串包防御负路径（更新源指向 updates/shiguang 应被拒）

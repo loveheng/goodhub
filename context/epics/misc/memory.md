@@ -2,8 +2,8 @@
 dev-loop: memory
 format: v1
 epic: misc
-total-merged: 5
-last-merge: 2026-10-22
+total-merged: 6
+last-merge: 2026-11-07
 ---
 
 # misc
@@ -23,6 +23,22 @@ last-merge: 2026-10-22
   - **P1（信息架构）**：⑥ 挂载弹层改标题「挂载」并三级分组（会话绑定 session / 本次发送附件 run / 资源中心 应用级），组名 + 期限说明肉眼可辨；⑦ 记忆只留一处可管理位（AppBar 本轮记忆）——归因 BottomSheet 只给计数 + 直达（历史恢复态保旧样）；⑧ 运行中**只锁会话绑定**（它改写会话 slot 会扰动在途装配），资源类入口不跟着置灰、`_pickResource` 去运行守卫；⑨ 空输入发送给一次性 SnackBar（桌面端 Enter 曾零反馈 = 死控件）；⑩ 「回到最新」浮钮两态：`missedSinceDetach > 0` 挂计数徽标 + tooltip 明说条数，纯翻页态保持低调。
   - **验证**：全仓 analyze 0 issue；`flutter test --timeout 180s` 985 绿（基线 972 + P0 7 + P1 6）；arch-guard / docs-lint OK。**未执行**：真机走查（输入法弹起后输入区实占高、多轮轨道密度、徽标深浅底对比）。
   - **[2026-10-31 后续治理] 本轮记录去堆积（接上条「一条都不留」拍板）**：系统通告按 `TrackNoticeCategory` 三分路由——**事实类**（引擎就绪/插件挂载/工具激活/CoW 重名/服务卸载/未信任跳过/配额·快照损坏/云端配置失败）进 controller 单槽账本 `latestFactNotice`，同文案重复轮次覆盖式收敛、仅留最新一份（彻底消除堆积与去重比较成本）；**错误类**（记忆写入失败/连接中断/挂载失败/slot 权限/CoW 同步降级）回对话流内联（发生当场可见，不进账本，防被良性事实覆盖吞掉）；**过程类**（plan echo/资源变更/端侧加载中/任务完成）不收纳、仅瞬态 pill。详见 devlog 2026-10-31 + `docs/project/index.md`。
+- 2026-10-19 杂项两件：会话抽屉底部全局入口横排工具带化（四竖排 ListTile→约 52dp 横排 `_DrawerUtilityItem`，热区 ≥44dp + 图标文字双通道，空间向会话列表一级内容倾斜）；13 个已完结 epic 入库 `archive/`（epics/ 仅留活跃域，prompt-mgmt memory 改摘要）。
+- 2026-10-22 聊天页 P2 打磨：本轮记忆入口常驻化恒可点（无记忆时空态解释，禁静默禁用）+ 思考轨表头自述 kThinkingHint（模型内部推理·不进对话历史）；SSOT 回填 chat-interaction.md。
+- 2026-10-24 安全存储升级显性化（「新版本 MCP 服务无法打开」根因）：flutter_secure_storage 9→11 跨大版本直升丢密钥（v11 移除 v9 算法，旧密文按损坏删除，宿主 DEGRADE 吞掉）——`secure_storage_upgrade.dart` checkUpgradeStatus 显性化 + 设置页提示行 + 节点卡「⚠ 令牌需重新录入」（修因优先报因）；机械规则=升密钥类依赖必读破坏性 changelog（lessons 有条目）。附：「MCP 服务打不开」真机排查设备侧三组合全绿（debug/本地 release/R2 官方），失败面收窄设备 B（候选=插件未装/版本旧/签名不配对/厂商限制，待设备 B 在位）——排查无结论不闭环。
+- 2026-10-30 应用内日志查看页：`AppLog` 2000 条环形缓冲 + debugPrint sink 零改动捕获（kReleaseMode 不装）+ `log_viewer_page`（过滤/复制/清空/跟随滚底）+ 设置页 debug 菜单入口。
+- 2026-10-31 本轮记录（round-record，用户拍板「对话页一条通告不留」）：TrackNote 单写进 `sessionNotices` 会话级账本（addEntry 单写/恢复全额入账摘净/撤下出账/随会话焚），AppBar Bolt=「本轮记录」面板两节（系统通告倒序 + 本轮记忆）三档图标，入口 ListenableBuilder 自刷新。随后同日去堆积治理见上条三分路由。
+- 2026-11-04 端侧窗口准入修 1B/1280 误报：`_devicePrompt` 裁剪后载荷单源，send() 准入与 _deviceSend 预检复用（已录 lessons 正文）。
+- AI 真机调试工具链（2026-11-05~07，[1/5]~[5/5]+抽取+迁仓）：debug 桥（debug-only/loopback/Bearer，/state·/logs·/ui-tree·/action·/reset 五端点，业务能力走注入端口未注入回 501 不静默）+ 控件语义树（零尺寸借后代/祖先矩形标 boundsSource、私有实现件过滤、同位置去重）+ 动作面（tap_node/set_text 绕 IME/navigate/ping）+ Deep Link 路由（goodhub://debug/<page> 白名单，避 WidgetsApp home 断言）+ `debug-bridge.sh` CLI（别名 dbg）；能力抽公共包迁独立仓 `../app_debug_bridge`（宿主专有三件改注入端口实现零耦合，path 依赖，仓内 CI 门禁）；语义树真机收敛 34→24 节点、零尺寸 0；**[SSOT 修正]** Key 缺口定性改「候选列表噪音」——项目不建 Semantics 语义层，AI 定位靠 key/text/type，label 缺失不算阻塞。
+- 联调与桥演进（2026-11-06）：goodshare×goodhub 双 App 桥全端点通 + ai-e2e 4/4 PASS；CLI 升联调统一入口（`--app <name>` 分层切换，pidof 过滤 logcat 发现端口+token，防同机多 App 串台）；桥改随机端口 `start(port: 0)`（logcat listening 行=端口+token 唯一事实源；goodshare 同型移交件已销账）；shiguang/goodTemplate 同型清账（CLI 移植 pid 发现）。
+- L1 真机调试会话日志采集（2026-11-06 立项即交付）：`debug-bridge.sh capture start/stop/tail/status`——pid 过滤流式 logcat 分片轮转防洪泛 + 按 logRevision 拉 /debug/logs 哈希去重落 app.jsonl（绕 2000 条 since 失效）+ bridge.json 凭据缓存 + focus.md 结构化脱敏；判定 S2 能力补丁→结构性引入（ADR 落 misc-decisions.md）；goodshare/shiguang/goodTemplate 副本各插 23 行 capture 转发块（非破坏保留原命令，goodshare discover 被 ai-e2e 设计稿引用故不替换；彻底退役待 discover 迁入统一入口后另轮裁决）。真机 §11 六步全绿。
+- 2026-11-06 散修与功能完善批：discover 通道 5s 超时兜底；AppSettingsBridge 安装失败「去设置」直达授权页；端侧逐调用 [AI-CAP] 留痕（caller/skill/耗时/产出，AppLog 捕获进 debug 桥）；debug_actions ui→llm 七边直连收敛 on_device_admin 门面（F16）；ProviderCacheCapability 可选接口（Anthropic 显式/OpenAI 前缀）；本地插件 per-plugin 挂载开关（`local_plugin_switches.dart` + 网关闸门过滤 + tools/list_changed 下行，UI 零直调网关）；chatTemplateFamily 消费面（composeGemma fallback：start_of_turn、system 并入首 user 轮）；llm_model 旧下载通道死数据退役；端侧性能读数透出（引擎流收口采集 TTFT/TPOT→tok/s，lastGenPerf 快照设置页只读行，OnDeviceGenPerf 门面）；域内 todos 体检 10 域 59→46 条（六域存量债触发条回收 + 三对重复合并）。
+- 2026-11-06 四项收口批：F5 清账撤除（diagBreakerState/三 dart-define 开关/hex 采样/drain 打点等诊断面全撤，onLowMemory 评估终态=维持现状不接状态机）；熔断 armed/disarm（engineExitReason 桥 + ApplicationExitInfo API30+ 细分 REASON_LOW_MEMORY→lmkSigkill / CRASH 族→hardCrash）；巡检 #68/#78 流转；SSOT 订正 capability.md/npu-deployment.md——「原子抢占」措辞收窄为受理段 Mutex 原子判定，打断=协作式（检查点生效/未生效按策略降级切云，禁重启引擎腾算力）。
+- 2026-11-06 易误解点修复三批（用户裁决 H1-H5+M1-M5+L1-L5）：失败可见化（markDirty/会话删除返 bool、五处删除/重置补 try/catch）、9 处裸 $e 走 humanizeError 白话化、导入 done 帧改「收尾中」、403 与更新文案人话重排、L2 确认卡超时先示因、memory_board 提示去内部 ID、术语统一（本地推理/生成→端侧、本地×N→本地插件×N、更新页「远程」→「服务端」）、准入探针 fail-open 经 onFact 接 AppLog 留痕。
+- 对话 UI 批（2026-11-06~07）：模型选择入口 `model_picker_sheet`（自动/优先端侧+云端单选，输入行 48dp 入口钮）；UX 美化 12 条（会话草稿随快照存取、总管模式运行守卫、ContextChip 44dp 热区、错误卡堆栈限 3 行可展开、资源撤销窗 8s、会话删除改长按、空态示例 chip 填输入框等）；输入区方案 B 双行（TextField 独占全宽 + 底栏动作行 [+][模型药丸][发送/中止]）；底栏 Gemini 对齐精修（+ 钮裸图标、全胶囊统一、发送键 52×36 药丸热区 60×48、+ 上色 l1Info 不套底防双框贴边复发）。
+- 端侧模型切换 B+（2026-11-07，用户裁决）：picker 确认卡明示驱逐代价三选（取消/下次提问装载/立即装载=显式授权重型预装载走装载 pill 链）；确认即驱逐旧驻留（disable 幂等 + _loadGen++ 作废在途装载）消除「切换没生效」误解；手动驱逐抑制「空闲回收」误报（_modelSwitchEvicting 标记）；真机走查（adb input 驱动正式包，截图 m0-m12）修真 Bug——picker `_OptionRow` 回调先于 _pop 执行被顶掉（确认卡闪现即消失），修=先关面板再回调；链路 A/B 全通（Qwen 端侧推理出正文）；生成中 InferenceException 引擎中断（云端未配无兜底，如实报错）另行观察。
+- 2026-11-07 memory-guard 地板线自锁修复（用户报障「端侧输出后自动报错」）：绝对地板线 1GB 在常驻稳态自锁——Qwen ~2GB 驻留使 availMem 恒 ≈930MB，生成期采样与收尾检查点每次必击穿 → mid-generation 驱逐在途流，每次长输出必报「引擎中断」，驱逐→重载回同一水位=纯 thrash；修复=地板线仅冷进程（loadedOnce=false）生效，暖机常驻态地板职责让位 TTL 回收 + LMK 兜底（:engine FGS 前挂）；足迹增量线（6GB）恒生效；单测 3 例（豁免/增量线不豁免/冷进程恢复）+ 真机长输出复测零报错。
+- 2026-11-06~07 真机事故与 chaos：integration_test 卸载宿主清数据事故（模型资产/会话清空后已恢复，已录 lessons；e2e 用例 `model_switch_e2e_test.dart` 留档待有状态安全路径复用）；chaos 断言框架落地但注入受限实证——非 root 三路全拒（kill -9 SELinux/run-as seapp_context/am kill FGS 豁免），注入位=debug action kill_engine（复用 cold-reload-restart 自杀契约）待扩面，严禁假绿。
 
 ## 断点
-- [断点] 下一步：等待新子任务（L1 capture 会话日志采集已交付）；余项=①goodshare 侧随机端口同型改动（移交件待用户执行）②goodhub 逐调用 AI 留痕补齐（全局待办）③本轮全部改动提交待用户指令
+- [断点] 下一步：misc devlog 已归并 memory.md（total-merged 6，2026-10-19~11-07 全条目提炼）；下一步 = 全局待办 GROOM 洗盘（62>30）+ done.md 行格式 1 处

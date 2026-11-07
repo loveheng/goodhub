@@ -53,3 +53,4 @@ updated: 2026-11-07
   - [design/ai-debug-bridge.md](design/ai-debug-bridge.md) — AI 真机调试桥（结构化观测替代截图猜测：端点契约 / 控件语义树 / 安全边界，draft）
   - [design/timeout-signaling.md](design/timeout-signaling.md) — 超时信令下沉优化方案（W1 熔断指纹解锁/探针让位、W2 装载进度可取消、W3 LivenessTick 信令下沉；W4/W5 跨仓与待上游）
   - [design/extensibility-hardening.md](design/extensibility-hardening.md) — 扩展性收口施工稿：hybrid 拆分 / TrackEntry 模型下沉 / 装配签名收敛 / 实现件单点 / 协议版本闸等 E1–E9 分批收口（S0–S5，draft）
+  - [design/on-device-residency.md](design/on-device-residency.md) — 端侧模型长驻深化评估：R1–R8 复核（R2 改判观望项 / R7 驻留绑架 / R8 生存环境分档）/ L0–L4 能力分级 / P0–P3 立项路径 + 跨 App 供给双模机制 W6 设计（draft）
