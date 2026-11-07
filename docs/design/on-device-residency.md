@@ -96,6 +96,7 @@ L0 现状 = 「装载后尽量多活」机制集（FGS 绑定即挂 + 5min TTL +
 - **推进纪律**：L1/L2 不翻拍板可做；L3/L4 各有显式触发条件与翻案成本——严禁未经新实证跳级。
 - **观测项（无实证不建机制）**：通话/音频对 HTP 推理的冲突——aDSP（音频）与 HTP（NPU 计算）为 Hexagon 不同内核域，「通话破音/驱动挂死」系推测无实证；真机实证异常再立项，与「温控全链摘除」同款教训（无真机证据不建响应机制）。
 - **交互规约说明**：冷装载期间的用户反馈已基本存在（`loadState=loading` 受理态 + `loadPhase` 装载阶段打点 + 状态带指示）——P0 仅需核对其在 3~5s 冷装载场景的可见性，非新建。
+- **观测面探针自律（No Active Polling，评审轮定案）**：P0 全部观测数据**随路挂接（Piggyback）在既有状态迁移事件**的瞬态快照（装载/驱逐沿、`send()` 起止、ACTIVE↔WARM 转换、trim 回调）——**严禁独立周期轮询线程**（读 `/proc/self/status` 亦有 CPU/唤醒开销）；采样风格 = P2-11 生成期 5s 有界守护线程先例（仅在算力占用期内采样），观测代码本身不得成为耗电源。
 
 ### 六·补 Apple Intelligence 模式借鉴定案（评审轮）
 
@@ -134,7 +135,7 @@ flowchart TD
 
 - 温热在位（`loadState == ready`）→ 直接占用执行槽，短文本（分类/提取）亚秒直出，长文本流式。
 - **续命规则（R7 落地）**：外部调用**不重置完整 5min TTL**，仅顺延短保底窗口 30s~1min——外部频繁小请求无法把模型钉死在内存。
-- 与宿主前台请求撞槽：**前台 > 池任务/外部任务**，抢占走既有 K11 协作式打断，被打断任务回池尾（M6）。
+- 与宿主前台请求撞槽：**前台 > 池任务/外部任务**，抢占走既有 K11 协作式打断，被打断任务回池尾（M6）。回池必须携带**重试计数器（`retryCount++`）**：连续打断/失败达阈值（3 次）打**死信 `FAILED_EXHAUSTED`** 通知调用方不可恢复，禁无限自旋回池（**毒丸循环防线**，与 goodshare 消费循环毒丸防护 §3.12.2-6 同款纪律）；死信状态对 Pull 可见、不计配额（K22 产出才计）。
 
 ### 7.3 模式二 Deferred-Path 规约
 
@@ -155,6 +156,7 @@ flowchart TD
 - **联合态响应**：`execution_mode: immediate`（含 result/usage）| `deferred`（含 task_id/status/estimated_trigger）——AIDL `String call(String)` **不动**，联合态装进现有 JSON 信封。
 - **交付目标身份（M5 安全修正）**：**必须绑定内核 UID 推导的调用方身份**（既有 `CallerIdentityResolver` 链，S07b 同源）——`callback_pkg` 自报不可信（A 插件可伪装 B 包名截取结果），仅作展示。
 - **Outbox 三件**：①结果原子落盘 `PENDING_DELIVERY`；②**Pull**（调用方回前台以 task_id 查询，交付即标记）+ **Push**（复用既有 `IMcpCallback.onEvent` oneway 事件面，**不新增反向接口**；目标 App 被冻结时不盲目拉起，留账本待其自取）；③**过期清账**（>24h 未触达 → 归档清除，防账本膨胀；expired 状态对调用方可见）。
+- **交付真理源 = Pull / 显式确认（评审轮定案）**：Android 12+ 应用冻结（cgroup v2 freezer）下，发往冻结进程的 oneway 事务进入对端 Binder 异步缓冲且**发送方只见成功**；对端若被 LMK 杀死，缓冲消息**静默丢弃**（oneway 异步缓冲另有半池上限的 spam 拒收，失败同样只留账）。故 **Push 定位为「在途温热触达」的尽力而为（best-effort）**——`PENDING_DELIVERY → DELIVERED` **只由 Pull 查询或调用方显式确认置位，严禁以 Push 发送成功标记交付**。
 - **与 `PrimitiveSuspension` 划界（防双源）**：K21 挂起态 = **已算完产物**等人工确认（resumeToken 重入、宿主不驻留）；本方案 deferred-WAL = **未受理工作**排队。两者语义不同，禁止互相借用字段。
 
 ### 7.6 立法触点与工作包
@@ -165,6 +167,6 @@ flowchart TD
 | goodhub-mcp-sdk `:contract` | AIDL 不动；plugin-core 解析面 + `api.md` 同轮 |
 | `kHostExportAllowlist` | on_device_complete 条目语义注记更新（三关注释钉） |
 
-工作包：**W6-a** 任务池 + WAL + 配额 + 联合态契约（跨仓同轮）；**W6-b** 顺风车排空调度（K11 抢占回池尾）；**W6-c** 充电黄金窗口（新 ADR + 用户开关 + 拔出中断）——**W6-c 实现指引 = WorkManager 声明式约束**（`setRequiresCharging` + `setRequiresDeviceIdle` + `setRequiresBatteryNotLow`，JobScheduler 底座平台协同调度，替代自管广播；**约束 ≠ 授权**，M1 ADR + 用户开关仍须）。
+工作包：**W6-a** 任务池 + WAL + 配额 + 联合态契约（跨仓同轮）；**W6-b** 顺风车排空调度（K11 抢占回池尾）；**W6-c** 充电黄金窗口（新 ADR + 用户开关 + 拔出中断）——**W6-c 实现指引 = WorkManager 声明式约束**（`setRequiresCharging` + `setRequiresDeviceIdle` + `setRequiresBatteryNotLow`，JobScheduler 底座平台协同调度，替代自管广播；**约束 ≠ 授权**，M1 ADR + 用户开关仍须）——**批处理执行形态 = 分块循环**：Worker 单次调度受 ~10 分钟量级执行墙（超时系统回调 `onStopped` 强停），故每完成 1 个任务即提交一次 WAL 事务、每轮循环前检查 `isStopped`；收到超时/拔线信号**安全收尾当前单任务**、未执行任务留池，优雅退出等下一窗口（禁在强停瞬间做半截写入）。
 
 **依赖顺序**：R7 Caller-Tiered TTL（P0/P1）先行——模式一「短顺延」依赖其主体分级；W6 整体属 `on_device-capability.md` 供给面演进，宿主内部调用方（summarizer 等）**维持既有同步语义**，本机制仅作用于导出面。

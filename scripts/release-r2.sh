@@ -70,7 +70,13 @@ VERSION_LINE="$(grep -m1 '^version:' pubspec.yaml)"
 VERSION_NAME="$(echo "$VERSION_LINE" | sed -E 's/.*:\s*([0-9.]+)\+.*/\1/')"
 VERSION_CODE="$(echo "$VERSION_LINE" | sed -E 's/.*\+([0-9]+).*/\1/')"
 # 应用包名：从 gradle 取，作为串包防御写入清单（缺失时留空，客户端宽容跳过）
-APP_ID="$(grep -m1 'applicationId' android/app/build.gradle.kts | sed -E 's/.*applicationId[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')"
+APP_ID="$(grep -m1 -E '^[[:space:]]*applicationId[[:space:]]*=' android/app/build.gradle.kts | sed -E 's/.*applicationId[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')"
+# 清单字段防呆：applicationId 必须是合法包名（2026-11-07 事故：grep 曾命中注释行，
+# 把整行注释写进清单 → 装机端串包防御拒绝全部更新）。非法即中止，勿带病上传。
+if ! [[ "$APP_ID" =~ ^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$ ]]; then
+  echo "FATAL: 从 build.gradle.kts 提取的 applicationId 非法: [$APP_ID]" >&2
+  exit 1
+fi
 [ -z "$CHANGELOG" ] && CHANGELOG="$(git log -1 --pretty=%s 2>/dev/null || echo '')"
 # 转义 json 字符串中的反斜杠与双引号
 CHANGELOG_ESC="${CHANGELOG//\\/\\\\}"

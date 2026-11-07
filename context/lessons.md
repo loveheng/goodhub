@@ -140,5 +140,7 @@ last-merge: 2026-11-07
 
 ## 待归并（inbox）
 
+- [release-r2-applicationId] 发布后清单 applicationId 字段是 gradle 注释原文（「// 测量变体隔离…」），装机端串包防御拒掉全部更新 ➔ release-r2.sh 用 grep -m1 'applicationId' 从 build.gradle.kts 提取包名——子串匹配命中 2026-11-04 bench 变体改动引入的注释行（先于真实赋值行），且脚本既有校验只对账 versionCode 未验 applicationId 格式 ➔ 提取锚定行首赋值 grep -E '^[[:space:]]*applicationId[[:space:]]*='（跳过注释行）+ 发布链防呆守卫（APP_ID 必须匹配合法包名正则，非法即 FATAL 中止）；机械规则=脚本从代码文件提取字面量时禁止子串 grep，必须锚定赋值形态且对提取值做格式断言；回归=bash -n + 守卫正反样本（注释行样本必须被咬住）+ 下次 release-r2 --dry-run 清单 applicationId=com.zzh.goodhub (Ref: self-update)
+
 - [geniex-qairt] ErrorCode[-100016] Parameter not supported + 流式中文夹杂 ä¸­ 型乱码 qairt 插件拒收 --stop/--stop-file(GenerationConfig.stopWords 禁传,EOS 停止管线内置);SDK 增量 detokenize 跨 token 拆裂多字节 UTF-8(只有 Token(String) 无字节出口,上游不可修) GenieSession 去 stopWords + StreamTextSanitizer 投递前 latin1 段重组还原 + think 块跨块剥除;复现锚=logcat GenieXSdk tag (Ref: on-device)
 - [on-device] Android `http.get().bodyBytes` 大文件下载截断条目：待补回归段（归并门禁=四段齐备，回归钉待补后入「端侧 / 资产与构建」节）

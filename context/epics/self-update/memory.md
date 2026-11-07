@@ -27,4 +27,4 @@ last-merge: 2026-11-07
 - 残留风险（未处理）：桶根目录旧对象 updates/app-release.apk + 两份旧清单（goodhub 2002 / shiguang 28019）仍在，旧源客户端按 sha256 失配 fail-closed；upload-r2.mjs 无删除能力，建议后续补 delete 或后台手工清理
 
 ## 断点
-- [断点] 下一步：真机自更新链验证完成（正路径到安装器拉起+串包拒绝实证，见 devlog 11-07）；遗留=①R2 清单坏态待用户重新发版（4015 拆分泄漏+APK 404）②404 下载流不失败健壮性缺口待复现收口③安装器落地需用户授「安装未知应用」权限后实测
+- [断点] 下一步：R2 已重新发版收口（v1.2.1 清单可消费：applicationId 修正+APK 200+sha256 一致，外网核验过）；遗留=①脚本修复+清单修正待提交（git add scripts/release-r2.sh updates/goodhub-update.json）②安装器落地实测需授「安装未知应用」权限③404 下载流不失败缺口待复现收口④4016 拆分 versionCode 口径与整包 2016 的自洽性观察（装机走更新链后归一）
