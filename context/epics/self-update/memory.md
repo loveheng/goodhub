@@ -27,4 +27,4 @@ last-merge: 2026-11-07
 - 残留风险（未处理）：桶根目录旧对象 updates/app-release.apk + 两份旧清单（goodhub 2002 / shiguang 28019）仍在，旧源客户端按 sha256 失配 fail-closed；upload-r2.mjs 无删除能力，建议后续补 delete 或后台手工清理
 
 ## 断点
-- [断点] 下一步：self-update 三项遗留全收口（①安装器落地实测 ✅ ②404 下载流收口 ✅ ③4016 口径观察 ✅ 自洽成立）；剩余=本轮代码改动待提交（lib/update/update_service.dart + test/update/update_service_test.dart）+ 陈旧权限弹卡不自愈小缺口待观察
+- [断点] 下一步：self-update 全部收口：①安装器落地实测 ✅ ②404 下载流收口 ✅（代码随 1d999f9 入库）③4016 口径观察 ✅ 自洽成立 ④账本已提交 4407208；无待办——仅陈旧权限弹卡不自愈小缺口留观察（下次触及更新页顺带核），新需求待用户指令
