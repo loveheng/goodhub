@@ -13,3 +13,5 @@ last-merge: 2026-11-07
 - [2026-11-07] [验证]: flutter analyze 0 issues；flutter test 全量 1808 绿（policy/metrics 新增 5 例；首跑 1 例偶发未再现未定级，复跑追踪）；arch-guard/docs-lint 通过；真机三线命中（ttl-configured 30000ms / evict 快照 batt=89 chg=false ps=false screen=true / rss-sample post-evict-5s/30s vmRss≈154MB 稳定）+ Dart 沿（load_ready/send/evicted）+ TTL 30s 时序（双源缺陷修复后）
 - [2026-11-07] [变更]: 自动采样会话：harness 20 轮（调试历经 logcat 轮转断发现→pkill 自匹配自杀链→计数多行污染→锁自匹配四坑后收敛为凭据缓存直连 curl + 计数等wait + PID 文件锁）；样本档 + 采样器归档 context/epics/on-device-residency/samples/；【数据点】~45+ 装卸后 query_on_device 挂起（>90s 无装载完成）= CMA/ION 碎片化疑似，R4 观测面首条真机数据点，重启回收后复测对照待办
 - [2026-11-07] [验证]: 真机采样会话执行（PLQ110）：~45+ 装卸循环、10+ 完整遥测周期、screen/chg 字段真实变化捕获；发现 R4 级信号（重复装卸后装载挂起）已入证据档
+- [2026-11-07] [变更]: P1 施工稿定稿并落文档第九节（P1-a 驻留策略单源+TTL 矩阵 / P1-b TRIM 分档 / P1-c 水位单源 deviceProbe 携带 / P1-d 聚焦 bind 预热）——L1/L2 机制化，不翻任何现有拍板
+- [2026-11-07] [验证]: docs-lint 通过；矩阵值与现状锚点经本轮取证核对（TRIM 即逐现状 EngineLifecycle.kt:116/MemGate 本地常量:17-25/warmup 双调用点/fg 流 :634）

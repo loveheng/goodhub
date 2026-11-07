@@ -222,3 +222,64 @@ flowchart TD
 - 真机冒烟：①短 TTL 下发 → `ttl-elapsed(30000ms)` 驱逐行出现；②JSONL 账本可经 `adb logcat`/文件拉取且字段完整；③命中率行在聊天冒烟中出现；④缺省路径行为与现状逐字节一致（不下发配置时）。
 - CI：analyze + 全量 test + arch-guard（R12 等）+ docs-lint。
 - 同轮台账：`index.md` 代码落点表补 `on_device_residency_policy` / 观测面两行；epic devlog 记账。
+
+## 九、P1 施工稿（驻留策略 owner）
+
+> 定位：L1/L2 两级落地——把「长驻行为」从散点常量收敛为**单点策略**（R7/R8 机制化）。前置 = P0 参数化缝（已交付）+ 观测面（已上线）。绑定 epic = `on-device-residency`。**红线：不翻任何现有拍板**（5min 前台 TTL 为矩阵缺省项；TRIM 分档改的是「BACKGROUND 即逐」的实现行为，属 L2 已立项范围）。
+
+### P1-a · 驻留策略单源（`:engine` 侧 ResidencyPolicy）
+
+- 新 `engine/ResidencyPolicy.kt`：**纯函数策略对象**（TTL 矩阵 + TRIM 分档的唯一 owner，状态机零魔法数纪律对齐）：
+
+```kotlin
+enum class CallerClass { hostForeground, hostBackground, external }  // R7 三值主体
+data class EnvSnapshot(val batteryPct: Int, val charging: Boolean,
+                       val powerSave: Boolean, val interactive: Boolean)
+fun ttlMs(caller: CallerClass, env: EnvSnapshot): Long   // 下表唯一实现
+fun trimAction(level: Int): TrimAction                    // P1-b 唯一实现
+```
+
+- **TTL 矩阵（R7/R8 落地，优先级从高到低短路）**：
+
+| 条件（短路序） | TTL | 依据 |
+|---|---|---|
+| `powerSave` 或 `batteryPct ≤ 20` | **0（收尾即逐）** | R8 低电归零——即用即焚 |
+| `interactive == false`（灭屏） | **1min** | R8 灭屏加速衰减（无在途生成前提，busy 护栏既有） |
+| `charging` | **30min** | R8 充电放宽（电量换算力窗口） |
+| `caller == external`（W6 预留） | **1min 顺延** | R7 搭便车——只消费温热不续命 |
+| 其余（宿主前台/后台） | **5min（拍板缺省）** | 现状缺省值 |
+
+- 接线：`scheduleTtl(generation)` 改读 `ResidencyPolicy.ttlMs(lastCaller, envSnapshot())`——`lastCaller` 由 `startGenerate` 的 `fg` 标志回填（`:engine` 已持有，`:634`），external 随 W6 落地接入；`envSnapshot()` 复用 S-R0-b 的 sticky 广播/PowerManager 同步读（事件沿零轮询）。`updateTtlMs`（P0 外部覆盖缝）保留，**策略值优先级 = 显式注入 > 矩阵**（诊断/实验通路）。
+- 观测对齐：每次 scheduleTtl 落 `[RESIDENCY] policy caller=… batt=… chg=… ps=… screen=… ttl=…` 决策行。
+
+### P1-b · TRIM 分档响应（L2）
+
+- 现状：`onTrimMemory ≥ BACKGROUND` 立即逐（`EngineLifecycle.kt:116`）。改：`trimAction(level)` 分档——
+  - `RUNNING_CRITICAL` / `COMPLETE` → **驱逐**（现状语义保留于极端档）；
+  - `BACKGROUND` / `RUNNING_LOW` → **不逐**，改记 `envPressure=true`：①本轮 WARM 续存；②下次 scheduleTtl 的 TTL 按低电档处理（高压让位）；③连续 3 次 BACKGROUND → 升级驱逐（防永久赖驻）。
+- 等价性风险：BACKGROUND 不逐 = 高压下被 LMK 击杀概率上升——`:engine` 被杀即 `onProcessDied` 自愈链兜底（票据对账重装），且权重 ION 属可回收匿名页之外的独立域（真机由 P0 观测面对账）。
+- 回归锚：EngineLifecycle 为纯状态机——trimAction 单测（三档输入 → 三类输出）+ 真机高压场景冒烟。
+
+### P1-c · 水位单 owner（R4 收敛）
+
+- 现状三层：Dart MemGate 1.2/1.6/0.9GB（`on_device_mem_gate.dart:17-25` 本地常量）· Kotlin 6GB/1GB（`MemoryGuardEvaluator.kt`）· hybrid memoryFloor 1GB 镜像。
+- 收敛：`MemoryGuardEvaluator` 常量升为**唯一事实源**；`LlmBridge.deviceProbe` 响应携带 `residencyThresholds`（loadMinAvailRam/retryHighWater/hardFloor）→ Dart MemGate **改为消费探针携带阈值**（缺省回落本地常量=兼容垫），hybrid memoryFloor 同源读取。三层常量字面量归一后，跨层漂移不可能发生。
+- 回归锚：MemGate 单测改喂探针携带阈值 + 既有真机水位冒烟。
+
+### P1-d · 聚焦 bind 预热（合规变体）
+
+- `chat_composer` FocusNode 首次获焦（会话级去重）→ `OnDeviceAdmin.warmupTouch()` → `sharedOnDeviceEngine.warmup()`（**bind + waitReady，不触权重装载**——懒加载立法不受影响）。
+- 效果：把 3~8s 进程冷启动/握手掩盖在打字时间里；`loadModel` 权重预热仍走 P0 决策点（观测数据未齐，不在本批）。
+- 回归锚：去重单测（同会话二次聚焦不重复触发）+ 真机冷启冒烟（聚焦 → 发送，TTFT 对比）。
+
+### 批次与验收
+
+| 批 | 内容 | 验收 |
+|---|---|---|
+| P1-a | ResidencyPolicy 单源 + TTL 矩阵 + scheduleTtl 接线 + policy 决策行 | Kotlin 真机：灭屏/充电/低电三态 TTL 变化实测（观测面行验证） |
+| P1-b | TRIM 分档 + 连续升级驱逐 | trimAction 单测 + 真机 BACKGROUND 场景冒烟 |
+| P1-c | 水位单源 + deviceProbe 携带阈值 | MemGate 单测改造 + 真机水位行对账 |
+| P1-d | 聚焦 bind 预热 | 去重单测 + 真机 TTFT 对比 |
+
+- 依赖：P1-a 先行（P1-b 的 envPressure 复用其策略对象）；P1-c/P1-d 独立。
+- 全批验收：观测面 policy 决策行覆盖全部矩阵格；全量测试绿；真机长会话冒烟。
