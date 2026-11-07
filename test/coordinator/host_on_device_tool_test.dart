@@ -173,11 +173,12 @@ void main() {
       final schema = HostOnDeviceToolExecutor.schemaOf(
           HostOnDeviceToolExecutor.toolName);
       expect(schema, isNotNull);
-      expect(schema['description'],
-          HostOnDeviceToolExecutor.toolSchemas().single.description);
-      expect(
-          schema['inputSchema'],
-          HostOnDeviceToolExecutor.toolSchemas().single.parametersSchema);
+      // W6-a：toolSchemas 双条目（complete + task_status）——按名取 own。
+      final own = HostOnDeviceToolExecutor.toolSchemas()
+          .where((s) => s.name == HostOnDeviceToolExecutor.toolName)
+          .single;
+      expect(schema['description'], own.description);
+      expect(schema['inputSchema'], own.parametersSchema);
       // 其他工具名返回空（owner 单源只答自己）。
       expect(HostOnDeviceToolExecutor.schemaOf('other'), isEmpty);
     });

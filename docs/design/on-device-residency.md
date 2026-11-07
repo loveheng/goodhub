@@ -283,3 +283,41 @@ fun trimAction(level: Int): TrimAction                    // P1-b 唯一实现
 
 - 依赖：P1-a 先行（P1-b 的 envPressure 复用其策略对象）；P1-c/P1-d 独立。
 - 全批验收：观测面 policy 决策行覆盖全部矩阵格；全量测试绿；真机长会话冒烟。
+
+## 十、W6 施工稿（a/b 批已交付）
+
+> 定位：第七节双模机制的施工稿。**跨仓前置**：goodshare `ai-app-split.md` §3.11.2 修订文本已备（移交件 = 本节 7.6 表 + 10.3 联合态载荷，用户执行写入）——**allow_deferred 缺省 false 下存量零变化，代码可先行**。
+
+### 10.1 已交付（W6-a + W6-b）
+
+| 组件 | 落点 | 要点 |
+|---|---|---|
+| 任务池账本 | `lib/coordinator/supply_task_pool.dart` | JSONL 整本原子写（KeyedWriteQueue，`supply_tasks.jsonl`）+ 状态机六态 + M4 配额（per-caller 8 / 全局 64）+ M5 身份过滤 + M6 毒丸死信（retries ≥3）+ 过期清账 + 崩溃恢复（running→queued）+ 滚动截半防膨胀 |
+| executor 联合态 | `host_on_device_tool.dart` | `allow_deferred`（缺省 false=存量零变化）+ `expiry_ms`；冷态 `OnDevicePrimitiveException` catch 分支 → 入池回执 `{execution_mode:'deferred', task_id, status, expiry_ms}`；M5 无 callerKey 不受理 |
+| status 拉取工具 | `HostSupplyTaskStatusExecutor`（`on_device_task_status`） | Pull = 交付真理源：pendingDelivery 查询即置 delivered 回结果；M5 过滤 not_found；Allowlist 已登记（readOnlyHint） |
+| invoker 接线 | `host_tool_invoker.dart` | taskPool 注入位 + 链挂 status 执行器 + schemaOf 双工具分派 |
+| 顺风车排空 | `OnDeviceAdmin.drainSupplyPool()` + `chat_send_use_case` run finally 钩子 | ≤3 条/轮，K11 抢占回池（requeue 毒丸计数），引擎忙/死亡即 return |
+
+- 测试：`test/coordinator/supply_task_pool_test.dart` 8 例（状态机/配额/M5/毒丸/持久化恢复/联合态/存量零变化/status 拉取）。
+- 登记面：`index.md` 代码落点表补 `supply_task_pool` 行；Allowlist 4 条（gateway__select_private / get_host_status / on_device_complete / on_device_task_status）。
+
+### 10.2 待交付
+
+- **W6-c** 充电黄金窗口（ADR 已立）：WorkManager 约束化 + 用户开关面 + 分块循环。
+- **消费端对接**：调用方（goodshare/插件 SDK）的 deferred 回执解析 + Pull 客户端——随 SDK 下一版发布。
+
+### 10.3 跨仓移交件（§3.11.2 修订文本，用户执行写入 goodshare 仓）
+
+```markdown
+### §3.11.2 增补（W6-a 联合态，2026-11-07）
+
+`on_device_complete` 新增可选参数 `allow_deferred`（缺省 false，存量语义零变化）：
+- `allow_deferred: true` 时，宿主端侧冷态（未装载/降级窗口）不再同步 failFast，
+  而是将任务原子登记入宿主任务池并返回回执：
+  `{execution_mode: "deferred", task_id: "...", status: "queued", expiry_ms: ...}`；
+- 调用方经 `on_device_task_status`（host 面 Allowlist 已登记）以 task_id 拉取
+  状态/结果——**Pull 为交付真理源**（Push best-effort，freezer 吞 oneway）；
+- 任务保质期缺省 24h（expiry_ms 可调）；配额 per-caller 8 条/全局 64 条；
+  计费点 = 执行时（产出才计，K22 同源）；
+- 交付寻址绑定内核 UID 推导身份（callback_pkg 仅展示用途）。
+```

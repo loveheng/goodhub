@@ -129,6 +129,18 @@ final List<HostExportEntry> kHostExportAllowlist = <HostExportEntry>[
     tags: <String>['core'],
     allowedActors: <Actor>{Actor.owner, Actor.external('gateway')},
   ),
+  // 端侧供给面导出（W6-a，on-device-residency 第七节）：`on_device_task_status`
+  // ——deferred 任务拉取（Pull = 交付真理源，freezer 吞 oneway 的唯一对策）。
+  // 登记三关：① 产品价值 = 异步任务的调用方可回收结果；② 隐私 = 结果仅回
+  // 登记时绑定的内核 UID 身份（M5，callerKey 过滤），无身份不受理；
+  // ③ 幂等拉取无副作用（readOnlyHint），交付标记可重复查询。
+  HostExportEntry(
+    name: 'on_device_task_status',
+    annotations: <String, Object?>{'readOnlyHint': true},
+    visibility: ToolVisibility.shared,
+    tags: <String>['core'],
+    allowedActors: <Actor>{Actor.owner, Actor.external('gateway')},
+  ),
 ];
 
 /// 控制面原语黑名单：宿主 JIT 元工具，**合成 `tools/list` 前强制剔除、

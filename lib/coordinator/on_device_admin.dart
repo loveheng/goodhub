@@ -5,6 +5,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart'
     show ValueListenable, ValueNotifier, debugPrint;
@@ -14,6 +15,8 @@ import '../llm/geniex_runtime_binding.dart'
     LiteRtLmNpuStatus;
 import '../llm/on_device_admission_probe.dart' show sharedAdmissionProbe;
 import '../llm/on_device_asset_manager.dart' show OnDeviceAssetManager;
+import '../llm/cloud/cloud_llm.dart' show AssembledToolCall;
+import '../llm/on_device_capability.dart' show AidlOnDeviceCapabilityService;
 import '../llm/on_device_engine.dart'
     show OnDeviceGenPerf, OnDeviceGenPerfAware, sharedOnDeviceEngine;
 import '../llm/on_device_gate_override.dart'
@@ -21,6 +24,9 @@ import '../llm/on_device_gate_override.dart'
 import '../llm/on_device_model_catalog.dart'
     show OnDeviceModelOption, OnDeviceModelSelection;
 import '../llm/on_device_session_ticket.dart' show SessionTicket;
+import 'host_on_device_tool.dart';
+import 'supply_quota.dart';
+import 'supply_task_pool.dart';
 
 export '../llm/cloud/cloud_llm.dart'
     show AssistantMessage, CloudChatMessage, SystemMessage, UserMessage;
@@ -50,6 +56,43 @@ abstract final class OnDeviceAdmin {
 
   static final ValueNotifier<OnDeviceGenPerf?> _noGenPerf =
       ValueNotifier<OnDeviceGenPerf?>(null);
+
+  /// W6-b 顺风车排空（on-device-residency 第七节）：WARM 窗口内排空异步
+  /// 任务池（≤[maxTasks] 条，K11 抢占回池语义由 requeue 承载）。Run 收口后
+  /// 由页面调用（用户阅读空闲期）；失败逐条留痕不反噬主路径。
+  static Future<void> drainSupplyPool({int maxTasks = 3}) async {
+    final pool = SupplyTaskPool.instance;
+    final executor = HostOnDeviceToolExecutor(
+      AidlOnDeviceCapabilityService(sharedOnDeviceEngine),
+      quota: SupplyQuota(),
+      taskPool: pool,
+    );
+    for (var i = 0; i < maxTasks; i++) {
+      final entry = await pool.claimNext();
+      if (entry == null) return;
+      try {
+        final r = await executor.execute(AssembledToolCall(
+          id: 'drain-${entry.taskId}',
+          name: HostOnDeviceToolExecutor.toolName,
+          argumentsJson: jsonEncode({
+            'instruction': entry.instruction,
+            'input': entry.input,
+          }),
+        ), callerKeyOverride: entry.callerKey);
+        if (r.isError) {
+          // 引擎忙/死亡：回池（毒丸计数累计，超限死信），停止本轮排空。
+          await pool.requeue(entry.taskId);
+          debugPrint('[DEGRADE] supply-drain: ${r.content}');
+          return;
+        }
+        await pool.completeTask(entry.taskId, r.content);
+      } on Object catch (e) {
+        await pool.requeue(entry.taskId);
+        debugPrint('[DEGRADE] supply-drain: $e');
+        return;
+      }
+    }
+  }
 
   /// 聚焦 bind 预热（P1-d，on-device-residency）：输入框首聚焦触发
   /// bind+waitReady（**不触权重装载**——懒加载立法不受影响）；预热失败静默

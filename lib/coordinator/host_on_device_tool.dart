@@ -25,10 +25,12 @@ import '../llm/on_device_capability.dart';
 import 'agent_loop.dart';
 import 'caller_death_interrupt.dart';
 import 'supply_quota.dart';
+import 'supply_task_pool.dart';
 
 /// 端侧供给面导出执行器。
 class HostOnDeviceToolExecutor implements ToolExecutor {
-  HostOnDeviceToolExecutor(this._primitive, {this.quota, this.callerKey});
+  HostOnDeviceToolExecutor(this._primitive,
+      {this.quota, this.callerKey, this.taskPool});
 
   final OnDeviceCapabilityService _primitive;
 
@@ -40,6 +42,10 @@ class HostOnDeviceToolExecutor implements ToolExecutor {
   /// 调用方身份键（W5 死亡联动；Binder 路径 = 插件包名，per-face 实例注入；
   /// null = 不注册打断——既有装配/网关工具面零行为变化）。
   final String? callerKey;
+
+  /// W6-a 异步任务池（null = 未装配——allow_deferred 请求回落同步 failFast，
+  /// 既有语义零变化）。
+  final SupplyTaskPool? taskPool;
 
   /// 工具名（裸名，与本机 executor 一致，不带 `host__` 前缀）。
   static const toolName = 'on_device_complete';
@@ -72,8 +78,34 @@ class HostOnDeviceToolExecutor implements ToolExecutor {
                 'type': 'string',
                 'description': '待处理的原文',
               },
+              'allow_deferred': {
+                'type': 'boolean',
+                'description': '冷态时转异步任务池（默认 false = 同步 failFast）；'
+                    '转池后以 on_device_task_status 拉取结果',
+              },
+              'expiry_ms': {
+                'type': 'integer',
+                'description': '异步任务保质期毫秒（默认 24h，过期作废）',
+              },
             },
             'required': ['instruction', 'input'],
+          },
+        ),
+        // W6-a：任务状态拉取（Pull = 交付真理源；M5 身份过滤——只能查自己的）。
+        CloudToolSchema(
+          name: HostSupplyTaskStatusExecutor.toolName,
+          description: '查询异步端侧推理任务状态/结果（配合 on_device_complete '
+              '的 allow_deferred 使用）。拉取即交付：pendingDelivery 态查询后置 '
+              'delivered 并返回结果。',
+          parametersSchema: {
+            'type': 'object',
+            'properties': {
+              'task_id': {
+                'type': 'string',
+                'description': 'on_device_complete 转池回执中的 task_id',
+              },
+            },
+            'required': ['task_id'],
           },
         ),
       ];
@@ -140,12 +172,15 @@ class HostOnDeviceToolExecutor implements ToolExecutor {
 
   /// schema 原文解析（供 `HostSchemaResolver` 合成 `tools/list` 用；owner =
   /// 执行面单源，与 `HostStatusToolExecutor.schemaOf` 同型）。
-  static Map<String, Object?> schemaOf(String tool) => tool == toolName
-      ? <String, Object?>{
-          'description': toolSchemas().single.description,
-          'inputSchema': toolSchemas().single.parametersSchema,
-        }
-      : const <String, Object?>{};
+  static Map<String, Object?> schemaOf(String tool) {
+    if (tool != toolName) return const <String, Object?>{};
+    final own =
+        toolSchemas().where((s) => s.name == toolName).single;
+    return {
+      'description': own.description,
+      'inputSchema': own.parametersSchema,
+    };
+  }
 
   /// [callerKeyOverride] = S07b 平台侧已解析的调用方包名（内核 UID 推导，
   /// Binder 反向路径传入）：优先于实例 [callerKey]（transport 元数据）——
@@ -246,9 +281,102 @@ class HostOnDeviceToolExecutor implements ToolExecutor {
       }
     } on OnDevicePrimitiveException catch (e) {
       capLog('err: ${e.message}');
+      // W6-a 冷态入池（Deferred-Path）：调用方显式 opt-in（allow_deferred）且
+      // 池已装配且身份可绑（M5：无 callerKey 不受理 deferred——无法寻址交付）
+      // 时，冷装载让位为「入池回执」，消费契机 = 顺风车/黄金窗口（7.4）。
+      final allowDeferred = args['allow_deferred'] == true;
+      final deferKey = callerKeyOverride ?? callerKey;
+      if (allowDeferred && taskPool != null && deferKey != null) {
+        try {
+          final entry = await taskPool!.submit(
+            callerKey: deferKey,
+            instruction: instruction,
+            input: input,
+          );
+          capLog('deferred taskId=${entry.taskId}');
+          return ToolExecutionResult(
+            content: jsonEncode({
+              'execution_mode': 'deferred',
+              'task_id': entry.taskId,
+              'status': 'queued',
+              'expiry_ms': entry.expiryAtMs -
+                  DateTime.now().millisecondsSinceEpoch,
+            }),
+          );
+        } on Object catch (pe) {
+          capLog('deferred-submit-failed: $pe');
+          // 入池失败（配额满等）回落同步错误语义（调用方自处）。
+        }
+      }
       return ToolExecutionResult(
           content: '端侧推理失败（宿主不兜底云端，可重试或自行降级）：${e.message}',
           isError: true);
     }
+  }
+}
+
+/// W6-a 异步任务状态拉取执行器（on-device-residency 第七节）：Pull = 交付
+/// 真理源（freezer 吞 oneway 的唯一对策）——pendingDelivery 态查询即置
+/// delivered 并回结果；M5 身份过滤（callerKey 不匹配 = 不可见）。
+class HostSupplyTaskStatusExecutor implements ToolExecutor {
+  HostSupplyTaskStatusExecutor(this._pool);
+
+  final SupplyTaskPool _pool;
+
+  static const toolName = 'on_device_task_status';
+
+  /// schema 单源（toolSchemas 清单内同形；owner = 执行面禁 Allowlist 复制）。
+  static Map<String, Object?> schemaOf(String tool) => tool == toolName
+      ? <String, Object?>{
+          'description': HostOnDeviceToolExecutor.toolSchemas()
+              .where((s) => s.name == toolName)
+              .single
+              .description,
+          'inputSchema': HostOnDeviceToolExecutor.toolSchemas()
+              .where((s) => s.name == toolName)
+              .single
+              .parametersSchema,
+        }
+      : const <String, Object?>{};
+
+  @override
+  Future<ToolExecutionResult> execute(
+    AssembledToolCall call, {
+    String? callerKeyOverride,
+  }) async {
+    if (call.name != toolName) {
+      return const ToolExecutionResult(
+          content: 'on_device_task_status 执行器不接受其他工具名', isError: true);
+    }
+    final callerKey = callerKeyOverride ?? '';
+    if (callerKey.isEmpty) {
+      // M5：无内核身份不受理（deferred 登记时已强制绑身份——理论不可达）。
+      return const ToolExecutionResult(
+          content: '调用方身份不可辨（deferred 任务按内核 UID 寻址）', isError: true);
+    }
+    final Object? args;
+    try {
+      args = jsonDecode(call.argumentsJson);
+    } on FormatException catch (e) {
+      return ToolExecutionResult(content: '参数不是合法 JSON: $e', isError: true);
+    }
+    final taskId = args is Map ? args['task_id'] : null;
+    if (taskId is! String || taskId.isEmpty) {
+      return const ToolExecutionResult(
+          content: '缺少 task_id', isError: true);
+    }
+    final entry = await _pool.statusFor(taskId, callerKey: callerKey);
+    if (entry == null) {
+      return ToolExecutionResult(
+          content: jsonEncode(
+              {'task_id': taskId, 'status': 'not_found'}),
+          isError: true);
+    }
+    // Pull 即交付（真理源）：pendingDelivery → delivered + 回结果。
+    if (entry.status == SupplyTaskStatus.pendingDelivery) {
+      await _pool.markDelivered(taskId, callerKey: callerKey);
+    }
+    return ToolExecutionResult(
+        content: jsonEncode(entry.projection()));
   }
 }

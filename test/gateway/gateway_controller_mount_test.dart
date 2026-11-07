@@ -324,9 +324,12 @@ void main() {
       // W5 端侧供给面导出：on_device_complete 属 host 公共面成员，
       // single 投影随 Allowlist 扩项自然纳入（导出面已过登记三关）。
       'on_device_complete',
+      // W6-a：on_device_task_status 拉取工具随任务池装配入面（长驻 P1 交付）。
+      'on_device_task_status',
     ]));
-    expect(singleNames, hasLength(3),
-        reason: 'single 暴露目标服务 + 唯一出口工具 + 端侧供给面导出项（W5）');
+    expect(singleNames, hasLength(4),
+        reason: 'single 暴露目标服务 + 唯一出口工具 + 端侧供给面导出项（W5）'
+            '+ 任务状态拉取（W6-a）');
     final singleCall = await single.toolsCall(
       name: 'get_host_status',
       arguments: const <String, Object?>{},

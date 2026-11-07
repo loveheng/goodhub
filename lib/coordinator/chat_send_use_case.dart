@@ -8,6 +8,7 @@
 /// 取消经 [ChatSendUseCase.cancel]，由它统一持有「已装配但未收口」的句柄。
 library;
 
+import 'dart:async';
 import 'dart:io';
 import '../llm/cloud/byok_store.dart';
 import '../llm/cloud/cloud_llm.dart';
@@ -23,6 +24,7 @@ import 'mcp_tool_face.dart';
 import 'resource_attachment_binder.dart' show ResourceAttachment;
 import 'chat_run_orchestrator.dart';
 import 'mcp_runtime.dart';
+import 'on_device_admin.dart';
 import 'mcp_run_spec.dart';
 import 'skill_registry.dart';
 import 'user_prompt_store.dart';
@@ -140,6 +142,10 @@ class ChatSendUseCase {
       orchestrator.markRunEnded();
       await assembly.close();
       if (identical(_active, assembly)) _active = null;
+      // W6-b 顺风车排空（on-device-residency 第七节）：Run 收口 = WARM 窗口
+      // 起点——用户阅读空闲期顺手排空任务池（≤3 条，K11 抢占回池）。
+      // 失败静默（排空是旁路面）；引擎忙即 return（下一 Run 再排）。
+      unawaited(OnDeviceAdmin.drainSupplyPool());
     }
   }
 

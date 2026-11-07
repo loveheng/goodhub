@@ -28,6 +28,7 @@ import '../llm/on_device_capability.dart';
 import 'agent_loop.dart';
 import 'host_on_device_tool.dart';
 import 'supply_quota.dart';
+import 'supply_task_pool.dart';
 import 'host_status_tool.dart';
 import 'tool_executor_chain.dart';
 import 'local_resource_tool_executor.dart';
@@ -88,6 +89,7 @@ Future<HostToolInvokerPort> assembleHostToolInvoker({
   String appVersion = 'unknown',
   OnDeviceCapabilityService? onDeviceCapability,
   SupplyQuota? supplyQuota,
+  SupplyTaskPool? taskPool,
 }) async {
   // 链路序（与 `McpRuntime.assemble` 同构思路）：宿主状态面 → 记忆面 → 资源面，
   // 三者互不重叠，命中即执行、未命中透传 inner。
@@ -119,7 +121,10 @@ Future<HostToolInvokerPort> assembleHostToolInvoker({
     // 端侧供给面（W5）：注入位非空才挂——null = 未装配（平台不支持/测试面），
     // host 面照常装配，仅少一类端侧推理工具（导出面降级，不阻断装配）。
     if (onDeviceCapability != null)
-      (inner) => HostOnDeviceToolExecutor(onDeviceCapability, quota: supplyQuota),
+      (inner) => HostOnDeviceToolExecutor(onDeviceCapability,
+          quota: supplyQuota, taskPool: taskPool),
+    if (taskPool != null)
+      (inner) => HostSupplyTaskStatusExecutor(taskPool),
   ], fallback: const _NoHostToolExecutor());
   return HostToolInvokerPort(
     executor: executor,
@@ -138,6 +143,10 @@ class _StatusSchemaOwner implements HostSchemaOwner {
     // HostOnDeviceToolExecutor（owner = 执行面，禁 Allowlist 复制）。
     if (toolName == HostOnDeviceToolExecutor.toolName) {
       final raw = HostOnDeviceToolExecutor.schemaOf(toolName);
+      return raw.isEmpty ? null : raw;
+    }
+    if (toolName == HostSupplyTaskStatusExecutor.toolName) {
+      final raw = HostSupplyTaskStatusExecutor.schemaOf(toolName);
       return raw.isEmpty ? null : raw;
     }
     final raw = HostStatusToolExecutor.schemaOf(toolName);
