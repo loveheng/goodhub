@@ -74,8 +74,8 @@ L0 现状 = 「装载后尽量多活」机制集（FGS 绑定即挂 + 5min TTL +
 
 | 阶段 | 内容 | 前置 |
 |---|---|---|
-| **P0 观测+策略位** | TTL/驱逐让位经 AIDL Bundle 缝参数化（5min 变缺省值）· 驻留观测面（驻留时长/驱逐原因分类/跨 App 命中率/**驱逐时电量区间**/**灭屏驱逐占比**/**被动杀死率**/**驱逐后 `:engine` RSS 采样**）· 电池白名单独立入口 | 无——纯增量 |
-| **P1 驻留策略 owner** | 水位判定收敛单 owner + TRIM 分档响应（BACKGROUND 降级 / CRITICAL 才逐）+ Caller-Tiered TTL（R7）+ 生存环境分档驱动 TTL（R8：低电归零/充电放宽/灭屏加速衰减 + FGS 撤挂联动） | P0 数据支撑 |
+| **P0 观测+策略位** | TTL/驱逐让位经 AIDL Bundle 缝参数化（5min 变缺省值）· 驻留观测面（驻留时长/驱逐原因分类/跨 App 命中率/**驱逐时电量区间**/**灭屏驱逐占比**/**被动杀死率**/**驱逐后 `:engine` RSS 采样**/**权重驻留物理形态按栈采样：mmap clean / dmabuf pinned / PSS 三口径**）· 电池白名单独立入口 · **审计项：llama.cpp / LiteRT 的 mmap 权重加载默认未被关闭、权重无 Java 堆中转深拷贝（GenieX AAR 内部行为黑盒登记待证）** | 无——纯增量 |
+| **P1 驻留策略 owner** | 水位判定收敛单 owner + TRIM 分档响应（BACKGROUND 降级 / CRITICAL 才逐）+ Caller-Tiered TTL（R7）+ 生存环境分档驱动 TTL（R8：低电归零/充电放宽/灭屏加速衰减 + FGS 撤挂联动）+ **聚焦 bind 预热**（`warmup()`-only 合规变体——bind + waitReady 是既有合法原语、不触权重装载，把 3~8s 进程冷启动/握手掩盖在打字时间里；**loadModel 权重预热仍走 P0 决策点**） | P0 数据支撑 |
 | **P2 上下文温热重评** | 条件触发：GenieX prefix API 或新实证 → AIDL `cacheHandle` 位 | ADR 翻转依据 |
 | **P3 多实例** | `OnDeviceEngineFactory` 兑现（多模型共存 / 小模型常驻构型） | 翻「装载单例」拍板，独立立项 |
 
@@ -87,7 +87,7 @@ L0 现状 = 「装载后尽量多活」机制集（FGS 绑定即挂 + 5min TTL +
 | Prio 2 | 跨 App 供给（W5） | **搭便车语义**：享受 Prio 1 温热窗口秒回；冷驱逐后默认 failFast / 排队等待，**严禁后台自发唤醒冷装载**（= 确认既有立法：failFast + 懒加载边界 + K19）。机制化 = 第七节双模（W6） |
 | Prio 3 | 后台任务链 | 完全让路：内存吃紧优先掐断，绝不为后台链延长驻留（K19 同构） |
 
-**P0 决策点**：①**打字聚焦预热**（用户点击输入框作为「即将提问」信号触发异步预热）——**新增一条自动装载路径**，与「原语绝不触发装载」红线及「立即装载」显式授权按钮（B+ 已有）的关系须拍板（聚焦≠提问，1.9GB 可能白付）；②观测面埋点按 Prio 1 主语义设计。
+**P0 决策点**：①**打字聚焦预热拆两段**——**bind 预热已采纳进 P1**（`warmup()`-only，不翻懒加载立法）；**loadModel 权重预热维持决策点**（聚焦≠提问，1.9GB 可能白付；Apple「全系统分摊预热成本」的类比不适用于单 App 独担，须「聚焦→发送转化率 + 聚焦停留时长 vs 装载时长」观测数据）；②观测面埋点按 Prio 1 主语义设计。
 
 ## 六、风险与约束
 
@@ -96,6 +96,16 @@ L0 现状 = 「装载后尽量多活」机制集（FGS 绑定即挂 + 5min TTL +
 - **推进纪律**：L1/L2 不翻拍板可做；L3/L4 各有显式触发条件与翻案成本——严禁未经新实证跳级。
 - **观测项（无实证不建机制）**：通话/音频对 HTP 推理的冲突——aDSP（音频）与 HTP（NPU 计算）为 Hexagon 不同内核域，「通话破音/驱动挂死」系推测无实证；真机实证异常再立项，与「温控全链摘除」同款教训（无真机证据不建响应机制）。
 - **交互规约说明**：冷装载期间的用户反馈已基本存在（`loadState=loading` 受理态 + `loadPhase` 装载阶段打点 + 状态带指示）——P0 仅需核对其在 3~5s 冷装载场景的可见性，非新建。
+
+### 六·补 Apple Intelligence 模式借鉴定案（评审轮）
+
+| 借鉴模式 | 裁定 | 理由与落点 |
+|---|---|---|
+| 单一底模 + LoRA 适配器 | **不采纳（登记重评触发）** | 「选定统一底模」与模型导入制拍板冲突（无默认模型、用户自带 GGUF/`.litertlm` 资产）；LoRA 绑死底模权重、用户换模型 adapter 即废，GenieX/QNN adapter 支持未实证；能力差异化已由 `supply/` 提示词模板 + 约束解码承载（= 现状）。**重评触发 = 用户生态出现配套 LoRA 需求且 GenieX adapter 实证可用** |
+| mmap 只读 Clean Pages | **栈分治** | llama.cpp（`LLAMA_MMAP` 默认）/ LiteRT 系 mmap = 库默认已具备「高压下变慢而不死」，审计默认未关即得；**GenieX/NPU 主路权重在 ION/dmabuf（DMA pin 内存，非 file-backed clean page），内核不可丢页回收——Apple 类比在主路径失效**。落点 = P0 三口径采样（见 P0 行）+ mmap 未关审计项 |
+| 统一中枢透明卸载（PCC） | **内部面 = 现状确认；导出面 = 不采纳** | 内部：`capability_router` + Requirement 声明 + 透明降级链 + localOnly 类型化阻断 = 今天架构；导出面「透明切云」违反「转发方接受降级语义需显式可知」红线（外部 App 数据经宿主云账号出境 = 成本归属 + 隐私授权两宗问题）。外部面演进 = W6 deferred（排队非秘密切云）。**不采纳记录留存防重提** |
+| DAS 机会主义调度 | **采纳（W6-c 实现指引）** | WorkManager 声明式约束（充电 + 设备空闲 + 电池非低电）替代自管广播，JobScheduler 底座平台协同；约束 ≠ 授权，M1 ADR + 用户开关仍须（见 7.6） |
+| 动线前置预热 | **拆两段** | bind 预热（`warmup()`-only）采纳进 P1——合法原语不翻懒加载立法；loadModel 权重预热维持 P0 决策点（单 App 独担成本、白付风险，凭观测数据拍板） |
 
 ## 七、跨 App 供给双模机制（W6 设计 · R7 / Prio-2 落地）
 
@@ -155,6 +165,6 @@ flowchart TD
 | goodhub-mcp-sdk `:contract` | AIDL 不动；plugin-core 解析面 + `api.md` 同轮 |
 | `kHostExportAllowlist` | on_device_complete 条目语义注记更新（三关注释钉） |
 
-工作包：**W6-a** 任务池 + WAL + 配额 + 联合态契约（跨仓同轮）；**W6-b** 顺风车排空调度（K11 抢占回池尾）；**W6-c** 充电黄金窗口（新 ADR + 用户开关 + 拔出中断）。
+工作包：**W6-a** 任务池 + WAL + 配额 + 联合态契约（跨仓同轮）；**W6-b** 顺风车排空调度（K11 抢占回池尾）；**W6-c** 充电黄金窗口（新 ADR + 用户开关 + 拔出中断）——**W6-c 实现指引 = WorkManager 声明式约束**（`setRequiresCharging` + `setRequiresDeviceIdle` + `setRequiresBatteryNotLow`，JobScheduler 底座平台协同调度，替代自管广播；**约束 ≠ 授权**，M1 ADR + 用户开关仍须）。
 
 **依赖顺序**：R7 Caller-Tiered TTL（P0/P1）先行——模式一「短顺延」依赖其主体分级；W6 整体属 `on_device-capability.md` 供给面演进，宿主内部调用方（summarizer 等）**维持既有同步语义**，本机制仅作用于导出面。
