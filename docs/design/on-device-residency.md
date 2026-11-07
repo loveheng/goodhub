@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 updated: 2026-11-07
 ---
 
@@ -180,3 +180,45 @@ flowchart TD
 工作包：**W6-a** 任务池 + WAL + 配额 + 联合态契约（跨仓同轮）；**W6-b** 顺风车排空调度（K11 抢占回池尾）；**W6-c** 充电黄金窗口（ADR 已立 · 用户开关默认关 + 拔出中断）——**W6-c 实现指引 = WorkManager 声明式约束**（`setRequiresCharging` + `setRequiresDeviceIdle` + `setRequiresBatteryNotLow`，JobScheduler 底座平台协同调度，替代自管广播；**约束 ≠ 授权**——授权已由 2026-11-07 ADR 给出（用户开关默认关），约束配置仍须）——**批处理执行形态 = 分块循环**：Worker 单次调度受 ~10 分钟量级执行墙（超时系统回调 `onStopped` 强停），故每完成 1 个任务即提交一次 WAL 事务、每轮循环前检查 `isStopped`；收到超时/拔线信号**安全收尾当前单任务**、未执行任务留池，优雅退出等下一窗口（禁在强停瞬间做半截写入）——**进程纪律**：WorkManager 初始化严格绑定主进程（Application.onCreate 在 `:engine` 亦执行，startup provider 误挂是多进程温床，须显式护栏）；Worker 线程**禁私造引擎句柄**，批量消费经既有装配链取用点（`service_directory.onDeviceEngine` → `loadExplicit()` 授权显式装载路径——批消费是 M1 ADR 授权的合法装载调用方），与 `:engine` 的通信走既有 AIDL 绑定。
 
 **依赖顺序**：R7 Caller-Tiered TTL（P0/P1）先行——模式一「短顺延」依赖其主体分级；W6 整体属 `on_device-capability.md` 供给面演进，宿主内部调用方（summarizer 等）**维持既有同步语义**，本机制仅作用于导出面。
+
+## 八、P0 施工稿（观测 + 策略位 · 零行为变化）
+
+> 定位：P0 = **探针批**——TTL 参数化（机制就位、缺省 5min 行为不变）+ Piggyback 观测面 + 电池白名单独立入口。**不改任何路由/驱逐行为**；产出的数据是未来是否翻 5min 缺省与 L1/L2 策略设计的唯一裁决依据。绑定 epic = `on-device-residency`（已挂载本稿）。
+
+### S-R0-a · TTL 参数化（策略位，行为零变化）
+
+| 层 | 落点 | 动作 |
+|---|---|---|
+| AIDL | `IOnDeviceEngineService.initEngine(config: Bundle)` | **零改动**——Bundle 参数已存在，仅新增可选键 `residencyTtlMs`（Long，缺省缺失 = 引擎内建缺省 5min） |
+| `:engine` | `EngineService.kt:383` initEngine 读键 + `:277` `EngineLifecycle` 构造传入 | `config?.getLong("residencyTtlMs")`（>0 才采用）→ `EngineLifecycle(ttlMs = …)`——`ttlMs` 构造参数现成（`EngineLifecycle.kt:34`），仅接线 |
+| Bridge | `EngineServiceBridge.kt:524` `svc.initEngine(Bundle(), …)` | Bundle 携带 Dart 侧策略值 |
+| Dart | 新 `lib/llm/on_device_residency_policy.dart`：`ResidencyPolicy.read()`（SharedPreferences 键 `on_device.residency_ttl_ms`，缺省 0 = 不下发） | `OnDeviceEngineBinding.bind()` 携带；UI 配置面本期仅 debug 联调页暴露（**非用户面**——5min 缺省未翻，数据先行） |
+
+- 红线：本批**不下发任何非缺省值**（配置读取存在即不打扰）；参数化仅为 L1 策略（R7/R8）备好注入缝。
+- 回归锚：`EngineLifecycle` 为纯 Kotlin 状态机——ttlMs 注入行为以真机冒烟验证（短 TTL 30s 下发 → 观察驱逐原因行 `ttl-elapsed(30000ms)`）；Dart 侧 `ResidencyPolicy.read` 单测。
+
+### S-R0-b · 驻留观测面（Piggyback，No Active Polling）
+
+**分类清单（既有驱逐原因前缀即分类，零新增字符串）**：`ttl-elapsed` / `trim-memory` / `memory-guard` / `release`（`EngineLifecycle.kt:79,116,128,154`）+ `cold-reload-restart` + `process-death`（`onProcessDied` 通道）。
+
+| 沿 | 挂点 | 采集 |
+|---|---|---|
+| 装载成功沿 | `loadModel` 就绪上行（Dart 侧 binding） | 时间戳 + 栈形态字段（backend = geniex/litertlm/llamacpp）+ PSS/RSS 快照 |
+| 驱逐沿 | `EngineLifecycle.evict(reason)`（:engine）+ `onEngineEvicted` 上行（Dart） | 原因分类 + **当时电量 %/充电态/isPowerSave/屏幕 interactive**（Kotlin 侧 sticky 广播 + PowerManager 同步读，事件触发非轮询） |
+| 驱逐后卫生采样 | `:engine` `Handler.postDelayed` 一次性（驱逐后 5s/30s 各一枪） | VmRSS/PSS——软释放内存卫生趋势（R4 开放问题的数据源） |
+| send 命中率 | `HybridCloudEngine` 腿入口/出口（S3 拆分后的 CloudLeg/DeviceLeg 天然挂点） | 结果 = device/cloud + 原因（命中率 = Prio 1/2 语义的量化） |
+| 灭屏占比 | 驱逐沿附带字段（isInteractive=false 占比） | 同驱逐沿 |
+
+- **落盘**：`[RESIDENCY]` 结构化 JSONL 账本（`KeyedWriteQueue` 原子追加，`underSupportDir/residency_metrics.jsonl`）+ logcat 镜像行（release 可由 capture 通道拉取——`run-as` 在本 ROM 被拒的兜底取数路径）。
+- **红线**：全部随路挂接（第八节探针自律条款）；无独立线程/定时器；release 构建可用（禁 AppLog——其 kDebugMode 自闸）。
+
+### S-R0-c · 电池白名单独立入口
+
+- `on_device_config_section` 增端侧自己的「电池优化白名单」状态/申请行（文案独立、语义归端侧续航），机制**复用** `GatewayServiceBridge` 的通用 PowerManager 包装（`isIgnoringBatteryOptimizations` / 申请 intent——网关无关的系统能力，抽 `BatteryExemptionBridge` 共享件或直接复用，施工时按最小改动定）。
+- 回归锚：既有 `gateway_section_test` 零改动 + 新行 UI 单测。
+
+### 验收与勾稽
+
+- 真机冒烟：①短 TTL 下发 → `ttl-elapsed(30000ms)` 驱逐行出现；②JSONL 账本可经 `adb logcat`/文件拉取且字段完整；③命中率行在聊天冒烟中出现；④缺省路径行为与现状逐字节一致（不下发配置时）。
+- CI：analyze + 全量 test + arch-guard（R12 等）+ docs-lint。
+- 同轮台账：`index.md` 代码落点表补 `on_device_residency_policy` / 观测面两行；epic devlog 记账。
