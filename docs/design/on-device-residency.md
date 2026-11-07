@@ -5,7 +5,7 @@ updated: 2026-11-07
 
 # 端侧模型长驻 · 深化评估（R1–R6 + 能力分级 + 立项路径）
 
-> 定位：「端侧模型长驻」赛道的评估 SSOT（承接 2026-11-07 架构评估的 R1–R6，扩展性半场 E1–E9 已由 `extensibility-hardening.md` 交付归档）。本稿是**评估稿**——P0 施工稿待产品语义优先级拍板后另出。绑定 epic 待 bind；`status: draft` = 未立项态，**P0 `::bind` 立项同轮翻 active**。
+> 定位：「端侧模型长驻」赛道的评估 SSOT（承接 2026-11-07 架构评估的 R1–R6，扩展性半场 E1–E9 已由 `extensibility-hardening.md` 交付归档）。本稿是**评估稿**——产品语义已拍板（Prio 确认 + 契机 B ADR 已立，均 2026-11-07），P0 施工稿待 `::bind` 立项另出；`status: draft` = 未立项态，**P0 `::bind` 立项同轮翻 active**。
 
 ## 代号说明
 
@@ -79,7 +79,7 @@ L0 现状 = 「装载后尽量多活」机制集（FGS 绑定即挂 + 5min TTL +
 | **P2 上下文温热重评** | 条件触发：GenieX prefix API 或新实证 → AIDL `cacheHandle` 位 | ADR 翻转依据 |
 | **P3 多实例** | `OnDeviceEngineFactory` 兑现（多模型共存 / 小模型常驻构型） | 翻「装载单例」拍板，独立立项 |
 
-**产品语义优先级（裁决建议，性质 = 显式化既有法律，非新裁决）**：
+**产品语义优先级（已确认 · 2026-11-07 拍板；性质 = 显式化既有法律，非新裁决）**：
 
 | 优先级 | 语义 | 策略落点 |
 |---|---|---|
@@ -124,7 +124,7 @@ flowchart TD
     D -- "false" --> F["同步 failFast 错误（存量语义零变化）"]
     E --> G{"消费契机"}
     G -- "契机 A 顺风车" --> H["前台装载就绪后 · 用户阅读空闲期排空池"]
-    G -- "契机 B 黄金窗口" --> I["充电+灭屏批处理（新 ADR + 用户开关）· 拔出中断回池"]
+    G -- "契机 B 黄金窗口" --> I["充电+灭屏批处理（ADR 已立 · 用户开关）· 拔出中断回池"]
     H --> J["结果落 Outbox 账本 → Pull / Push 交付（IMcpCallback.onEvent）"]
     I --> J
 ```
@@ -147,7 +147,7 @@ flowchart TD
 ### 7.4 消费契机（两Trigger，零边际成本）
 
 1. **契机 A · 顺风车**：用户前台交互引发的冷装载本来就发生——装载就绪、处理完用户当次提问后，处于 WARM_STANDBY 窗口的**用户阅读空闲期**顺手排空任务池。冷启动成本摊薄为 0。约束：排空中用户新消息 → M6 抢占回池尾。
-2. **契机 B · 充电黄金窗口（M1：须新 ADR）**：`ACTION_POWER_CONNECTED` + 灭屏闲置 → 批量吞吐任务池 → 跑完立即卸载深度待机。**与懒加载立法冲突**（无用户交互的后台装载）——须新 ADR + **用户可见开关**（夜间算力批处理 = 电量换算力的交易，充电态由用户授权）；**拔出充电线** → 批处理暂停、未跑任务回池。
+2. **契机 B · 充电黄金窗口（ADR 已立 2026-11-07，Ref `context/epics/on-device/decisions.md`）**：`ACTION_POWER_CONNECTED` + 灭屏闲置 → 批量吞吐任务池 → 跑完立即卸载深度待机。**与懒加载立法冲突**（无用户交互的后台装载）——须新 ADR + **用户可见开关**（夜间算力批处理 = 电量换算力的交易，充电态由用户授权）；**拔出充电线** → 批处理暂停、未跑任务回池。
 3. 严禁第三种契机：不得起后台定时器生硬拉起模型（破坏省电初衷 + 违懒加载立法）。
 
 ### 7.5 契约与交付（Outbox）
@@ -177,6 +177,6 @@ flowchart TD
 | goodhub-mcp-sdk `:contract` | AIDL 不动；plugin-core 解析面 + `api.md` 同轮 |
 | `kHostExportAllowlist` | on_device_complete 条目语义注记更新（三关注释钉） |
 
-工作包：**W6-a** 任务池 + WAL + 配额 + 联合态契约（跨仓同轮）；**W6-b** 顺风车排空调度（K11 抢占回池尾）；**W6-c** 充电黄金窗口（新 ADR + 用户开关 + 拔出中断）——**W6-c 实现指引 = WorkManager 声明式约束**（`setRequiresCharging` + `setRequiresDeviceIdle` + `setRequiresBatteryNotLow`，JobScheduler 底座平台协同调度，替代自管广播；**约束 ≠ 授权**，M1 ADR + 用户开关仍须）——**批处理执行形态 = 分块循环**：Worker 单次调度受 ~10 分钟量级执行墙（超时系统回调 `onStopped` 强停），故每完成 1 个任务即提交一次 WAL 事务、每轮循环前检查 `isStopped`；收到超时/拔线信号**安全收尾当前单任务**、未执行任务留池，优雅退出等下一窗口（禁在强停瞬间做半截写入）——**进程纪律**：WorkManager 初始化严格绑定主进程（Application.onCreate 在 `:engine` 亦执行，startup provider 误挂是多进程温床，须显式护栏）；Worker 线程**禁私造引擎句柄**，批量消费经既有装配链取用点（`service_directory.onDeviceEngine` → `loadExplicit()` 授权显式装载路径——批消费是 M1 ADR 授权的合法装载调用方），与 `:engine` 的通信走既有 AIDL 绑定。
+工作包：**W6-a** 任务池 + WAL + 配额 + 联合态契约（跨仓同轮）；**W6-b** 顺风车排空调度（K11 抢占回池尾）；**W6-c** 充电黄金窗口（ADR 已立 · 用户开关默认关 + 拔出中断）——**W6-c 实现指引 = WorkManager 声明式约束**（`setRequiresCharging` + `setRequiresDeviceIdle` + `setRequiresBatteryNotLow`，JobScheduler 底座平台协同调度，替代自管广播；**约束 ≠ 授权**——授权已由 2026-11-07 ADR 给出（用户开关默认关），约束配置仍须）——**批处理执行形态 = 分块循环**：Worker 单次调度受 ~10 分钟量级执行墙（超时系统回调 `onStopped` 强停），故每完成 1 个任务即提交一次 WAL 事务、每轮循环前检查 `isStopped`；收到超时/拔线信号**安全收尾当前单任务**、未执行任务留池，优雅退出等下一窗口（禁在强停瞬间做半截写入）——**进程纪律**：WorkManager 初始化严格绑定主进程（Application.onCreate 在 `:engine` 亦执行，startup provider 误挂是多进程温床，须显式护栏）；Worker 线程**禁私造引擎句柄**，批量消费经既有装配链取用点（`service_directory.onDeviceEngine` → `loadExplicit()` 授权显式装载路径——批消费是 M1 ADR 授权的合法装载调用方），与 `:engine` 的通信走既有 AIDL 绑定。
 
 **依赖顺序**：R7 Caller-Tiered TTL（P0/P1）先行——模式一「短顺延」依赖其主体分级；W6 整体属 `on_device-capability.md` 供给面演进，宿主内部调用方（summarizer 等）**维持既有同步语义**，本机制仅作用于导出面。

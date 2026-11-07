@@ -163,3 +163,13 @@ last-merge: none
 - **收敛条件**：上游发布修复版（0.11+ 或 hotfix）→ 立即反向切换 + bench 对照钉（short/long/repeat × NPU/GPU 六例）重验 + NpuFitStore 升版自动重评 + 删 PATCH 标记；**放行前置门 = qairt 主路（QAIRT+NPU bundle）在 0.3.5 的性能补测**（两版未对照，降版可能伤主路——未补测前不得开工）；补测若 qairt 主路 0.3.5 劣于 0.10.0 → 改评估「llama_cpp 插件单插件降版混合栈」形态重评。
   - **前置门结果（2026-11-06 真机补测，已触发转向）**：qairt 主路 0.3.5 **不是性能劣化而是加载硬失败**（`create() error code -100201` / `[STDERR] Could not create context from binary index 0: err 5000`）——0.3.5 AAR 内置旧 QNN HTP 运行库无法加载 2026-10-17 新版 QAIRT 编译的 4 分片 .bin；0.10.0 同 bundle 主路健康（decode 41.34 tok/s / prefill 2479 tok/s）。**整包降版 0.3.5 否决**（打穿 qairt NPU 主路，比 llama_cpp 慢更严重）→ 转评「llama_cpp 单插件/ggml 运行库降版、qairt 栈维持 0.10.0」混合栈形态（约束：插件本体与 ggml 库均内置 AAR，混合栈可行性取决于增配运行库机制能否单独替换 ggml 库而不动 qairt 栈 + 插件本体替换验证）。
   - **路线拍板（2026-11-06 用户选路线 B）**：走「提交上游 issue + 等修复版」，**混合栈降版评估暂缓**（待办保留、不排期）。上游 = github.com/qualcomm/GenieX（issues 活跃，维护者 mengshengwu/zhiyuan8 在积极处理）；issue 稿已打磨为提交就绪形态（含 #1584/#1507 交叉引用 + SM8750 数字差异归因提问）落 `issue-draft-geniex-0.10.0-llamacpp-regression.md`；期间 llama_cpp 档维持现状 5~6 tok/s（qairt 主路不受影响、一直健康）。**重评触发器**：上游回复修复版 → 反向切换 + 六例 bench 对照重验 + NpuFitStore 升版自动重评；或用户改主意回评混合栈。
+
+### [2026-11-07] [ADR] W6-c 契机 B「夜间充电批处理」立项：WorkManager 约束化 + 用户开关 + 分块循环 (src: 长驻深化评估评审链 + 用户拍板)
+- **场景/痛点**：`docs/design/on-device-residency.md` 第七节 W6 双模机制——跨 App 异步任务池（deferred-WAL）冷态下无自发消费契机，仅靠顺风车（宿主前台活跃）消化，积压任务受限于宿主活跃度（expiry 24h 过期清账兜底）。契机 B（充电+灭屏自发冷装载批处理）与懒加载立法冲突（无用户交互的后台装载），须独立 ADR 授权。数据现状：P0 观测面未建，「积压任务量级/顺风车消化率」无实证——本 ADR 按产品方向先行立项，观测数据后回评频次收益。
+- **可选方案（含否决理由）**：
+  - A 自管广播 + Timer 轮询（自听 ACTION_POWER_CONNECTED 自行调度）（**否决**：自建轮询耗电 + 绕开平台调度协同 + 电池审查风险；评审轮 WorkManager 约束化建议采纳后此形态出局）；
+  - B **WorkManager 声明式约束批处理（采纳）**：`setRequiresCharging` + `setRequiresDeviceIdle` + `setRequiresBatteryNotLow`，JobScheduler 底座平台协同调度；
+  - C 不做（异步任务仅靠顺风车消化，expiry 24h 清账兜底）（用户对照后否决——算力红利真实，批准立项）。
+- **最终决定**：①批准 W6-c 立项；②物理形态 = WorkManager 声明式约束三件 + **用户可见开关（默认关闭）**；③执行形态 = 分块循环（每任务一次 WAL 提交 + 每轮查 `isStopped`；~10min 执行墙 / 拔充电线 → 安全收尾当前单任务、余量回池，禁半截写入）；④进程纪律 = WorkManager 初始化绑定主进程（Application.onCreate 在 `:engine` 亦执行，startup provider 误挂是多进程温床）、Worker 禁私造引擎句柄（经 `service_directory.onDeviceEngine` → `loadExplicit()` 授权显式装载路径，与 `:engine` 通信走既有 AIDL 绑定）；⑤**懒加载立法豁免面** = 「用户开关开启 + 三约束全满足」双条件下的自发冷装载，仅此一途，禁泛化到一般后台装载。
+- **AI 洞察**：①约束 ≠ 授权——WorkManager 解决「何时跑」，本 ADR 解决「许可不该跑」，两件事必须分开立法；②豁免面收窄到双条件是防「一般后台装载」合法化的关键闸门；③拔线中断语义 = 优雅回池非断点续跑（任务幂等性由 complete 原语无状态契约天然保证）。
+- **收敛条件**：①用户开关面未上线前 W6-c 不进用户手（完成度门）；②P0 观测面出「积压任务量级 / 顺风车消化率」数据后回评批处理频次收益；③若批处理引发电池/热投诉 → 回本 ADR 降档或砍除。

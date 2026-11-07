@@ -26,5 +26,7 @@ last-merge: 2026-11-07
 - flutter analyze 0 新增（存量 1 info 不变）；flutter test --timeout 60s 446 例全绿；release-r2.sh 实跑 exit 0，v1.0.1+2003 已推 updates/goodhub/（清单带 applicationId=com.zzh.goodhub），公网 GET 200 且远端 APK sha256 与清单一致
 - 残留风险（未处理）：桶根目录旧对象 updates/app-release.apk + 两份旧清单（goodhub 2002 / shiguang 28019）仍在，旧源客户端按 sha256 失配 fail-closed；upload-r2.mjs 无删除能力，建议后续补 delete 或后台手工清理
 
+  - **2026-11-07 真机验证轮 + R2 重发收口（全链闭环日）**：①装机 release 4016 走真实 R2 源判「已是最新」——split 口径自洽（发布链清单 versionCode=APK 真身，发布渠道设备与清单同口径）；②R2 重新发版 v1.2.1（99a5d90）：4015 坏态（拆分泄漏+APK 404）根治，过程中抓到第二次事故——release-r2.sh `grep -m1 'applicationId'` 命中 bench 注释行污染清单，根治=提取锚定行首赋值 + 包名格式防呆守卫（非法即 FATAL），lesson 已落 inbox；③UpdateService 增可注入 httpTimeout（默认 30s）覆盖 TCP/响应头/响应体无推进三挂起点（真机 404 流永挂根因=dart:io 零超时），4 回归钉 + 全量 1803 绿，代码随 1d999f9 入库；④安装器落地实测：授「安装未知应用」后全链闭环（发现 4017→下载→SHA-256→确认卡→系统安装器→应用已更新→重启），同码覆装驱动口径（--build-number 基线+清单声明触发，release 不可降级/-d 被拒/卸载清数据三路皆否）；⑤小缺口留观察：陈旧「需要权限」弹卡在授权+重启后复现（失败态快照不自愈）。驱动坑：debug 桥树 bounds 会随布局差异错位，tap_bounds 失败用截图换算兜底。
+
 ## 断点
 - [断点] 下一步：self-update 全部收口：①安装器落地实测 ✅ ②404 下载流收口 ✅（代码随 1d999f9 入库）③4016 口径观察 ✅ 自洽成立 ④账本已提交 4407208；无待办——仅陈旧权限弹卡不自愈小缺口留观察（下次触及更新页顺带核），新需求待用户指令
