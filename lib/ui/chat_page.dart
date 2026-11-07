@@ -34,8 +34,6 @@ import '../coordinator/plan_proposal_tool.dart'
     show PlanProposalDecision;
 import '../coordinator/task_plan.dart' show PlanAggregateRecord;
 import '../llm/cloud/cloud_llm.dart';
-import '../llm/on_device_pending_load.dart';
-import '../llm/on_device_engine.dart';
 
 
 import '../mcp/connection_manager.dart';
@@ -46,7 +44,6 @@ import '../mcp/server_endpoints.dart';
 import '../mcp/default_private_server.dart';
 import '../gateway_api/gateway_control.dart';
 import '../sandbox/conversation_store.dart';
-import 'components/call_card.dart';
 import 'components/cross_source_consent_card.dart';
 import 'components/conversation_drawer.dart';
 import 'components/model_picker_sheet.dart';
@@ -1310,6 +1307,7 @@ class _ChatPageState extends State<ChatPage>
         delegates: delegates,
         quota: _session.samplingQuota,
         engine: widget.engineOverride,
+        byokStore: byokStore(), // E9：应用级单实例（service_directory 读穿访问器）
         resourceAttachments: attachmentsSnapshot,
         sharedFaces: sharedFaces,
         cowStoreProvider: cowOverridesStore,

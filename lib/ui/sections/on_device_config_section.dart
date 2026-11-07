@@ -15,8 +15,7 @@ import '../../coordinator/on_device_admin.dart'
         GenieXStatus,
         LiteRtLmNpuStatus,
         OnDeviceAdmin,
-        OnDeviceGenPerf,
-        sharedOnDeviceEngine;
+        OnDeviceGenPerf;
 import '../../gateway_api/gateway_control.dart';
 
 /// 电池白名单查询/申请注入位（测试替换，范式同 on_device_model_section）。
@@ -420,7 +419,7 @@ class _OnDeviceConfigSectionState extends State<OnDeviceConfigSection>
             // 最近一次端侧生成性能（W bench 消费面：tok/s / TTFT / 上下文占用；
             // 有过端侧产出才显，纯错误收口不写快照）。
             ValueListenableBuilder<OnDeviceGenPerf?>(
-              valueListenable: sharedOnDeviceEngine.lastGenPerf,
+              valueListenable: OnDeviceAdmin.onDeviceLastGenPerf(),
               builder: (context, perf, _) {
                 if (perf == null) return const SizedBox.shrink();
                 final ctxTok = (perf.promptChars / 1.3).round();

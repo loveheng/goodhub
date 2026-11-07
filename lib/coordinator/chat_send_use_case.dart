@@ -9,6 +9,7 @@
 library;
 
 import 'dart:io';
+import '../llm/cloud/byok_store.dart';
 import '../llm/cloud/cloud_llm.dart';
 import '../sandbox/memory_store.dart';
 import 'agent_loop.dart';
@@ -22,6 +23,7 @@ import 'mcp_tool_face.dart';
 import 'resource_attachment_binder.dart' show ResourceAttachment;
 import 'chat_run_orchestrator.dart';
 import 'mcp_runtime.dart';
+import 'mcp_run_spec.dart';
 import 'skill_registry.dart';
 import 'user_prompt_store.dart';
 
@@ -157,6 +159,10 @@ class ChatSendUseCase {
     required RuntimeDelegates delegates,
     required SamplingQuota quota,
     CloudLlmEngine? engine,
+
+    /// BYOK 配置库应用级单实例（E9 闭环）：窗口传 `service_directory.byokStore()`
+    /// （null = 引擎装配就地构造，兼容旧调用方/测试）。
+    ByokStore? byokStore,
     List<ResourceAttachment> resourceAttachments = const [],
     Map<String, McpToolFace> sharedFaces = const {},
     PlanRunState? planState,
@@ -181,7 +187,9 @@ class ChatSendUseCase {
     session.bindSkills(baseSkills.registry);
     session.bindDegradation(session.degradation ?? DegradationController());
     final assembly = await const McpRuntime().assemble(
+      McpRunSpec(
       engine: engine,
+      byokStore: byokStore,
       resourceAttachments: resourceAttachments,
       sharedFaces: sharedFaces,
       context: sessionContext,
@@ -196,7 +204,7 @@ class ChatSendUseCase {
       planState: planState,
       onSamplingBegin: onSamplingBegin,
       onSamplingEnd: onSamplingEnd,
-    );
+    ));
     // 取消锚点前置：装配完成即可经 [cancel] 中止（含连接期预中止，F19），
     // 与窗口原 `_activeAssembly?.abort()` 语义等价（run 期再置一次，幂等）。
     _active = assembly;

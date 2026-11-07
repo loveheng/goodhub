@@ -26,7 +26,7 @@ import '../coordinator/hybrid_assembly.dart';
 import '../coordinator/mcp_runtime.dart';
 import '../coordinator/mcp_tool_face.dart';
 import '../llm/on_device_capability.dart' show AidlOnDeviceCapabilityService;
-import '../llm/on_device_engine_aidl.dart' show sharedOnDeviceEngine;
+import '../llm/on_device_engine.dart' show sharedOnDeviceEngine;
 import '../mcp/local_plugin_discovery.dart';
 import '../mcp/mcp_client.dart';
 import '../mcp/server_endpoints.dart';

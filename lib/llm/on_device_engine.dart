@@ -241,3 +241,77 @@ abstract interface class OnDeviceSupplyFace
   /// 前台服务绑定态查询（FGS 防冻结护栏读数；W1-S09 收口自具体类）。
   Future<bool> isForeground();
 }
+
+/// 端侧生成性能透出快照（S2 自实现件上移至契约件）：aidl 实现件采集、UI 经
+/// 门面只读——契约相邻 DTO 归契约件所有。
+class OnDeviceGenPerf {
+  const OnDeviceGenPerf({
+    required this.ttftMs,
+    required this.totalMs,
+    required this.tokPerSec,
+    required this.outputChars,
+    required this.promptChars,
+  });
+
+  /// 首块到达时延（Dart 发起 generate → 首个流块，含全链）。
+  final int ttftMs;
+  final int totalMs;
+
+  /// 解码速率 = 1000/TPOT（口径与 on_device_bench 同源）。
+  final double tokPerSec;
+  final int outputChars;
+
+  /// 本流 prompt 字符数（上下文占用估算原料，中文 ≈1.3 字/token）。
+  final int promptChars;
+}
+
+/// 生成性能透出能力接口（S2 可选能力，接口探测惯例）：实现方持有最近一次
+/// 端侧生成的性能快照；未实现 = 无透出面。消费点 = on_device_admin 门面。
+abstract interface class OnDeviceGenPerfAware implements OnDeviceSupplyFace {
+  ValueListenable<OnDeviceGenPerf?> get lastGenPerf;
+}
+
+/// 显式装载扩展面（S2 可选能力，接口探测惯例）：诊断基准（on_device_bench）
+/// 驱动裸装载链（loadModel + 票据对账回写）——主聊天路径经 enable 的
+/// _loadState 写面，不走本面；「原语绝不自动触发装载」红线不受影响（调用方
+/// 仍为显式驱动）。
+abstract interface class OnDeviceExplicitLoadAware implements OnDeviceSupplyFace {
+  Future<EngineStatus> loadModel(String modelDir,
+      {String? modelId, String? backendHint});
+
+  /// 裸装载后按权威票据补写 _loadState（消除 session-mirror drift）。
+  Future<void> reconcileLoadStateFromTicket();
+}
+
+/// 进程级端侧引擎单例（S2 实现件单点收口）：类型 = [OnDeviceSupplyFace]
+/// 接口——消费方禁持具体实现类（W1-S09 门禁同源红线）。实现经
+/// [registerSharedOnDeviceEngine] 由装配根（main）注册，实现件 import 收敛至
+/// 白名单（main 装配根 / service_directory 取用点 / llm 域内 / 门面）。
+OnDeviceSupplyFace? _sharedOnDeviceEngine;
+
+/// 注册进程级端侧引擎实例（装配根专责；同实例重复注册幂等放行，异实例断言
+/// 拦截——MethodChannel handler 进程级单槽，多实例互踩回调）。
+void registerSharedOnDeviceEngine(OnDeviceSupplyFace impl) {
+  if (_sharedOnDeviceEngine != null) {
+    assert(
+        identical(_sharedOnDeviceEngine, impl),
+        "sharedOnDeviceEngine 重复注册且实例不同——进程级单例纪律被破坏");
+    return;
+  }
+  _sharedOnDeviceEngine = impl;
+}
+
+/// 进程级端侧引擎单例取用点。未注册即抛 StateError（fail-fast：装配顺序错误
+/// 当场暴露，禁静默兜底）。
+OnDeviceSupplyFace get sharedOnDeviceEngine {
+  final engine = _sharedOnDeviceEngine;
+  if (engine == null) {
+    throw StateError(
+        "sharedOnDeviceEngine 未注册：main() 装配根须先行 registerSharedOnDeviceEngine");
+  }
+  return engine;
+}
+
+/// 测试重置（注册语义单测专用；生产代码禁调）。
+@visibleForTesting
+void resetSharedOnDeviceEngineForTest() => _sharedOnDeviceEngine = null;

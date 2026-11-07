@@ -9,7 +9,6 @@ import 'on_device_asset_manager.dart';
 import 'on_device_dispatch_profile.dart';
 import 'on_device_engine.dart';
 import 'on_device_engine_adapter.dart';
-import 'on_device_engine_aidl.dart';
 import 'on_device_engine_binding.dart';
 import 'on_device_model_catalog.dart';
 import 'on_device_user_demand.dart';

@@ -4,10 +4,10 @@
 /// / 侧边栏列表）与编排逻辑下沉到 coordinator 纯内核层；窗口只持本服务句柄 + UI 态。
 ///
 /// 边界纪律（防 coordinator→ui 反向边复燃）：本服务**不依赖 ui 层类型**。
-/// `TrackEntry`/`TrackEntryCodec` 位于 `lib/ui/components/dual_track_stream.dart`
-/// （ui 层），故轨道卡编解码由调用方在边界完成——[persistCurrent]/[persistIfAny]
-/// 收 `trackJson` 字符串参数（UI 经 `TrackEntryCodec` 编码后传入），[loadSnapshot]
-/// 返回原始 [ConversationSnapshot]（messages/track 解码留在 UI 层）。
+/// `TrackEntry`/`TrackEntryCodec` 住 `lib/coordinator/chat_track_model.dart`
+/// （S4 下沉，内核认识轨道语义）；轨道仍以 JSON 字符串过 [persistCurrent]/
+/// [persistIfAny] 边界、[loadSnapshot] 返回原始 [ConversationSnapshot]——
+/// 解码时机归调用方（渲染态与交互态挂接在 UI 层）。
 /// `ChatMessageCodec` 位于 `lib/llm/cloud/`（llm 层，coordinator 已依赖），可安全使用。
 library;
 

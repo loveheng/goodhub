@@ -22,6 +22,7 @@ import 'package:goodhub/mcp/sampling.dart';
 
 import 'components/breaker_card.dart';
 import 'sections/byok_section.dart';
+import '../../coordinator/chat_track_model.dart' show CallCardPhase;
 import 'components/call_card.dart';
 import 'components/confirmation_card.dart';
 import 'components/cross_source_consent_card.dart';

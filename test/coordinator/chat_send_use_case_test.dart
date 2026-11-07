@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/coordinator/chat_run_orchestrator.dart';
 import 'package:goodhub/coordinator/chat_send_use_case.dart';
 import 'package:goodhub/coordinator/mcp_runtime.dart';
+import 'package:goodhub/coordinator/mcp_run_spec.dart';
 import 'package:goodhub/coordinator/skill_registry.dart';
 import 'package:goodhub/llm/cloud/cloud_llm.dart';
 import 'package:goodhub/mcp/mcp_client.dart';
@@ -115,6 +116,7 @@ void main() {
     final transports = <McpTransport>[];
     final tmp = await _tmp();
     final assembly = await const McpRuntime().assemble(
+      McpRunSpec(
       context: SessionContext(),
       endpoints: const [
         ServerEndpoint(id: 'good', name: 'g', endpoint: 'http://x/good/mcp'),
@@ -131,7 +133,7 @@ void main() {
         transports.add(t);
         return McpClient(t);
       },
-    );
+    ));
     return (assembly: assembly, transports: transports);
   }
 

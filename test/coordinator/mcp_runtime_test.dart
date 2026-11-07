@@ -13,6 +13,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/coordinator/mcp_runtime.dart';
+import 'package:goodhub/coordinator/mcp_run_spec.dart';
 import 'package:goodhub/coordinator/task_plan.dart';
 import 'package:goodhub/coordinator/mcp_tool_face.dart';
 import 'package:goodhub/coordinator/skill_registry.dart';
@@ -243,6 +244,7 @@ Future<McpAssembly> _assemble({
 }) async {
   final tmp = await _tmpDir();
   return const McpRuntime().assemble(
+    McpRunSpec(
     context: context ?? SessionContext(),
     endpoints: endpoints,
     locals: const [],
@@ -261,7 +263,7 @@ Future<McpAssembly> _assemble({
       clients[endpoint] = client;
       return client;
     },
-  );
+  ));
 }
 
 void _assembleTests() {
@@ -448,6 +450,7 @@ void _assembleTests() {
     final transports = <McpTransport>[];
     final tmp = await _tmpDir();
     final assembly = await const McpRuntime().assemble(
+      McpRunSpec(
       context: SessionContext(),
       endpoints: [ep('ok'), ep('boom')],
       locals: const [],
@@ -465,7 +468,7 @@ void _assembleTests() {
         transports.add(transport);
         return McpClient(transport);
       },
-    );
+    ));
     addTearDown(assembly.close);
 
     final ok = transports.whereType<_CountingTransport>().where((t) => !t.failSend).single;

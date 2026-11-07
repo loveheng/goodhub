@@ -15,6 +15,7 @@ library;
 
 import '../core/errors/mcp_error.dart';
 import '../mcp/mcp_client.dart';
+import '../mcp/transport/mcp_transport.dart' show ReservedNamespaceTransport;
 import '../mcp/transport/host_transport.dart';
 
 /// 断言 [serverId] 可被挂载：`host` 仅限内置 [HostTransport]，其余一律拒装。
@@ -23,7 +24,8 @@ import '../mcp/transport/host_transport.dart';
 /// 跳过并通告，不得因一条误配端点炸掉整轮装配）。
 void assertServerIdMountable(String serverId, McpClient client) {
   if (serverId != kHostServerId) return;
-  if (client.transport is HostTransport) return;
+  // S1c 能力化：按 [ReservedNamespaceTransport] 接口探测，禁 is 具体类。
+  if (client.transport is ReservedNamespaceTransport) return;
   throw ReservedNamespaceException(
     'serverId "$kHostServerId" 为宿主保留命名空间，仅限内置 HostTransport 装配'
     '（当前传输 ${client.transport.runtimeType}）——外部插件 / 手填端点不得占用',

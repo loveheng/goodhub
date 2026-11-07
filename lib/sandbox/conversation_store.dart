@@ -7,8 +7,8 @@
 ///   `_sessionTranscript` 保证配对，本存储只做忠实序列化、不再裁剪；
 /// - 介质口径同记忆沙盒：SequentialFileWriter 全量重写（temp+rename 原子
 ///   替换）；列表 = 扫目录逐文件解析（会话数小，读放大可忽略）；
-/// - 轨道条目编解码住 UI 层（dual_track_stream 静态方法）——TrackEntry 是
-///   UI 模型，沙盒层只存 JSON（层级纪律：④ 不 import ⑤）；消息编解码已迁
+/// - 轨道条目模型+codec 住 coordinator（chat_track_model.dart，S4 下沉）——
+///   沙盒层只存 JSON（层级纪律：④ 不 import ⑤）；消息编解码已迁
 ///   llm 域（`llm/cloud/chat_message_codec.dart`，arch-hardening ④）——存储
 ///   层只认 JSON Map 与 core 领域消息 DTO，不感知任何 LLM 类型；
 /// - 损坏文件不抛穿：list 跳过 + load 返 null，[DEGRADE] 留痕（恢复失败

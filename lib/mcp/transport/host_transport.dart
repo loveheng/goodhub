@@ -169,7 +169,7 @@ typedef HostSchemaResolver = Map<String, Object?>? Function(String toolName);
 /// 支持面：`initialize` / `tools/list` / `tools/call` / `ping`（+ 通知帧静默
 /// 吞掉）。**无 GET SSE 订阅通道**（宿主不提供 resources/subscribe），
 /// [getStream] 按 Binder 同口径抛 [UnsupportedError]，协议层退化为不监听。
-class HostTransport implements McpTransport {
+class HostTransport implements McpTransport, ReservedNamespaceTransport {
   HostTransport({
     required this.invoker,
     List<HostExportEntry>? allowlist,

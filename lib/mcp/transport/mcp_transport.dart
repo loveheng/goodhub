@@ -56,8 +56,19 @@ abstract class McpTransport {
   void close();
 }
 
+/// 可周期心跳能力接口（extensibility-hardening S1c 能力化，D16 语义）：仅远端
+/// HTTP 传输可周期探活——本地 Binder 依赖 DeathRecipient 事件感知（进程死亡是
+/// 毫秒级事件），严禁轮询（电量刺客）。消费点 = `connection_health.dart`（按
+/// 接口探测，禁 is 具体类）；新传输具备该能力即实现本接口。
+abstract interface class PollableTransport implements McpTransport {}
+
+/// 保留命名空间承载能力接口（S1c 能力化，架构债 #15 门禁 3）：`host` 系统保留
+/// serverId 仅限内置 HostTransport 持有。消费点 = `reserved_namespace.dart`
+/// （按接口探测，禁 is 具体类）。
+abstract interface class ReservedNamespaceTransport implements McpTransport {}
+
 /// HTTP 传输实现（Streamable HTTP，无状态逐请求）。
-class HttpTransport implements McpTransport {
+class HttpTransport implements McpTransport, PollableTransport {
   HttpTransport({required this.baseUrl, this.apiKey, http.Client? httpClient})
       : _http = httpClient ?? http.Client();
 

@@ -15,6 +15,7 @@ import 'coordinator/ref_store.dart';
 import 'gateway/debug_bridge.dart';
 import 'task/task_consume_ledger.dart';
 import 'llm/on_device_bench.dart';
+import 'llm/on_device_engine.dart';
 import 'llm/on_device_engine_aidl.dart';
 import 'llm/on_device_asset_manager.dart';
 import 'mcp/connection_health.dart';
@@ -35,6 +36,8 @@ void main() async {
   // 三态主题（暗/亮/暖）持久化于 SharedPreferences，启动期读取后注入单例，
   // 再 runApp——避免首帧用错主题闪一下。
   WidgetsFlutterBinding.ensureInitialized();
+  // 端侧引擎进程级单例注册（S2 实现件单点收口：实现件更换 = 改本行）。
+  registerSharedOnDeviceEngine(AidlOnDeviceEngine());
   // 日志捕获 sink（调试页数据源）：先装再跑，启动期 debugPrint 即入缓冲。
   AppLog.install();
   if (!kReleaseMode) {

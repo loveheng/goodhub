@@ -152,6 +152,15 @@ scan_all() {
     "import '[^']*mcp/tool_router\.dart" "lib/mcp/tool_router.dart"
   # R9 执行面链构造（手工把实例塞进 inner 可致内层整层丢弃）
   scan_chain_inner
+  # R12 端侧引擎实现件单点（extensibility-hardening S2）：lib 非白名单文件禁
+  # import on_device_engine_aidl.dart——消费方一律经抽象件 on_device_engine.dart
+  # （sharedOnDeviceEngine 单例注册制，类型 OnDeviceSupplyFace）。白名单 = 装配根
+  # （main 注册行）+ 门面（on_device_admin export 面）+ llm 域内存量件；llm 域内
+  # 新增实现件 import 须同轮登记白名单（具体类类型引用由 W1-S09 门禁钉把守）。
+  scan_pattern "R12-on-device-impl-import" "lib" \
+    "直接 import 端侧引擎实现件 on_device_engine_aidl：消费方一律经抽象件 on_device_engine.dart（sharedOnDeviceEngine 单例）；实现件 import 仅限装配根/门面/llm 域内登记件" \
+    "import '[^']*llm/on_device_engine_aidl\.dart" \
+    "lib/main.dart lib/coordinator/on_device_admin.dart lib/llm/on_device_status_class.dart"
   # R11 跨进程契约面双向比对（漏接 = 静默 MissingPluginException）
   scan_bridge_contract
   return 0

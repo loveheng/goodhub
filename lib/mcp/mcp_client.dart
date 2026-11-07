@@ -134,6 +134,16 @@ class McpClient {
       'clientInfo': {'name': 'goodhub', 'version': '0.1.0'},
     });
     final caps = ServerCapabilities.parse(result);
+    // 架构债 #28 fail-closed（extensibility-hardening S1a）：server 回显异版本
+    // = 标准 MCP 客户端协商语义下的拒装（initialize 应答非所请求版本 → 客户端
+    // 断开），禁静默按旧版本硬连（local-plugin-access-trust.md 立法口径）。
+    // parse 对缺字段回退 kMcpProtocolVersion——存量不回显的保守 server 不拦。
+    if (caps.protocolVersion != kMcpProtocolVersion) {
+      debugPrint("[MCP] negotiate: protocol version mismatch — "
+          "server=${caps.protocolVersion}, host=$kMcpProtocolVersion（拒装）");
+      throw McpProtocolException(
+          "protocol version mismatch: server ${caps.protocolVersion} != host $kMcpProtocolVersion");
+    }
     _caps = caps;
     // 规范握手第二步（MCP 2025-06-18：client 必须回 initialized 通知）。
     // DEGRADE: 个别 server 对通知返回 4xx 时不阻断连接（capabilities 已到手，

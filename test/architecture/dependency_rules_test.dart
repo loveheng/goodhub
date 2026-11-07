@@ -278,6 +278,8 @@ const Map<String, Set<String>> kUiDirectLinkWhitelist = <String, Set<String>>{
   'ui/components/dual_track_stream.dart': <String>{'mcp'},
   'ui/components/chat_gate_delegates.dart': <String>{'mcp'},
   'ui/components/elicitation_card.dart': <String>{'mcp'},
+  // S4 拆分延续边（dual_track_stream 渲染件拆出，elicitation DTO 直连同源）：
+  'ui/components/track_entry_gate_cards.dart': <String>{'mcp'},
   'ui/gateway_loop_debug_page.dart': <String>{'llm', 'mcp'}, // 联调豁免（§1.4 类别 3）
   // F16 账实补登（2026-10-24 正向矩阵首轮实证的漏登边）：
   'ui/sections/resource_center_section.dart': <String>{'resources'},

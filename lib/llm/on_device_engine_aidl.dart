@@ -78,7 +78,8 @@ const Duration kWaitReadyTimeout = Duration(seconds: 10);
 // W1-S08：显式声明三面实现（引擎控制面 + 显式装载面 + 供给面合取形状）——
 // 注册中心以 OnDeviceSupplyFace 对外供给（此前 loadState 面是结构鸭子，未入型）。
 class AidlOnDeviceEngine
-    implements OnDeviceEngine, OnDeviceEnableCapable, OnDeviceSupplyFace {
+    implements OnDeviceEngine, OnDeviceEnableCapable, OnDeviceSupplyFace,
+        OnDeviceGenPerfAware, OnDeviceExplicitLoadAware {
   AidlOnDeviceEngine({
     OnDeviceEngineBinding? binding,
     EngineCircuitBreaker? breaker,
@@ -143,6 +144,7 @@ class AidlOnDeviceEngine
 
   /// 最近一次端侧生成性能快照（W bench 消费面：tok/s / TTFT / 上下文占用
   /// 透出 UI；收口时写入，见 [_closeWithFinish]；纯错误收口不写）。
+  @override
   final ValueNotifier<OnDeviceGenPerf?> lastGenPerf =
       ValueNotifier<OnDeviceGenPerf?>(null);
 
@@ -526,6 +528,7 @@ class AidlOnDeviceEngine
   /// 以**权威票据**对账补写（I2：投影由权威派生，非猜测），消除
   /// `session-mirror drift`（此前每次 generate 刷 DEGRADE）。非 ready/busy
   /// 不动投影（失败/未知态由装载链自身收口）。
+  @override
   Future<void> reconcileLoadStateFromTicket() async {
     final s = await authoritativeStatus();
     if (s == EngineStatus.ready || s == EngineStatus.busy) {
@@ -603,6 +606,7 @@ class AidlOnDeviceEngine
   /// 语义（AMS 会自动重启 :engine 并重连）；其余远端异常 = 终态失败，
   /// **错误码如实入文案**——禁沿用 checkStatus 的 DEGRADE 口径返回
   /// unsupportedDevice（会把通道异常读成「硬件不支持」）。
+  @override
   Future<EngineStatus> loadModel(String modelDir,
       {String? modelId, String? backendHint}) async {
     try {
@@ -628,6 +632,7 @@ class AidlOnDeviceEngine
     }
   }
 
+  @override
   @override
   Stream<EngineChunk> generate({
     required String requestId,
@@ -1219,27 +1224,6 @@ class AidlOnDeviceEngine
 }
 
 /// 最近一次端侧生成性能快照（不可变；供配置页只读透出）。
-class OnDeviceGenPerf {
-  const OnDeviceGenPerf({
-    required this.ttftMs,
-    required this.totalMs,
-    required this.tokPerSec,
-    required this.outputChars,
-    required this.promptChars,
-  });
-
-  /// 首块到达时延（Dart 发起 generate → 首个流块，含全链）。
-  final int ttftMs;
-  final int totalMs;
-
-  /// 解码速率 = 1000/TPOT（口径与 on_device_bench 同源）。
-  final double tokPerSec;
-  final int outputChars;
-
-  /// 本流 prompt 字符数（上下文占用估算原料，中文 ≈1.3 字/token）。
-  final int promptChars;
-}
-
 class _ActiveGenerate {
   _ActiveGenerate(this.requestId, this.ctrl, this.detok,
       {required this.promptChars});
@@ -1270,11 +1254,6 @@ class _ActiveGenerate {
   EngineFinishReason? pendingFinishReason;
 }
 
-/// 进程级唯一端侧引擎实例：MethodChannel handler 为进程级单槽
-/// （setMethodCallHandler 后写覆盖），多实例将互踩回调（onDataBatch 等
-/// 事件只投递给最后注册的 binding）——装配层（hybrid_assembly）与启动
-/// 引导（main）共享本件，严禁再 new 第二个。
-///
-/// 挂进混合引擎的装配适配（`AidlOnDeviceLlmEngineAdapter`）见
-/// `on_device_engine_adapter.dart`（2026-10-30 体量收口拆出）。
-final AidlOnDeviceEngine sharedOnDeviceEngine = AidlOnDeviceEngine();
+/// 端侧引擎进程级单例已上移抽象件 `on_device_engine.dart`（S2 实现件单点
+/// 收口）：注册制 + 类型 OnDeviceSupplyFace——本文件只留实现类，import 白名单
+/// 见 arch-guard R12（装配根 main 注册 / service_directory 取用点 / 门面 / llm 域内）。

@@ -24,8 +24,16 @@ import 'on_device_bench_archive.dart';
 import 'on_device_bench_suite.dart';
 import 'on_device_chat_prompt.dart';
 import 'on_device_engine.dart';
-import 'on_device_engine_aidl.dart';
 import 'on_device_model_catalog.dart';
+
+// S2：单例接口化后，裸装载链与原语生成经能力接口探测取用（禁持具体类）。
+OnDeviceExplicitLoadAware _explicitEngine() {
+  final engine = sharedOnDeviceEngine;
+  if (engine is! OnDeviceExplicitLoadAware) {
+    throw StateError('端侧引擎未实现显式装载扩展面（OnDeviceExplicitLoadAware）');
+  }
+  return engine;
+}
 
 /// 吞吐测量门（启动引导 ready 后自动跑一轮）。
 ///
@@ -452,7 +460,7 @@ class OnDeviceBench {
     EngineStatus st = EngineStatus.assetMissing;
     for (var attempt = 1; attempt <= 3; attempt++) {
       try {
-        st = await sharedOnDeviceEngine.loadModel(dir);
+        st = await _explicitEngine().loadModel(dir);
         break;
       } on OnDeviceLoadException catch (e) {
         debugPrint(
@@ -472,7 +480,7 @@ class OnDeviceBench {
         // 显式装载链投影写回（2026-11-05 drift 观测债）：裸 loadModel 绕过
         // enable 的 _loadState 写面——就绪后按权威票据补写，消除后续每次
         // generate 的 session-mirror drift。
-        await sharedOnDeviceEngine.reconcileLoadStateFromTicket();
+        await _explicitEngine().reconcileLoadStateFromTicket();
         return;
       }
       if (s == EngineStatus.unsupportedDevice) {

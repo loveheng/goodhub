@@ -10,26 +10,9 @@ library;
 
 import 'package:flutter/material.dart';
 
+import '../../coordinator/chat_track_model.dart' show CallCardPhase;
 import '../tokens/console_tokens.dart';
 import 'status_strip.dart';
-
-/// 卡片生命周期相位（ui-design §3.2 左侧状态竖条语义色的映射源）。
-enum CallCardPhase {
-  /// 执行中（Started 即插卡；Emerald）。
-  running,
-
-  /// 疑似卡死（D4：无更新超阈值，只提示不自动中止；Amber）。
-  stuck,
-
-  /// 成功终态（Emerald 竖条 + 正文灰阶弱化）。
-  success,
-
-  /// 失败终态（Rose）。
-  failed,
-
-  /// 用户中止终态（Rose + 灰阶正文；与 failed 区分，architecture §10）。
-  cancelled,
-}
 
 class CallCard extends StatefulWidget {
   const CallCard({

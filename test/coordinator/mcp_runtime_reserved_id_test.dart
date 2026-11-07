@@ -10,6 +10,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/coordinator/mcp_runtime.dart';
+import 'package:goodhub/coordinator/mcp_run_spec.dart';
 import 'package:goodhub/coordinator/skill_registry.dart';
 import 'package:goodhub/core/errors/mcp_error.dart';
 import 'package:goodhub/core/tool_result.dart';
@@ -175,6 +176,7 @@ void main() {
     test('端点声明 host → 该端点拒装 + danger 通告，其余端点照常挂载', () async {
       final notes = <String>[];
       final assembly = await const McpRuntime().assemble(
+        McpRunSpec(
         context: SessionContext(),
         endpoints: [_ep('host'), _ep('goodshare')],
         locals: const [],
@@ -185,7 +187,7 @@ void main() {
         tempDirResolver: _tmpDir,
         documentsDirResolver: _tmpDir,
         clientFactory: (endpoint, apiKey) => McpClient(_ForeignTransport()),
-      );
+      ));
       addTearDown(assembly.close);
       expect(assembly.router.serverIds, ['goodshare'],
           reason: 'host 端点被拒装，且不得炸掉整轮装配');
@@ -196,6 +198,7 @@ void main() {
     test('被拒端点的 client 走 close 释放（不泄漏连接）', () async {
       final transports = <_ForeignTransport>[];
       final assembly = await const McpRuntime().assemble(
+        McpRunSpec(
         context: SessionContext(),
         endpoints: [_ep('host')],
         locals: const [],
@@ -210,7 +213,7 @@ void main() {
           transports.add(t);
           return McpClient(t);
         },
-      );
+      ));
       addTearDown(assembly.close);
       expect(transports, hasLength(1));
       expect(transports.single.closeCount, 1, reason: '拒装即释放，不得留悬空 client');

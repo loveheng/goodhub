@@ -10,6 +10,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/coordinator/mcp_runtime.dart';
+import 'package:goodhub/coordinator/mcp_run_spec.dart';
 import 'package:goodhub/coordinator/run_profile.dart';
 import 'package:goodhub/coordinator/skill_registry.dart';
 import 'package:goodhub/coordinator/task_plan.dart';
@@ -100,6 +101,7 @@ Future<McpAssembly> _assemble({
 }) async {
   final tmp = await _tmp();
   return const McpRuntime().assemble(
+    McpRunSpec(
     context: SessionContext(),
     endpoints: const [
       ServerEndpoint(id: 'good', name: 'g', endpoint: 'http://x/good/mcp'),
@@ -123,7 +125,7 @@ Future<McpAssembly> _assemble({
     ),
     planState: planState,
     profile: profile,
-  );
+  ));
 }
 
 void main() {

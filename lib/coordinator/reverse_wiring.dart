@@ -91,7 +91,9 @@ void wireSampling({
     }
 
     final transport = entry.value.client.transport;
-    if (transport is BinderTransport) {
+    // S1c 能力化：按 [CallerIdentityTransport] 接口探测，禁 is 具体类——新传输
+    // 具备平台侧身份解析能力即实现该接口，本接线零改动。
+    if (transport is CallerIdentityTransport) {
       transport.onServerRequestWithCaller = (method, params, caller) =>
           handle(method, params, caller);
     } else {
@@ -112,7 +114,7 @@ void wireSampling({
 /// 静默失效（= 孤儿算力空跑，K17 目标落空）。
 String _callerIdentityOf(McpToolFace face) {
   final transport = face.client.transport;
-  if (transport is BinderTransport) return transport.packageName;
+  if (transport is CallerIdentityTransport) return transport.callerKey;
   return face.serverId;
 }
 

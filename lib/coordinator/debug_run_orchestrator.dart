@@ -29,7 +29,7 @@ import '../core/errors/mcp_error.dart';
 import '../llm/cloud/cloud_llm.dart';
 import '../llm/cloud/sampling_engine.dart';
 import '../llm/on_device_capability.dart';
-import '../llm/on_device_engine_aidl.dart' show sharedOnDeviceEngine;
+import '../llm/on_device_engine.dart' show sharedOnDeviceEngine;
 import '../mcp/mcp_client.dart';
 import '../mcp/sampling.dart';
 import '../mcp/server_capabilities.dart';

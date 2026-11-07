@@ -25,7 +25,6 @@ import '../coordinator/cow_sync.dart';
 import '../coordinator/user_prompt_store.dart';
 import '../llm/cloud/byok_store.dart';
 import '../llm/on_device_engine.dart';
-import '../llm/on_device_engine_aidl.dart' show sharedOnDeviceEngine;
 import '../mcp/server_endpoints.dart';
 import '../resources/resource_store.dart';
 import '../sandbox/workspace_state_store.dart';
@@ -51,7 +50,8 @@ ResourceStore? _resourceStore;
 
 /// 端侧供给面条目（W1-S08，`on-device-capability.md` §2「纳入注册中心、UI
 /// 零直连」立法）：UI / 装配层取端侧引擎一律经 [onDeviceEngine]，禁再 import
-/// `on_device_engine_aidl.dart` 直连具体实现件（实现件更换 = 改本文件一行）。
+/// 直连具体实现件（S2 后实现件更换 = main 装配根注册行一处；本访问器只做
+/// 取用点收口，import 已换抽象件 on_device_engine.dart）。
 OnDeviceSupplyFace? onDeviceEngineOverride;
 
 /// 端侧供给面取用：缺省回落实现件单例（进程级唯一，loadedOnce 单装载纪律

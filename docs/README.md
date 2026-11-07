@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-11-06
+updated: 2026-11-07
 ---
 # docs
 
@@ -52,3 +52,4 @@ updated: 2026-11-06
   - [design/arch-consolidation.md](design/arch-consolidation.md) — 架构收敛施工稿：应用级 owner 注册中心 + 装配 Profile 化（活跃债 #20~#26，draft）
   - [design/ai-debug-bridge.md](design/ai-debug-bridge.md) — AI 真机调试桥（结构化观测替代截图猜测：端点契约 / 控件语义树 / 安全边界，draft）
   - [design/timeout-signaling.md](design/timeout-signaling.md) — 超时信令下沉优化方案（W1 熔断指纹解锁/探针让位、W2 装载进度可取消、W3 LivenessTick 信令下沉；W4/W5 跨仓与待上游）
+  - [design/extensibility-hardening.md](design/extensibility-hardening.md) — 扩展性收口施工稿：hybrid 拆分 / TrackEntry 模型下沉 / 装配签名收敛 / 实现件单点 / 协议版本闸等 E1–E9 分批收口（S0–S5，draft）

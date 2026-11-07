@@ -10,7 +10,6 @@ library;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/core/notice_category.dart';
 import 'package:goodhub/ui/chat_status_controller.dart';
-import 'package:goodhub/ui/components/call_card.dart';
 import 'package:goodhub/ui/components/dual_track_stream.dart';
 import 'package:goodhub/ui/components/status_capsule.dart';
 

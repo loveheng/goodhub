@@ -4,6 +4,7 @@ import 'package:goodhub/coordinator/permission_gateway.dart'
     show GateDecision;
 import 'package:goodhub/coordinator/tool_breaker.dart';
 import 'package:goodhub/ui/components/breaker_card.dart';
+import 'package:goodhub/coordinator/chat_track_model.dart';
 import 'package:goodhub/ui/components/call_card.dart';
 import 'package:goodhub/ui/components/confirmation_card.dart';
 import 'package:goodhub/ui/components/fence_block_card.dart';

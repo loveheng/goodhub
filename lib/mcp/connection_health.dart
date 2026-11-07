@@ -3,7 +3,7 @@
 /// **作用域隔离（D16 约束）**：本地 Binder 插件依赖 Android 内核
 /// `DeathRecipient` 事件感知（进程被杀/闪退是毫秒级事件驱动），**绝不轮询**——
 /// 对 Binder 连接调 [start] 直接 no-op（DEGRADE 留痕），避免频繁唤醒休眠子
-/// App 进程退化成「电量刺客」。判定依据 = [pollable]（`transport is HttpTransport`）。
+/// App 进程退化成「电量刺客」。判定依据 = [pollable]（S1c 能力化：`transport is PollableTransport`）。
 ///
 /// 状态机（单调、非任务态，纯连接质量信号）：
 /// `unknown` → 首次探活成功 `online`；单次失败 `degraded`；**连续 `maxConsecutiveFailures`
@@ -52,8 +52,9 @@ class ConnectionHealth {
   /// 心跳误判离线级联 D18 取消在途。null = 未接线（维持旧行为）。
   final bool Function()? isAlive;
 
-  /// 仅远端 HTTP 连接可轮询（D16：Binder 靠 DeathRecipient 事件感知，严禁轮询）。
-  static bool pollable(McpClient client) => client.transport is HttpTransport;
+  /// 仅远端 HTTP 连接可轮询（D16：Binder 靠 DeathRecipient 事件感知，严禁轮询）
+  /// ——S1c 能力化：按 [PollableTransport] 接口探测，禁 is 具体类。
+  static bool pollable(McpClient client) => client.transport is PollableTransport;
 
   ConnectionState _state = ConnectionState.unknown;
   ConnectionState get state => _state;
@@ -103,7 +104,7 @@ class ConnectionHealth {
   void start() {
     if (!pollable(client)) {
       debugPrint(
-        '[DEGRADE] connection-health: skip polling on non-HTTP transport '
+        '[DEGRADE] connection-health: skip polling on non-pollable transport '
         '(${client.transport.runtimeType}); rely on DeathRecipient',
       );
       return;

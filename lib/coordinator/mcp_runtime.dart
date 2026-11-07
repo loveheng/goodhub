@@ -11,8 +11,8 @@
 /// 「只立签名、不实现」，其余按 §8.1 已拍板语义可完整实现。
 library;
 
+import 'mcp_run_spec.dart';
 import 'dart:developer' as developer;
-import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
 
@@ -40,10 +40,10 @@ import 'tool_router.dart';
 import '../core/errors/mcp_error.dart';
 import 'context_governor.dart' show OnDeviceResultSummarizer;
 import '../llm/on_device_capability.dart';
-import '../llm/on_device_engine_aidl.dart' show sharedOnDeviceEngine;
+import '../llm/on_device_engine.dart' show sharedOnDeviceEngine;
 import '../core/notice_category.dart';
 import '../llm/cloud/cloud_llm.dart'
-    show CloudChatMessage, CloudLlmEngine, CloudToolSchema;
+    show CloudChatMessage, CloudToolSchema;
 import '../mcp/connection_manager.dart';
 import '../mcp/transport/binder_transport.dart' show BinderTransport;
 import 'dart:async' show unawaited;
@@ -59,7 +59,7 @@ import 'reserved_namespace.dart';
 import '../resources/resource_store.dart';
 import '../sandbox/memory_store.dart';
 import '../sandbox/workspace_state_store.dart';
-import 'resource_attachment_binder.dart' show ResourceAttachment, bindResourceAttachments;
+import 'resource_attachment_binder.dart' show bindResourceAttachments;
 import 'reverse_wiring.dart';
 import 'caller_death_interrupt.dart';
 import 'supply_quota.dart';
@@ -351,6 +351,15 @@ typedef McpMount = ({
 
 /// MCP 侧 Run 级装配（§3.3 命名裁决：McpRuntime，不用 ServiceRuntime——云端
 /// 引擎侧 Run 级装配已由 `hybrid_assembly.dart` 承载）。
+/// 宿主本地工具面 schema 单源（E3 差集审计收口）：Memory + LocalResource
+/// 两面此前在 gateway.loadCatalog 与 AgentLoop toolsProvider 各写字面（漏一边
+/// = 网关守门面与模型可见面漂移）——收本函数单源，两侧各自消费；agent 专有
+/// 条目（JIT 三件套/PlanProposalTool/activation）不进网关为有意差异，不在此列。
+List<CloudToolSchema> hostLocalToolSchemas(ResourceStore? resourceStore) => [
+  ...MemoryToolExecutor.toolSchemas(),
+  if (resourceStore != null) ...LocalResourceToolExecutor.toolSchemas(),
+];
+
 class McpRuntime {
   const McpRuntime();
 
@@ -369,50 +378,7 @@ class McpRuntime {
   ///   null = 内部 new（gateway 现状语义）；
   /// - [clientFactory]：注入位（T5c，范式 `server_probe.dart:49-52`），
   ///   默认 `McpClient.http`。
-  Future<McpAssembly> assemble({
-    required SessionContext context,
-    required List<ServerEndpoint> endpoints,
-    required List<LocalPluginInfo> locals,
-    required Future<String?> Function(String serverId) apiKeyReader,
-    required MemoryStore memoryStore,
-    required SkillRegistry skills,
-    RuntimeDelegates delegates = const RuntimeDelegates(),
-    SamplingQuota? quota,
-    McpClientFactory? clientFactory,
-    void Function()? onSamplingBegin,
-    void Function()? onSamplingEnd,
-    CloudLlmEngine? engine,
-
-    /// 会话级编排状态（多插件任务编排 B1；比照 quota 独立实例入参不进
-    /// SessionContext 快照——台账/配额跨续跑累计，grant 仍 Run 级）。
-    /// null = 不挂计划围栏（网关 headless 装配无编排语义）。
-    PlanRunState? planState,
-
-    Future<Directory> Function()? tempDirResolver,
-    Future<Directory> Function()? documentsDirResolver,
-
-    /// 资源中心附件（M1-T3）：非空且 [resourceStore] 就绪时，装配期把全文
-    /// 落 run 级 $ref 池并产出上下文 footer（[McpAssembly.resourceContextFooter]）。
-    List<ResourceAttachment> resourceAttachments = const [],
-
-    /// 测试注入位 / 生产由窗口经 lib/app 装配传入；null = 不注册本地资源工具面。
-    ResourceStore? resourceStore,
-
-    /// 共享能力源 face 表（装配层合一 · Contract 件，2026-10-23 方向裁决）：
-    /// 生产由 chat 传 `GatewayController.shared.faces`——id 命中即**借用**该
-    /// face（跳过新建/协商/连接，消同源双实例双冷启动），进度经运行期监听器
-    /// 接入本会话；client 归源所有，本会话不 close、不入 abort（跨消费者取消
-    /// 风险），sampling/elicitation/CoW 接线保留源侧现状。缺省空表 = 旧路径
-    /// 全量自建（测试隔离不受影响）。
-    Map<String, McpToolFace> sharedFaces = const {},
-
-    /// S1：CoW 覆写库的应用级单实例来源（null = 装配内就地构造，兼容旧调用方）。
-    Future<CowOverridesStore> Function()? cowStoreProvider,
-
-    /// S2 运行场景（默认 `chat`）：决定本次装配的**能力上限**（哪些反向能力/
-    /// 同步/编排围栏参与接线）。调用主体（Actor）的每请求裁决不在此处，见 §S6。
-    RunProfile profile = RunProfile.chat,
-  }) async {
+  Future<McpAssembly> assemble(McpRunSpec spec) async {
     // 装配中途失败（如第 N 个端点 negotiate 抛）：回收已建连接/客户端/RefStore
     // 再上抛——原 chat_page 实现里这些资源都在 _send 的 try-finally 保护下，
     // 内核化后该保护必须随装配段一起迁入（plan 步 1 单测「装配异常路径」）。
@@ -421,29 +387,10 @@ class McpRuntime {
     RefStore? partialRefStore;
     try {
       return await _assembleInner(
-        context: context,
-        endpoints: endpoints,
-        locals: locals,
-        apiKeyReader: apiKeyReader,
-        memoryStore: memoryStore,
-        skills: skills,
-        delegates: delegates,
-        quota: quota,
-        clientFactory: clientFactory,
-        onSamplingBegin: onSamplingBegin,
-        onSamplingEnd: onSamplingEnd,
-        engine: engine,
-        tempDirResolver: tempDirResolver,
-        documentsDirResolver: documentsDirResolver,
-        resourceAttachments: resourceAttachments,
-        resourceStore: resourceStore,
-        sharedFaces: sharedFaces,
-        cowStoreProvider: cowStoreProvider,
-        profile: profile,
+        spec: spec,
         partialConns: partialConns,
         partialClients: partialClients,
         partialRefStore: (rs) => partialRefStore = rs,
-        planState: planState,
       );
     } on Object {
       for (final c in partialConns) {
@@ -471,34 +418,33 @@ class McpRuntime {
   }
 
   Future<McpAssembly> _assembleInner({
-    required SessionContext context,
-    required List<ServerEndpoint> endpoints,
-    required List<LocalPluginInfo> locals,
-    required Future<String?> Function(String serverId) apiKeyReader,
-    required MemoryStore memoryStore,
-    required SkillRegistry skills,
-    required RuntimeDelegates delegates,
-    required SamplingQuota? quota,
-    required McpClientFactory? clientFactory,
-    required void Function()? onSamplingBegin,
-    required void Function()? onSamplingEnd,
-    required CloudLlmEngine? engine,
-    required Future<Directory> Function()? tempDirResolver,
-    required Future<Directory> Function()? documentsDirResolver,
-    required List<ResourceAttachment> resourceAttachments,
-    required ResourceStore? resourceStore,
-    required Map<String, McpToolFace> sharedFaces,
-    required Future<CowOverridesStore> Function()? cowStoreProvider,
-    required RunProfile profile,
+    required McpRunSpec spec,
     required List<McpConnection> partialConns,
     required List<McpClient> partialClients,
     required void Function(RefStore refStore) partialRefStore,
-
-    /// 会话级编排状态（多插件任务编排 B1；比照 quota 独立实例入参不进
-    /// SessionContext 快照——台账/配额跨续跑累计，grant 仍 Run 级）。
-    /// null = 不挂计划围栏（网关 headless 装配无编排语义）。
-    PlanRunState? planState,
   }) async {
+    // E3：入参从 spec 解构（体内引用零改动）。
+    final context = spec.context;
+    final endpoints = spec.endpoints;
+    final locals = spec.locals;
+    final apiKeyReader = spec.apiKeyReader;
+    final memoryStore = spec.memoryStore;
+    final skills = spec.skills;
+    final delegates = spec.delegates;
+    final quota = spec.quota;
+    final clientFactory = spec.clientFactory;
+    final onSamplingBegin = spec.onSamplingBegin;
+    final onSamplingEnd = spec.onSamplingEnd;
+    final engine = spec.engine;
+    final byokStore = spec.byokStore;
+    final planState = spec.planState;
+    final tempDirResolver = spec.tempDirResolver;
+    final documentsDirResolver = spec.documentsDirResolver;
+    final resourceAttachments = spec.resourceAttachments;
+    final resourceStore = spec.resourceStore;
+    final sharedFaces = spec.sharedFaces;
+    final cowStoreProvider = spec.cowStoreProvider;
+    final profile = spec.profile;
     final factory = clientFactory ??
         ((String endpoint, String? apiKey) =>
             McpClient.http(baseUrl: endpoint, apiKey: apiKey));
@@ -699,11 +645,9 @@ class McpRuntime {
     );
     final executor = chain.executor;
     final gateway = chain.gateway;
-    final resourceToolStore = resourceStore;
     gateway.loadCatalog([
       ...router.focusedSchemas(),
-      ...MemoryToolExecutor.toolSchemas(),
-      if (resourceToolStore != null) ...LocalResourceToolExecutor.toolSchemas(),
+      ...hostLocalToolSchemas(resourceStore),
     ]);
     // 资源附件绑定（M1-T3）：全文落 run 级 $ref 池 + 产出上下文 footer。
     String? resourceContextFooter;
@@ -720,6 +664,7 @@ class McpRuntime {
           controller: context.degradation ?? DegradationController(),
           piiFenceDelegate: delegates.fenceDelegate, // D4 有人值守拦截卡（可空）
           onNote: note, // P2-1：BYOK 读取失败的用户可见通道
+          byokStoreOverride: byokStore, // E9：应用级单实例（null = 就地构造）
         );
     note?.call('✓ 引擎就绪：${effectiveEngine.name}', danger: false, category: TrackNoticeCategory.fact);
 
@@ -809,8 +754,7 @@ class McpRuntime {
           //（无编排态不进工具面；assemble 仅聊天路径调用，PC 网关走 mount 原语不可见）。
           if (caps.planFence && planState != null) PlanProposalTool.schema(),
           skills.activationToolSchema(),
-          ...MemoryToolExecutor.toolSchemas(),
-          if (resourceStore != null) ...LocalResourceToolExecutor.toolSchemas(),
+          ...hostLocalToolSchemas(resourceStore),
         ];
       },
     );

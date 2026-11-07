@@ -5,8 +5,8 @@
 /// - **纯 Dart 门面**：本文件不 import Flutter（Directory 构造经
 ///   [ConversationStore.underSupportDir] 收在 sandbox 层，层级纪律 ④ 不 import ⑤）；
 /// - **save 组装**：transcript 编码（`ConversationStore.encodeMessages`）收在
-///   内核——窗口只传轨道条目 JSON（TrackEntry 是 UI 模型，codec 留 UI 层，
-///   `conversation_store.dart:10-12` SSOT）；绑定三态从 [ConversationSession]
+///   内核——窗口只传轨道条目 JSON（TrackEntry 模型+codec 住
+///   coordinator/chat_track_model.dart，S4 下沉 SSOT）；绑定三态从 [ConversationSession]
 ///   直读（核心↔核心横向具体类型，两层+端口形态）；
 /// - **失败不抛穿**：save 异常 DEGRADE 留痕返 false——调用方在 finally 中
 ///   使用，抛穿会吞掉 Run 收尾的原生异常路径（原替身同口径）；

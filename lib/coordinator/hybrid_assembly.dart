@@ -20,7 +20,6 @@ import '../llm/device_tier.dart';
 import '../llm/llm.dart';
 import '../llm/on_device_engine.dart';
 import '../llm/on_device_engine_adapter.dart';
-import '../llm/on_device_engine_aidl.dart';
 import '../llm/on_device_gate_override.dart';
 import 'discovery_executor.dart';
 import 'local_resource_tool_executor.dart';

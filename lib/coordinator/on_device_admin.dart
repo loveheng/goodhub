@@ -6,12 +6,15 @@ library;
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show ValueListenable, ValueNotifier;
+
 import '../llm/geniex_runtime_binding.dart'
     show GenieXRuntimeControl, GenieXStatus, LiteRtLmNpuControl,
     LiteRtLmNpuStatus;
 import '../llm/on_device_admission_probe.dart' show sharedAdmissionProbe;
 import '../llm/on_device_asset_manager.dart' show OnDeviceAssetManager;
-import '../llm/on_device_engine_aidl.dart' show sharedOnDeviceEngine;
+import '../llm/on_device_engine.dart'
+    show OnDeviceGenPerf, OnDeviceGenPerfAware, sharedOnDeviceEngine;
 import '../llm/on_device_gate_override.dart'
     show GateOverride, OnDeviceGateOverride;
 import '../llm/on_device_model_catalog.dart'
@@ -25,9 +28,10 @@ export '../llm/geniex_runtime_binding.dart'
 export '../llm/on_device_asset_manager.dart'
     show AssetPullProgress, OnDeviceAssetManager;
 export '../llm/on_device_chat_prompt.dart' show buildOnDeviceChatPromptJsonAsync;
-export '../llm/on_device_engine.dart' show EngineStatus, GenerationConfig;
-export '../llm/on_device_engine_aidl.dart'
-    show OnDeviceGenPerf, sharedOnDeviceEngine;
+export '../llm/on_device_engine.dart'
+    show EngineStatus, GenerationConfig, OnDeviceGenPerf,
+        OnDeviceLoadState, sharedOnDeviceEngine;
+export '../llm/on_device_pending_load.dart' show OnDevicePendingLoad;
 export '../llm/on_device_gate_override.dart' show GateOverride;
 export '../llm/on_device_history_policy.dart'
     show AnchorAndRecentHistoryPolicy, BarePromptHistoryPolicy,
@@ -41,6 +45,20 @@ export '../llm/on_device_session_ticket.dart' show SessionTicket;
 
 /// 端侧管理面服务聚合（设置段 / 导入流共用的唯一出口）。
 abstract final class OnDeviceAdmin {
+  // ---- 生成性能透出（S2：单例接口化后经能力接口探测取实现件专属读数）----
+
+  static final ValueNotifier<OnDeviceGenPerf?> _noGenPerf =
+      ValueNotifier<OnDeviceGenPerf?>(null);
+
+  /// 最近一次端侧生成性能透出（实现方未实现能力接口 = 恒 null 通知器）。
+  static ValueListenable<OnDeviceGenPerf?> onDeviceLastGenPerf() {
+    final engine = sharedOnDeviceEngine;
+    if (engine is OnDeviceGenPerfAware) {
+      return engine.lastGenPerf;
+    }
+    return _noGenPerf;
+  }
+
   // ---- 增配运行库（geniex_runtime_binding）----
 
   /// 增配镜像列表读取（GenieX/LiteRT-LM 双族共用一套持久化）。

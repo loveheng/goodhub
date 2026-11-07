@@ -37,7 +37,32 @@ import 'mcp_transport.dart';
 ///  - 新增：`onCallerDied`（平台侧独立死亡代理）= 宿主作**算力提供方**时感知
 ///    **调用方**进程死亡 → 驱动宿主打断该调用方名下在途的端侧执行。
 ///    既有方向的死亡代理不覆盖反向路径，故不复用既有信封/回调。
-class BinderTransport implements McpTransport {
+/// 调用方身份能力接口（extensibility-hardening S1c 能力化）：反向请求需携带
+/// 平台侧已解析调用方身份的传输（当前唯一实现 = Binder）。消费点 =
+/// `reverse_wiring.dart`（按接口探测，禁 is 具体类）；新传输具备同能力即实现
+/// 本接口。
+abstract interface class CallerIdentityTransport implements McpTransport {
+  /// 与 [McpClient.onServerRequest] 二选一接线（本钩子优先）：携带平台侧已解析
+  /// 调用方身份的反向请求钩子。帧未携带身份（平台侧解析失败）时本钩子不会被
+  /// 调用——该请求由传输层按拒绝处置回 -32001（禁匿名放行）。
+  Future<Map<String, Object?>?> Function(
+    String method,
+    Object? params,
+    ResolvedCallerIdentity caller,
+  )? get onServerRequestWithCaller;
+
+  set onServerRequestWithCaller(
+      Future<Map<String, Object?>?> Function(
+    String method,
+    Object? params,
+    ResolvedCallerIdentity caller,
+  )? handler);
+
+  /// 调用方身份键（K17：与平台侧死亡事件键同源；Binder = 插件包名）。
+  String get callerKey;
+}
+
+class BinderTransport implements McpTransport, CallerIdentityTransport {
   BinderTransport({
     required this.transportId,
     required this.packageName,
@@ -65,6 +90,11 @@ class BinderTransport implements McpTransport {
 
   /// 目标插件包名（物理主键，§9.3）。
   final String packageName;
+
+  /// 调用方身份键（[CallerIdentityTransport] 契约）：与 [packageName] 同源——
+  /// 平台侧死亡事件推的 callerKey 即包名（K17：混用即打断静默失效）。
+  @override
+  String get callerKey => packageName;
 
   /// 目标插件 Service 全限定类名（如 com.zzh.goodhub.sample.dummy.DummyPluginService）。
   final String serviceClassName;
@@ -204,6 +234,7 @@ class BinderTransport implements McpTransport {
   /// **帧未携带身份（平台侧解析失败）时本钩子不会被调用**：该请求按拒绝处置
   /// 回 -32001（禁匿名放行——身份缺失若放行，信任白名单与授权矩阵同时失效）。
   /// 非 Binder 面（HTTP）无内核身份，继续用 [onServerRequest]。
+  @override
   Future<Map<String, Object?>?> Function(
     String method,
     Object? params,
