@@ -1,0 +1,1 @@
+- [2026-11-07] (测试) (重:中) [流转] 真机端到端验收（代码侧已闭环，仅剩双端真机走查：single&server=host 仅见无前缀 host 工具并实调 / full 带前缀联邦面 / AtomCode full 模式 host__ 工具回归）——移入全局 context/todos.md「真机验收总账」⑥，与 P0-B/T5 等真机项合并执行 (src: ai, 流转出清)

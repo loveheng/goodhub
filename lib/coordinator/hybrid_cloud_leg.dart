@@ -10,6 +10,7 @@ import 'package:flutter/foundation.dart';
 import '../core/errors/cloud_llm_error.dart';
 import '../core/errors/inference_error.dart';
 import '../llm/cloud/byok_store.dart';
+import '../llm/on_device_residency_metrics.dart';
 import '../llm/cloud/cloud_llm.dart';
 import '../llm/on_device_history_policy_store.dart';
 import '../llm/on_device_model_catalog.dart';
@@ -75,6 +76,9 @@ class HybridCloudLeg {
     // 历史策略接线（2026-11-02）：策略挂模型本身（用户拍板）——按生效
     // BYOK profile id 取偏好，非默认 ① 时裁剪消息后再发（默认档整体跳过 =
     // 存量零变化；工具链路内部豁免不裁剪）。
+    // R-P0 驻留观测面（S-R0-b）：云腿入口 Piggyback（命中率分母）。
+    onDeviceResidencyMetrics
+        .eventSync('send', {'mode': 'cloud', 'fallbackAllowed': allowDeviceFallback});
     final cloudPolicyId = await _cloudModelPolicyId();
     var effective = request;
     if (cloudPolicyId != null &&

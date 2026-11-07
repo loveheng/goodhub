@@ -6,3 +6,5 @@
 - [2026-10-11] [变更]: M2-T6 上下文治理落地（E1 拍板：摘要化失败兜底=保留原文+[DEGRADE] 留痕）：lib/coordinator/context_governor.dart——trimMessagesToWindow 发送边界滑动窗口纯函数（保留前导 System/User+最近 N 轮完整对、裁剪点只落 Assistant 边界防拆对、本地历史不裁=步数墙放宽续跑依赖完整上下文）+ estimateTokens 字符级粗估（与 hybrid_inference maxInputChars 同族）+ summarizedContent 宿主注引用标记（$ref 暂存池归 M3）+ OnDeviceResultSummarizer 端侧摘要器（generate 翻译式降级 null 收敛为 SummarizeException，不预检 isAvailable 防竞态）；agent_loop 接线：engine.send 前窗口化 + 回填前 _governedContent 摘要化（失败保留原文 [DEGRADE] 留痕），LoopToolCallFinished 事件恒带原文（治理只影响发送上下文）；debug 页摘要化开关默认关（防既有联调流隐式依赖端侧引擎）
 - [2026-10-11] [验证]: flutter analyze 0 issue + 全量 test 164 绿（新增 context_governor 7 用例 + agent_loop T6 4 用例：窗口最近 N 轮/配对完整/入参不裁/阈值边界恰等于 1000 不摘要/失败兜底）；工程坑一处：sublist(0, cut) 保留的是切点前段=最旧 N 轮，滑动窗口语义=保留最近 N 轮+前导——首版方向反了，测试钉住
 
+- [2026-11-07] (风险) [long] [关闭·前提失效] goodshare MCP server 生命周期绑 UI 可见性（退后台 8765 停监听）——2026-11-07 取证：8765 已降级为内部调试通道（goodshare mcp_server.dart:71 注记，2026-10-15 拍板 MCP 主机制走 goodhub Binder 插件），设备侧 McpBinderService 绑定 com.zzh.goodhub 运行中——同机回环致命场景已被 Binder 机制结构性覆盖，原风险前提不成立 (src: ai, 复核取证)
+

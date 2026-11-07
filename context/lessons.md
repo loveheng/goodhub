@@ -146,3 +146,4 @@ last-merge: 2026-11-07
 
 - [geniex-qairt] ErrorCode[-100016] Parameter not supported + 流式中文夹杂 ä¸­ 型乱码 qairt 插件拒收 --stop/--stop-file(GenerationConfig.stopWords 禁传,EOS 停止管线内置);SDK 增量 detokenize 跨 token 拆裂多字节 UTF-8(只有 Token(String) 无字节出口,上游不可修) GenieSession 去 stopWords + StreamTextSanitizer 投递前 latin1 段重组还原 + think 块跨块剥除;复现锚=logcat GenieXSdk tag (Ref: on-device)
 - [on-device] Android `http.get().bodyBytes` 大文件下载截断条目：待补回归段（归并门禁=四段齐备，回归钉待补后入「端侧 / 资产与构建」节）
+- [engine] 现象: TTL 参数注入后真机仍按 5min 驱逐（reason 串显示新值 30000ms，实际 300s 后才触发） | 根因: TTL 双源——EngineLifecycle.ttlMs 已注入，但 EngineService.scheduleTtl 的 postDelayed 延时直读 DEFAULT_TTL_MS 常量，注入参数未贯通调度侧 | 处置: EngineLifecycle 暴露 effectiveTtlMs getter，scheduleTtl 改读之（禁直读 DEFAULT 常量）；参数注入类改动须全链同源审计（状态机/调度/回调三处） | 回归: 真机 `--dart-define=ON_DEVICE_RESIDENCY_TTL_MS=30000` → ttl-elapsed(30000ms) 在生成收尾 +30s 触发（非 +5min） (Ref: on-device-residency S-R0-a)

@@ -107,6 +107,10 @@ object EngineServiceBridge {
     }
 
     /// AIDL 回调线程（Binder 线程池）≠ Flutter 平台通道的线程约束（主线程强制）：
+    /// R-P0 驻留策略位：bind 时下发的 TTL（毫秒，0 = 不下发用引擎缺省）。
+    @Volatile
+    private var residencyTtlMs = 0L
+
     /// 回调统一 post 主线程再 invokeMethod——否则每次回调抛 RuntimeException
     /// 消息全丢（真机实测：生成已跑完，Dart 永远收不到 token/finished → 无结果）。
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -171,6 +175,10 @@ object EngineServiceBridge {
                     }
                 }
                 "bind" -> {
+                    // R-P0 驻留策略位（on-device-residency S-R0-a）：TTL 随 bind
+                    // 下发（缺省缺失 = 引擎内建 5min 零行为变化）。重连重跑
+                    // initEngine 时沿用本值（字段跨连接存续）。
+                    residencyTtlMs = (call.argument<Any>("residencyTtlMs") as? Number)?.toLong() ?: 0L
                     bind(activity)
                     result.success(null)
                 }
@@ -521,7 +529,14 @@ object EngineServiceBridge {
                 engine = svc
                 Log.d(TAG, "engine service connected (AIDL proxy)")
                 try {
-                    val status = svc.initEngine(Bundle(), object : IOnDeviceEngineListener.Stub() {
+                    // R-P0：驻留策略位随握手下发（>0 才入 Bundle，缺省零变化）。
+                    val initCfg = Bundle().apply {
+                        if (residencyTtlMs > 0) {
+                            putLong(com.zzh.goodhub.engine.EngineLifecycle.KEY_RESIDENCY_TTL_MS,
+                                residencyTtlMs)
+                        }
+                    }
+                    val status = svc.initEngine(initCfg, object : IOnDeviceEngineListener.Stub() {
                         override fun onLoadPhaseChanged(phase: Int) {
                             // F4 装载阶段活体打点：诊断面上行（阶段推进 = 活体信号）。
                             invokeOnMain("onLoadPhaseChanged", mapOf("phase" to phase))

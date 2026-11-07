@@ -277,6 +277,9 @@ class EngineService : Service() {
     private val lifecycle = com.zzh.goodhub.engine.EngineLifecycle(
         onEvict = { reason ->
             Log.i(TAG, "lifecycle evict: $reason")
+            // R-P0 驻留观测面（on-device-residency S-R0-b）：驱逐沿环境快照
+            //（电量/充电/省电/亮灭屏——事件瞬态随路采样，No Active Polling）。
+            Log.i(TAG, "[RESIDENCY] evict reason=$reason ${residencyEnvSnapshot()}")
             session.close()
             dataPlane?.close()
             dataPlane = null
@@ -289,12 +292,50 @@ class EngineService : Service() {
             notifyEngineEvicted(reason)
             // FGS 撤下对称（路线 B）：驱逐 = 权重释放，保活失去意义，常驻通知须收。
             stopFgs()
+            // R-P0 软释放内存卫生采样（S-R0-b）：驱逐后一次性快照（事件触发
+            // 非轮询）——「软释放 ION 是否真还」的数据源（R4 开放问题）。若新
+            // 装载在采样点前发生，样本反映的是装载后状态（噪声可辨识：沿带
+            // reason 字段对账）。
+            listOf(5_000L, 30_000L).forEach { d ->
+                mainHandler.postDelayed({
+                    Log.i(TAG,
+                        "[RESIDENCY] rss-sample phase=post-evict-${d / 1000}s " +
+                            residencyRssSnapshot())
+                }, d)
+            }
         },
         // 受理窗口竞态护栏（2026-11-05 真机实证）：槽 busy（在途 / 受理中生成）
         // → TTL 拒绝驱逐，杜绝孤儿在途生成（空产出 frames=0 + 误导 busy）。
         // 槽字段先于本字段声明，lambda 迟绑定读取，不依赖初始化顺序。
         isBusy = { slot.isBusy },
     )
+
+    /// R-P0 观测快照（S-R0-b）：电量/充电/省电/亮灭屏——驱逐沿事件瞬态随路
+    /// 采样（No Active Polling：sticky 广播同步读，零轮询零定时器）。
+    private fun residencyEnvSnapshot(): String {
+        return runCatching {
+            val bm = getSystemService(android.content.Context.BATTERY_SERVICE) as? android.os.BatteryManager
+            val pct = bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
+            val intent = registerReceiver(
+                null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
+            val charging = intent?.let {
+                it.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, -1) ==
+                    android.os.BatteryManager.BATTERY_STATUS_CHARGING
+            } ?: false
+            val pm = getSystemService(android.content.Context.POWER_SERVICE) as? android.os.PowerManager
+            "batt=$pct chg=$charging ps=${pm?.isPowerSaveMode} screen=${pm?.isInteractive}"
+        }.getOrElse { "snapshot-unavailable: $it" }
+    }
+
+    /// R-P0 软释放内存卫生采样：VmRSS/VmHWM（/proc/self/status 一次性读取）。
+    private fun residencyRssSnapshot(): String {
+        return runCatching {
+            val status = java.io.File("/proc/self/status").readText()
+            val rss = Regex("VmRSS:\\s+(\\d+\\s+kB)").find(status)?.groupValues?.get(1) ?: "?"
+            val hwm = Regex("VmHWM:\\s+(\\d+\\s+kB)").find(status)?.groupValues?.get(1) ?: "?"
+            "vmRss=$rss vmHwm=$hwm"
+        }.getOrElse { "rss-unavailable: $it" }
+    }
 
     /// TTL 定时器（主线程 Handler；代次失配由状态机作废，防旧计时器杀新会话）。
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
@@ -303,7 +344,7 @@ class EngineService : Service() {
         mainHandler.removeCallbacksAndMessages(null)
         mainHandler.postDelayed(
             { lifecycle.onTtlElapsed(generation) },
-            com.zzh.goodhub.engine.EngineLifecycle.DEFAULT_TTL_MS,
+            lifecycle.effectiveTtlMs,
         )
     }
 
@@ -382,6 +423,15 @@ class EngineService : Service() {
     private val stub = object : IOnDeviceEngineService.Stub() {
         override fun initEngine(config: Bundle?, cb: IOnDeviceEngineListener?): Int {
             listener = cb
+            // R-P0 驻留策略位（on-device-residency S-R0-a）：TTL 经 Bundle 参数化
+            //（缺省缺失 = 引擎内建 5min 零行为变化；>0 才采用——5min 缺省翻动
+            // 须观测数据支撑）。
+            val residencyTtl = config?.getLong(
+                com.zzh.goodhub.engine.EngineLifecycle.KEY_RESIDENCY_TTL_MS, 0L) ?: 0L
+            if (residencyTtl > 0) {
+                lifecycle.updateTtlMs(residencyTtl)
+                Log.i(TAG, "[RESIDENCY] ttl-configured: ${residencyTtl}ms")
+            }
             ensureDataPlane()
             // 后端可用性（S3 换线）：QnnProbe/jniLibs 探针随裸 Genie C API 链
             // 退役——geniex-android AAR 自带 QNN 运行时全家桶，真伪由 loadModel

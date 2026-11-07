@@ -16,6 +16,7 @@ import '../core/errors/inference_error.dart';
 import '../llm/cloud/cloud_llm.dart';
 import '../llm/llm.dart';
 import '../llm/on_device_admission_probe.dart';
+import '../llm/on_device_residency_metrics.dart';
 import '../llm/on_device_dispatch_profile.dart';
 import '../llm/on_device_engine.dart';
 import '../llm/on_device_model_catalog.dart';
@@ -69,6 +70,9 @@ class HybridDeviceLeg {
       onCancel: () => completed ? Future<void>.value() : device.cancelActive(),
     );
     Future<void>(() async {
+      // R-P0 驻留观测面（S-R0-b）：send 腿入口 Piggyback（命中率分子）。
+      onDeviceResidencyMetrics.eventSync(
+          'send', {'mode': 'device', 'reason': reason});
       debugPrint('[HybridEngine] 端侧路径（$reason）：${device.name}');
       try {
         // 端侧对话 prompt 构造与载荷估算（buildDevicePrompt 单源）：消息序列 JSON

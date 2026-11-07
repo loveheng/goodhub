@@ -30,8 +30,9 @@ import android.content.ComponentCallbacks2
  * 定时器凭代次失配自行作废，杜绝「旧计时器杀新会话」竞态。
  */
 class EngineLifecycle(
-    /** TTL 时长（毫秒）。§4.1 拍板 3~5min 区间取 5min（后台续航优先）。 */
-    private val ttlMs: Long = DEFAULT_TTL_MS,
+    /** TTL 时长（毫秒）。§4.1 拍板 3~5min 区间取 5min（后台续航优先）；
+     *  R-P0 参数化（on-device-residency S-R0-a）：initEngine Bundle 可注入覆盖。 */
+    private var ttlMs: Long = DEFAULT_TTL_MS,
     /** 驱逐动作回调（接线方：Genie 会话 + 数据面释放）。 */
     private val onEvict: (reason: String) -> Unit,
     /**
@@ -45,9 +46,22 @@ class EngineLifecycle(
      */
     private val isBusy: () -> Boolean = { false },
 ) {
+    /** R-P0 驻留策略位：TTL 参数注入（>0 才采用；缺省 5min 零行为变化——
+     *  5min 缺省翻动须观测数据支撑，本缝仅为 L1 策略备好注入位）。 */
+    fun updateTtlMs(ms: Long) {
+        if (ms > 0) ttlMs = ms
+    }
+
+    /** R-P0：调度侧（scheduleTtl）读取的生效 TTL——注入后与 reason 串同源，
+     *  禁双源（首版缺陷：调度侧直读 DEFAULT_TTL_MS 致注入后仍按 5min 计时）。 */
+    val effectiveTtlMs: Long get() = ttlMs
+
     companion object {
         /** §4.1 Inactivity TTL 3~5min，取上界 5min（后台续航优先于重载开销）。 */
         const val DEFAULT_TTL_MS = 5 * 60 * 1000L
+
+        /** R-P0 驻留策略位：initEngine Bundle 键（on-device-residency S-R0-a）。 */
+        const val KEY_RESIDENCY_TTL_MS = "residencyTtlMs"
     }
 
     enum class State { COLD_EVICTED, WARM_STANDBY, ACTIVE }

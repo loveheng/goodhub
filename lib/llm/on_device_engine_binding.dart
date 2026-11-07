@@ -7,6 +7,8 @@ import 'package:flutter/services.dart';
 
 import 'on_device_engine.dart';
 import 'on_device_ready_gate.dart';
+import 'on_device_residency_metrics.dart';
+import 'on_device_residency_policy.dart';
 import 'on_device_session_ticket.dart';
 
 /// 数据面帧类型（§6.1 v3.1 TLV，S02 常量单源）：与 C++ 侧
@@ -157,6 +159,8 @@ class OnDeviceEngineBinding {
           readyGate.noteGone();
           onEngineDied?.call();
         case 'onProcessDied':
+          // R-P0 驻留观测面：被动杀死沿（S-R0-b 分类清单第六类）。
+          onDeviceResidencyMetrics.event('process_died', {});
           readyGate.noteGone();
           onProcessDied?.call();
         case 'onIpcDeadlock':
@@ -176,6 +180,8 @@ class OnDeviceEngineBinding {
             args['finishReason'] as int? ?? 0,
           );
         case 'onEngineReady':
+          onDeviceResidencyMetrics
+              .event('load_ready', {'status': (call.arguments as int?) ?? 5});
           readyGate.noteReady((call.arguments as int?) ?? 5);
         case 'onEngineEvicted':
           // :engine 自发驱逐：消费方复位 loadState（见 [onEngineEvicted] 注释）。
@@ -184,6 +190,8 @@ class OnDeviceEngineBinding {
           final args = call.arguments;
           final reason = args is Map ? args['reason'] as String? ?? 'unknown' : 'unknown';
           final evicting = args is Map ? args['evictingRequestId'] as String? : null;
+          // R-P0 驻留观测面（S-R0-b）：驱逐沿 Piggyback（No Active Polling）。
+          onDeviceResidencyMetrics.event('evicted', {'reason': reason});
           // 投影作废（I2：失效=未知，禁猜测复位）+ 既有 loadState 复位消费面。
           sessionMirror.invalidate();
           onEngineEvicted?.call(reason);
@@ -232,7 +240,11 @@ class OnDeviceEngineBinding {
   Future<void> bind() async {
     _ensureHandler();
     try {
-      await channel.invokeMethod<void>('bind');
+      // R-P0 驻留策略位（on-device-residency S-R0-a）：TTL 随 bind 下发
+      //（ResidencyPolicy 读取；0 = 不下发，引擎内建缺省 5min 零行为变化）。
+      final ttl = await readResidencyTtlMs();
+      await channel.invokeMethod<void>(
+          'bind', ttl > 0 ? {'residencyTtlMs': ttl} : null);
     } on PlatformException catch (e) {
       // ignore: avoid_print
       print('[DEGRADE] on_device_engine bind: $e');

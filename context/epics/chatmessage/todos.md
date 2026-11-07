@@ -29,4 +29,3 @@ epic: chatmessage
 - **DoD(P3)**：单轮多 `tool_calls` 总耗时显著下降且零异常中断流；切换私有域发往上游的历史严格成对、不触发 `400 Bad Request`；超大 result 回填永不超越 `2000 token` 上界。
 
 ## 依赖跟踪（不归本 epic，仅监测）
-- [ ] (风险) [long] `MemoryStore` 兼作审计日志（`opsLog`）——2026-10-16 窗口解耦评估裁决：**本轮不动**（动审计会横向牵涉 `gateway_security` / `permission_gateway`，破收敛）。收敛条件：当审计与记忆需要不同保留策略（留存期/可删性/合规导出）时，必须从 `MemoryStore` 拆出独立 OpsLog 内核
