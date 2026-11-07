@@ -158,6 +158,16 @@ flowchart TD
 - **Outbox 三件**：①结果原子落盘 `PENDING_DELIVERY`；②**Pull**（调用方回前台以 task_id 查询，交付即标记）+ **Push**（复用既有 `IMcpCallback.onEvent` oneway 事件面，**不新增反向接口**；目标 App 被冻结时不盲目拉起，留账本待其自取）；③**过期清账**（>24h 未触达 → 归档清除，防账本膨胀；expired 状态对调用方可见）。
 - **交付真理源 = Pull / 显式确认（评审轮定案）**：Android 12+ 应用冻结（cgroup v2 freezer）下，发往冻结进程的 oneway 事务进入对端 Binder 异步缓冲且**发送方只见成功**；对端若被 LMK 杀死，缓冲消息**静默丢弃**（oneway 异步缓冲另有半池上限的 spam 拒收，失败同样只留账）。故 **Push 定位为「在途温热触达」的尽力而为（best-effort）**——`PENDING_DELIVERY → DELIVERED` **只由 Pull 查询或调用方显式确认置位，严禁以 Push 发送成功标记交付**。
 - **与 `PrimitiveSuspension` 划界（防双源）**：K21 挂起态 = **已算完产物**等人工确认（resumeToken 重入、宿主不驻留）；本方案 deferred-WAL = **未受理工作**排队。两者语义不同，禁止互相借用字段。
+- **入口统一纪律（任务池唯一咽喉 = host 导出面）**：外部 App 对任务池的一切操作**只允许发生在 host 导出面上**——任务池居宿主 `filesDir` 私有目录，旁路物理不可达；私造 Binder 接口/其他入口 = 免登记进出（重蹈 `lib/mcp/tool_router.dart` 海关过滤双源的历史病，活跃债 #27 教训）。工具族（一操作一工具，JIT 三件套 / `gateway__` 族同款先例，method overload 会与投影裁剪冲突）：
+
+  | 工具 | 操作 | 响应 |
+  |---|---|---|
+  | `on_device_complete` | 登记（prompt + allow_deferred） | 联合态：immediate（result/usage）/ deferred（task_id 回执） |
+  | `on_device_task_status` | 拉取（task_id） | queued / running / done+result / expired / FAILED_EXHAUSTED |
+  | `on_device_task_cancel` | 撤销（task_id，queued 态可撤；W6-a 可只登记 schema 不实现） | 撤销确认 |
+
+  三件共享**同一套咽喉件**：`CallerIdentityResolver` 身份解析（登记记身份 / 拉取验身份，防 A 登记 B 拉取截取）→ `kHostExportAllowlist` 门禁 → `host_tool_invoker` 执行链 → `SupplyQuota`（callerKey 计费）→ Outbox 账本。Push（`IMcpCallback.onEvent`）是单向出口非入口，不在此列。
+  **作用域边界**：本统一入口只管**跨 App 导出面**——宿主内部调用方（summarizer、顺风车排空调度器）走 `OnDeviceCapabilityService` 供给面原语，两套消费方共享 `:engine` 但入口分离（导出面有身份/配额/审计，内部面有既有 capability 纪律）。
 
 ### 7.6 立法触点与工作包
 
