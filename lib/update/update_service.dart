@@ -16,10 +16,20 @@ const String kDefaultUpdateSourceUrl =
     String.fromEnvironment('UPDATE_SOURCE_URL', defaultValue: '');
 
 class UpdateService {
-  UpdateService(this._prefs, {this.defaultSourceUrl = kDefaultUpdateSourceUrl});
+  UpdateService(
+    this._prefs, {
+    this.defaultSourceUrl = kDefaultUpdateSourceUrl,
+    this.httpTimeout = kDefaultHttpTimeout,
+  });
 
   final SharedPreferences _prefs;
   final String defaultSourceUrl;
+
+  /// 单请求 HTTP 超时（2026-11-07 真机实证：R2 对已删 APK 返回 404 时
+  /// 响应头等待可无限挂起 → 页面永卡「下载中…」无报错。覆盖三挂起点：
+  /// TCP 连接 / 响应头 / 响应体无推进；测试可注入短超时）。
+  final Duration httpTimeout;
+  static const kDefaultHttpTimeout = Duration(seconds: 30);
   static const _prefSourceUrl = 'update_source_url';
   static const manifestFileName = 'goodhub-update.json';
 
@@ -59,14 +69,20 @@ class UpdateService {
     if (source == null || source.isEmpty) {
       throw const UpdateException('尚未配置更新源');
     }
-    final client = HttpClient();
+    final client = HttpClient()..connectionTimeout = httpTimeout;
     try {
       final req = await client.getUrl(manifestUri(source));
-      final res = await req.close();
+      final res = await req.close().timeout(
+          httpTimeout,
+          onTimeout: () => throw UpdateException(
+              '清单拉取超时：服务器 ${httpTimeout.inSeconds}s 未响应'));
       if (res.statusCode != 200) {
         throw UpdateException('清单拉取失败：HTTP ${res.statusCode}');
       }
-      final body = await utf8.decoder.bind(res).join();
+      final body = await utf8.decoder.bind(res).join().timeout(
+          httpTimeout,
+          onTimeout: () => throw UpdateException(
+              '清单拉取超时：响应体 ${httpTimeout.inSeconds}s 未完成'));
       final manifest = UpdateManifest.parse(body);
       // 包身份校验：清单声明 applicationId 时须与本机包名一致，
       // 防止多 app 共用统一更新源时串包（下到/装到别人的包，或拉到别人的配置）。
@@ -105,12 +121,15 @@ class UpdateService {
     final dir = to ?? Directory('${(await getApplicationDocumentsDirectory()).path}/updates');
     await dir.create(recursive: true);
     final dest = File('${dir.path}/update.apk.part');
-    final client = HttpClient();
+    final client = HttpClient()..connectionTimeout = httpTimeout;
     final digestSink = _DigestSink();
     final hasher = crypto.sha256.startChunkedConversion(digestSink);
     try {
       final req = await client.getUrl(Uri.parse(url));
-      final res = await req.close();
+      final res = await req.close().timeout(
+          httpTimeout,
+          onTimeout: () => throw UpdateException(
+              'APK 下载超时：服务器 ${httpTimeout.inSeconds}s 未响应'));
       if (res.statusCode != 200) {
         throw UpdateException('APK 下载失败：HTTP ${res.statusCode}');
       }
@@ -118,7 +137,13 @@ class UpdateService {
       var received = 0;
       final sink = dest.openWrite();
       try {
-        await for (final chunk in res) {
+        // 响应体无推进看门狗：每 chunk 重置计时，stall（连接挂起无数据）
+        // 超时即抛 UpdateException——不再依赖「下一个 chunk」才能取消。
+        await for (final chunk
+            in res.timeout(httpTimeout, onTimeout: (eventSink) {
+          eventSink.addError(UpdateException(
+              'APK 下载超时：连接 ${httpTimeout.inSeconds}s 无数据推进'));
+        })) {
           if (isCancelled?.call() ?? false) {
             // 半成品删除失败无害：下次下载同路径 openWrite 截断重写。
             try {

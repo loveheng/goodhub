@@ -6,6 +6,7 @@
 /// 单测只覆盖「旧清单无 applicationId → 宽容跳过」路径，真机侧载验证。
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -229,6 +230,71 @@ void main() {
       );
       expect(File('${tmp.path}/update.apk.part').existsSync(), isFalse,
           reason: '取消即删半成品，不留残留');
+    });
+
+    test('HTTP 404 → 立即 UpdateException（状态码前置检查钉）', () async {
+      final s = await serve(status: 404, body: 'not found');
+      final prefs = await SharedPreferences.getInstance();
+      final svc = UpdateService(prefs);
+      await expectLater(
+        svc.downloadApk('http://127.0.0.1:${s.port}/app.apk', to: tmp),
+        throwsA(isA<UpdateException>()
+            .having((e) => e.message, 'message', contains('HTTP 404'))),
+      );
+    });
+
+    test('响应头挂起（服务器收请求不回应）→ httpTimeout 内抛超时，不再永挂', () async {
+      final s = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      servers.add(s);
+      s.listen((req) async {
+        // 永不写响应头/体——复现 2026-11-07 真机 R2 404 流挂起形态。
+        await Completer<void>().future.timeout(const Duration(minutes: 5));
+      });
+      final prefs = await SharedPreferences.getInstance();
+      final svc = UpdateService(prefs, httpTimeout: const Duration(milliseconds: 300));
+      final sw = Stopwatch()..start();
+      await expectLater(
+        svc.downloadApk('http://127.0.0.1:${s.port}/app.apk', to: tmp),
+        throwsA(isA<UpdateException>()
+            .having((e) => e.message, 'message', contains('下载超时'))),
+      );
+      expect(sw.elapsed.inSeconds, lessThan(5), reason: '超时须短平快，不等服务器');
+    });
+
+    test('响应体半途 stall（发了部分字节后挂起）→ 无推进看门狗超时', () async {
+      final s = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      servers.add(s);
+      s.listen((req) async {
+        final res = req.response;
+        res.statusCode = 200;
+        res.add(List<int>.filled(64, 1)); // 先给一个 chunk
+        await res.flush();
+        await Completer<void>().future.timeout(const Duration(minutes: 5));
+      });
+      final prefs = await SharedPreferences.getInstance();
+      final svc = UpdateService(prefs, httpTimeout: const Duration(milliseconds: 300));
+      await expectLater(
+        svc.downloadApk('http://127.0.0.1:${s.port}/app.apk', to: tmp),
+        throwsA(isA<UpdateException>()
+            .having((e) => e.message, 'message', contains('无数据推进'))),
+      );
+    });
+
+    test('清单拉取：响应头挂起 → check() 超时抛 UpdateException（同族挂起点）', () async {
+      final s = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      servers.add(s);
+      s.listen((req) async {
+        await Completer<void>().future.timeout(const Duration(minutes: 5));
+      });
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('update_source_url',
+          'http://127.0.0.1:${s.port}'); // 回环 http 豁免合法
+      final svc = UpdateService(prefs, httpTimeout: const Duration(milliseconds: 300));
+      await expectLater(
+        svc.check(),
+        throwsA(isA<UpdateException>()
+            .having((e) => e.message, 'message', contains('清单拉取超时'))),
+      );
     });
   });
 }

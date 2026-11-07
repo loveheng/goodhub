@@ -140,6 +140,8 @@ last-merge: 2026-11-07
 
 ## 待归并（inbox）
 
+- [update-service-http-timeout] 自更新下载对 404 的响应流永挂（页面恒「下载中…」无报错），真机 R2 对已删 APK 的响应头等待可无限挂起 ➔ dart:io HttpClient 默认零超时——connectionTimeout 不设即无限，close() 等响应头与响应体读取同样无超时；statusCode!=200 检查写在 close() 之后，头不回来就永远到不了 ➔ 三挂起点全配超时：client.connectionTimeout + close().timeout + res.timeout（每 chunk 重置的看门狗），超时 Duration 做成可注入参数供单测短值验证；机械规则=凡手写 dart:io HttpClient 请求，三个等待面（连接/响应头/响应体推进）必须全部有超时兜底，statusCode 检查之前就可能挂 ➔回归: test/update/update_service_test.dart 4 钉（静默服务器永不回应/半途 stall/404 快速失败/清单同族），撤超时即红 (Ref: self-update)
+
 - [release-r2-applicationId] 发布后清单 applicationId 字段是 gradle 注释原文（「// 测量变体隔离…」），装机端串包防御拒掉全部更新 ➔ release-r2.sh 用 grep -m1 'applicationId' 从 build.gradle.kts 提取包名——子串匹配命中 2026-11-04 bench 变体改动引入的注释行（先于真实赋值行），且脚本既有校验只对账 versionCode 未验 applicationId 格式 ➔ 提取锚定行首赋值 grep -E '^[[:space:]]*applicationId[[:space:]]*='（跳过注释行）+ 发布链防呆守卫（APP_ID 必须匹配合法包名正则，非法即 FATAL 中止）；机械规则=脚本从代码文件提取字面量时禁止子串 grep，必须锚定赋值形态且对提取值做格式断言；回归=bash -n + 守卫正反样本（注释行样本必须被咬住）+ 下次 release-r2 --dry-run 清单 applicationId=com.zzh.goodhub (Ref: self-update)
 
 - [geniex-qairt] ErrorCode[-100016] Parameter not supported + 流式中文夹杂 ä¸­ 型乱码 qairt 插件拒收 --stop/--stop-file(GenerationConfig.stopWords 禁传,EOS 停止管线内置);SDK 增量 detokenize 跨 token 拆裂多字节 UTF-8(只有 Token(String) 无字节出口,上游不可修) GenieSession 去 stopWords + StreamTextSanitizer 投递前 latin1 段重组还原 + think 块跨块剥除;复现锚=logcat GenieXSdk tag (Ref: on-device)

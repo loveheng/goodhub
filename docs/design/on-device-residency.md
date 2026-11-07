@@ -5,7 +5,7 @@ updated: 2026-11-07
 
 # 端侧模型长驻 · 深化评估（R1–R6 + 能力分级 + 立项路径）
 
-> 定位：「端侧模型长驻」赛道的评估 SSOT（承接 2026-11-07 架构评估的 R1–R6，扩展性半场 E1–E9 已由 `extensibility-hardening.md` 交付归档）。本稿是**评估稿**——P0 施工稿待产品语义优先级拍板后另出。绑定 epic 待 bind。
+> 定位：「端侧模型长驻」赛道的评估 SSOT（承接 2026-11-07 架构评估的 R1–R6，扩展性半场 E1–E9 已由 `extensibility-hardening.md` 交付归档）。本稿是**评估稿**——P0 施工稿待产品语义优先级拍板后另出。绑定 epic 待 bind；`status: draft` = 未立项态，**P0 `::bind` 立项同轮翻 active**。
 
 ## 代号说明
 
@@ -142,7 +142,7 @@ flowchart TD
 - 冷态（已释放 / 进程死亡 / 整机内存低于警戒线）→ **严禁就地阻塞触发冷装载**：入参原子写入本地任务池，≤5ms 返回回执 `{status: "queued", task_id, mode: "deferred"}`；调用方界面自行呈现「后台分析中」占位，主线程零阻塞。
 - **`allow_deferred` 缺省 false（M3）**：存量调用方（goodshare 等）维持同步 failFast 零变化；新语义 opt-in。
 - **任务池配额（M4）**：per-caller 上限 + 全局上限（复用 `SupplyQuota` 滑窗形态）；`expiry_ms`（建议 24h）作废时调用方可查（status=expired，非静默消失）；**配额计费点 = 执行时计，非受理时计**（K22「频次产出才计」——惩罚的是产出，不惩罚被积压者）。
-- **存储形态**：JSON 账本（`SequentialFileWriter`/`KeyedWriteQueue` 原子写，`task_consume_ledger` 先例）——**不引 SQLite**（配额约束后量级低，新依赖无收益）。
+- **存储形态**：JSON 账本（`SequentialFileWriter`/`KeyedWriteQueue` 原子写，`task_consume_ledger` 先例）——**不引 SQLite**（配额约束后量级低，新依赖无收益）。**并发隔离纪律**：`KeyedWriteQueue` 互斥键精确收敛到 WAL 文件物理路径（提交写走 Binder 线程、消费读改写走主进程调度侧，跨线程真实并发）——标记交付属读改写，**整段入队**走同一路径键（`MemoryStore`「读改写整段入队已自保」先例）；读侧（Pull 查询）免锁——temp+rename 原子替换保证读到旧/新整本一致性快照。
 
 ### 7.4 消费契机（两Trigger，零边际成本）
 
@@ -167,6 +167,6 @@ flowchart TD
 | goodhub-mcp-sdk `:contract` | AIDL 不动；plugin-core 解析面 + `api.md` 同轮 |
 | `kHostExportAllowlist` | on_device_complete 条目语义注记更新（三关注释钉） |
 
-工作包：**W6-a** 任务池 + WAL + 配额 + 联合态契约（跨仓同轮）；**W6-b** 顺风车排空调度（K11 抢占回池尾）；**W6-c** 充电黄金窗口（新 ADR + 用户开关 + 拔出中断）——**W6-c 实现指引 = WorkManager 声明式约束**（`setRequiresCharging` + `setRequiresDeviceIdle` + `setRequiresBatteryNotLow`，JobScheduler 底座平台协同调度，替代自管广播；**约束 ≠ 授权**，M1 ADR + 用户开关仍须）——**批处理执行形态 = 分块循环**：Worker 单次调度受 ~10 分钟量级执行墙（超时系统回调 `onStopped` 强停），故每完成 1 个任务即提交一次 WAL 事务、每轮循环前检查 `isStopped`；收到超时/拔线信号**安全收尾当前单任务**、未执行任务留池，优雅退出等下一窗口（禁在强停瞬间做半截写入）。
+工作包：**W6-a** 任务池 + WAL + 配额 + 联合态契约（跨仓同轮）；**W6-b** 顺风车排空调度（K11 抢占回池尾）；**W6-c** 充电黄金窗口（新 ADR + 用户开关 + 拔出中断）——**W6-c 实现指引 = WorkManager 声明式约束**（`setRequiresCharging` + `setRequiresDeviceIdle` + `setRequiresBatteryNotLow`，JobScheduler 底座平台协同调度，替代自管广播；**约束 ≠ 授权**，M1 ADR + 用户开关仍须）——**批处理执行形态 = 分块循环**：Worker 单次调度受 ~10 分钟量级执行墙（超时系统回调 `onStopped` 强停），故每完成 1 个任务即提交一次 WAL 事务、每轮循环前检查 `isStopped`；收到超时/拔线信号**安全收尾当前单任务**、未执行任务留池，优雅退出等下一窗口（禁在强停瞬间做半截写入）——**进程纪律**：WorkManager 初始化严格绑定主进程（Application.onCreate 在 `:engine` 亦执行，startup provider 误挂是多进程温床，须显式护栏）；Worker 线程**禁私造引擎句柄**，批量消费经既有装配链取用点（`service_directory.onDeviceEngine` → `loadExplicit()` 授权显式装载路径——批消费是 M1 ADR 授权的合法装载调用方），与 `:engine` 的通信走既有 AIDL 绑定。
 
 **依赖顺序**：R7 Caller-Tiered TTL（P0/P1）先行——模式一「短顺延」依赖其主体分级；W6 整体属 `on_device-capability.md` 供给面演进，宿主内部调用方（summarizer 等）**维持既有同步语义**，本机制仅作用于导出面。

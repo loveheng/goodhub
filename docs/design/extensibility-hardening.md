@@ -1,11 +1,11 @@
 ---
-status: draft
+status: active
 updated: 2026-11-07
 ---
 
 # 扩展性收口施工稿（S0–S5）
 
-> 定位：架构评估「不利于以后扩展」各点（E1–E9）的收口施工稿。范围拍板 = 全量 S0–S5；协议版本闸口径拍板 = 精确匹配起步。绑定 epic 待 bind（候选 `ext-hardening`）。端侧模型长驻评估（R1–R6）不在本稿范围，另行立项。
+> 定位：架构评估「不利于以后扩展」各点（E1–E9）的收口施工稿。范围拍板 = 全量 S0–S5（已全批交付，commit 8623b58，真机验收通过）；协议版本闸口径拍板 = 精确匹配起步。epic 已收尾归档（context/archive/extensibility-hardening）。端侧模型长驻评估（R1–R6）不在本稿范围，见 `on-device-residency.md`。
 
 ## 代号说明
 
