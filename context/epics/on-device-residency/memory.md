@@ -16,4 +16,4 @@ last-merge: 2026-11-07
 - P0 施工稿已定稿（文档第八节）：S-R0-a TTL 参数化（AIDL Bundle 缝，缺省零行为变化）/ S-R0-b Piggyback 观测面（驱逐四类+cold-reload+process-death 六分类，JSONL 账本 + logcat 镜像）/ S-R0-c 电池白名单独立入口。验证：docs-lint 通过；证据链 = initEngine Bundle 缝 / EngineLifecycle ttlMs 构造参数 / 驱逐原因四类规范串 / onEngineEvicted 汇入点三处（devlog 2026-11-07 归并）。
 
 ## 断点
-- [断点] 下一步：P0+P1+W6-a/b/c 全批交付；下一步 = 用户真机长期使用积累观测数据 → TTL 缺省翻案评估 → W6 消费端（SDK + goodshare 插件侧）
+- [断点] 下一步：W6 端到端联调通过（双模真机确认）；下一步 = ①用户长期使用积累观测数据 ②SDK plugin-core deferred 消费（goodshare 插件 allow_deferred=true 接入）③P2/P3 按 ADR 触发

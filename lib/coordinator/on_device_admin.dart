@@ -145,6 +145,28 @@ abstract final class OnDeviceAdmin {
   static Future<bool> nightlyBatchEnabled() => readNightlyBatchEnabled();
   static Future<void> setNightlyBatch(bool v) => setNightlyBatchEnabled(v);
 
+  /// W6 联调入口（on-device-residency 第七节）：模拟外部调用方以
+  /// allow_deferred=true 调用 on_device_complete——冷态时入池回执，
+  /// WARM 时同步直出。返回联合态 JSON（与导出面 content 同形）。
+  static Future<String> simulateDeferredCall(
+      {required String instruction, required String input}) async {
+    final executor = HostOnDeviceToolExecutor(
+      AidlOnDeviceCapabilityService(sharedOnDeviceEngine),
+      quota: SupplyQuota(),
+      taskPool: SupplyTaskPool.instance,
+    );
+    final r = await executor.execute(AssembledToolCall(
+      id: 'sim-deferred-${DateTime.now().millisecondsSinceEpoch}',
+      name: HostOnDeviceToolExecutor.toolName,
+      argumentsJson: jsonEncode({
+        'instruction': instruction,
+        'input': input,
+        'allow_deferred': true,
+      }),
+    ), callerKeyOverride: 'com.zzh.goodshare');
+    return r.content;
+  }
+
   /// 聚焦 bind 预热（P1-d，on-device-residency）：输入框首聚焦触发
   /// bind+waitReady（**不触权重装载**——懒加载立法不受影响）；预热失败静默
   /// （首次请求自有快速暖机兜底）。

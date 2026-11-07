@@ -8,6 +8,7 @@ library;
 import 'package:app_debug_bridge/app_debug_bridge.dart' as kit;
 import 'package:flutter/widgets.dart';
 
+
 import '../coordinator/on_device_admin.dart';
 import 'navigator_key.dart';
 
@@ -45,6 +46,11 @@ Future<Object?> executeDebugAction(String action, Map<String, Object?> args) asy
       return await _getHistoryPolicy(args);
     case 'query_on_device':
       return await _queryOnDevice(args);
+    case 'simulate_deferred':
+      return await OnDeviceAdmin.simulateDeferredCall(
+        instruction: (args['instruction'] as String?) ?? '提取关键词',
+        input: (args['input'] as String?) ?? '端侧联调测试文本',
+      );
     default:
       return kit.executeDebugAction(
         action,
