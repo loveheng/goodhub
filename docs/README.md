@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-11-07
+updated: 2026-11-08
 ---
 # docs
 
@@ -54,3 +54,5 @@ updated: 2026-11-07
   - [design/timeout-signaling.md](design/timeout-signaling.md) — 超时信令下沉优化方案（W1 熔断指纹解锁/探针让位、W2 装载进度可取消、W3 LivenessTick 信令下沉；W4/W5 跨仓与待上游）
   - [design/extensibility-hardening.md](design/extensibility-hardening.md) — 扩展性收口施工稿：hybrid 拆分 / TrackEntry 模型下沉 / 装配签名收敛 / 实现件单点 / 协议版本闸等 E1–E9 分批收口（S0–S5，draft）
   - [design/on-device-residency.md](design/on-device-residency.md) — 端侧模型长驻深化评估：R1–R8 复核（R2 改判观望项 / R7 驻留绑架 / R8 生存环境分档）/ L0–L4 能力分级 / P0–P3 立项路径 + 跨 App 供给双模机制 W6 设计（draft）
+  - [design/residency-strategy-ui.md](design/residency-strategy-ui.md) — 端侧驻留策略用户面：设置页三档预设（智能跟随/驻留更久/快速释放），TTL 优先级链与 warmup 重放生效路径（active）
+  - [design/ai-capability-export.md](design/ai-capability-export.md) — 对外 AI 能力接入设计（统一接入标准 ai/complete 原语 + per-app 处理模型 AppCapabilityProfile，三层收拢 M-A~M-D，draft）
