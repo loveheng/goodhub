@@ -1,7 +1,8 @@
 /// 设置页 · 端侧模型配置段（2026-11-02 自 `OnDeviceModelSection` 拆出）：端侧
-/// **配置**面——启用偏好（门禁覆盖）/ GenieX 增配运行库（NPU 档）/ 电池优化
-/// 白名单提示。资产面（导入/选择/删除）留在资源中心「端侧模型」tab（用户拍板：
-/// 配置归设置、资产归资源中心——端侧模型导入留资源中心，端侧配置回设置）。
+/// **配置**面——启用偏好（门禁覆盖）/ 驻留策略三档（P1 用户面，residency-strategy-ui）/
+/// GenieX 增配运行库（NPU 档）/ 电池优化白名单提示 / 夜间批处理开关（W6-c）。
+/// 资产面（导入/选择/删除）留在资源中心「端侧模型」tab（用户拍板：配置归设置、
+/// 资产归资源中心——端侧模型导入留资源中心，端侧配置回设置）。
 library;
 
 import 'dart:async';
@@ -15,7 +16,10 @@ import '../../coordinator/on_device_admin.dart'
         GenieXStatus,
         LiteRtLmNpuStatus,
         OnDeviceAdmin,
-        OnDeviceGenPerf;
+        OnDeviceGenPerf,
+        OnDeviceResidencyStrategy,
+        residencyStrategyDescription,
+        residencyStrategyLabel;
 import '../../gateway_api/gateway_control.dart';
 
 /// 电池白名单查询/申请注入位（测试替换，范式同 on_device_model_section）。
@@ -63,6 +67,10 @@ class _OnDeviceConfigSectionState extends State<OnDeviceConfigSection>
   /// 中断概率。
   bool? _batteryExempt;
 
+  /// 用户驻留策略档位（P1 用户面，residency-strategy-ui）：读取完成前按缺省
+  /// smart 渲染（矩阵原样），异步加载后 setState 校正。
+  OnDeviceResidencyStrategy _residencyStrategy = OnDeviceResidencyStrategy.smart;
+
   @override
   void initState() {
     super.initState();
@@ -71,6 +79,7 @@ class _OnDeviceConfigSectionState extends State<OnDeviceConfigSection>
     unawaited(_refreshLitertlm());
     unawaited(_refreshGateOverride());
     unawaited(_refreshBatteryExemption());
+    unawaited(_loadResidencyStrategy());
     // 双族事件合并分发（单 handler——同通道 setMethodCallHandler 相互覆盖）。
     _geniexEvents ??= OnDeviceAdmin.npuListen(
       onGeniexProgress: (pct) {
@@ -291,6 +300,62 @@ class _OnDeviceConfigSectionState extends State<OnDeviceConfigSection>
     }
   }
 
+  Future<void> _loadResidencyStrategy() async {
+    final s = await OnDeviceAdmin.residencyStrategy();
+    if (!mounted) return;
+    setState(() => _residencyStrategy = s);
+  }
+
+  Future<void> _selectResidencyStrategy(OnDeviceResidencyStrategy s) async {
+    await OnDeviceAdmin.setResidencyStrategy(s);
+    if (!mounted) return;
+    setState(() => _residencyStrategy = s);
+    widget.onFlash?.call('驻留策略已更新：${residencyStrategyLabel(s)}');
+  }
+
+  /// P1 用户面驻留策略行（residency-strategy-ui）：紧凑下拉 + 选中档说明。
+  /// 三档语义与红线（低电归零全档保留 / external 不放大）见设计稿。
+  Widget _residencyStrategyRow(ConsoleTokens t) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text('端侧驻留策略',
+                  style: TextStyle(fontSize: Fsz.note, color: t.l1Info)),
+            ),
+            DropdownButton<OnDeviceResidencyStrategy>(
+              key: const ValueKey('on-device-residency-strategy'),
+              value: _residencyStrategy,
+              underline: const SizedBox.shrink(),
+              isDense: true,
+              items: [
+                for (final s in OnDeviceResidencyStrategy.values)
+                  DropdownMenuItem(
+                    value: s,
+                    child: Text(residencyStrategyLabel(s),
+                        style:
+                            TextStyle(fontSize: Fsz.note, color: t.l1Info)),
+                  ),
+              ],
+              onChanged: (s) {
+                if (s == null || s == _residencyStrategy) return;
+                unawaited(_selectResidencyStrategy(s));
+              },
+            ),
+          ],
+        ),
+        const SizedBox(height: 2),
+        Text(
+          residencyStrategyDescription(_residencyStrategy),
+          key: const ValueKey('on-device-residency-strategy-desc'),
+          style: TextStyle(fontSize: Fsz.telemetrySm, color: t.terminalMuted),
+        ),
+      ],
+    );
+  }
+
   bool? _nightlyBatchEnabled;
   Future<void> _loadNightlyBatch() async {
     final v = await OnDeviceAdmin.nightlyBatchEnabled();
@@ -426,6 +491,9 @@ class _OnDeviceConfigSectionState extends State<OnDeviceConfigSection>
                   _gateOverride!.preferOnDevice, _setPrefer),
               const SizedBox(height: 6),
             ],
+            // P1 用户面驻留策略（residency-strategy-ui）：三档预设下拉。
+            _residencyStrategyRow(t),
+            const SizedBox(height: 6),
             // GenieX 增配运行库（npu-geniex-runtime P2，设计稿 §7）
             _geniexBlock(t),
             const SizedBox(height: 6),
@@ -452,19 +520,20 @@ class _OnDeviceConfigSectionState extends State<OnDeviceConfigSection>
             // 电池优化白名单（S3-5 OEM 冻结防护）：未加入时提示并一键跳转。
             if (_batteryExempt == false) ...[
               _batteryExemptRow(t),
-              // W6-c 夜间批处理开关（on-device-residency 第七节契机 B）。
-              SwitchListTile(
-                dense: true,
-                title: Text('夜间算力批处理',
-                    style: TextStyle(fontSize: Fsz.body, color: t.l2Accent)),
-                subtitle: Text('充电且空闲时批量处理积压的端侧任务',
-                    style: TextStyle(fontSize: Fsz.note, color: t.terminalMuted)),
-                value: _nightlyBatchEnabled ?? false,
-                onChanged: (v) => _toggleNightlyBatch(v),
-                activeThumbColor: t.l1Info,
-              ),
               const SizedBox(height: 6),
             ],
+            // W6-c 夜间批处理开关（on-device-residency 第七节契机 B）——恒显
+            //（原误嵌套白名单未加入分支，属联调期布局事故：开关语义与白名单无关）。
+            SwitchListTile(
+              dense: true,
+              title: Text('夜间算力批处理',
+                  style: TextStyle(fontSize: Fsz.body, color: t.l2Accent)),
+              subtitle: Text('充电且空闲时批量处理积压的端侧任务',
+                  style: TextStyle(fontSize: Fsz.note, color: t.terminalMuted)),
+              value: _nightlyBatchEnabled ?? false,
+              onChanged: (v) => _toggleNightlyBatch(v),
+              activeThumbColor: t.l1Info,
+            ),
           ],
         ),
       ),

@@ -358,21 +358,25 @@ class EngineService : Service() {
     private var trimPressure = false
     private var trimPressureStreak = 0
     private var residencyTtlOverrideMs = 0L
+    private var residencyStrategy = com.zzh.goodhub.engine.ResidencyPolicy.Strategy.smart
 
     private fun scheduleTtl(generation: Int) {
         mainHandler.removeCallbacksAndMessages(null)
-        // P1-a 驻留策略单源：TTL = 显式注入（P0 诊断缝）> ResidencyPolicy 矩阵
-        //（R7/R8：低电归零 / 压力让位 / 灭屏 1min / 充电 30min / external 搭便车 /
-        // 缺省 5min）——effectiveTtlMs 缺省值与矩阵缺省一致（缺省路径零变化）。
+        // P1-a 驻留策略单源：TTL = 显式注入（P0 诊断缝）> 用户档位（P1 用户面）
+        //> ResidencyPolicy 矩阵（R7/R8：低电归零 / 压力让位 / 灭屏 1min / 充电
+        // 30min / external 搭便车 / 缺省 5min）——缺省路径零变化。
         val caller = if (lastGenerateForeground)
             com.zzh.goodhub.engine.ResidencyPolicy.CallerClass.hostForeground
         else com.zzh.goodhub.engine.ResidencyPolicy.CallerClass.hostBackground
         val env = residencyEnv()
         val ttl = if (residencyTtlOverrideMs > 0) residencyTtlOverrideMs
-        else com.zzh.goodhub.engine.ResidencyPolicy.ttlMs(caller, env, trimPressure)
+        else com.zzh.goodhub.engine.ResidencyPolicy.ttlMs(caller, env, trimPressure, residencyStrategy)
+        // TTL 双源禁（lessons 同款）：驱逐原因串 lifecycle.ttlMs 与实际计时同源——
+        // 每次调度即回写（缺省矩阵路径此前恒显 5min 旧值）。
+        if (ttl > 0L) lifecycle.updateTtlMs(ttl)
         Log.i(TAG, "[RESIDENCY] policy caller=${caller.name} batt=${env.batteryPct} " +
             "chg=${env.charging} ps=${env.powerSave} screen=${env.interactive} " +
-            "pressure=$trimPressure ttl=${ttl}ms")
+            "pressure=$trimPressure strategy=${residencyStrategy.name} ttl=${ttl}ms")
         if (ttl <= 0L) {
             // 收尾即逐（低电/压力档）：本轮完成即让位，无待命窗口。
             Log.i(TAG, "[RESIDENCY] evict-immediate reason=policy-ttl-zero")
@@ -463,10 +467,14 @@ class EngineService : Service() {
             // R-P0 驻留策略位（on-device-residency S-R0-a）：TTL 经 Bundle 参数化
             //（缺省缺失 = 引擎内建 5min 零行为变化；>0 才采用——5min 缺省翻动
             // 须观测数据支撑）。
+            // P1 用户面：两键均无条件回填（缺键 = 复位缺省）——用户在设置页
+            // 切档后重放 initEngine 必须能退回矩阵缺省，禁旧值跨重放残留。
             val residencyTtl = config?.getLong(
                 com.zzh.goodhub.engine.EngineLifecycle.KEY_RESIDENCY_TTL_MS, 0L) ?: 0L
+            residencyTtlOverrideMs = if (residencyTtl > 0) residencyTtl else 0L
+            residencyStrategy = com.zzh.goodhub.engine.ResidencyPolicy.strategyFrom(
+                config?.getString(com.zzh.goodhub.engine.EngineLifecycle.KEY_RESIDENCY_STRATEGY))
             if (residencyTtl > 0) {
-                residencyTtlOverrideMs = residencyTtl
                 lifecycle.updateTtlMs(residencyTtl)
                 Log.i(TAG, "[RESIDENCY] ttl-configured: ${residencyTtl}ms")
             }

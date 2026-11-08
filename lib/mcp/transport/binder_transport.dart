@@ -75,6 +75,7 @@ class BinderTransport implements McpTransport, CallerIdentityTransport {
     // 装配的 reset 清掉本实例刚 bind 的传输（native 'unknown transport'）。
     // 注册实例并确保事件路由表就绪（进程级只设一次，见 [_ensureMethodCallHandler]）。
     _instances[transportId] = this;
+    _liveByTid.putIfAbsent(transportId, () => <BinderTransport>[]).add(this);
     _ensureMethodCallHandler();
     _guardRegistrySize(); // debug 守卫：未走 close() 的实例会被静态表强引用驻留
     // 触发连接（异步；首个 send 前完成 bind，CONNECTING 期间请求入队）。
@@ -127,6 +128,16 @@ class BinderTransport implements McpTransport, CallerIdentityTransport {
   /// 的复杂度远高于收益）。
   static final Map<String, BinderTransport> _instances =
       <String, BinderTransport>{};
+
+  /// **per-transportId 存活实例集合**（缺陷 D 修复，2026-11-08）：同插件可被
+  /// 多个 Dart client 持有（task-consume 驻留 + 聊天 Run 会话），它们共享
+  /// **同一条原生连接**（native `transports.computeIfAbsent(id)`）——任何一方
+  /// close 都不得销毁共享连接，否则驻留 bind 被连带 unbind（真机实证：聊天
+  /// Run 收口同秒 goodshare `McpBinderService.onDestroy`，Pull 恒 not_ready）。
+  /// 语义 = 引用计数：构造 +1、[close] -1，**最后一个持有者**才向原生发
+  /// close；非最后持有者仅退订（路由槽按存活顺序转让，见 [close]）。
+  static final Map<String, List<BinderTransport>> _liveByTid =
+      <String, List<BinderTransport>>{};
 
   /// 注册表尺寸守卫（debug only）：本地插件连接正常为个位数（goodshare /
   /// shiguang / 网关挂载 / 多轮 Run 并存）。超阈值 = 有实例未走 [close] 被
@@ -400,6 +411,8 @@ class BinderTransport implements McpTransport, CallerIdentityTransport {
     Object? params,
     ResolvedCallerIdentity? caller,
   ) async {
+    debugPrint(
+        '[reverse] 收到反向请求 method=$method id=$id caller=${caller?.packageName ?? "null"} withCaller=${onServerRequestWithCaller != null}');
     final withCaller = onServerRequestWithCaller;
     // 单点构造反向响应帧（final 单一赋值，规避 multi-assign 红线）：
     // - 携带身份的钩子已接线 → 身份缺失（平台侧解析失败）= 拒绝 -32001（S07b
@@ -645,14 +658,25 @@ class BinderTransport implements McpTransport, CallerIdentityTransport {
     // 事件路由表进程级常驻、不随实例退订——无退订即无 cancel 踩踏（结构性
     // 根除），亦无重连重建路径。
     if (_instances[transportId] == this) _instances.remove(transportId);
+    // 缺陷 D 修复：引用计数退订。共享连接（native computeIfAbsent）被同 tid
+    // 多实例持有——仅最后一个持有者才发 native close；否则只做路由转让
+    // （槽交给下一存活实例，驻留 client 的在途/后续请求仍可达）。
+    final live = _liveByTid[transportId]?..remove(this);
+    if (live == null || live.isEmpty) {
+      _liveByTid.remove(transportId);
+    } else {
+      _instances[transportId] = live.first;
+    }
     // 秒级收敛在途（abort/断连场景不再干等 120s 看门狗）；此后迟到的终帧
     // 因实例已摘除而被路由为 delivered=false 静默丢弃——等待者已全部失败，
     // 丢帧无害。
     _failInFlight('binder transport closed: $transportId');
     _eventBroadcast.close();
-    _channel
-        .invokeMethod<void>('close', <String, Object>{'transportId': transportId})
-        .ignore();
+    if (live == null || live.isEmpty) {
+      _channel
+          .invokeMethod<void>('close', <String, Object>{'transportId': transportId})
+          .ignore();
+    }
   }
 }
 

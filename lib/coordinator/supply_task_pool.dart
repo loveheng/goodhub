@@ -253,6 +253,14 @@ class SupplyTaskPool {
     await _persist();
   }
 
+  /// 调试清账（debug action `purge_supply_pool` 专用）：清空全部条目并持久化。
+  /// 用途 = not_found 失败收敛的真机构造（消费端登记仍在、宿主侧任务消失）。
+  /// 仅调试面调用，生产路径不触达。
+  Future<void> clearForDebug() async {
+    _entries.clear();
+    await _persist();
+  }
+
   /// 回池尾（K11 抢占/执行失败）：retries 累计；达到上限转死信。
   /// 返回 true = 已回池；false = 已转死信（调用方应停止重排）。
   Future<bool> requeue(String taskId) async {
@@ -318,6 +326,21 @@ class SupplyTaskPool {
         'loaded=$_loaded '
         '${_entries.map((e) => "${e.taskId.substring(0, 16)}…=${e.status.name}").join(", ")}');
   }
+
+  /// 调试快照（联调设施 §G1b）：全池条目结构化投影（额外带 callerKey 供双端
+  /// 对账），仅 debug 动作面消费、不改内存态——区别于 [debugDump]（单行日志）
+  /// 与 [statusFor]（callerKey 身份过滤的查询面）。
+  List<Map<String, Object?>> debugSnapshot() => [
+        for (final e in _entries)
+          <String, Object?>{
+            ...e.projection(),
+            'callerKey': e.callerKey,
+            // 载荷指纹（不回显原文——隐私；字符数供「池里存的就是坏的」判读）。
+            'instructionChars': e.instruction.length,
+            'inputChars': e.input.length,
+            if (e.deliveredAtMs != null) 'deliveredAtMs': e.deliveredAtMs,
+          },
+      ];
 
   /// 测试/诊断：重置内存态（不删盘文件）。
   void resetForTest() {

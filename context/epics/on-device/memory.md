@@ -2,15 +2,15 @@
 dev-loop: memory
 format: v1
 epic: on-device
-total-merged: 1
-last-merge: 2026-11-07
+total-merged: 2
+last-merge: 2026-11-08
 ---
 
 # on-device（端侧能力 · 现状盘点与缺口治理）
 
 > 初始化状态文档（2026-10-28 立项）。本 epic 盘点 goodhub「端侧（设备侧 / App 本体）」能力现状与缺口，作为后续端侧能力补齐的断点基线。
 
-- [挂载] docs/design/on-device-capability.md（端侧能力公共服务设计，本 epic 主设计稿：芯片分发/双后端/分期，v3.3 多栈构型修订）；关联稿同域：on-device-npu-deployment（引擎深度设计 v2.8）/ on-device-npu-runtime-split（运行库拆分）/ on-device-lifecycle-single-source（会话一致性 v2.3）/ context-stepped-pruning（阶梯截断）/ on-device-admission-probe / on-device-asset-metadata / on-device-residency（常驻评估，独立 epic）——全量指针见 docs/README.md 与 docs/project/index.md
+- [挂载] docs/design/on-device-capability.md （端侧能力公共服务设计，本 epic 主设计稿：芯片分发/双后端/分期，v3.3 多栈构型修订）；关联稿同域：on-device-npu-deployment（引擎深度设计 v2.8）/ on-device-npu-runtime-split（运行库拆分）/ on-device-lifecycle-single-source（会话一致性 v2.3）/ context-stepped-pruning（阶梯截断）/ on-device-admission-probe / on-device-asset-metadata / on-device-residency（常驻评估，独立 epic）——全量指针见 docs/README.md 与 docs/project/index.md
 - [横切·task-capability W3 升格（2026-11-04）] 端侧算力供给面服务形态 = `OnDeviceCapabilityService` 统一入口（`complete` 唯一推理入口无状态/幂等 + `completeStream` 流式取消随退订下沉 + `availability()`/`loadExplicit()` 可用性查询与幂等显式装载 + `PrimitiveSuspension` 挂起态契约）；约束解码规格经 `GenerationConfig.responseFormat` 双端承载（键面 = `SessionTicketWire.kt`，跨仓立法源 goodshare `ai-app-split.md` §3.11 已修订）；语义注入走 `supply/` Skill 命名空间（宿主内置，端侧资产零模板）——SSOT = `on-device-task-capability.md` §4.1/§5.1，本条为挂载锚（防双源，只指不抄）
 - [关联] docs/design/resource-center.md（一期不做二进制多模态）/ thirdconnect.md（G6 独立进程 §9.5/§10.5）/ host-gateway-accessibility-memory.md（§10.1 韧性/§10.4 硬截断/§3.5 摘要器）/ docs/product/architecture.md（端侧引擎职责/双端策略/N7 围栏）/ future-considerations.md（FC2 多模态 PII）
 
@@ -75,7 +75,8 @@ last-merge: 2026-11-07
 - **Qwen 真机轮（11-04~06）**：通路三前置跑通 / contextTokens 收敛 n_ctx 防满窗 LMK / 超窗=SDK 硬失败 [Fact] / 版本退化侦查（二分 0.3.5→0.8.0 引入 → AAR 本体定性 → qairt 0.3.5 前置门硬失败 err 5000）→ **归因反转：ngl=0 静默兜底，无版本退化；ngl=-1 修复 5.6×**（生产 31.5~32.7 / demo 33.1 tok/s）；libggml-cpu SIGSEGV 长输入观测（NPU 路径可能绕开，复验在 todos）。
 - **真机驱动工具链（11-05~06）**：debug-bridge 宿主动作面（list_models / set_history_policy / get_history_policy / query_on_device 强制端侧 / tap_bounds / wait_log / system-ui / system-tap / --file）；on-device-chaos-matrix 六例驱动器；装机判据修正（dart-define 值烤入串判构建变体 + 哈希比对纪律）。
 - **验证批次 P0~P3 收口（11-06）**：S11 任务对照 classify pass（迁移前提成立）；P2 12222 复评闭环（Qwen 族不复现，触发器=长 system 指令）；P3 独立核验通过。**待立项**：P4 端侧 2B 工具调用质量实验（S2 前置）、P5 ③摘要器接线。
+- **W6 联调收口（11-08）**：调试设施补全（drain_supply_pool/pool_dump debug action + SupplyTaskPool.debugSnapshot、debug-bridge freeze-check/unfreeze/capture 多包联采）；executor 空产出缺陷七轮排查终态归因 litertlm 0.16.0 SDK 缺陷——**决策 Ref: docs/design/on-device-capability.md ## 决策日志**；缓解层保留（completeInterruptible 空产出单次即时重试 / AIDL onCancel 完成态守卫 / traceId 微秒唯一化 / 载荷指纹诊断）；e2e 设施 `--case ondevice` 在 Qwen3.5-2B 基准档 3/3 全绿 = W6-a 自动化验收通过。
 
 ## 断点
 
-- [断点] 下一步：devlog 全量归并收口（552 行提炼入 memory「实施史与关键定音」，total-merged 1，MOUNT 收敛 1 行，todos 口径清理 23 条）；余项=P4 工具调用质量实验 / P5 摘要器接线 / 上游 issue 提交拍板 / ngl=-1 commit 待用户——均为用户侧或另行立项，域内无机械债
+- [断点] 等待新子任务（余项均用户侧/另行立项：P4 工具调用质量实验 / P5 摘要器接线 / litertlm 升版 0.18.1 拍板 / 上游 issue 提交 / ngl=-1 commit）

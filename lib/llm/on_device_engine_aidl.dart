@@ -645,7 +645,18 @@ class AidlOnDeviceEngine
     }
     // 每代复位数据面帧/字节计数（绑定级累加器，跨代残留会误导诊断打点）。
     _binding.resetDataCounters();
-    final ctrl = StreamController<EngineChunk>(onCancel: () => cancel(requestId));
+    final ctrl = StreamController<EngineChunk>(onCancel: () {
+      // P0-修复（2026-11-08 executor 空产出真机定位）：流正常收口（EOS /
+      // ctrl.close）后监听方退订仍会触发 onCancel——此刻生成已终态
+      //（_active 已摘除），再透传 cancel = session.abort() **会话级全局
+      // 标志污染下一个生成**（真机实证：同 epoch 内探测/调试路径生成正常、
+      // 紧随的原语生成恒 status=0 bytes=0 瞬时 EOS，概率与收尾 cancel 的
+      // native 落点相关；LiteRtLmRunner.cancelGenerate 无 requestId 过滤，
+      // GenieSession.abortRequested 为会话级 volatile）。仅在生成仍在途时
+      // 透传取消（真打断语义不变；_active 摘除先于 ctrl.close，时序闭环）。
+      if (_active.containsKey(requestId)) return cancel(requestId);
+      return Future<void>.value();
+    });
     // 解码自愈接线：坏字节（字节流错位）会让 utf8 chunked 解码器进入持续失败
     // 态——一次失败后每个后续字节都抛 FormatException（真机 S2-5 实证 78189 条
     // 异常洪泛 → 主进程 136% CPU → ANR 冻结）。detok 侧单字节失败即重建解码器

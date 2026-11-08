@@ -144,7 +144,7 @@ class HostOnDeviceToolExecutor implements ToolExecutor {
         instruction: instruction,
         input: input,
         fallback: PrimitiveFallbackPolicy.failFast,
-        traceId: 'host_export',
+        traceId: 'host_export_${DateTime.now().microsecondsSinceEpoch}',
       );
     }
     void Function()? unregister;
@@ -153,7 +153,7 @@ class HostOnDeviceToolExecutor implements ToolExecutor {
         instruction: instruction,
         input: input,
         fallback: PrimitiveFallbackPolicy.failFast,
-        traceId: 'host_export',
+        traceId: 'host_export_${DateTime.now().microsecondsSinceEpoch}',
         onSubscribed: (cancel) {
           // 注册打断回调（订阅建立即注册——注册窗口在订阅内，外部打断自此
           // 可让槽；漏注册 = 漏打断 = 孤儿算力空跑）。
@@ -259,7 +259,7 @@ class HostOnDeviceToolExecutor implements ToolExecutor {
             instruction: instruction,
             input: input,
             fallback: PrimitiveFallbackPolicy.failFast,
-            traceId: 'host_export',
+            traceId: 'host_export_${DateTime.now().microsecondsSinceEpoch}',
           );
           capLog('ok outChars=${out.length}');
           quota?.countOutput(DateTime.now()); // 实际产出 → 频次计入

@@ -27,6 +27,8 @@ last-merge: 2026-11-07
 - [真机测试] integration_test 真机跑完后 com.zzh.goodhub 被 pm 卸载、prefs/已装模型资产/会话全部清空（e2e 进程读 prefs=null、listInstalled=[] 即其果） ➔ 根因: flutter test integration_test 的设备适配器在测试结束后 uninstall 宿主调试应用，Android 卸载即清 data——对有本地持久状态的宿主，集成测试是破坏性操作 ➔ 规则: 真机 e2e 立项前必评宿主数据副作用——有状态宿主改用 adb input 驱动已装正式包、或测试壳用独立 applicationId+数据备份恢复；跑完必须重建正式入口重装（有机体残留引用回归钉 test/ui/chat_page_smoke_test.dart） (Ref: model-switch-e2e)
 - [Android/ColorOS] 真机闪退：装载风暴中 LMK 先杀前台主进程（adj=100 而非 0），:engine 随失联跌回 905 双亡；指纹=hasAboveClient=true 且 oom adj curRaw=0/set=100 ➔ BIND_ABOVE_CLIENT 给客户端进程打 hasAboveClient 标记，ColorOS 据此把客户端压到 VISIBLE(100) 档以实现『服务高于客户端』——提权旗标反噬客户端本身 ➔ 绑定旗标只用 BIND_AUTO_CREATE|BIND_IMPORTANT（服务重要性不低于客户端即够）；真机验收须采样双进程 /proc/<pid>/oom_score_adj（装载期 main 恒 adj0）；EngineServiceBridge.kt 旗标处已留禁加注释 (Ref: s2-5-above-client-backfire)
 - [sideload-verify] `adb install -r` 反复报 Success 但目标包 lastUpdateTime/行为纹丝不动，误判「ColorOS 静默安装失败」排查半天 | 根因: 侧载目标根本不是被核查的包——gradle `takeIf { isNotBlank } ?: ".bench"` 语义误用（takeIf 命中返回**原值** "bench"，elvis 不触发），applicationId 拼成无点幽灵包 `com.zzh.goodhubbench`，所有安装都 Success 落进幽灵包；验证却盯着 `.bench` 看 | 处置: 改 `?.let { ".$it" }`；侧载验证纪律 = 拉设备侧 APK 与宿主构建产物**哈希比对**（`pm path` + pull + sha256），勿信 install Success / lastUpdateTime 单一信号 | 回归: 侧载流程机械检查（安装后哈希比对步骤，见 devlog 2026-11-04 Qwen 轮） (Ref: on-device)
+- gradle 单测过滤 `--tests '<FQN>'` 会广播到全部子工程（无此测试的 :flutter_secure_storage 等直接 FAIL，误导排查方向）➔ 必须 `:app:testDebugUnitTest` 限定；Flutter 工程的测试结果不在 android/app/build，在仓库根 `build/app/test-results/testDebugUnitTest/`（Flutter gradle 布局） | 回归：机械规则 (Ref: residency-strategy-ui)
+- debug-bridge wait_log 的 ERE 经多层 shell 传递，括号转义会被剥成 ERE 分组（`ttl-elapsed\(60000ms\)` 匹配不到字面括号 → 90s 假阴性超时误判产品缺陷）➔ 断言正则一律免括号设计（前后缀锚定 / `.*`），先跑短窗探针验证匹配再上长等待 | 回归：机械规则 (Ref: residency-strategy-ui)
 
 ## 持久化 / JSON
 
@@ -64,6 +66,7 @@ last-merge: 2026-11-07
 - [ui-stream-boundary] 第二轮回答黏进第一轮气泡（UI 完全无气泡而引擎产出正常入历史） ➔ ChatStatusController._activeTextEntry 跨 Run 共享且收尾不断开（设计修正：先做手工 breakTextStream 双保险=同一知识写两遍，被用户否） ➔ 最终设计=Run 令牌所有权：beginRun 发新令牌、归属判定内建于 appendStreamText/_onStreamFlush、跨 Run 追加在状态机层面不可能，调用方零纪律；排查教训：引擎日志正常时尽早向用户取证 UI 具体表现（无气泡 vs 空内容 vs 答非所问），三方证据分叉点即定位点；回归钉：test/ui 气泡边界 8 例 (Ref: on-device)
 - [ui-stream-boundary] 现象: 第二轮回答『完全没有气泡』而引擎侧每轮产出正常且入历史 | 根因: ChatStatusController._activeTextEntry 跨 Run 共享、Run 收尾不断开，第二轮回答 append 进上一轮气泡（用户视角=新消息零回应） | 处置: **不变量进状态机，不放散落调用点**——Run 归属令牌（controller 发号）+ 块级条目入轨即关段（边界按轨道结构派生），页面层零纪律；「收尾/起步各补一处 breakTextStream」式双保险被否决（纪律外移=纪律缺失：异常/中止/重试/迟到帧等路径必漏；动作不可断言；断流会把迟到帧冲成孤立气泡致顺序倒挂）；排查教训: 引擎日志正常时尽早向用户取证 UI 具体表现（无气泡 vs 空内容 vs 答非所问），三方证据（引擎产出/历史入库/UI 表现）分叉点即定位点 | 回归: test/ui/chat_status_controller_stream_test.dart（跨 Run 另起气泡 + 残余保序 + 块级条目关段 + 收尾/快照刷盘） (Ref: on-device)
 - [test/widget] fake-async widget 测试中 dart:io 完成事件不推进（negotiate 永挂）；出站网络垫片行为不稳（时快 4xx 时永挂） | 根因: fakeAsync 时钟只驱动微任务与 timer，socket IO 完成回调由真实事件循环投递不随 pump 推进；沙箱网络路径被垫片拦截且时序不确定 | 处置: Run 级 widget 断言用「结构钉子」或 runAsync 真实窗；网络路径不作确定性地基，平台通道/真实 IO 混链用「真实窗↔pump」交替推进 | 回归: test/ui/chat_page_smoke_test.dart F1 结构钉子 + F19 _pendingAbort 闸门用例 (Ref: review-fix-2026-10)
+- flutter test 前台跑一律包墙钟 `timeout N`——testWidgets 的 `--timeout` 走 FakeAsync 虚拟时钟，通道/真实 IO 挂死不推进虚拟时间永不触发（实测挂死 150s 零输出直到墙钟 kill）；挂死还会留孤儿 flutter_tester 拖慢后续判定（ps 查杀再续）；通道类挂死排查第一嫌疑 = test/flutter_test_config.dart（全测试进程装配引导，决定测试环境里有哪些真实单例与通道实现——第二轮就该查它而非三轮交互探针） | 回归：机械规则（执行纪律，无代码钉） (Ref: residency-strategy-ui)
 
 ## dart / 语言与结构性编辑
 
@@ -94,6 +97,8 @@ last-merge: 2026-11-07
 - [工具链/toolbox] 现象: toolbox run cl 裸跑（不传 --root）时 15 个 epic 伪报「挂载失效：docs/design/*.md 不存在」（文件实际存在），带 --root 跑仅 3 条真实告警 | 根因: context-lint.sh 的 lint_mounts/lint_pointers 用原始 $ROOT 拼路径（不传 --root 时为空串 → tp=/docs/... 绝对路径必不存在），而非 lint_data 解析后的 $R（含 pwd 回退）；toolbox 的 cwd 继承正常——QC1 曾误判为「工具库目录 exec 致基准错位」，「一律显式传 --root」绕行治标未治本 | 处置: 2026-10-19 根治——两处 $ROOT 改 $R + self-test 增「cd 进夹具无 --root 不假报」断言；显式传 --root 仍是良好习惯但不再必需 | 回归: context-lint.sh --self-test 含无 --root 断言（toolbox run cl 与 --root 直跑结论一致：0 违规 5 告警） (Ref: misc)
 - 现象: 单轴化改名（D1）后漏检 7 处契约面漂移（PC 文案旧键 3 + SSOT 文档矛盾 4），全靠人工评估轮发现 | 根因: 契约面变更需同时改「代码 / 面向下游文案 / SSOT 文档」三面，人工扫漏检率高且随项目数放大（框架级病害，非单项目问题） | 处置: 机械件化——引擎全局共用（零项目知识）+ 规则数据留各项目 registry（只加数据行不改代码）+ Dart 镜像进 CI；散文级集合描述一致性机械不可靠，明确不做扫描归人判 | 回归: drift-guard（BANNED/CONST/OVERSIZE 三类）+ test/architecture/drift_rules_test.dart 镜像；rules 文档 docs/design/meta-upgrade.md (Ref: meta-upgrade)
 - 现象: 扫描器逐文件 grep 后按 path:lineno:code 解析路径，取到的是行号当路径（如 FAIL 119: ...），且整行注释未被剔除（误报 /// 注释） | 根因: GNU grep 单文件操作数时 -n 只输出 lineno:code（不输出文件名；多文件/目录操作数才输出），解析器按多文件形态假设取值即错 | 处置: 扫描器一律加 -H 强制文件名输出（单/多操作数一致），并按扩展名分派行级过滤（.dart 整行注释 // 与 * 起头剔除） | 回归: drift-guard --self-test 金丝雀（坏样本含 // 注释与代码两种形态）+ 真实仓变异探针（注入即红/还原即绿） (Ref: meta-upgrade)
+- 现象: safe-patcher 相对路径原按 shell cwd 解析——cwd≠项目根时写入 `<cwd>/<相对路径>` 副本且报「OK 已覆盖」，实文件纹丝不动（android/ 下写 android/app/... → android/android/app/... 实录，两轮同错才 md5 对比破案） | 根因: `--ws` 缺省 "."（cwd），AI 惯传仓库相对路径而 shell cwd 漂移（cd android && gradlew 后未回根） | 处置: 工具根治——缺省工作区锚 git 仓库根（cwd 上溯发现，无 git 回退 cwd），显式 --ws 原样生效，cwd≠工作区输出 ⚠ 提醒；AI 侧纪律 = 工具传参前确认 cwd 或一律绝对路径 | 回归: safe-patcher --self-test 第 12/13 项（无 git 回退 cwd / git 根锚定），变异探针 = cwd 子目录写根相对路径须落实根 + 告警 + 无副本 (Ref: residency-strategy-ui)
+- AI 写码禁 heredoc（`cat > x << 'EOF'`）承载含嵌套引号的代码/配置——多层转义面大（Dart/Kotlin 嵌套引号必错，实测 invokeMethod("'bind'") 落盘带字面引号返工）➔ 新文件/整文件替换一律 Write 工具，heredoc 仅限无引号敏感的纯文本追加（「IDE 参数截断分块落盘」既有场景不受影响） | 回归：机械规则 (Ref: residency-strategy-ui)
 
 ## 端侧 / 数据面与 IPC
 
@@ -139,6 +144,8 @@ last-merge: 2026-11-07
 - [gguf-budget] GGUF 头扫描 8MB 启发式预算在真实大词表工件上必漏检（Qwen3.5-2B KV 区实测 10.9MB，chat_template 排在 tokens/merges 大数组之后）——合成头单测全绿但真工件必失败 | 根因: 预算凭「KV 区远小于此」经验值拍脑袋，无真实工件回归钉验证 | 处置: 预算 32MB（Qwen3.5-2B 实测锚定）+ 真实工件回归钉入测试（本机基准文件缺席即跳过，CI 安全） | 回归: test/llm/on_device_model_profile_test.dart「真实工件回归钉」 (Ref: on-device)
 
 ## 待归并（inbox）
+
+- [on-device] 现象: 设置页切档后 UI 不更新（desc/flash 均不变），纯 Dart 探针 await OnDeviceAdmin.setResidencyStrategy 挂死且 flutter test --timeout 不触发 | 根因: 门面把「写偏好」与 bind 通道往返耦合（await sharedOnDeviceEngine.warmup()）——test/flutter_test_config.dart 对全测试进程预注册 AidlOnDeviceEngine，widget 测试里 MethodChannel 'bind' 无 mock handler 其 Future 永不完成；产品同型风险 = 通道挂起拖死设置面 | 处置: 重放改 unawaited 后件（设置面只等偏好落盘），_replayResidencyBind 自行 try/catch DEGRADE 留痕 | 回归: test/ui/on_device_residency_strategy_test.dart「切档：下拉选快速释放→说明与 toast 联动」（改回 await 即红） (Ref: residency-strategy-ui)
 
 - [update-service-http-timeout] 自更新下载对 404 的响应流永挂（页面恒「下载中…」无报错），真机 R2 对已删 APK 的响应头等待可无限挂起 ➔ dart:io HttpClient 默认零超时——connectionTimeout 不设即无限，close() 等响应头与响应体读取同样无超时；statusCode!=200 检查写在 close() 之后，头不回来就永远到不了 ➔ 三挂起点全配超时：client.connectionTimeout + close().timeout + res.timeout（每 chunk 重置的看门狗），超时 Duration 做成可注入参数供单测短值验证；机械规则=凡手写 dart:io HttpClient 请求，三个等待面（连接/响应头/响应体推进）必须全部有超时兜底，statusCode 检查之前就可能挂 ➔回归: test/update/update_service_test.dart 4 钉（静默服务器永不回应/半途 stall/404 快速失败/清单同族），撤超时即红 (Ref: self-update)
 

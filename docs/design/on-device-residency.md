@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-11-07
+updated: 2026-11-08
 ---
 
 # 端侧模型长驻 · 深化评估（R1–R6 + 能力分级 + 立项路径）
@@ -192,7 +192,7 @@ flowchart TD
 | AIDL | `IOnDeviceEngineService.initEngine(config: Bundle)` | **零改动**——Bundle 参数已存在，仅新增可选键 `residencyTtlMs`（Long，缺省缺失 = 引擎内建缺省 5min） |
 | `:engine` | `EngineService.kt:383` initEngine 读键 + `:277` `EngineLifecycle` 构造传入 | `config?.getLong("residencyTtlMs")`（>0 才采用）→ `EngineLifecycle(ttlMs = …)`——`ttlMs` 构造参数现成（`EngineLifecycle.kt:34`），仅接线 |
 | Bridge | `EngineServiceBridge.kt:524` `svc.initEngine(Bundle(), …)` | Bundle 携带 Dart 侧策略值 |
-| Dart | 新 `lib/llm/on_device_residency_policy.dart`：`ResidencyPolicy.read()`（SharedPreferences 键 `on_device.residency_ttl_ms`，缺省 0 = 不下发） | `OnDeviceEngineBinding.bind()` 携带；UI 配置面本期仅 debug 联调页暴露（**非用户面**——5min 缺省未翻，数据先行） |
+| Dart | 新 `lib/llm/on_device_residency_policy.dart`：`ResidencyPolicy.read()`（SharedPreferences 键 `on_device.residency_ttl_ms`，缺省 0 = 不下发） | `OnDeviceEngineBinding.bind()` 携带；原「仅 debug 联调页暴露（非用户面）」红线已由 P1 用户面取代——用户面走档位键（`on_device.residency_strategy`，smart 不下发 = 缺省零变化），本 TTL 缝退居诊断通路，设计 SSOT = `residency-strategy-ui.md` |
 
 - 红线：本批**不下发任何非缺省值**（配置读取存在即不打扰）；参数化仅为 L1 策略（R7/R8）备好注入缝。
 - 回归锚：`EngineLifecycle` 为纯 Kotlin 状态机——ttlMs 注入行为以真机冒烟验证（短 TTL 30s 下发 → 观察驱逐原因行 `ttl-elapsed(30000ms)`）；Dart 侧 `ResidencyPolicy.read` 单测。

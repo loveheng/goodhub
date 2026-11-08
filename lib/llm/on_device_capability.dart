@@ -25,11 +25,13 @@ library;
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/services.dart' show PlatformException;
 
 import 'cloud/cloud_llm.dart';
 import 'on_device_chat_prompt.dart';
 import 'on_device_engine.dart';
+import 'on_device_model_catalog.dart';
 
 /// 降级策略（三档，类型化禁止隐式）。
 enum PrimitiveFallbackPolicy {
@@ -418,13 +420,20 @@ class AidlOnDeviceCapabilityService
     // 受理段（流建立前收口：熔断窗口 / PII / 未就绪）由 completeStream 内
     // 完成，其异常经流错误通道进入本方法的 catch → 统一走 [_degrade] 收口
     // （禁旁路降级链：旁路 = 计数丢失 + degradeToCloud 档在该形态下失效）。
-    try {
+    //
+    // P0-修复（2026-11-08 executor 空产出真机定位）：litertlm 0.16.0 真机
+    // 存在**同 prompt 相邻调用间歇性零产出/异常**（实证：同一引擎数秒内
+    // 一次 generate_failed、一次正常 97 字；executor 面表现为瞬时 EOS 空
+    // 产出 → 池 requeue 也吃同一硬币）。单次即时重试消化间歇性；仍空 =
+    // 如实走 [_degrade]（failFast → 显式失败，R1 口径不变）。
+    Future<String> runOnce() {
       final buf = StringBuffer();
       final completer = Completer<String>();
       var interrupted = false;
       late StreamSubscription<EngineChunk> sub;
       // 取消钩子（幂等）：打断源经 [onSubscribed] 注册 → 退订 → 引擎
-      // `cancel(requestId)` 让槽（取消随退订下沉）。
+      // `cancel(requestId)` 让槽（取消随退订下沉）。重试的每次流各注册
+      // 各自的取消钩子（打断语义逐次有效；已收口条目的 cancel 为幂等空转）。
       Future<void> cancelOnce() async {
         if (interrupted) return;
         interrupted = true;
@@ -450,7 +459,16 @@ class AidlOnDeviceCapabilityService
       );
       // 订阅建立后立即交出取消钩子（打断源注册位）——自此外部打断可让槽。
       onSubscribed?.call(cancelOnce);
-      final t = await completer.future;
+      return completer.future;
+    }
+
+    try {
+      var t = await runOnce();
+      if (t.isEmpty) {
+        debugPrint('[DEGRADE] on_device empty output → 单次即时重试（间歇性零产出消化）');
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        t = await runOnce();
+      }
       if (t.isEmpty) {
         return await _degrade(fallback, '端侧产出为空', traceId,
             instruction: instruction, input: input, config: config);
@@ -500,10 +518,30 @@ class AidlOnDeviceCapabilityService
     if (_engine.loadState.value != OnDeviceLoadState.ready) {
       throw OnDevicePrimitiveException('端侧会话未就绪（未装载/装载中）');
     }
-    final prompt = buildOnDeviceChatPromptJson([
-      SystemMessage(instruction),
-      UserMessage(effectiveInput),
-    ]);
+    // P0-修复（2026-11-08 会话验证轮定音）：litertlm/Gemma3（小窗模型）对
+    // **[system,user] 长输入恒静默空成功**（status=0 零 chunk——systemInstruction
+    // 经 ConversationConfig 独立通道下发，与输入合计超模型窗后 SDK 正常收流
+    // 不报错；同 epoch A/B 三重复实证：[system,user]+232 字输入空 / [user]-only
+    // 同量级与短输入正常，聊天持久会话亦正常）。小窗模型（ctx ≤ 4096）的原语
+    // prompt 降为单 user 轮（instruction 前置并入——单发任务语义等价）；大窗
+    // 模型（Qwen 262K）保持 [system,user] 原形态零变化。顺带把模型窗预算面
+    // 接进 builder（本路径无历史轮，无裁剪影响）。
+    final model = await OnDeviceModelSelection.read();
+    final contextTokens = model?.contextTokens;
+    final mergeSystemIntoUser =
+        contextTokens != null && contextTokens <= 4096;
+    final prompt = buildOnDeviceChatPromptJson(
+      mergeSystemIntoUser
+          ? [UserMessage('$instruction\n\n$effectiveInput')]
+          : [SystemMessage(instruction), UserMessage(effectiveInput)],
+      contextTokens: contextTokens,
+    );
+    // 诊断打点（executor 空产出跟踪）：prompt 指纹——形态（是否合并）+ 三值
+    // 长度，与绑定层帧计数（first data frame）及 close accounting 配套。
+    debugPrint('[on-device-prim] generate '
+        'merged=$mergeSystemIntoUser ctx=$contextTokens '
+        'promptChars=${prompt.length} instructionChars=${instruction.length} '
+        'inputChars=${effectiveInput.length}');
     final requestId =
         'prim_${traceId == null ? '' : '${traceId}_'}${_seq++}';
     // 槽位有界退避受理（service_busy 窗口内重试，超时上抛——流式消费方

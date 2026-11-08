@@ -10,6 +10,7 @@ import 'package:flutter/widgets.dart';
 
 
 import '../coordinator/on_device_admin.dart';
+import '../coordinator/supply_task_pool.dart';
 import 'navigator_key.dart';
 
 export 'package:app_debug_bridge/app_debug_bridge.dart' show kDebugActions;
@@ -20,6 +21,9 @@ const List<String> kHostDebugActions = <String>[
   'set_history_policy',
   'get_history_policy',
   'query_on_device',
+  'drain_supply_pool',
+  'pool_dump',
+  'set_residency_strategy',
 ];
 
 /// 测试注入位：非空时替代宿主 navigator 的遍历起点。
@@ -46,11 +50,41 @@ Future<Object?> executeDebugAction(String action, Map<String, Object?> args) asy
       return await _getHistoryPolicy(args);
     case 'query_on_device':
       return await _queryOnDevice(args);
+    case 'set_residency_strategy':
+      return await _setResidencyStrategy(args);
     case 'simulate_deferred':
       return await OnDeviceAdmin.simulateDeferredCall(
         instruction: (args['instruction'] as String?) ?? '提取关键词',
         input: (args['input'] as String?) ?? '端侧联调测试文本',
       );
+    case 'purge_supply_pool':
+      // 调试清账（缺陷 D 系列验收设施）：not_found 失败收敛的真机构造——
+      // 消费端登记仍在（prefs 持久化）、宿主侧池条目清空 → 下轮 Pull 必 not_found。
+      await SupplyTaskPool.instance.clearForDebug();
+      return <String, Object?>{'ok': true, 'action': 'purge_supply_pool'};
+    case 'drain_supply_pool':
+      // 联调设施 §G3（on-device e2e 消费触发）：与聊天 Run 收口同一
+      // [OnDeviceAdmin.drainSupplyPool] 单源语义，await 完成（e2e 可直接断言
+      // 池后状态，免轮询窗口）；maxTasks 缺省 3 与生产顺风车同参，夜间批 20 由
+      // 调用方显式传。模型未装载时由池/执行器既有 failFast→requeue 兜底。
+      await OnDeviceAdmin.drainSupplyPool(
+        maxTasks: (args['maxTasks'] as num?)?.toInt() ?? 3,
+      );
+      SupplyTaskPool.instance.debugDump('drain-debug-exit');
+      return <String, Object?>{
+        'ok': true,
+        'action': 'drain_supply_pool',
+        'pool': SupplyTaskPool.instance.debugSnapshot(),
+      };
+    case 'pool_dump':
+      // 联调设施 §G1b：任务池结构化快照（对账/断言的状态真源），替代 pool-dump
+      // 日志反推；与 goodshare /debug/state onDeviceTasks 成对（细则 1：各自
+      // 暴露本仓状态，聚合视图即用即走不落份）。
+      return <String, Object?>{
+        'ok': true,
+        'action': 'pool_dump',
+        'pool': SupplyTaskPool.instance.debugSnapshot(),
+      };
     default:
       return kit.executeDebugAction(
         action,
@@ -374,4 +408,36 @@ void bindDebugNavigator() {
 /// 装配期（或测试）设置公共包的路由白名单（宿主页面清单）。
 void bindDebugRoutes(kit.DebugRouteRegistry registry) {
   kit.debugRouteRegistry = registry;
+}
+
+/// 写用户驻留策略档位（residency-strategy-ui 真机自动化驱动位）：经
+/// [OnDeviceAdmin.setResidencyStrategy]（含 unawaited bind 重放——已连接时
+/// initEngine 即席生效），回读校验落盘。生效断言走 logcat
+/// `[RESIDENCY] policy ... strategy=` 行（scheduleTtl 于 loadModel 受理 /
+/// 生成收口时打出；`query_on_device` 全链即可触发）。
+Future<Map<String, Object?>> _setResidencyStrategy(
+    Map<String, Object?> args) async {
+  final OnDeviceResidencyStrategy value;
+  switch (args['strategy']?.toString()) {
+    case 'smart':
+      value = OnDeviceResidencyStrategy.smart;
+    case 'extended':
+      value = OnDeviceResidencyStrategy.extended;
+    case 'frugal':
+      value = OnDeviceResidencyStrategy.frugal;
+    default:
+      return <String, Object?>{
+        'ok': false,
+        'error': 'bad_strategy',
+        'hint': 'strategy 须为 smart / extended / frugal',
+      };
+  }
+  await OnDeviceAdmin.setResidencyStrategy(value);
+  final verified = await OnDeviceAdmin.residencyStrategy();
+  return <String, Object?>{
+    'ok': true,
+    'action': 'set_residency_strategy',
+    'strategy': verified.name,
+    'label': residencyStrategyLabel(verified),
+  };
 }

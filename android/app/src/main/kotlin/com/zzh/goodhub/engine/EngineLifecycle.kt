@@ -62,6 +62,9 @@ class EngineLifecycle(
 
         /** R-P0 驻留策略位：initEngine Bundle 键（on-device-residency S-R0-a）。 */
         const val KEY_RESIDENCY_TTL_MS = "residencyTtlMs"
+
+        /** P1 用户面驻留策略档位键（值 = [com.zzh.goodhub.engine.ResidencyPolicy.Strategy] 名，缺失 = smart）。 */
+        const val KEY_RESIDENCY_STRATEGY = "residencyStrategy"
     }
 
     enum class State { COLD_EVICTED, WARM_STANDBY, ACTIVE }

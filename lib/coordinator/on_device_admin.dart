@@ -25,10 +25,16 @@ import '../llm/on_device_model_catalog.dart'
     show OnDeviceModelOption, OnDeviceModelSelection;
 import '../llm/on_device_session_ticket.dart' show SessionTicket;
 import '../llm/on_device_residency_policy.dart'
-    show readNightlyBatchEnabled, setNightlyBatchEnabled;
+    show OnDeviceResidencyStrategy, readNightlyBatchEnabled, readResidencyStrategy,
+        setNightlyBatchEnabled;
+import '../llm/on_device_residency_policy.dart' as residency_strategy
+    show setResidencyStrategy;
 
 export '../llm/on_device_residency_policy.dart'
     show readNightlyBatchEnabled, setNightlyBatchEnabled;
+export '../llm/on_device_residency_policy.dart'
+    show OnDeviceResidencyStrategy, residencyStrategyLabel,
+        residencyStrategyDescription;
 import 'host_on_device_tool.dart';
 import 'supply_quota.dart';
 import 'supply_task_pool.dart';
@@ -75,7 +81,7 @@ abstract final class OnDeviceAdmin {
     );
     for (var i = 0; i < maxTasks; i++) {
       final entry = await pool.claimNext();
-      debugPrint('[RESIDENCY] drain claimNext[${i}]: ${entry?.taskId ?? "null"} status=${entry?.status.name ?? "-"}');
+      debugPrint('[RESIDENCY] drain claimNext[$i]: ${entry?.taskId ?? "null"} status=${entry?.status.name ?? "-"}');
       if (entry == null) return;
       try {
         final r = await executor.execute(AssembledToolCall(
@@ -146,6 +152,30 @@ abstract final class OnDeviceAdmin {
 
   static Future<bool> nightlyBatchEnabled() => readNightlyBatchEnabled();
   static Future<void> setNightlyBatch(bool v) => setNightlyBatchEnabled(v);
+
+  // ---- P1 用户面驻留策略档位（on-device-residency 策略单源，residency-strategy-ui）----
+
+  static Future<OnDeviceResidencyStrategy> residencyStrategy() =>
+      readResidencyStrategy();
+
+  /// 写档位并 best-effort 重放 bind 配置：warmup()（bind+waitReady，不触权重
+  /// 装载——懒加载立法不受影响）触发原生 bind 处理器刷新档位字段，已连接时
+  /// 就地重跑 initEngine 即席生效；未连接随下次握手生效。
+  ///
+  /// 重放**不 await**（unawaited 后件）：设置面反馈只等偏好落盘，bind 通道
+  /// 挂起/失败不拖 UI——重放自身 DEGRADE 留痕，首次请求自有 bind 兜底。
+  static Future<void> setResidencyStrategy(OnDeviceResidencyStrategy v) async {
+    await residency_strategy.setResidencyStrategy(v);
+    unawaited(_replayResidencyBind());
+  }
+
+  static Future<void> _replayResidencyBind() async {
+    try {
+      await sharedOnDeviceEngine.warmup();
+    } on Object catch (e) {
+      debugPrint('[DEGRADE] residency-strategy replay: $e');
+    }
+  }
 
   /// W6 联调入口（on-device-residency 第七节）：模拟外部调用方以
   /// allow_deferred=true 调用 on_device_complete——冷态时入池回执，

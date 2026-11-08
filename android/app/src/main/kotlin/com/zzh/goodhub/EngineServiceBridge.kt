@@ -111,6 +111,25 @@ object EngineServiceBridge {
     @Volatile
     private var residencyTtlMs = 0L
 
+    /// P1 用户面驻留策略档位（ResidencyPolicy.Strategy 名；null = smart 不入键）。
+    @Volatile
+    private var residencyStrategy: String? = null
+
+    /// initEngine 监听器缓存（Fix2 重绑幂等：bind 重放配置复用同一监听器实例，
+    /// :engine 侧 initEngine 本就重设 listener + 幂等）。
+    @Volatile
+    private var engineListener: IOnDeviceEngineListener? = null
+
+    /// 驻留策略位 Bundle 单源：onServiceConnected 握手与 bind 重放共用。
+    private fun residencyInitConfig(): Bundle = Bundle().apply {
+        if (residencyTtlMs > 0) {
+            putLong(com.zzh.goodhub.engine.EngineLifecycle.KEY_RESIDENCY_TTL_MS, residencyTtlMs)
+        }
+        residencyStrategy?.takeIf { it.isNotBlank() }?.let {
+            putString(com.zzh.goodhub.engine.EngineLifecycle.KEY_RESIDENCY_STRATEGY, it)
+        }
+    }
+
     /// 回调统一 post 主线程再 invokeMethod——否则每次回调抛 RuntimeException
     /// 消息全丢（真机实测：生成已跑完，Dart 永远收不到 token/finished → 无结果）。
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -175,11 +194,23 @@ object EngineServiceBridge {
                     }
                 }
                 "bind" -> {
-                    // R-P0 驻留策略位（on-device-residency S-R0-a）：TTL 随 bind
-                    // 下发（缺省缺失 = 引擎内建 5min 零行为变化）。重连重跑
-                    // initEngine 时沿用本值（字段跨连接存续）。
+                    // R-P0/P1 驻留策略位（on-device-residency S-R0-a + P1 用户面）：
+                    // TTL/档位随 bind 下发（键缺失 = 复位缺省，零行为变化）。已连接
+                    // 时就地重跑 initEngine（幂等）——设置页切档后 warmup() 重放即席
+                    // 生效，未连接则随下次握手生效（residencyInitConfig 单源）。
                     residencyTtlMs = (call.argument<Any>("residencyTtlMs") as? Number)?.toLong() ?: 0L
+                    residencyStrategy = call.argument<Any>("residencyStrategy") as? String
                     bind(activity)
+                    (engine)?.let { svc ->
+                        engineListener?.let { l ->
+                            try {
+                                val status = svc.initEngine(residencyInitConfig(), l)
+                                Log.i(TAG, "initEngine(replay) -> EngineStatus ordinal=$status")
+                            } catch (e: Exception) {
+                                Log.w(TAG, "[DEGRADE] initEngine(replay) failed: $e")
+                            }
+                        }
+                    }
                     result.success(null)
                 }
                 "unbind" -> {
@@ -529,14 +560,8 @@ object EngineServiceBridge {
                 engine = svc
                 Log.d(TAG, "engine service connected (AIDL proxy)")
                 try {
-                    // R-P0：驻留策略位随握手下发（>0 才入 Bundle，缺省零变化）。
-                    val initCfg = Bundle().apply {
-                        if (residencyTtlMs > 0) {
-                            putLong(com.zzh.goodhub.engine.EngineLifecycle.KEY_RESIDENCY_TTL_MS,
-                                residencyTtlMs)
-                        }
-                    }
-                    val status = svc.initEngine(initCfg, object : IOnDeviceEngineListener.Stub() {
+                    // R-P0/P1：驻留策略位随握手下发（键缺失 = 缺省零变化）。
+                    val listener = object : IOnDeviceEngineListener.Stub() {
                         override fun onLoadPhaseChanged(phase: Int) {
                             // F4 装载阶段活体打点：诊断面上行（阶段推进 = 活体信号）。
                             invokeOnMain("onLoadPhaseChanged", mapOf("phase" to phase))
@@ -597,7 +622,9 @@ object EngineServiceBridge {
                                 "evictingRequestId" to evictingRequestId,
                             ))
                         }
-                    })
+                    }
+                    engineListener = listener
+                    val status = svc.initEngine(residencyInitConfig(), listener)
                     Log.i(TAG, "initEngine -> EngineStatus ordinal=$status")
                     // S2 正式接线：ready 事件 = bind 时序竞态的收口点——
                     // onServiceConnected 内 initEngine 同步完成即 :engine 控制面

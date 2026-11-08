@@ -17,13 +17,18 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart' show debugPrint;
 
+import '../coordinator/caller_death_interrupt.dart';
 import '../coordinator/hybrid_assembly.dart';
 import '../coordinator/hybrid_inference.dart';
+import '../coordinator/reverse_wiring.dart';
 import '../llm/cloud/cloud_llm.dart';
+import '../llm/on_device_capability.dart';
+import '../llm/on_device_engine.dart';
 import '../mcp/goodshare_task_api.dart';
 import '../mcp/local_plugin_discovery.dart';
 import '../mcp/mcp_client.dart';
 import '../mcp/trusted_plugins.dart';
+import '../mcp/transport/binder_transport.dart';
 import '../task/task_consume_ledger.dart';
 import '../task/task_consume_loop.dart';
 import '../task/task_loop_service.dart';
@@ -103,6 +108,19 @@ class TaskConsumeBootstrap {
       }
       final client = _discovery.createClient(info);
       _client = client;
+      // W6-a 驻留端侧反向接线（2026-11-08 联调缺陷 C）：反向帧经本 client 的
+      // Binder 传输到达，此前无 handler 恒 result:null（goodshare 侧判「宿主
+      // 未连入」）。网关/聊天装配的场景化接线不覆盖驻留场景——本件按共享件
+      // 补挂端侧两 method（sampling 云端不外借，非端侧 method 回 null 拒绝）。
+      // K17 调用方死亡代理同款幂等接线（与 _assembleInner 一致）。
+      ensureCallerDeathInterruptWired();
+      BinderTransport.onCallerDeath =
+          (callerKey) => unawaited(callerDeathInterruptSingleton?.notifyDeath(callerKey));
+      wireOnDeviceReverse(
+        client: client,
+        onDeviceCapability: AidlOnDeviceCapabilityService(sharedOnDeviceEngine),
+        callerKey: kGoodsharePackage, // K17：Binder 路径 callerKey = 插件包名
+      );
       final resolvedEngine = engine ?? await assembleDefaultHybridEngine();
       final service = TaskLoopService(
         api: GoodshareTaskSource(GoodshareTaskApi(client)),

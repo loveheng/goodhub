@@ -149,3 +149,9 @@ updated: 2026-11-06
 3. **P1 范围收敛得当**：App 内 + 云端搭配是正确 MVP，复用既有降级判据，工程增量可控。
 4. **P1 前置依赖（刚性）**：**`:engine` 独立进程（G6）为 P1 阻塞项**，须与模型分发同步落地；P2-a 立项 + 模型分发齐备方可启动；多模态（P2-c）另受 FC2 约束。
 5. **前置交付物**：QNN 优化模型包 + Neuron 编译产物就绪、`CapabilityProbe` API（SoC 识别 + 驱动可加载性 + NPU Delegate 初始化 + RAM 门禁）、`:engine` 独立进程通信骨架。
+
+## 决策日志
+
+> devlog 决策/权衡类条目的归档专节（dev-loop §4；机械件 `toolbox run dlog <epic>` 同文幂等追加）。
+
+- [2026-11-08] W6 联调 executor 空产出终态归因 = litertlm 0.16.0 NPU 管线对 Gemma3 特定内容族的间歇性零产出（内容敏感 + 非确定性），缺陷位于 SDK 内部，宿主侧（含会话生命周期管理）无可修缝位；产品口径 = Qwen3.5-2B（llama_cpp）为 W6-a 验收基准档（e2e 3/3 绿），Gemma3×litertlm 档恢复使用前须升 AAR 0.16.0→0.18.1 重验（待拍板）（否决: 会话生命周期实现层修复——沉降闸/close 延后两轮实验均证伪；采样档/prompt/装载窗口/requestId 变量排除——逐项证伪；探测闸类缓解——user-only 形态假阳性）

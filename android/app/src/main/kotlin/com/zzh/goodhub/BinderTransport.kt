@@ -328,6 +328,17 @@ object BinderTransportBridge {
         private val lock = Any()
         private var channel: IMcpChannel? = null
         private var connection: ServiceConnection? = null
+
+        // ---- 断连自愈重连（缺陷 D 第二面修复，2026-11-08）----
+        // 既有自愈 = send 在 DEAD 态 rebind，但 idle（task-consume 无任务、
+        // 心跳仅推理期在发）时无人 send——对端进程被杀重启（force-stop 置
+        // stopped state，BIND_AUTO_CREATE 不拉起；am start 重启后须重新
+        // bindService）后连接永不恢复。此处补：DEAD 后指数退避自动重连
+        // （1s→60s 封顶），connected 成功归零；宿主主动 close（引用计数
+        // 最后持有者）永久停止，防插件卸载后的无谓循环。
+        @Volatile
+        private var closedByOwner = false
+        private var reconnectAttempt = 0
         private val pending = LinkedBlockingQueue<PendingCall>()
 
         private data class PendingCall(val body: String, val future: CompletableFuture<String>)
@@ -433,8 +444,7 @@ object BinderTransportBridge {
                 override fun onServiceConnected(name: ComponentName?, rawBinder: IBinder?) {
                     val ch = IMcpChannel.Stub.asInterface(rawBinder)
                     try {
-                        rawBinder?.linkToDeath(deathRecipient, 0)
-                        // 新增链路（K17 调用方进程死亡联动打断）：为反向请求链路
+                        rawBinder?.linkToDeath(deathRecipient, 0)                        // 新增链路（K17 调用方进程死亡联动打断）：为反向请求链路
                         // 的调用方进程注册**独立**死亡代理——既有 recipient 服务
                         // 「宿主 client 在途收敛」，本 recipient 服务「宿主在途
                         // 端侧执行打断」，两条链路互不替代。
@@ -444,6 +454,7 @@ object BinderTransportBridge {
                     synchronized(lock) {
                         channel = ch
                         state = State.READY
+                        reconnectAttempt = 0
                     }
                     try {
                         ch?.registerCallback(callback)
@@ -454,11 +465,13 @@ object BinderTransportBridge {
                 }
 
                 override fun onServiceDisconnected(name: ComponentName?) {
-                    // 系统正常断开（非崩溃）：标记 DEAD，下次 send 自动重连
+                    // 系统正常断开（非崩溃）：标记 DEAD，下次 send 自动重连；
+                    // idle 无人 send 时由退避重连兜底（缺陷 D 第二面）。
                     synchronized(lock) {
                         state = State.DEAD
                         channel = null
                     }
+                    scheduleReconnect()
                 }
             }
             connection = conn
@@ -470,6 +483,7 @@ object BinderTransportBridge {
                     state = State.DEAD
                 }
                 failPending(RuntimeException("bindService failed: $packageName/$serviceClassName"))
+                scheduleReconnect()
                 return
             }
             // 冷启动 5s 超时（§9.1）：CONNECTING 超时才抛错，不静默吞/不卡线程
@@ -484,6 +498,7 @@ object BinderTransportBridge {
                         failPending(
                             RuntimeException("plugin cold-start timeout (${COLD_START_TIMEOUT_MS}ms)")
                         )
+                        scheduleReconnect()
                     }
                 }
             }
@@ -561,6 +576,7 @@ object BinderTransportBridge {
             //    收敛），此处补的正是「占位已回、终帧永不到达」的盲区。
             failPending(RuntimeException("plugin died (binderDied)"))
             pushTransportDied()
+            scheduleReconnect()
         }
 
         fun answerReverse(body: String) {
@@ -575,6 +591,7 @@ object BinderTransportBridge {
         }
 
         fun close() {
+            closedByOwner = true // 宿主主动关闭：终止退避重连（插件卸载/释放语义）
             synchronized(lock) {
                 connection?.let { runCatching { context.unbindService(it) } }
                 connection = null
@@ -583,6 +600,27 @@ object BinderTransportBridge {
                 failPending(RuntimeException("transport closed"))
             }
             eventExecutor.shutdown()
+        }
+
+        /// 断连自愈调度（缺陷 D 第二面）：DEAD 后指数退避重连（1s→60s 封顶），
+        /// connected 成功归零。一次性线程承載 sleep（共享 executor 不可长占）；
+        /// 到点后复查 state==DEAD（期间可能已被 send 重连/被 close）再 startBind。
+        private fun scheduleReconnect() {
+            if (closedByOwner) return
+            val delay = minOf(1000L shl reconnectAttempt.coerceAtMost(6), 60_000L)
+            reconnectAttempt++
+            Thread {
+                try {
+                    Thread.sleep(delay)
+                } catch (_: InterruptedException) {
+                    return@Thread
+                }
+                val should = synchronized(lock) { state == State.DEAD && !closedByOwner }
+                if (should) {
+                    Log.i(TAG, "reconnect attempt #$reconnectAttempt → $packageName")
+                    startBind()
+                }
+            }.apply { isDaemon = true }.start()
         }
     }
 }

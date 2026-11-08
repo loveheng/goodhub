@@ -240,11 +240,12 @@ class OnDeviceEngineBinding {
   Future<void> bind() async {
     _ensureHandler();
     try {
-      // R-P0 驻留策略位（on-device-residency S-R0-a）：TTL 随 bind 下发
-      //（ResidencyPolicy 读取；0 = 不下发，引擎内建缺省 5min 零行为变化）。
+      // R-P0/P1 驻留策略位（on-device-residency）：TTL 诊断缝 + 用户档位随
+      // bind 下发（键组装单源 residencyBindArgs；smart 全缺省 = 零行为变化）。
       final ttl = await readResidencyTtlMs();
-      await channel.invokeMethod<void>(
-          'bind', ttl > 0 ? {'residencyTtlMs': ttl} : null);
+      final strategy = await readResidencyStrategy();
+      final args = residencyBindArgs(ttl, strategy);
+      await channel.invokeMethod<void>('bind', args.isEmpty ? null : args);
     } on PlatformException catch (e) {
       // ignore: avoid_print
       print('[DEGRADE] on_device_engine bind: $e');

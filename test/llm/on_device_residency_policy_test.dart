@@ -21,4 +21,51 @@ void main() {
     expect(await readResidencyTtlMs(), -5,
         reason: '策略位忠实透传，正负守卫归引擎侧 updateTtlMs');
   });
+
+  group('P1 用户面驻留策略档位（residency-strategy-ui）', () {
+    setUp(() {
+      SharedPreferences.setMockInitialValues({});
+    });
+
+    test('缺省 = smart（矩阵原样，存量零变化钉子）', () async {
+      expect(await readResidencyStrategy(), OnDeviceResidencyStrategy.smart);
+    });
+
+    test('写入后读回一致（三档回路）', () async {
+      await setResidencyStrategy(OnDeviceResidencyStrategy.extended);
+      expect(await readResidencyStrategy(), OnDeviceResidencyStrategy.extended);
+      await setResidencyStrategy(OnDeviceResidencyStrategy.frugal);
+      expect(await readResidencyStrategy(), OnDeviceResidencyStrategy.frugal);
+      await setResidencyStrategy(OnDeviceResidencyStrategy.smart);
+      expect(await readResidencyStrategy(), OnDeviceResidencyStrategy.smart);
+    });
+
+    test('非法存储值回落 smart（白名单解析）', () async {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('on_device.residency_strategy', 'bogus');
+      expect(await readResidencyStrategy(), OnDeviceResidencyStrategy.smart);
+    });
+
+    test('bind 键组装：smart 不出档位键（缺省零变化）', () {
+      expect(residencyBindArgs(0, OnDeviceResidencyStrategy.smart), isEmpty);
+      expect(residencyBindArgs(30000, OnDeviceResidencyStrategy.smart),
+          {'residencyTtlMs': 30000},
+          reason: 'TTL 诊断缝独立于档位（>0 才携带）');
+    });
+
+    test('bind 键组装：非 smart 档只出档位键（矩阵在引擎侧自算）', () {
+      expect(residencyBindArgs(0, OnDeviceResidencyStrategy.extended),
+          {'residencyStrategy': 'extended'});
+      expect(residencyBindArgs(0, OnDeviceResidencyStrategy.frugal),
+          {'residencyStrategy': 'frugal'});
+    });
+
+    test('UI 文案三档全覆盖（禁内部枚举名直出，ui-design §2）', () {
+      for (final s in OnDeviceResidencyStrategy.values) {
+        expect(residencyStrategyLabel(s), isNotEmpty);
+        expect(residencyStrategyLabel(s), isNot(contains(s.name)));
+        expect(residencyStrategyDescription(s), isNotEmpty);
+      }
+    });
+  });
 }

@@ -11,10 +11,13 @@ library;
 
 import 'dart:convert' show jsonEncode;
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
 import '../llm/cloud/cloud_llm.dart';
 import '../llm/cloud/sampling_engine.dart' show CloudSamplingEngine;
 import '../core/errors/mcp_error.dart';
 import '../llm/on_device_capability.dart';
+import '../mcp/mcp_client.dart';
 import '../mcp/sampling.dart' show SamplingQuota, samplingRequestHandler;
 import '../mcp/transport/binder_transport.dart';
 import 'caller_death_interrupt.dart';
@@ -70,6 +73,11 @@ void wireSampling({
                 onDeviceCapability,
                 quota: supplyQuota,
                 callerKey: _callerIdentityOf(entry.value),
+                // W6-a 入池接线（2026-11-08 联调缺陷修复）：此前反向路径未挂池 →
+                // allow_deferred 永远不入池，冷态只能同步报错。池为宿主驻留单例
+                // （同文件下方任务状态执行器同款用法）；仅 allow_deferred=true
+                // 时生效，存量 failFast 语义零变化。
+                taskPool: SupplyTaskPool.instance,
               );
     // S07/S07b：Binder 面走携带平台侧已解析身份的钩子（帧未携带身份 = 平台侧
     // 解析失败，由传输层按拒绝处置 -32001，本处理器只消费已解析身份）；
@@ -79,8 +87,9 @@ void wireSampling({
       Object? params,
       ResolvedCallerIdentity? caller,
     ) async {
+      debugPrint('[reverse] handle method=$method supplyExport=${supplyExport != null}');
       if (method == HostOnDeviceToolExecutor.reverseMethodName) {
-        return _forwardOnDeviceComplete(
+        return forwardOnDeviceComplete(
           supplyExport!,
           params,
           // 主体可辨（S07b）：优先内核解析身份；HTTP 面无内核身份回退既有键。
@@ -88,7 +97,7 @@ void wireSampling({
         );
       }
       if (method == HostSupplyTaskStatusExecutor.reverseMethodName) {
-        return _forwardSupplyTaskStatus(params,
+        return forwardSupplyTaskStatus(params,
             callerKeyOverride: caller?.packageName);
       }
       onSamplingBegin?.call();
@@ -125,7 +134,7 @@ String _callerIdentityOf(McpToolFace face) {
 
 /// host/onDeviceTaskStatus 反向请求转发（W6-a 拉取接缝）：Pull = 交付
 /// 真理源——pendingDelivery 查询即置 delivered 回结果；M5 身份过滤。
-Future<Map<String, Object?>?> _forwardSupplyTaskStatus(
+Future<Map<String, Object?>?> forwardSupplyTaskStatus(
     Object? params,
     {String? callerKeyOverride}) async {
   final p = params is Map<String, Object?> ? params : <String, Object?>{};
@@ -157,7 +166,7 @@ Future<Map<String, Object?>?> _forwardSupplyTaskStatus(
 /// 可知红线）。[callerKeyOverride] = S07b 平台侧已解析的调用方包名（内核
 /// UID 推导），优先于 per-face 实例键（主体可辨：配额记账与死亡打断按
 /// 内核身份裁决，非 transport 元数据）。
-Future<Map<String, Object?>?> _forwardOnDeviceComplete(
+Future<Map<String, Object?>?> forwardOnDeviceComplete(
     HostOnDeviceToolExecutor export, Object? params,
     {String? callerKeyOverride}) async {
   final p = params is Map<String, Object?> ? params : <String, Object?>{};
@@ -169,6 +178,9 @@ Future<Map<String, Object?>?> _forwardOnDeviceComplete(
     ),
     callerKeyOverride: callerKeyOverride,
   );
+  final rc = r.content.toString();
+  debugPrint(
+      '[reverse] execute 返回 isError=${r.isError} content=${rc.length > 200 ? rc.substring(0, 200) : rc}');
   if (r.isError) {
     throw McpRpcException(-32000, r.content);
   }
@@ -177,4 +189,63 @@ Future<Map<String, Object?>?> _forwardOnDeviceComplete(
     'model': 'goodhub-on-device',
     'content': {'type': 'text', 'text': r.content},
   };
+}
+
+/// 端侧反向请求驻留接线（W6-a 共享件，2026-11-08 联调缺陷 C 修复）。
+///
+/// **缺口**：反向路径此前只在网关装配（[GatewayController._assemble]）与聊天
+/// 装配（`_assembleInner`，caps.sampling 门控）接线；驻留场景（冷启动 +
+/// task-consume 常驻，无聊天无网关）两路都不触发——goodshare 的反向帧经其
+/// task-consume client 的 Binder 传输到达，却无 handler 应答，恒 `result:null`
+/// （真机实证 07:25/07:33：`withCaller=false` → `{"id":"srv_N","result":null}`，
+/// goodshare 侧判「宿主未连入」）。
+///
+/// 本件把端侧两个 Tier 1 反向 method（`host/onDeviceComplete` +
+/// `host/onDeviceTaskStatus`）注册到**指定 client 的传输**——与 [wireSampling]
+/// 同款 S1c 身份探测；执行逻辑单源复用 [forwardOnDeviceComplete] /
+/// [forwardSupplyTaskStatus]（禁双实现漂移）。**sampling 云端不外借**：非端侧
+/// method 回 null（驻留场景无人值守路径不外借宿主推理资源，对齐 _assembleInner
+/// 纪律）。
+void wireOnDeviceReverse({
+  required McpClient client,
+  required OnDeviceCapabilityService onDeviceCapability,
+  required String callerKey,
+  SupplyQuota? supplyQuota,
+}) {
+  final export = HostOnDeviceToolExecutor(
+    onDeviceCapability,
+    quota: supplyQuota ?? SupplyQuota(),
+    callerKey: callerKey,
+    // W6-a 入池接线（同 wireSampling 缺陷 A 修复）：驻留场景同款挂池。
+    taskPool: SupplyTaskPool.instance,
+  );
+  Future<Map<String, Object?>?> handle(
+    String method,
+    Object? params,
+    ResolvedCallerIdentity? caller,
+  ) async {
+    if (method == HostOnDeviceToolExecutor.reverseMethodName) {
+      return forwardOnDeviceComplete(
+        export,
+        params,
+        // 主体可辨（S07b）：优先帧携带的内核解析身份，缺失回退接线方声明键。
+        callerKeyOverride: caller?.packageName ?? callerKey,
+      );
+    }
+    if (method == HostSupplyTaskStatusExecutor.reverseMethodName) {
+      return forwardSupplyTaskStatus(
+        params,
+        callerKeyOverride: caller?.packageName ?? callerKey,
+      );
+    }
+    return null;
+  }
+
+  final transport = client.transport;
+  if (transport is CallerIdentityTransport) {
+    transport.onServerRequestWithCaller =
+        (method, params, caller) => handle(method, params, caller);
+  } else {
+    client.onServerRequest = (method, params) => handle(method, params, null);
+  }
 }

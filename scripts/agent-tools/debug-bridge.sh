@@ -31,6 +31,12 @@ CAP_KEEP=3               # 保留最近几个分片
 CAP_INTERVAL=2            # /debug/state revision 轮询间隔（秒）
 CAP_LINES=40              # focus 每类最多输出条数
 CAP_ALL=0
+# 多包联采（联调设施 §G5）：空 = 仅当前 --app/env 包（会话根即叶子，旧形态）；
+# __BOTH__ = canonical 双包（goodhub+goodshare）；其余 = 逗号/空格分隔包名清单。
+# 多包会话 = 根 meta.json 带 packages 键 + 逐包子目录（叶子内布局与旧形态同构）。
+CAP_PACKAGES=""
+# 设备级 freezer 命令（§G4）的位置参数包名（缺省 = $APP_PACKAGE）。
+FREEZE_PKG=""
 
 # 宿主 app 包名（前台守卫 / soft-hint 判定用）。默认 GoodHub；跨项目分发时
 # 各仓副本用 DEBUG_BRIDGE_APP_PACKAGE 覆盖（goodshare / goodTemplate /
@@ -77,11 +83,22 @@ debug-bridge — AI 真机调试桥 CLI（薄管道：只做 adb forward + token
                               守卫——就是要点系统层；软提示当前前台防误触）
   capture <start|stop|tail|status> [--dir <path>] [--max-lines N] [--keep N]
                               [--interval S] [--lines N] [--all]
+                              [--packages <a,b> | --both]
                               会话级日志采集：流式 logcat 按目标 App 全部 pid
                               （含 :engine）过滤落 device.*.log 分片；桥结构化
                               日志按 /debug/state logRevision 变化增量抓取并
                               本地去重落 app.jsonl；tail 生成 focus 重点摘要。
                               start 后台常驻、stop 幂等收尾、status 报体量。
+                              --packages / --both = 多包同窗口联采（§G5）：根
+                              会话下逐包子目录（叶子内布局与单包同构），tail
+                              汇聚各叶 focus 成根 focus.md——跨仓对账免手工
+                              grep 对时间戳。
+  freeze-check [package]      报告进程冻结态（§G4 设备级，纯 adb 无桥依赖）：
+                              isFrozen=true 期间反向请求悬挂、两侧零日志——
+                              环境事实 B 的结构化出口。
+  unfreeze [package]          前台化解冻（monkey LAUNCHER 拉起 + 轮询确认，
+                              最长 10s）；已解冻则 no-op。联调节奏适配：
+                              触发宿主消费前先 unfreeze。
 
 示例:
   toolbox run debug-bridge --device <SERIAL> ui-tree
@@ -148,11 +165,46 @@ precheck() {
 # pidof 给出目标包全部 pid，用 logcat 第 3/4 列过滤——同机多 App 各持桥
 # （端口互异、token 各自隔离），按 pid 匹配天然防串台。只认含 token= 的
 # 启动行，[DEGRADE] 启动失败行不带 token，天然排除。
+# 凭据缓存回退（联调设施 §G1 强化）：logcat token 启动行会被环形缓冲冲掉
+# （高频日志实测 <10min），App 未重启时 pid 不变 → 缓存凭据可用。校验双闸 =
+# 当前 pid ∈ 缓存 pid 集（防串台）+ HTTP ping 3s 通（防失活）；失配即弃。
+# capture 的 bridge.json 同思路（§G5 先例），此处覆盖 CLI 全命令面。
+creds_dir() { printf '%s' "${DEBUG_BRIDGE_CREDS_DIR:-/tmp/.debug-bridge-creds}"; }
+
+creds_put() { # $1 = pids（空格分隔）
+  local d; d="$(creds_dir)"; mkdir -p "$d" 2>/dev/null || return 0
+  printf '%s' "$TOKEN" > "$d/$DEVICE-$APP_PACKAGE.token" 2>/dev/null || return 0
+  printf '%s' "$PORT" > "$d/$DEVICE-$APP_PACKAGE.port" 2>/dev/null || return 0
+  printf '%s\n' "$1" > "$d/$DEVICE-$APP_PACKAGE.pids" 2>/dev/null || return 0
+  chmod 600 "$d/$DEVICE-$APP_PACKAGE.token" \
+    "$d/$DEVICE-$APP_PACKAGE.port" "$d/$DEVICE-$APP_PACKAGE.pids" 2>/dev/null || true
+}
+
+creds_get() { # 依赖全局 pids_g（resolve_bridge 置位）
+  local d; d="$(creds_dir)"
+  local pf="$d/$DEVICE-$APP_PACKAGE.pids"
+  [ -f "$pf" ] || return 1
+  local cpids cur ok=""
+  cpids="$(tr -d '\r' < "$pf" 2>/dev/null)"
+  for cur in $pids_g; do
+    case " $cpids " in *" $cur "*) ok=1 ;; esac
+  done
+  [ -n "$ok" ] || return 1
+  TOKEN="$(cat "$d/$DEVICE-$APP_PACKAGE.token" 2>/dev/null)"
+  PORT="$(cat "$d/$DEVICE-$APP_PACKAGE.port" 2>/dev/null)"
+  [ -n "$TOKEN" ] && [ -n "$PORT" ] || return 1
+  adb -s "$DEVICE" forward "tcp:$PORT" "tcp:$PORT" >/dev/null 2>&1 || return 1
+  curl -sS --max-time 3 -H "Authorization: Bearer $TOKEN" \
+    "http://127.0.0.1:$PORT/debug/state" >/dev/null 2>&1 || return 1
+  return 0
+}
+
 resolve_bridge() {
   local pids line
   pids="$(adb -s "$DEVICE" shell pidof "$APP_PACKAGE" 2>/dev/null \
     | tr -d '\r' | tr '\n' ' ')"
   [ -n "${pids// /}" ] || return 1
+  pids_g="$pids"
   line="$(adb -s "$DEVICE" logcat -d 2>/dev/null \
     | grep -aF 'token=' \
     | grep -aF '[debug-bridge]' \
@@ -160,12 +212,18 @@ resolve_bridge() {
         BEGIN { n=split(p, a, /[ \t]+/); for (i=1;i<=n;i++) if (a[i] != "") ok[a[i]]=1 }
         ($3 in ok) || ($4 in ok) { last=$0 }
         END { print last }')"
-  [ -n "$line" ] || return 1
-  TOKEN="$(printf '%s' "$line" | grep -oE 'token=[^ ]+' | tail -1 \
-    | cut -d= -f2 | tr -d '\r[:space:]')"
-  PORT="$(printf '%s' "$line" | grep -oE '127\.0\.0\.1:[0-9]+' | head -1 \
-    | cut -d: -f2 | tr -d '\r[:space:]')"
-  [ -n "$TOKEN" ] && [ -n "$PORT" ]
+  if [ -n "$line" ]; then
+    TOKEN="$(printf '%s' "$line" | grep -oE 'token=[^ ]+' | tail -1 \
+      | cut -d= -f2 | tr -d '\r[:space:]')"
+    PORT="$(printf '%s' "$line" | grep -oE '127\.0\.0\.1:[0-9]+' | head -1 \
+      | cut -d: -f2 | tr -d '\r[:space:]')"
+    if [ -n "$TOKEN" ] && [ -n "$PORT" ]; then
+      creds_put "$pids"
+      return 0
+    fi
+  fi
+  # DEGRADE 回退：token 行被冲 ≠ 桥死了——凭据缓存双闸校验后复用。
+  creds_get
 }
 
 # --app 别名 → 包名映射（统一入口分层切换；新 App 接入 = 加一行映射）。
@@ -188,6 +246,53 @@ foreground_pkg() {
     | grep -E 'topResumedActivity|ResumedActivity' | tail -1 \
     | grep -oE 'u0 [a-zA-Z0-9_.]+/' | head -1 \
     | awk '{print $2}' | sed 's|/$||'
+}
+
+# ---- 设备级 freezer 命令（联调设施 §G4）----
+# 环境事实 B（2026-11-08 实证）：宿主退后台 ~2min 被 CachedAppOptimizer 冻结，
+# 期间反向请求悬挂、两侧零日志整链路静默。此二命令把「查冻结/前台化解冻」
+# 工具化，替代手工 dumpsys + am start；纯 adb 无桥依赖。
+
+freeze_state() { # $1=pkg → stdout "pid frozen"；进程不存在 return 1
+  local pid frozen
+  pid="$(adb -s "$DEVICE" shell pidof "$1" 2>/dev/null | tr -d '\r' | awk '{print $1}')"
+  [ -n "$pid" ] || return 1
+  # ProcessRecord 行含 "<pid>:<pkg>/..."，isFrozen 在其下 ~10 行内；-A 12 截取
+  # 到下一进程块之前足够命中（实证格式 2026-11-08）。
+  frozen="$(adb -s "$DEVICE" shell dumpsys activity processes 2>/dev/null \
+    | grep -aA 12 "$pid:$1" | grep -aoE 'isFrozen=(true|false)' | head -1 | cut -d= -f2)"
+  printf '%s %s\n' "$pid" "${frozen:-unknown}"
+}
+
+cmd_freeze_check() {
+  local pkg="${1:-$APP_PACKAGE}" st
+  st="$(freeze_state "$pkg")" || fail "未发现 $pkg 进程" "am start 拉起后重试；或核对包名"
+  printf '{"ok":true,"package":"%s","pid":%s,"frozen":"%s"}\n' \
+    "$pkg" "${st%% *}" "${st##* }"
+}
+
+cmd_unfreeze() {
+  local pkg="${1:-$APP_PACKAGE}" st i=0
+  st="$(freeze_state "$pkg")" || fail "未发现 $pkg 进程" "am start 拉起后重试"
+  if [ "${st##* }" = "false" ]; then
+    printf '{"ok":true,"package":"%s","pid":%s,"frozen":false,"waitedSeconds":0}\n' "$pkg" "${st%% *}"
+    exit 0
+  fi
+  # 前台化解冻（实证有效）：monkey LAUNCHER 拉起到前台 → freezer 即刻释放；
+  # 轮询确认防假解冻（am start 对已存在任务可能只 bring-to-front 不触发 resume）。
+  adb -s "$DEVICE" shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 \
+    >/dev/null 2>&1 \
+    || fail "前台化失败" "手动 am start -n $pkg/<MainActivity> 后重试"
+  while [ "$i" -lt 10 ]; do
+    sleep 1; i=$((i+1))
+    st="$(freeze_state "$pkg" 2>/dev/null)" || continue
+    if [ "${st##* }" = "false" ]; then
+      printf '{"ok":true,"package":"%s","pid":%s,"frozen":false,"waitedSeconds":%d}\n' \
+        "$pkg" "${st%% *}" "$i"
+      exit 0
+    fi
+  done
+  fail "解冻超时（10s）仍 frozen" "dumpsys activity processes 手查 isFrozen；确认设备无省电白名单拦截"
 }
 
 # ---- capture：会话级日志采集 ----
@@ -224,16 +329,34 @@ cap_pids() {
     | tr -d '\r' | sort -u
 }
 
-cap_start() {
-  cap_root
-  mkdir -p "$CAP_ROOT" || fail "建采集根目录失败: $CAP_ROOT" "检查路径权限"
-  CAP_SESSION="$CAP_ROOT/session-$(date +%Y%m%d-%H%M%S)-$$"
-  mkdir -p "$CAP_SESSION" || fail "建会话目录失败: $CAP_SESSION" "检查路径权限"
+# 会话叶子发现（§G5 多包形态分派）：根 meta.json 带 packages 键 = 多包会话
+# （逐包子目录为叶子）；无该键 = 旧单包会话（根即叶子，stop/status/tail 向后兼容）。
+cap_leaves() {
+  local pkgs p
+  pkgs="$(python3 -c '
+import json, sys
+try: print(" ".join(json.load(open(sys.argv[1], encoding="utf-8")).get("packages", [])))
+except Exception: pass
+' "$CAP_SESSION/meta.json" 2>/dev/null)"
+  if [ -n "$pkgs" ]; then
+    for p in $pkgs; do printf '%s/%s\n' "$CAP_SESSION" "$p"; done
+  else
+    printf '%s\n' "$CAP_SESSION"
+  fi
+}
+
+# 单包叶子启动（§G5 重构：原 cap_start 本体参数化——包名经参数与环境双通道
+# 传入，采集器继承 DEBUG_BRIDGE_APP_PACKAGE，多包时不再依赖 --app 别名）。
+cap_start_one() { # $1=pkg  $2=叶子会话目录；成功无输出，失败 fail 退出
+  local pkg="$1"
+  CAP_SESSION="$2"
+  APP_PACKAGE="$pkg"
+  export DEBUG_BRIDGE_APP_PACKAGE="$pkg"
+  mkdir -p "$CAP_SESSION" || fail "建叶子会话目录失败: $CAP_SESSION" "检查路径权限"
   local pids pids_json bridge_port self
   pids="$(cap_pids)"
-  [ -n "$pids" ] || fail "未发现 $APP_PACKAGE 进程" "确认 App 已启动：am start -n $APP_PACKAGE/.MainActivity"
+  [ -n "$pids" ] || fail "未发现 $pkg 进程" "确认 App 已启动：am start -n $pkg/<MainActivity>"
   printf '%s\n' "$pids" > "$CAP_SESSION/pids"
-  pids_json="$(printf '%s\n' "$pids" | awk 'NF { printf "%s\"%s\"", (n++ ? "," : ""), $1 }')"
   # DEGRADE: 桥未发现不阻断启动——device 流式通道独立可用，采集器会周期重试。
   bridge_port=""
   if resolve_bridge 2>/dev/null; then
@@ -258,27 +381,73 @@ json.dump({
   "maxLines": int(maxl), "keep": int(keep), "interval": int(interval),
   "note": "device.*.log 为流式 logcat 原文（含桥 token）；app.jsonl 为 /debug/logs 结构化条目"
 }, open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-' "$CAP_SESSION/meta.json" "$DEVICE" "$APP_PACKAGE" "${APP_NAME:-goodhub}" "$pids" "$bridge_port" \
+' "$CAP_SESSION/meta.json" "$DEVICE" "$pkg" "$pkg" "$pids" "$bridge_port" \
     "$CAP_MAX_LINES" "$CAP_KEEP" "$CAP_INTERVAL" \
     || fail "写 meta.json 失败" "检查 python3 可用性"
   : > "$CAP_SESSION/app.jsonl"
   : > "$CAP_SESSION/app.seen"
-  command -v setsid >/dev/null 2>&1 \
-    || fail "缺 setsid（util-linux），无法后台常驻采集器" "安装 util-linux 或改用前台会话"
   self="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
   # 采集器与 logcat 管线同进程组，stop 一次收干净；无散落持久脚本。
   # 显式经 bash 执行：工具池脚本无 +x 位（toolbox shim 用 bash 调），setsid
-  # 直接 exec 会 Permission denied。
-  setsid bash "$self" --device "$DEVICE" --app "${APP_NAME:-goodhub}" _collector \
+  # 直接 exec 会 Permission denied。包名走 env（resolve_bridge 按 APP_PACKAGE）。
+  DEBUG_BRIDGE_APP_PACKAGE="$pkg" setsid bash "$self" --device "$DEVICE" _collector \
       "$CAP_SESSION" "$CAP_MAX_LINES" "$CAP_KEEP" "$CAP_INTERVAL" \
       >> "$CAP_SESSION/collector.log" 2>&1 < /dev/null &
   local cpid=$!
   printf '%s\n' "$cpid" > "$CAP_SESSION/collector.pid"
-  printf '%s\n' "$CAP_SESSION" > "$CAP_ROOT/current"
   sleep 1
-  cap_pid_alive || fail "采集器启动后立即退出" "查看 $CAP_SESSION/collector.log"
-  printf '{"ok":true,"session":"%s","pids":[%s],"collectorPid":%s,"bridgePort":%s,"deviceChannel":"streaming","appChannel":"revision-polling"}\n' \
-    "$CAP_SESSION" "$pids_json" "$cpid" "${bridge_port:-null}"
+  cap_pid_alive || fail "采集器启动后立即退出（$pkg）" "查看 $CAP_SESSION/collector.log"
+}
+
+cap_start() {
+  cap_root
+  mkdir -p "$CAP_ROOT" || fail "建采集根目录失败: $CAP_ROOT" "检查路径权限"
+  # 包清单解析（§G5 多包联采）：--both 别名 / --packages 逗号分隔；空 = 单包
+  # （兼容旧用法，会话根即叶子）。
+  local pkgs p leaves_json=""
+  case "$CAP_PACKAGES" in
+    __BOTH__) pkgs="com.zzh.goodhub com.zzh.goodshare" ;;
+    "")       pkgs="$APP_PACKAGE" ;;
+    *)        pkgs="$(printf '%s' "$CAP_PACKAGES" | tr ',' ' ')" ;;
+  esac
+  for p in $pkgs; do
+    printf '%s' "$p" | grep -Eq '^[A-Za-z0-9._]+$' \
+      || fail "非法包名: $p" "包名仅字母数字._"
+  done
+  local sroot
+  sroot="$CAP_ROOT/session-$(date +%Y%m%d-%H%M%S)-$$"
+  CAP_SESSION="$sroot"
+  mkdir -p "$CAP_SESSION" || fail "建会话目录失败: $CAP_SESSION" "检查路径权限"
+  # 先验后动：全部包进程在场才启动任何采集器（防半启动会话收不了口）。
+  for p in $pkgs; do
+    APP_PACKAGE="$p" cap_pids | grep -q . \
+      || fail "未发现 $p 进程" "确认 App 已启动：am start -n $p/<MainActivity>"
+  done
+  command -v setsid >/dev/null 2>&1 \
+    || fail "缺 setsid（util-linux），无法后台常驻采集器" "安装 util-linux 或改用前台会话"
+  # 根 meta：packages 键是「多包会话」标识（cap_leaves 按此分派叶子）。
+  python3 -c '
+import json, sys, datetime
+out, device, pkgs = sys.argv[1], sys.argv[2], sys.argv[3:]
+json.dump({
+  "startedAt": datetime.datetime.now().isoformat(timespec="seconds"),
+  "device": device, "packages": pkgs,
+  "note": "多包会话：逐包子目录，叶子内布局与单包同构；device.*.log 为流式 logcat 原文（含桥 token）；app.jsonl 为 /debug/logs 结构化条目"
+}, open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+' "$CAP_SESSION/meta.json" "$DEVICE" $pkgs \
+    || fail "写根 meta.json 失败" "检查 python3 可用性"
+  # ⚠ 叶路径必须从局部 $sroot 拼接——cap_start_one 会改写全局 CAP_SESSION
+  # （同 shell 函数调用），用 $CAP_SESSION 拼接会嵌套上一轮叶子路径。
+  for p in $pkgs; do
+    cap_start_one "$p" "$sroot/$p"
+    leaves_json="$leaves_json\"$sroot/$p\","
+  done
+  CAP_SESSION="$sroot"
+  printf '%s\n' "$CAP_SESSION" > "$CAP_ROOT/current"
+  printf '{"ok":true,"session":"%s","packages":[%s],"leaves":[%s],"deviceChannel":"streaming","appChannel":"revision-polling"}\n' \
+    "$CAP_SESSION" \
+    "$(for p in $pkgs; do printf '"%s",' "$p"; done | sed 's/,$//')" \
+    "$(printf '%s' "$leaves_json" | sed 's/,$//')"
 }
 
 # 内部子命令：由 capture start 经 setsid 后台拉起，勿手调。
@@ -370,8 +539,7 @@ print(n)
   done
 }
 
-cap_stop() {
-  cap_root; cap_current
+cap_stop_one() { # 叶级 stop（CAP_SESSION = 叶目录）
   if cap_pid_alive; then
     local p i=0; p="$(cat "$CAP_SESSION/collector.pid")"
     kill -TERM "-$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null || true
@@ -393,25 +561,46 @@ m["stoppedAt"]=datetime.datetime.now().isoformat(timespec="seconds")
 json.dump(m, open(p,"w",encoding="utf-8"), ensure_ascii=False, indent=1)
 ' "$CAP_SESSION/meta.json" \
     || echo "[DEGRADE] capture: meta.json stoppedAt 写入失败" >> "$CAP_SESSION/collector.log"
+}
+
+cap_stop() {
+  cap_root; cap_current
+  local root="$CAP_SESSION" leaf
+  for leaf in $(cap_leaves); do CAP_SESSION="$leaf"; cap_stop_one; done
+  CAP_SESSION="$root"
+  # 根 meta 也补 stoppedAt（tail 汇总头读取它报「止」时间）。
+  python3 -c '
+import json, sys, datetime
+p=sys.argv[1]
+try: m=json.load(open(p, encoding="utf-8"))
+except Exception: m={}
+m["stoppedAt"]=datetime.datetime.now().isoformat(timespec="seconds")
+json.dump(m, open(p,"w",encoding="utf-8"), ensure_ascii=False, indent=1)
+' "$CAP_SESSION/meta.json" 2>/dev/null || true
   printf '{"ok":true,"session":"%s","stopped":true}\n' "$CAP_SESSION"
 }
 
 cap_status() {
   cap_root; cap_current
-  local app_lines parts device_lines bytes running
-  app_lines="$(wc -l < "$CAP_SESSION/app.jsonl" 2>/dev/null | tr -d ' ')"
-  parts="$(find "$CAP_SESSION" -maxdepth 1 -name 'device.*.log' | wc -l | tr -d ' ')"
-  device_lines="$(cat "$CAP_SESSION"/device.*.log 2>/dev/null | wc -l | tr -d ' ')"
+  local root="$CAP_SESSION" leaf running=false l_app l_dev l_parts
+  local sum_app=0 sum_dev=0 sum_parts=0 bytes
+  for leaf in $(cap_leaves); do
+    CAP_SESSION="$leaf"
+    l_app="$(wc -l < "$CAP_SESSION/app.jsonl" 2>/dev/null | tr -d ' ')"; l_app="${l_app:-0}"
+    l_dev="$(cat "$CAP_SESSION"/device.*.log 2>/dev/null | wc -l | tr -d ' ')"; l_dev="${l_dev:-0}"
+    l_parts="$(find "$CAP_SESSION" -maxdepth 1 -name 'device.*.log' 2>/dev/null | wc -l | tr -d ' ')"; l_parts="${l_parts:-0}"
+    sum_app=$((sum_app + l_app)); sum_dev=$((sum_dev + l_dev)); sum_parts=$((sum_parts + l_parts))
+    if cap_pid_alive; then running=true; fi
+  done
+  CAP_SESSION="$root"
   bytes="$(du -sk "$CAP_SESSION" 2>/dev/null | cut -f1)"
-  if cap_pid_alive; then running=true; else running=false; fi
   printf '{"ok":true,"session":"%s","running":%s,"appLines":%s,"deviceLines":%s,"parts":%s,"kbytes":%s}\n' \
-    "$CAP_SESSION" "$running" "${app_lines:-0}" "${device_lines:-0}" "${parts:-0}" "${bytes:-0}"
+    "$CAP_SESSION" "$running" "$sum_app" "$sum_dev" "$sum_parts" "${bytes:-0}"
 }
 
 # focus 摘要：只看结构化 warning/error + device 异常关键词 + 时间线首尾；
 # 输出脱敏 token=...，原文仍留在会话目录（禁入 git / context/）。
-cap_tail() {
-  cap_root; cap_current
+cap_focus_one() { # $1 = 叶会话目录；生成叶 focus.md 并输出
   python3 -c '
 import json, sys, os, glob, re
 sess, lines, show_all = sys.argv[1], int(sys.argv[2]), sys.argv[3] == "1"
@@ -458,8 +647,43 @@ out += ["- " + os.path.basename(x) for x in parts]
 text = "\n".join(out) + "\n"
 open(os.path.join(sess, "focus.md"), "w", encoding="utf-8").write(text)
 sys.stdout.write(text)
-' "$CAP_SESSION" "$CAP_LINES" "$CAP_ALL" \
+' "$1" "$CAP_LINES" "$CAP_ALL" \
     || fail "生成 focus 失败" "检查 python3 与会话目录完整性"
+}
+
+cap_tail() {
+  cap_root; cap_current
+  local root="$CAP_SESSION" leaves leaf
+  leaves="$(cap_leaves)"
+  if [ "$leaves" = "$CAP_SESSION" ]; then
+    # 旧单包会话（根即叶）：保持原输出形态（根 focus.md 直接生成）。
+    cap_focus_one "$CAP_SESSION"
+    return 0
+  fi
+  # 多包会话（§G5）：各叶先生成 focus.md，再汇聚成根 focus.md——跨仓对账
+  # 出口，两包时间线同根 meta 起止窗，免手工 grep 对时间戳。
+  for leaf in $leaves; do cap_focus_one "$leaf" > /dev/null; done
+  python3 -c '
+import json, sys, os
+root, leaves = sys.argv[1], sys.argv[2:]
+out = ["# capture focus ｜ " + os.path.basename(root) + "（%d 包联采）" % len(leaves), ""]
+try:
+    m = json.load(open(os.path.join(root, "meta.json"), encoding="utf-8"))
+    out.append("- packages: %s ｜ 起 %s ｜ 止 %s" % (", ".join(m.get("packages", [])), m.get("startedAt","?"), m.get("stoppedAt","进行中")))
+except Exception:
+    pass
+for leaf in leaves:
+    p = os.path.join(leaf, "focus.md")
+    out += ["", "---", ""]
+    if os.path.exists(p):
+        out.append(open(p, encoding="utf-8").read().rstrip())
+    else:
+        out.append("## %s：focus 缺失（采集器未产出）" % os.path.basename(leaf))
+text = "\n".join(out) + "\n"
+open(os.path.join(root, "focus.md"), "w", encoding="utf-8").write(text)
+sys.stdout.write(text)
+' "$CAP_SESSION" $leaves \
+    || fail "汇聚根 focus 失败" "检查各叶 focus.md 与 python3"
 }
 
 while [ $# -gt 0 ]; do
@@ -500,6 +724,12 @@ while [ $# -gt 0 ]; do
       ;;
     foreground)
       CMD=foreground; shift ;;
+    freeze-check)
+      CMD=freeze_check; shift
+      if [ $# -gt 0 ] && [ -n "${1:-}" ]; then FREEZE_PKG="$1"; shift; fi ;;
+    unfreeze)
+      CMD=unfreeze; shift
+      if [ $# -gt 0 ] && [ -n "${1:-}" ]; then FREEZE_PKG="$1"; shift; fi ;;
     system-ui)
       CMD=system_ui; shift; SU_SUB="${1:-}"; [ $# -gt 0 ] && shift ;;
     system-tap)
@@ -576,7 +806,12 @@ while [ $# -gt 0 ]; do
           --lines) CAP_LINES="${2:-}"; shift 2
             valid_uint "$CAP_LINES" || fail "非法 --lines: $CAP_LINES" "正整数，如 40" ;;
           --all) CAP_ALL=1; shift ;;
-          *) fail "capture 未知参数: $1" "参数须放在 capture 子命令之后；可用 --dir / --max-lines / --keep / --interval / --lines / --all" ;;
+          --packages) CAP_PACKAGES="${2:-__EMPTY__}"; shift 2
+            [ "$CAP_PACKAGES" != "__EMPTY__" ] || fail "--packages 缺包名列表" "逗号分隔，如 com.zzh.goodhub,com.zzh.goodshare"
+            printf '%s' "$CAP_PACKAGES" | grep -Eq '^[A-Za-z0-9.,_-]+$' \
+              || fail "非法 --packages: $CAP_PACKAGES" "包名仅字母数字._-，逗号分隔" ;;
+          --both) CAP_PACKAGES="__BOTH__"; shift ;;
+          *) fail "capture 未知参数: $1" "参数须放在 capture 子命令之后；可用 --dir / --max-lines / --keep / --interval / --lines / --all / --packages / --both" ;;
         esac
       done
       ;;
@@ -607,6 +842,12 @@ fi
 [ -n "$DEVICE" ] || fail "缺 --device" "adb devices 查串号后传 --device <SERIAL>"
 map_app
 precheck || fail "adb/curl 不可用或设备不在线" "adb devices；export PATH=\$HOME/android-sdk/platform-tools:\$PATH"
+
+# —— 设备级命令早分派（§G4）：纯 adb，不依赖桥可用性 ——
+case "$CMD" in
+  freeze_check) cmd_freeze_check "$FREEZE_PKG"; exit $? ;;
+  unfreeze) cmd_unfreeze "$FREEZE_PKG"; exit $? ;;
+esac
 
 # —— capture 早分派：不依赖桥可用性（collector 自行发现/重连）——
 case "$CMD" in
@@ -761,7 +1002,9 @@ PY
 esac
 
 if [ -n "$BODY" ]; then
-  OUT="$(curl -sS --max-time 10 -X POST -H "$AUTH" -H "$CONTENT" -d "$BODY" "$URL" 2>&1)" \
+  # action POST 可经 DBG_HTTP_TIMEOUT 放宽（默认 10s）：慢动作（drain_supply_pool
+  # 同步等端侧推理完成）由调用方显式放宽，GET 面保持 10s 快失败。
+  OUT="$(curl -sS --max-time "${DBG_HTTP_TIMEOUT:-10}" -X POST -H "$AUTH" -H "$CONTENT" -d "$BODY" "$URL" 2>&1)" \
     || fail "端点请求失败" "$OUT"
 else
   OUT="$(curl -sS --max-time 10 -H "$AUTH" "$URL" 2>&1)" \
