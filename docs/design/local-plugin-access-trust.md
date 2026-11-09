@@ -160,4 +160,4 @@ updated: 2026-10-14
 | `tools/list_changed` 下行（§6 Schema 热同步，规划） | 网关下行通道（G1~G5，thirdconnect §9.2） |
 | 协议版本常量（§7） | `kMcpProtocolVersion`（`lib/mcp/mcp_client.dart`）；SDK 版本绑定 thirdconnect §11.5 |
 | `use_server` 聚焦元工具（§1.7 替代方案） | `lib/coordinator/discovery_executor.dart` + `ToolRouter.focusedServer/focusedSchemas`（独占守卫）；单测 `test/coordinator/discovery_executor_test.dart` |
-| 真机 e2e（§8.1） | `integration_test/goodshare_toolrouter_e2e_test.dart`；Manifest/指纹门禁 `test/mcp/local_plugin_manifest_gate_test.dart` + `local_plugin_signature_test.dart` |
+| 真机 e2e（§8.1） | `integration_test/dummy_toolrouter_e2e_test.dart`；Manifest/指纹门禁 `test/mcp/local_plugin_manifest_gate_test.dart` + `local_plugin_signature_test.dart` |

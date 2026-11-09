@@ -71,10 +71,15 @@ void main() {
     // ---- e2e-1b 聚合 tools/list：前缀 <server_id>__<tool> 透传 ----
     final names = handler.toolsList().map((t) => t['name'] as String).toList();
     debugPrint('[e2e] tools: $names');
-    expect(names, contains('dummy__echo'), reason: '应聚合 echo');
-    expect(names, contains('dummy__add'), reason: '应聚合 add');
-    expect(names, contains('dummy__slowEcho'), reason: '应聚合 slowEcho');
-    expect(names, contains('dummy__reverseDemo'), reason: '应聚合 reverseDemo');
+    expect(names, contains('dummy__echo'), reason: '应聚合 echo（visibility=SHARED）');
+    // default-deny 海关（mcp_gateway_handler.dart 投影管道）：visibility 缺失 =
+    // PRIVATE = 不向外部 Agent 暴露目录。负断言把该契约钉进回归。
+    expect(names, isNot(contains('dummy__add')),
+        reason: 'add 未标 SHARED，不应进对外聚合目录（default-deny）');
+    expect(names, isNot(contains('dummy__slowEcho')),
+        reason: 'slowEcho 未标 SHARED，不应进对外聚合目录');
+    expect(names, isNot(contains('dummy__reverseDemo')),
+        reason: 'reverseDemo 未标 SHARED，不应进对外聚合目录');
 
     // ---- e2e-2 Binder 同步链路：dummy__slowEcho（progress + 终帧）----
     final r1 = await _withTimeout(
@@ -141,9 +146,14 @@ void main() {
         'method': 'tools/list',
       }), 'http tools/list');
       final tools = (listResp['result'] as Map)['tools'] as List;
-      expect(tools.any((t) => (t as Map)['name'] == 'dummy__slowEcho'), isTrue,
-          reason: 'PC 经 /mcp 应看到 dummy__slowEcho');
+      final toolNames = tools.map((t) => (t as Map)['name'] as String).toList();
+      expect(toolNames, isNot(contains('dummy__slowEcho')),
+          reason: 'PC 经 /mcp 目录不应看到 PRIVATE 工具（default-deny 海关）');
+      expect(toolNames, contains('dummy__echo'),
+          reason: 'PC 经 /mcp 目录应看到 SHARED 工具 dummy__echo');
 
+      // 目录收窄 ≠ ACL：PRIVATE 工具知名直达仍可达（调用方可信性由信任
+      // 白名单 / L2 确认卡独立把关，可见性不是安全边界）。
       final (sid3, callResp) = await _withTimeout(_rpc(client, sid2, {
         'jsonrpc': '2.0',
         'id': 3,

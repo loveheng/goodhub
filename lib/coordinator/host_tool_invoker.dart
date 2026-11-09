@@ -26,6 +26,7 @@ import '../resources/resource_store.dart';
 import '../sandbox/memory_store.dart';
 import '../llm/on_device_capability.dart';
 import 'agent_loop.dart';
+import 'host_ai_complete_tool.dart';
 import 'host_on_device_tool.dart';
 import 'supply_quota.dart';
 import 'supply_task_pool.dart';
@@ -122,9 +123,12 @@ Future<HostToolInvokerPort> assembleHostToolInvoker({
     // host 面照常装配，仅少一类端侧推理工具（导出面降级，不阻断装配）。
     if (onDeviceCapability != null)
       (inner) => HostOnDeviceToolExecutor(onDeviceCapability,
-          quota: supplyQuota, taskPool: taskPool),
+          inner: inner, quota: supplyQuota, taskPool: taskPool),
     if (taskPool != null)
-      (inner) => HostSupplyTaskStatusExecutor(taskPool),
+      (inner) => HostSupplyTaskStatusExecutor(taskPool, inner: inner),
+    // AI 能力原语（M-D 网关投影）：语义单源 = AiCompleteService.completeCore
+    //（受理链裁决不在此层；执行器只做形状适配）。
+    (inner) => HostAiCompleteExecutor(inner: inner),
   ], fallback: const _NoHostToolExecutor());
   return HostToolInvokerPort(
     executor: executor,
@@ -147,6 +151,11 @@ class _StatusSchemaOwner implements HostSchemaOwner {
     }
     if (toolName == HostSupplyTaskStatusExecutor.toolName) {
       final raw = HostSupplyTaskStatusExecutor.schemaOf(toolName);
+      return raw.isEmpty ? null : raw;
+    }
+    // AI 能力原语（M-D）：ai_complete 的 schema 单源在 HostAiCompleteExecutor。
+    if (toolName == HostAiCompleteExecutor.toolName) {
+      final raw = HostAiCompleteExecutor.schemaOf(toolName);
       return raw.isEmpty ? null : raw;
     }
     final raw = HostStatusToolExecutor.schemaOf(toolName);

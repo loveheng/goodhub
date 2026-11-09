@@ -2,7 +2,7 @@
 //
 // signature 权限（protectionLevel="signature"）语义下，缺 <uses-permission> 或
 // <queries> 声明 → bindService 直接抛 SecurityException（无弹窗、无降级）。该失败
-// 目前只有真机 e2e（goodshare_binder_e2e_test.dart）会晚失败；本测试把 #9 §3-1 与
+// 目前只有真机 e2e（dummy_binder_e2e_test.dart）会晚失败；本测试把 #9 §3-1 与
 // §5 D.2 的 Manifest 前置下沉到 flutter 快速门禁（CI），Manifest 一被误删/误改即刻红灯。
 import 'dart:io';
 

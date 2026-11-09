@@ -218,8 +218,6 @@ void main() {
     // 修复「基线态全是空」：最不可见的内置 prompt 首先可见。
     expect(find.text('ref-pipeline'), findsOneWidget);
     expect(find.text('task-discipline'), findsOneWidget);
-    expect(find.text('goodshare-data'), findsOneWidget);
-    expect(find.textContaining('拾贝是用户的收集器'), findsOneWidget);
     expect(find.text('官方预置'),
         findsNWidgets(builtinSkills()
             .where((s) => s.scope != SkillScope.onDemand).length),
@@ -339,8 +337,7 @@ void main() {
     expect(find.text('回答保持简洁克制。'), findsOneWidget);
     expect(find.text('用户'), findsOneWidget);
 
-    // appScoped 面：builtin（goodshare-data）与 CoW 同步产物同台展示。
-    expect(find.text('goodshare-data'), findsOneWidget);
+    // appScoped 面：CoW 同步产物展示（goodshare-data 内置 skill 已退役）。
     expect(find.text('cow/weekly-review'), findsOneWidget);
     expect(find.text('CoW 同步'), findsOneWidget);
     expect(find.text('逐条回顾本周收集条目。'), findsOneWidget);

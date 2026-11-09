@@ -1,15 +1,16 @@
-// goodshare 单服务经 ToolRouter 全链（M4-T6-4 回归坐证）：
+// dummy 插件单服务经 ToolRouter 全链（M4-T6-4 回归坐证，对端 = SDK 仓
+// sample-dummy-plugin 标准参照插件——2026-11-09 自 goodshare 专属联调改造而来）：
 // 复刻 ChatPage._send 的本地插件装配路径——discovery(sameSignature) → createClient
 // → negotiate → McpToolFace → listTools → ToolRouter(faces) → 默认全激活 →
 // activatedSchemas() 前缀化 + DiscoveryExecutor JIT 元工具可见 + 经 router 路由一次
 // 真实 tools/call + 未激活幻觉调用防线。
 //
-// 与 goodshare_binder_e2e_test.dart 的分层：那个验传输层（McpClient bind+tools）；
+// 与 dummy_binder_e2e_test.dart 的分层：那个验传输层（McpClient bind+tools）；
 // 本测试验 T6 装配层（ToolRouter 前缀隔离 / JIT 两级发现 / 激活集门控）。
 //
-// 前置：goodhub + goodshare 同机同一 debug keystore 同批安装（§5 门禁已过：
+// 前置：goodhub + dummy 插件同机同一 debug keystore 同批安装（§5 门禁已过：
 // D.1 指纹 SAME / D.2 bind 通）。运行：
-//   flutter test integration_test/goodshare_toolrouter_e2e_test.dart -d <device>
+//   flutter test integration_test/dummy_toolrouter_e2e_test.dart -d <device>
 
 library;
 
@@ -41,49 +42,48 @@ class _ThrowInner implements ToolExecutor {
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('T6-4: goodshare 单服务经 ToolRouter 前缀路由 + JIT 元工具全链',
+  testWidgets('T6-4: dummy 单服务经 ToolRouter 前缀路由 + JIT 元工具全链',
       (tester) async {
-    // ---- 发现 goodshare（同签名私有生态，§1.2.6 零弹窗自动信任）----
+    // ---- 发现 dummy 插件（同签名私有生态，§1.2.6 零弹窗自动信任）----
     final plugins = await _withTimeout(localPluginDiscovery.scan(), 'scan');
-    final found =
-        plugins.where((p) => p.serverId == 'goodshare').toList();
-    expect(found, isNotEmpty, reason: '应扫描到 goodshare 本地插件');
-    final gs = found.first;
-    expect(gs.sameSignature, isTrue, reason: '两包须同签名（§5 D.1/D.2 已过）');
+    final found = plugins.where((p) => p.serverId == 'dummy').toList();
+    expect(found, isNotEmpty, reason: '应扫描到 dummy 本地插件');
+    final dummy = found.first;
+    expect(dummy.sameSignature, isTrue, reason: '两包须同签名（§5 D.1/D.2 已过）');
 
     // ---- 复刻 ChatPage 本地插件装配：negotiate → face → listTools ----
-    final client = localPluginDiscovery.createClient(gs);
+    final client = localPluginDiscovery.createClient(dummy);
     await _withTimeout(client.negotiate(), 'negotiate');
-    final face = McpToolFace(client: client, serverId: gs.serverId);
+    final face = McpToolFace(client: client, serverId: dummy.serverId);
     await _withTimeout(face.listTools(), 'listTools');
 
     // T6：路由注册表 + 默认激活全部已挂载（保单服务回归）。
-    final router = ToolRouter(faces: {gs.serverId: face});
+    final router = ToolRouter(faces: {dummy.serverId: face});
     router.activatedServers.addAll(router.serverIds);
 
     try {
-      // 断言1：serverIds 含 goodshare。
-      expect(router.serverIds, contains('goodshare'));
+      // 断言1：serverIds 含 dummy。
+      expect(router.serverIds, contains('dummy'));
 
       // 断言2：activatedSchemas 前缀化 + 含已知工具（F1.2 命名空间隔离）。
       final schemas = router.activatedSchemas();
       expect(schemas, isNotEmpty, reason: '激活 schema 不应为空');
       final names = schemas.map((s) => s.name).toList();
-      expect(names, contains('goodshare__list_items'),
-          reason: '工具名须带 goodshare__ 前缀');
-      expect(names.every((n) => n.startsWith('goodshare__')), isTrue,
+      expect(names, contains('dummy__echo'),
+          reason: '工具名须带 dummy__ 前缀');
+      expect(names.every((n) => n.startsWith('dummy__')), isTrue,
           reason: '全部工具名均带服务前缀');
 
       // 断言3：serverFor 前缀解析（本地工具名无前缀 → null）。
-      expect(router.serverFor('goodshare__list_items'), 'goodshare');
+      expect(router.serverFor('dummy__echo'), 'dummy');
       expect(router.serverFor('get_connected_apps'), isNull,
           reason: '宿主本地工具名无前缀 → null');
 
-      // 断言4：JIT 元工具随 tools 下发 + get_connected_apps 列出 goodshare。
+      // 断言4：JIT 元工具随 tools 下发 + get_connected_apps 列出 dummy。
       final discovery = DiscoveryExecutor(
         router: router,
         inner: _ThrowInner(),
-        serverSummaries: {gs.serverId: 'goodshare (本地)'},
+        serverSummaries: {dummy.serverId: 'dummy (本地)'},
       );
       final staticNames =
           DiscoveryExecutor.staticSchemas().map((s) => s.name).toList();
@@ -96,29 +96,29 @@ void main() {
             id: 't6-4-list', name: 'get_connected_apps', argumentsJson: '{}'),
       );
       expect(listed.isError, isFalse);
-      expect(listed.content, contains('goodshare'),
-          reason: 'get_connected_apps 应列出已挂载 goodshare');
+      expect(listed.content, contains('dummy'),
+          reason: 'get_connected_apps 应列出已挂载 dummy');
 
       // 断言5：经 router 前缀路由一次真实 tools/call。
       final routed = await _withTimeout(
         router.execute(
           AssembledToolCall(
               id: 't6-4-call',
-              name: 'goodshare__list_items',
-              argumentsJson: '{"limit":5}'),
+              name: 'dummy__echo',
+              argumentsJson: '{"text":"t6-4"}'),
         ),
-        'routed list_items',
+        'routed echo',
       );
       expect(routed.isError, isFalse,
           reason: '经 ToolRouter 路由的 tools/call 不应 isError: ${routed.content}');
       expect(routed.content, isNotEmpty);
 
       // 断言6：未激活服务的幻觉调用防线（引导 activate_server_tools）。
-      router.activatedServers.remove(gs.serverId);
+      router.activatedServers.remove(dummy.serverId);
       final blocked = await router.execute(
         AssembledToolCall(
             id: 't6-4-blocked',
-            name: 'goodshare__list_items',
+            name: 'dummy__echo',
             argumentsJson: '{}'),
       );
       expect(blocked.isError, isTrue,

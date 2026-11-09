@@ -274,4 +274,65 @@ void main() {
       );
     });
   });
+
+  group('D2 适配壳（ai-capability-export M-B）：completeCore 注入收敛单链', () {
+    test('messages 编排映射 complete 语义：systemPrompt → instruction，'
+        '消息 → 角色前缀 transcript；结果形状不变', () async {
+      ({String text, String model})? captured;
+      final handler = samplingRequestHandler(
+        engine: _FakeEngine('引擎路径不应触达'),
+        quota: SamplingQuota(),
+        serverKey: 'goodshare',
+        completeCore: ({
+          required String instruction,
+          required String input,
+          int? maxTokens,
+          double? temperature,
+        }) async {
+          captured = (text: '壳产出', model: 'goodhub-on-device');
+          expect(instruction, '任务指令');
+          expect(input, contains('[user] 用户问题'));
+          expect(maxTokens, 1024);
+          return captured!;
+        },
+      );
+      final r = await handler('sampling/createMessage', {
+        'systemPrompt': '任务指令',
+        'maxTokens': 2048, // 宿主 clamp 到 1024 后进核心
+        'messages': [
+          {'role': 'user', 'content': {'type': 'text', 'text': '用户问题'}},
+        ],
+      });
+      expect(captured, isNotNull, reason: '核心被调用（D2 收敛——引擎直连不再走）');
+      expect(r!['model'], 'goodhub-on-device');
+      expect((r['content'] as Map)['text'], '壳产出');
+    });
+
+    test('pool 配额仍在壳侧（分池语义保留）：默认池满 → -32000 先于核心',
+        () async {
+      var coreCalled = false;
+      final handler = samplingRequestHandler(
+        engine: _FakeEngine('x'),
+        quota: SamplingQuota(maxPerWindow: 1),
+        serverKey: 'goodshare',
+        completeCore: ({required instruction, required input, maxTokens, temperature}) async {
+          coreCalled = true;
+          return (text: 'y', model: 'm');
+        },
+      );
+      final base = <String, Object?>{
+        'messages': [
+          {'role': 'user', 'content': {'type': 'text', 'text': 'a'}},
+        ],
+      };
+      await handler('sampling/createMessage', base); // 1/1 消耗（核心被调一次）
+      coreCalled = false; // 只验证第二笔（超限）不触达核心
+      await expectLater(
+        handler('sampling/createMessage', base),
+        throwsA(isA<McpRpcException>().having((e) => e.code, 'code', -32000)),
+        reason: '壳侧配额先决（D2：配额分池保留）',
+      );
+      expect(coreCalled, isFalse, reason: '配额拒绝不触达核心');
+    });
+  });
 }

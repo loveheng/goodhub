@@ -146,10 +146,11 @@ integration_test 清单（**命令与前置的唯一出处**；各测试文件�
 | --- | --- | --- |
 | `trust_gate_test.dart` | 信任闸门 UI 全路径（信任 / 拒绝 + SharedPreferences 落库） | 无（自造假数据），先跑它 |
 | `thirdconnect_e2e_test.dart` | 设备侧无头 e2e：发现 → Binder 同步 → 反向请求 → 网关 HTTP 聚合 | 设备在线 |
-| `goodshare_binder_e2e_test.dart` | 传输层：发现 → bind → tools/list → tools/call | goodshare 与 goodhub 同 keystore 同批安装，且 goodshare 至少启动过一次 |
-| `goodshare_toolrouter_e2e_test.dart` | 装配层：ToolRouter 前缀隔离 / JIT 两级发现 / 激活集门控 | 同上 |
-| `goodshare_wal_e2e_test.dart` | WAL 写路径并发压测（无死锁 / 无库内 locked） | 同上 |
-| `gateway_external_probe_test.dart` | 外联探针：网关绑 0.0.0.0:8766 保活 120s，供 PC 侧 `adb forward tcp:8766 tcp:8766` + curl 打 /mcp | 非断言用例，需外部 curl 驱动 |
+| `dummy_binder_e2e_test.dart` | 传输层：发现 → bind → tools/list → tools/call | dummy 插件与 goodhub 同 keystore 同批安装（goodhub-mcp-sdk sample-dummy-plugin），且至少启动过一次 |
+| `dummy_toolrouter_e2e_test.dart` | 装配层：ToolRouter 前缀隔离 / JIT 两级发现 / 激活集门控 | 同上 |
+| `ai_complete_e2e_test.dart` | ai/complete 受理链 + Pull 交付 + Binder 反向帧 | 同上 |
+| （已迁出）`goodshare_wal_e2e_test.dart` | WAL 写路径并发压测 | 已迁 goodshare 仓 integration_test/（2026-11-09 归属裁决） |
+| `gateway_external_probe_test.dart` | 外联探针（NON-TEST）：装配 faces + 网关绑 0.0.0.0:8766 保活 120s；标准消费方 = goodhub-mcp-sdk 仓 `conformance/run.py` probe 模式（自动拉起探针 + adb forward + JSON-RPC 驱动 A1-A4 断言） | 非断言用例，禁当回归 e2e 跑；探针以测试壳覆盖安装宿主包 |
 
 ```bash
 flutter test integration_test/trust_gate_test.dart -d <DEVICE_ID>  # 单例跑法（前置最简）
@@ -157,6 +158,8 @@ toolbox run build-apk --install                                     # ⚠️ 跑
 ```
 
 AI 自驱真机调试走 debug 桥（结构化观测 + 按锚点操作，替代截图猜坐标）：`toolbox run debug-bridge --device <ID> <state|logs|ui-tree|action|navigate|ping>`，契约见 `docs/design/ai-debug-bridge.md`。
+
+接入方真机联调机械验收（跨仓，零 goodhub 侧测试代码）= goodhub-mcp-sdk 仓 `conformance/`：`run.py` + 每接入方一份 `configs/<app>.json` 薄配置，A1-A4 四项断言（initialize / SHARED 可见 / PRIVATE 不可见 / SHARED tools/call）；命令出处 = 该仓 `conformance/README.md`；设计 SSOT = `docs/design/integration-test-refactor.md`。
 
 需跨多轮回看日志或做 A/B 对比时，先 `capture start` 起会话再操作，收尾 `capture tail` 看重点、`capture stop` 停采集。logcat 是全系统环形缓冲（各 256 KiB），一次性 `logcat -d` 只能拿到尚未被覆盖的尾部；采集原文含桥 token 与用户输入，禁止入库或写进 `context/`，用毕清理。
 

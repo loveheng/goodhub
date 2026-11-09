@@ -1,17 +1,17 @@
-// W5 跨 App 转发端侧算力（Binder 路径）回归钉：reverse_wiring 扩派私有反向
-// method `host/onDeviceComplete`。
+// 反向请求接线回归钉（收编后形态，2026-11-09）：推理入口 = 标准原语
+// `ai/complete`（统一受理链）；私有 method `host/onDeviceComplete` **已退役**
+// （响应删除，本文件钉退役 + 防复活）。
 //
-// 红线：① 与 sampling 反向请求并存不互替（云端引擎路径零扰动）；② 降级语义
-// 显式可知（isError 结果转 McpRpcException error 帧，message 原文透传）；
-// ③ 与 `host__on_device_complete` 工具面同源执行器（K22 配额单源）；
-// ④ 双装配点（McpRuntime / Gateway）同款接线（Binder/HTTP 插件路径双路可达）。
+// 红线：① sampling 反向请求并存不互替（D2 保留兼容，云端引擎路径零扰动）；
+// ② K17 死亡联动经 ai/complete 受理链保持（身份键 = 包名同源）；
+// ③ 双装配点（McpRuntime / Gateway）同款接线（Binder/HTTP 插件路径双路可达）。
 import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:goodhub/coordinator/ai_complete_service.dart';
 import 'package:goodhub/coordinator/caller_death_interrupt.dart';
-import 'package:goodhub/coordinator/host_on_device_tool.dart';
 import 'package:goodhub/coordinator/reverse_wiring.dart';
 import 'package:goodhub/coordinator/supply_quota.dart';
 import 'package:goodhub/core/errors/mcp_error.dart';
@@ -183,6 +183,10 @@ class _HangingCapability
 }
 
 void main() {
+  // M-B：AiCompleteService 为进程级单例（wireSampling ensureConfigured 注入腿
+  // 只填空腿）——逐例重置防上一例的桩腿泄漏进下一例的受理链。
+  setUp(AiCompleteService.resetForTest);
+
   Future<McpToolFace> face(String serverId) async {
     final f = McpToolFace(
         client: McpClient(_FakeTransport(<Map<String, Object?>>[])),
@@ -191,7 +195,7 @@ void main() {
     return f;
   }
 
-  test('host/onDeviceComplete 反向分派：转发端侧产出（同源执行器）', () async {
+  test('host/onDeviceComplete 退役钉：旧 method 落 -32601（防复活）', () async {
     final f = await face('goodshare');
     wireSampling(
       faces: {'goodshare': f},
@@ -200,14 +204,41 @@ void main() {
       onDeviceCapability: _StubCapability(output: '端侧结果'),
       supplyQuota: SupplyQuota(),
     );
-    final r = await f.client.onServerRequest!(
-      HostOnDeviceToolExecutor.reverseMethodName,
-      {'instruction': '提取', 'input': '原文'},
+    Object? caught;
+    try {
+      await f.client.onServerRequest!(
+        'host/onDeviceComplete', // 退役 method（goodshare 已迁 ai/complete）
+        {'instruction': '提取', 'input': '原文'},
+      );
+    } on McpRpcException catch (e) {
+      caught = e;
+    }
+    expect((caught as McpRpcException).code, -32601,
+        reason: '退役响应删除 → 未知反向请求（防复活钉）');
+  });
+
+  test('ai/complete 反向受理（收编后形态）：受理链产出经单帧钩子回落路径不可达',
+      () async {
+    // ai/complete 的受理走 **会话钩子**（多帧 _async/phase 承载）——单帧
+    // onServerRequest 路径（非会话传输）不受理 ai/*，落 -32601：
+    // 消费端必须具备会话能力（:goodhub-ai-runtime / 迁移插件经 Binder）。
+    final f = await face('goodshare');
+    wireSampling(
+      faces: {'goodshare': f},
+      engine: _NoopCloudEngine(),
+      quota: SamplingQuota(),
+      onDeviceCapability: _StubCapability(output: '端侧结果'),
+      supplyQuota: SupplyQuota(),
     );
-    final content = r!['content'] as Map;
-    expect(content['text'], '端侧结果');
-    expect(r['role'], 'assistant');
-    expect(r['model'], 'goodhub-on-device');
+    Object? caught;
+    try {
+      await f.client.onServerRequest!('ai/complete',
+          {'instruction': '提取', 'input': '原文'});
+    } on McpRpcException catch (e) {
+      caught = e;
+    }
+    expect((caught as McpRpcException).code, -32601,
+        reason: '单帧钩子不承载 ai/*（会话钩子专属——消费端能力探针语义）');
   });
 
   test('sampling 反向请求不受扰：并存不互替（method 分流先行）', () async {
@@ -217,10 +248,12 @@ void main() {
       faces: {'goodshare': f},
       engine: _NoopCloudEngine(),
       quota: SamplingQuota(),
-      onDeviceCapability: _StubCapability(),
+      // D2 收敛（M-B）：sampling 壳推理走统一受理链（随设备主路由——本例
+      // 端腿桩失败 = 分派确实到达 sampling 处理器并执行了推理链）。
+      onDeviceCapability: _StubCapability()
+        ..error = const OnDevicePrimitiveException('端侧会话未就绪'),
       supplyQuota: SupplyQuota(),
     );
-    // sampling/createMessage 走云端 handler（引擎 noop 炸 = 证明被分派到它）。
     try {
       await f.client.onServerRequest!('sampling/createMessage', {
         'messages': [
@@ -228,55 +261,10 @@ void main() {
         ],
       });
     } on Object {
-      samplingCalled = true; // 引擎 noop 抛错 = 分派到达云端 handler
+      samplingCalled = true; // 端腿桩失败经受理链 → McpRpcException = 分派到达
     }
-    expect(samplingCalled, isTrue, reason: 'sampling 分派不受 W5 扩派影响');
-  });
-
-  test('降级语义显式可知：执行器 isError → McpRpcException(-32000) 原文透传',
-      () async {
-    final f = await face('goodshare');
-    wireSampling(
-      faces: {'goodshare': f},
-      engine: _NoopCloudEngine(),
-      quota: SamplingQuota(),
-      onDeviceCapability: _StubCapability()
-        ..error = const OnDevicePrimitiveException('端侧会话未就绪'),
-      supplyQuota: SupplyQuota(),
-    );
-    Object? caught;
-    try {
-      await f.client.onServerRequest!(
-        HostOnDeviceToolExecutor.reverseMethodName,
-        {'instruction': 'i', 'input': 'x'},
-      );
-    } on McpRpcException catch (e) {
-      caught = e;
-    }
-    expect(caught, isA<McpRpcException>(), reason: 'isError → error 帧（显式可知）');
-    expect((caught as McpRpcException).code, -32000);
-    expect(caught.message, contains('不兜底云端'));
-  });
-
-  test('参数语义同源：params 结构化 {instruction, input} 经同一 execute 校验',
-      () async {
-    final f = await face('goodshare');
-    wireSampling(
-      faces: {'goodshare': f},
-      engine: _NoopCloudEngine(),
-      quota: SamplingQuota(),
-      onDeviceCapability: _StubCapability(),
-      supplyQuota: SupplyQuota(),
-    );
-    Object? caught;
-    try {
-      await f.client.onServerRequest!(
-          HostOnDeviceToolExecutor.reverseMethodName, {'input': 'x'});
-    } on McpRpcException catch (e) {
-      caught = e;
-    }
-    expect((caught as McpRpcException).message, contains('instruction'),
-        reason: '缺 instruction → 执行器参数校验（与工具面同源）');
+    expect(samplingCalled, isTrue,
+        reason: 'sampling 分派不受 ai/complete 收编影响（D2 保留兼容，经统一受理链，端腿失败显式可知）');
   });
 
   group('W5 调用方进程死亡联动打断（K17）', () {
@@ -319,18 +307,21 @@ void main() {
         supplyQuota: SupplyQuota(),
       );
 
-      // S07/S07b：Binder 面走携带平台侧已解析身份的钩子（onServerRequest 已
-      // 不再被 wireSampling 设置——身份经内核 UID 解析随帧到达）。
-      final pending = (binderFace.client.transport as BinderTransport)
-          .onServerRequestWithCaller!(
-        HostOnDeviceToolExecutor.reverseMethodName,
+      // S07/S07b：Binder 面走携带平台侧已解析身份的会话钩子（ai/complete
+      // 收编后受理路径；身份经内核 UID 解析随帧到达）。
+      final frames = <Map<String, Object?>>[];
+      final pending =
+          (binderFace.client.transport as BinderTransport)
+              .onServerRequestSessionWithCaller!(
+        AiWire.methodComplete,
+        'srv_k17',
         {'instruction': 'i', 'input': 'x'},
         const ResolvedCallerIdentity(
           packageName: 'com.zzh.goodshare',
           signatureSha256: 'sha256:caller',
         ),
+        frames.add,
       );
-      final settled = expectLater(pending, throwsA(isA<McpRpcException>()));
       await Future<void>.delayed(const Duration(milliseconds: 10));
 
       // 死亡通知按 serverId（错键）→ 匹配不上 → 不打断（证明键必须同源：
@@ -339,11 +330,14 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 10));
       expect(cap.cancelled, isFalse, reason: 'serverId ≠ 包名 → 匹配不上（漏打断）');
 
-      // 死亡通知按包名（正确键）→ 打断生效 + 本次调用作废（-32000 显式可知）。
+      // 死亡通知按包名（正确键）→ 打断生效 + 本次调用作废。ai/complete
+      // 死亡语义 = **零终帧**（调用方已死，不回程——区别于作废 error 帧）。
       BinderTransport.onCallerDeath!('com.zzh.goodshare');
-      await settled;
+      await pending;
       expect(cap.cancelled, isTrue,
           reason: '订阅取消 → 透传 cancel(requestId) → 引擎让槽（协作式打断）');
+      expect(frames.where((f) => f['error'] != null), isEmpty,
+          reason: '死亡作废零终帧（ai/complete 收编语义：不回程）');
     });
   });
 }

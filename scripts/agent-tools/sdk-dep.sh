@@ -63,15 +63,23 @@ VERSION="$(sed -n 's/^version=//p' "$SDK_REPO/VERSION" 2>/dev/null | head -1)"
 [ -n "$VERSION" ] || { json_out "FAIL" "error" "SDK 仓缺 VERSION 文件或 version 字段" ""; exit 2; }
 
 echo "==> 发布 SDK 到本地 Maven（版本 $VERSION，仓 $SDK_REPO）"
-if ! (cd "$SDK_REPO" && ./gradlew --console=plain publishToMavenLocal); then
+# 四工件显式发布（0.6.0 发布链口径，同 CHANGELOG/dist.sh）：根聚合 publishToMavenLocal
+# 只会落 contract/plugin-core 两件，AI 消费面双件（ai-client/ai-runtime）需显式点名。
+if ! (cd "$SDK_REPO" && ./gradlew --console=plain \
+    :contract:publishToMavenLocal \
+    :plugin-core:publishToMavenLocal \
+    :goodhub-ai-client:publishToMavenLocal \
+    :goodhub-ai-runtime:publishToMavenLocal); then
   json_out "FAIL" "error" "publishToMavenLocal 失败" "看上方 gradle 输出"; exit 1
 fi
 
-TARGET="$HOME/.m2/repository/com/zzh/goodhub/mcp/goodhub-mcp-contract/$VERSION"
-if [ ! -f "$TARGET/goodhub-mcp-contract-$VERSION.aar" ]; then
-  json_out "FAIL" "error" "本地 Maven 仓未见契约产物：$TARGET" ""; exit 1
-fi
+for ART in goodhub-mcp-contract goodhub-mcp-plugin-core goodhub-ai-client goodhub-ai-runtime; do
+  TARGET="$HOME/.m2/repository/com/zzh/goodhub/mcp/$ART/$VERSION"
+  if [ ! -f "$TARGET/$ART-$VERSION.aar" ]; then
+    json_out "FAIL" "error" "本地 Maven 仓未见产物：$TARGET" ""; exit 1
+  fi
+done
 
-echo "OK: 已发布到 ~/.m2（goodhub-mcp-contract:$VERSION）"
+echo "OK: 已发布到 ~/.m2（四工件 $VERSION：contract/plugin-core/ai-client/ai-runtime）"
 json_out "OK" "info" "SDK $VERSION 已发布到本地 Maven 仓" ""
 exit 0

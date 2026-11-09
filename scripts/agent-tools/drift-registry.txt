@@ -6,6 +6,13 @@
 # 格式：BANNED|token|scopes|reason ／ CONST|name|literal|declaring[,mirrors] ／ OVERSIZE|limit|listfile
 # scope = 目录（递归 .dart/.md）或文件；.dart 整行注释不判；context/ 是历史账归属，不扫。
 
+# —— D-PRIMARY BANNED：goodshare 字面量单源化（2026-11-09，ai-capability-export
+# 通用化：框架层禁写死来源包名/前缀，一律引 core/data_source.dart 的
+# kPrimaryDataSource* 常量或契约探测；server_endpoints.dart 迁移遗留
+# drift:keep 豁免）——
+BANNED|'com.zzh.goodshare'|lib|来源包名字面量（单源 = core/data_source.dart kPrimaryDataSourcePackage）
+BANNED|serverId = 'goodshare'|lib|来源 serverId 字面量（单源 = core/data_source.dart kPrimaryDataSourceServerId）
+
 # —— D1 BANNED：退役词条（token 级）——
 # 旧工具名（2026-10-23 术语纠错：list_private_servers → list_servers）。
 # PC 侧模型照抄文案里的旧名即调不存在的工具（幻觉调用源）→ lib 与 docs 全禁。

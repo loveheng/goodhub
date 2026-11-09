@@ -22,6 +22,7 @@ import 'package:goodhub/mcp/sampling.dart';
 
 import 'components/breaker_card.dart';
 import 'sections/byok_section.dart';
+import '../core/data_source.dart';
 import '../../coordinator/chat_track_model.dart' show CallCardPhase;
 import 'components/call_card.dart';
 import 'components/confirmation_card.dart';
@@ -279,7 +280,7 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
     final localTarget = _selectedLocal;
     await for (final e in _orchestrator.run(
       DebugRunConfig(
-        serverId: localTarget?.serverId ?? 'goodshare',
+        serverId: localTarget?.serverId ?? kPrimaryDataSourceServerId,
         systemPrompt: _systemPrompt,
         userPrompt: prompt,
         clientFactory: () => localTarget == null
@@ -537,7 +538,7 @@ class _GatewayLoopDebugPageState extends State<GatewayLoopDebugPage> {
               enabled: !_running,
               obscureText: true,
               decoration: const InputDecoration(
-                labelText: 'X-Api-Key（goodshare「MCP 服务」页可查看）',
+                labelText: 'X-Api-Key（数据源「MCP 服务」页可查看）',
                 border: OutlineInputBorder(),
                 isDense: true,
               ),

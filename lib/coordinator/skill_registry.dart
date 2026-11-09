@@ -203,24 +203,20 @@ List<Skill> builtinSkills() => const [
             '（创建/修改/删除/发送）必须等用户确认后执行；失败如实呈现，'
             '不粉饰、不静默重试。',
       ),
-      Skill(
-        name: 'goodshare-data',
-        scope: SkillScope.appScoped,
-        serverId: 'goodshare',
-        description: '拾贝数据面：检索/读取/写入三工具口径与 Vault 隐私边界。',
-        source: SkillSource.builtin,
-        content: '拾贝是用户的收集器：list_items 检索（关键词/类型），get_item '
-            '读全文，add_item 存新内容。Vault 私密条目不可见属隐私边界，'
-            '勿尝试绕过；条目正文可能很长，优先用 \$ref 传递。',
-      ),
+      // ai-capability-export 通用化（2026-11-09）：goodshare-data 内置 skill
+      // 退役——数据面工具口径由来源侧 MCP 工具描述/prompts 自带（会话开场
+      // 不再注入特定来源的介绍，防模型幻觉调用未挂载面）。
       Skill(
         name: 'deep-organize',
         scope: SkillScope.onDemand,
         description: '深度整理：逐条读取最近条目，输出归档建议清单（不执行写操作）。',
         source: SkillSource.builtin,
-        content: '逐条读取用户最近的收集条目（分页 list_items → get_item），'
-            '输出归档建议清单：条目 id、建议（保留/归档/待办/删除）、一句理由。'
-            '不执行写操作，仅输出建议。',
+        // 通用化（2026-11-09）：内容不写死具体来源工具名（list_items/get_item
+        // 是 goodshare 数据面的工具——写死即幻觉调用源），改为「当前挂载的
+        // 数据面工具」通用表述，工具名以实挂 server 的 tools/list 为准。
+        content: '使用当前挂载的数据面检索与读取工具，逐条读取用户最近的'
+            '收集条目，输出归档建议清单：条目 id、建议（保留/归档/待办/删除）、'
+            '一句理由。不执行写操作，仅输出建议。',
       ),
       // —— supply/ 语义命名空间（W3-S17 语义外注首条）——
       // 宿主供给面消费语义按 `supply/<语义名>` 落 builtin：语义住宿主 App

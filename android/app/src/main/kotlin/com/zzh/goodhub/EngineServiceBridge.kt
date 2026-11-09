@@ -11,6 +11,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.os.StatFs
 import com.zzh.goodhub.engine.GenieXRuntime
 import android.util.Log
@@ -36,9 +37,19 @@ object EngineServiceBridge {
     private const val CHANNEL = "goodhub/on_device_engine"
     private const val TAG = "EngineServiceBridge"
 
+    /// M-B 受理期保活（ai-capability-export §5）：外部 ai/complete 冷装载窗口
+    /// 的 PARTIAL WakeLock（CPU 不休眠防「载到 90% 被冻」）。
+    /// 15min 硬超时兜底键泄漏（三钥匙正常释放外的最后防线，防算力空挂耗电）。
+    private const val KEEPALIVE_TIMEOUT_MS = 15L * 60 * 1000
+
     private var channel: MethodChannel? = null
     private var connection: ServiceConnection? = null
     private var engine: IOnDeviceEngineService? = null
+
+    /// 保活键表（key → 持锁标记；引用计数在 Dart 侧 SupplyKeepalive，此处
+    /// 只做键寻址 + 超时兜底；同进程单例，无需并发容器——MethodChannel 回调恒主线程）。
+    private val keepaliveKeys = mutableSetOf<String>()
+    private var keepaliveWakeLock: PowerManager.WakeLock? = null
 
     /// 绑定上下文（统一 applicationContext，进程级不变量）。
     /// ServiceDispatcher 按 (Context, connection) 键控——2026-11-02 真机定谳：
@@ -170,6 +181,42 @@ object EngineServiceBridge {
 
     private fun handleMethodCall(activity: Activity, call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
+                // M-B 受理期保活（三钥匙释放的机械承载；防抖由 Dart 侧只在冷
+                // 装载窗口调用）。任一键在途即持锁，全释放才松——15min 超时
+                // 是键泄漏的最后防线，非正常释放路径。
+                "keepaliveAcquire" -> {
+                    val key = call.argument<String>("key")
+                    if (key.isNullOrEmpty()) {
+                        result.error("bad_args", "keepaliveAcquire 缺 key", null)
+                    } else {
+                        keepaliveKeys.add(key)
+                        if (keepaliveWakeLock?.isHeld != true) {
+                            val pm = activity.getSystemService(Context.POWER_SERVICE) as PowerManager
+                            keepaliveWakeLock = pm.newWakeLock(
+                                PowerManager.PARTIAL_WAKE_LOCK, "goodhub:ai-acceptance"
+                            ).apply {
+                                setReferenceCounted(false)
+                                acquire(KEEPALIVE_TIMEOUT_MS)
+                            }
+                            Log.d(TAG, "ai-keepalive acquired (${keepaliveKeys.size} keys)")
+                        }
+                        result.success(null)
+                    }
+                }
+                "keepaliveRelease" -> {
+                    val key = call.argument<String>("key")
+                    if (key.isNullOrEmpty()) {
+                        result.error("bad_args", "keepaliveRelease 缺 key", null)
+                    } else {
+                        keepaliveKeys.remove(key)
+                        if (keepaliveKeys.isEmpty()) {
+                            runCatching { keepaliveWakeLock?.takeIf { it.isHeld }?.release() }
+                            keepaliveWakeLock = null
+                            Log.d(TAG, "ai-keepalive released (all keys gone)")
+                        }
+                        result.success(null)
+                    }
+                }
                 // 熔断 armed/disarm 演进（对照 IRIDIS，2026-11-06）：系统权威退出
                 // 理由（ApplicationExitInfo，API 30+）——精确区分真崩溃
                 //（REASON_CRASH*/ANR）与 LMK 处决（REASON_LOW_MEMORY），细化

@@ -37,6 +37,7 @@ import 'ref_hydrator.dart' show CrossSourceDelegate;
 import 'skill_registry.dart';
 import 'tool_breaker.dart' show BlockDelegate;
 import 'tool_router.dart';
+import '../core/data_source.dart';
 import '../core/errors/mcp_error.dart';
 import 'context_governor.dart' show OnDeviceResultSummarizer;
 import '../llm/on_device_capability.dart';
@@ -62,6 +63,7 @@ import '../sandbox/workspace_state_store.dart';
 import 'resource_attachment_binder.dart' show bindResourceAttachments;
 import 'reverse_wiring.dart';
 import 'caller_death_interrupt.dart';
+import 'supply_task_pool.dart';
 import 'supply_quota.dart';
 
 // ---------------------------------------------------------------------------
@@ -676,7 +678,7 @@ class McpRuntime {
     if (caps.sampling) {
       // §S2 二期：sampling 接线唯一实现（网关同款共享件，消装配第二副本）。
       // W5 跨 App 转发端侧算力（Binder 路径）：插件（同机 App）经私有反向
-      // method host/onDeviceComplete 用宿主端侧算力——与 sampling 反向请求
+      // method ai/complete 用宿主端侧算力（host/onDeviceComplete 已退役）——与 sampling 反向请求
       // （云端引擎）并存不互替；K22 配额 + 降级语义由导出执行器单源承载。
       // 装配降级：供给面缺省 null = 不挂分派（ Binder 路径无端侧转发，
       // sampling 照常）。
@@ -692,6 +694,10 @@ class McpRuntime {
         onSamplingEnd: onSamplingEnd,
         onDeviceCapability: AidlOnDeviceCapabilityService(sharedOnDeviceEngine),
         supplyQuota: SupplyQuota(),
+        // 收编（0.5.0）：ai/complete 冷态联合态任务池（驻留单例——与网关
+        // 装配同池；缺挂 = 聊天/消费装配面 deferred 恒回落同步 fast-fail，
+        // 2026-11-09 真机回归实证）。
+        taskPool: SupplyTaskPool.instance,
       );
     }
     // —— T6：elicitation 反向请求（server→宿主结构化提问）；双条件：profile 允许
@@ -739,7 +745,7 @@ class McpRuntime {
       ).call,
       refServerId: router.serverIds.isNotEmpty
           ? router.serverIds.first
-          : 'goodshare',
+          : kPrimaryDataSourceServerId,
       serverResolver: router.serverFor,
       // 切域事务提交点（prompt-mgmt §8.2.2）：ToolResultMessage 落历史后提交
       // pending 槽位请求——前 Abort 槽位不变，后 Abort 不回滚。

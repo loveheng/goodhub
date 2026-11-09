@@ -320,7 +320,7 @@ class CowSyncService {
         name: 'cow/${item.promptName}',
         scope: SkillScope.appScoped,
         serverId: serverId,
-        description: item.description ?? 'goodshare 模板（CoW 同步 v${item.serverVersion}）',
+        description: item.description ?? '官方模板（CoW 同步 v${item.serverVersion}）',
         content: item.content ?? '',
         source: SkillSource.cow,
       );

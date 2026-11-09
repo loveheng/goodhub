@@ -112,22 +112,6 @@ class PermissionGateway implements ToolExecutor {
   /// 会话豁免集（C7：内存态，会话结束/Abort 清空）。
   final Set<String> _sessionGrants = {};
 
-  /// 本地只读白名单（goodshare 工具面 2026-10-11 核对：纯查询七项）。
-  ///
-  /// **角色变更（2026-10-21）**：原为「无 hint 时的兜底裁决源，表未命中一律
-  /// 从严落 L2」；随 SDK 0.2.0 起 hints 选择性下发，「双缺从严」条款下线后
-  /// 本表**不再参与裁决**（未声明 hints 一律 L1，见 [classify]），仅保留为
-  /// goodshare 只读面台账（审计 / 文档对齐 / 后续 per-tool 策略复用）。
-  static const Set<String> localReadOnlyTools = {
-    'list_items',
-    'get_item',
-    'query_machine_data',
-    'list_workspaces',
-    'list_jobs',
-    'get_job_status',
-    'get_timeline_context',
-  };
-
   /// tools/list 后全量刷新注解目录（§8：目录变更即全量重挂，不留旧能力）。
   void loadCatalog(List<CloudToolSchema> tools) {
     _annotations

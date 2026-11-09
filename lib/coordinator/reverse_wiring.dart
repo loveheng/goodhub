@@ -20,6 +20,7 @@ import '../llm/on_device_capability.dart';
 import '../mcp/mcp_client.dart';
 import '../mcp/sampling.dart' show SamplingQuota, samplingRequestHandler;
 import '../mcp/transport/binder_transport.dart';
+import 'ai_complete_service.dart';
 import 'caller_death_interrupt.dart';
 import 'host_on_device_tool.dart';
 import 'supply_quota.dart';
@@ -31,13 +32,11 @@ import 'mcp_tool_face.dart';
 /// [excludedServerIds]：不供给反向请求的面（网关传 `kHostServerId`——host 面
 /// 是宿主自身导出面，不回调宿主推理）。
 ///
-/// **W5 跨 App 转发端侧算力（Binder 路径）**：[onDeviceCapability] 非空时，
-/// 同一反向请求通道扩派私有 method **`host/onDeviceComplete`**（Tier 1 契约，
-/// params 同导出工具 {instruction, input}）——转发方（同机插件 App）经此用
-/// 宿主**端侧**算力（sampling 反向请求走云端引擎，二者并存不互替）。降级
-/// 语义与 K22 配额由导出执行器统一承载（`HostOnDeviceToolExecutor`——与
-/// `host__on_device_complete` 工具面同源，禁双实现漂移）；失败转 McpRpcException
-/// error 帧（message 含原因与「宿主不兜底云端」提示——转发方显式可知红线）。
+/// **端侧算力反向请求（收编后形态）**：推理入口 = 标准原语 **`ai/complete`**
+///（`AiCompleteService` 统一受理链，2026-11-09 收编迁移）；私有 method
+/// `host/onDeviceComplete` **已退役**（响应已删，旧调用回 -32601——退役钉）；
+/// 拉取面 `host/onDeviceTaskStatus` 保留（Pull = 交付真理源）。sampling 云端
+/// 反向请求不受影响（D2 保留兼容）。
 ///
 /// **W5 调用方进程死亡联动打断（K17）**：本件是反向路径的装配单点——首次
 /// 装配即挂上调用方死亡注册表（[ensureCallerDeathInterruptWired]，幂等单例），
@@ -52,15 +51,56 @@ void wireSampling({
   void Function()? onSamplingEnd,
   OnDeviceCapabilityService? onDeviceCapability,
   SupplyQuota? supplyQuota,
+  AppCapabilityRegistry? capabilityRegistry,
+  AiAuditSink? auditSink,
+  CallerForegroundProbe? foregroundProbe,
+  SupplyTaskPool? taskPool,
 }) {
   // K17 装配接线（幂等单例；两装配点经本共享件同款调用，消第二副本）。
   ensureCallerDeathInterruptWired();
+  // M-B 统一受理链装配（ensureConfigured 只填空腿——两装配点携带件不对称，
+  // 后装点覆盖会拆掉先装腿；D2 收敛：sampling 壳与 ai/complete 共用同链）。
+  // M-C：能力档案注册表 / ops 审计 / 前台探针同槽注入（null = 未装配零变化）。
+  // 收编（0.5.0）：deferred 任务池同槽——ai/complete 冷态联合态承载。
+  AiCompleteService.ensureConfigured(
+    onDevice: onDeviceCapability,
+    cloudEngine: CloudSamplingEngine(engine),
+    quota: supplyQuota,
+    capabilityRegistry: capabilityRegistry,
+    auditSink: auditSink,
+    foregroundProbe: foregroundProbe,
+    taskPool: taskPool,
+  );
   for (final entry in faces.entries) {
     if (excludedServerIds.contains(entry.key)) continue;
+    // D2 适配壳核心注入：sampling 反向请求经统一受理链（AiCompleteFailure
+    // → McpRpcException(-32000) error 帧映射在此收口——mcp 域不感知
+    // coordinator 类型，跨界只走纯值函数 + 标准异常）。
     final sampling = samplingRequestHandler(
       engine: CloudSamplingEngine(engine),
       quota: quota,
       serverKey: entry.key,
+      completeCore: ({
+        required String instruction,
+        required String input,
+        int? maxTokens,
+        double? temperature,
+      }) async {
+        try {
+          final c = await AiCompleteService.instance.completeCore(
+            instruction: instruction,
+            input: input,
+            maxTokens: maxTokens,
+            temperature: temperature,
+          );
+          return (text: c.text, model: c.model);
+        } on AiCompleteFailure catch (e) {
+          throw McpRpcException(-32000, e.message, data: <String, Object?>{
+            'status': e.status,
+            if (e.retryAfterMs != null) AiWire.keyRetryAfterMs: e.retryAfterMs,
+          });
+        }
+      },
     );
     // W5 Binder 路径：端侧算力转发处理器（非空才挂；与导出工具面同源执行器
     // ——降级语义/K22 配额单源，禁双实现漂移）。per-face 实例携带调用方身份
@@ -88,14 +128,10 @@ void wireSampling({
       ResolvedCallerIdentity? caller,
     ) async {
       debugPrint('[reverse] handle method=$method supplyExport=${supplyExport != null}');
-      if (method == HostOnDeviceToolExecutor.reverseMethodName) {
-        return forwardOnDeviceComplete(
-          supplyExport!,
-          params,
-          // 主体可辨（S07b）：优先内核解析身份；HTTP 面无内核身份回退既有键。
-          callerKeyOverride: caller?.packageName,
-        );
-      }
+      // 退役清账（2026-11-09）：私有 method `host/onDeviceComplete` 已删响应
+      //（goodshare 消费面已迁 `ai/complete`——见 ai_complete_service 收编分支），
+      // 旧调用落 sampling handler 的 -32601（未知反向请求）；退役钉
+      // = reverse_wiring_test「host/onDeviceComplete 退役」。
       if (method == HostSupplyTaskStatusExecutor.reverseMethodName) {
         return forwardSupplyTaskStatus(params,
             callerKeyOverride: caller?.packageName);
@@ -107,7 +143,47 @@ void wireSampling({
     final transport = entry.value.client.transport;
     // S1c 能力化：按 [CallerIdentityTransport] 接口探测，禁 is 具体类——新传输
     // 具备平台侧身份解析能力即实现该接口，本接线零改动。
-    if (transport is CallerIdentityTransport) {
+    if (transport is ReverseSessionTransport) {
+      // M-B 反向会话钩子（多帧应答）：ai/complete + ai/cancel 直达统一受理链
+      //（_async ack + _meta.phase progress + 终帧全走 answerReverse 同 id 多次
+      // 透传）；其余 method 委托既有 handle() 并复制单帧应答语义（与 transport
+      // _reverseFrame 等价——result/error/异常三态，禁在两处各拼一份帧序）。
+      transport.onServerRequestSessionWithCaller =
+          (method, id, params, caller, emit) async {
+        final handled = await AiCompleteService.instance.handleAiMethod(
+          method: method,
+          id: id,
+          params: params,
+          caller: caller,
+          callerKeyFallback: _callerIdentityOf(entry.value),
+          emit: emit,
+        );
+        if (handled) return;
+        try {
+          final r = await handle(method, params, caller);
+          emit(<String, Object?>{'jsonrpc': '2.0', 'id': id, 'result': r});
+        } on McpRpcException catch (e) {
+          emit(<String, Object?>{
+            'jsonrpc': '2.0',
+            'id': id,
+            'error': <String, Object?>{
+              'code': e.code,
+              'message': e.message,
+              if (e.data != null) 'data': e.data,
+            },
+          });
+        } catch (e) {
+          emit(<String, Object?>{
+            'jsonrpc': '2.0',
+            'id': id,
+            'error': <String, Object?>{
+              'code': -32603,
+              'message': '宿主反向请求处理失败: $e',
+            },
+          });
+        }
+      };
+    } else if (transport is CallerIdentityTransport) {
       transport.onServerRequestWithCaller = (method, params, caller) =>
           handle(method, params, caller);
     } else {
@@ -160,37 +236,6 @@ Future<Map<String, Object?>?> forwardSupplyTaskStatus(
       'content': {'type': 'text', 'text': jsonEncode(entry.projection())}};
 }
 
-/// host/onDeviceComplete 反向请求处理：转发到导出执行器（K22 配额 + 降级
-/// 语义单源——params 序列化后经同一 execute 路径，禁旁路副本）；isError
-/// 结果转 McpRpcException(-32000) error 帧（message 原文透传，转发方显式
-/// 可知红线）。[callerKeyOverride] = S07b 平台侧已解析的调用方包名（内核
-/// UID 推导），优先于 per-face 实例键（主体可辨：配额记账与死亡打断按
-/// 内核身份裁决，非 transport 元数据）。
-Future<Map<String, Object?>?> forwardOnDeviceComplete(
-    HostOnDeviceToolExecutor export, Object? params,
-    {String? callerKeyOverride}) async {
-  final p = params is Map<String, Object?> ? params : <String, Object?>{};
-  final r = await export.execute(
-    AssembledToolCall(
-      id: 'rev-host-export',
-      name: HostOnDeviceToolExecutor.toolName,
-      argumentsJson: jsonEncode(p),
-    ),
-    callerKeyOverride: callerKeyOverride,
-  );
-  final rc = r.content.toString();
-  debugPrint(
-      '[reverse] execute 返回 isError=${r.isError} content=${rc.length > 200 ? rc.substring(0, 200) : rc}');
-  if (r.isError) {
-    throw McpRpcException(-32000, r.content);
-  }
-  return {
-    'role': 'assistant',
-    'model': 'goodhub-on-device',
-    'content': {'type': 'text', 'text': r.content},
-  };
-}
-
 /// 端侧反向请求驻留接线（W6-a 共享件，2026-11-08 联调缺陷 C 修复）。
 ///
 /// **缺口**：反向路径此前只在网关装配（[GatewayController._assemble]）与聊天
@@ -200,38 +245,38 @@ Future<Map<String, Object?>?> forwardOnDeviceComplete(
 /// （真机实证 07:25/07:33：`withCaller=false` → `{"id":"srv_N","result":null}`，
 /// goodshare 侧判「宿主未连入」）。
 ///
-/// 本件把端侧两个 Tier 1 反向 method（`host/onDeviceComplete` +
-/// `host/onDeviceTaskStatus`）注册到**指定 client 的传输**——与 [wireSampling]
-/// 同款 S1c 身份探测；执行逻辑单源复用 [forwardOnDeviceComplete] /
-/// [forwardSupplyTaskStatus]（禁双实现漂移）。**sampling 云端不外借**：非端侧
-/// method 回 null（驻留场景无人值守路径不外借宿主推理资源，对齐 _assembleInner
-/// 纪律）。
+/// 本件把端侧拉取面 Tier 1 反向 method（`host/onDeviceTaskStatus`）注册到
+/// **指定 client 的传输**——与 [wireSampling] 同款 S1c 身份探测；推理入口
+/// `ai/complete` 由同一传输的会话钩子承载（[AiCompleteService]，收编后形态）。
+/// **sampling 云端不外借**：非端侧 method 回 null（驻留场景无人值守路径不外借
+/// 宿主推理资源，对齐 _assembleInner 纪律）。
 void wireOnDeviceReverse({
   required McpClient client,
   required OnDeviceCapabilityService onDeviceCapability,
   required String callerKey,
   SupplyQuota? supplyQuota,
+  AppCapabilityRegistry? capabilityRegistry,
+  AiAuditSink? auditSink,
+  CallerForegroundProbe? foregroundProbe,
+  SupplyTaskPool? taskPool,
 }) {
-  final export = HostOnDeviceToolExecutor(
-    onDeviceCapability,
-    quota: supplyQuota ?? SupplyQuota(),
-    callerKey: callerKey,
-    // W6-a 入池接线（同 wireSampling 缺陷 A 修复）：驻留场景同款挂池。
-    taskPool: SupplyTaskPool.instance,
+  // M-B：驻留装配点同样补受理链（只填空腿——网关/聊天先装时不拆腿）。
+  AiCompleteService.ensureConfigured(
+    onDevice: onDeviceCapability,
+    quota: supplyQuota,
+    capabilityRegistry: capabilityRegistry,
+    auditSink: auditSink,
+    foregroundProbe: foregroundProbe,
+    taskPool: taskPool,
   );
+  // 退役清账（2026-11-09）：HostOnDeviceToolExecutor 反向构造已删（其工具面
+  // 实例仍由网关装配链承载）。
   Future<Map<String, Object?>?> handle(
     String method,
     Object? params,
     ResolvedCallerIdentity? caller,
   ) async {
-    if (method == HostOnDeviceToolExecutor.reverseMethodName) {
-      return forwardOnDeviceComplete(
-        export,
-        params,
-        // 主体可辨（S07b）：优先帧携带的内核解析身份，缺失回退接线方声明键。
-        callerKeyOverride: caller?.packageName ?? callerKey,
-      );
-    }
+    // 退役清账（2026-11-09）：host/onDeviceComplete 响应已删（同 wireSampling）。
     if (method == HostSupplyTaskStatusExecutor.reverseMethodName) {
       return forwardSupplyTaskStatus(
         params,
@@ -242,7 +287,46 @@ void wireOnDeviceReverse({
   }
 
   final transport = client.transport;
-  if (transport is CallerIdentityTransport) {
+  if (transport is ReverseSessionTransport) {
+    // M-B：驻留场景同款会话钩子（W6-a 驻留缺口教训——goodshare 反向帧经
+    // task-consume client 到达，不接线即 result:null）。ai/* 直达受理链，
+    // 其余委托 handle()（含未知 method → result:null 既有语义）。
+    transport.onServerRequestSessionWithCaller =
+        (method, id, params, caller, emit) async {
+      final handled = await AiCompleteService.instance.handleAiMethod(
+        method: method,
+        id: id,
+        params: params,
+        caller: caller,
+        callerKeyFallback: caller.packageName,
+        emit: emit,
+      );
+      if (handled) return;
+      try {
+        final r = await handle(method, params, caller);
+        emit(<String, Object?>{'jsonrpc': '2.0', 'id': id, 'result': r});
+      } on McpRpcException catch (e) {
+        emit(<String, Object?>{
+          'jsonrpc': '2.0',
+          'id': id,
+          'error': <String, Object?>{
+            'code': e.code,
+            'message': e.message,
+            if (e.data != null) 'data': e.data,
+          },
+        });
+      } catch (e) {
+        emit(<String, Object?>{
+          'jsonrpc': '2.0',
+          'id': id,
+          'error': <String, Object?>{
+            'code': -32603,
+            'message': '宿主反向请求处理失败: $e',
+          },
+        });
+      }
+    };
+  } else if (transport is CallerIdentityTransport) {
     transport.onServerRequestWithCaller =
         (method, params, caller) => handle(method, params, caller);
   } else {

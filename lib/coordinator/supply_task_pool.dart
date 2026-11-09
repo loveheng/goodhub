@@ -22,6 +22,16 @@ import 'package:path_provider/path_provider.dart';
 import '../core/storage/keyed_write_queue.dart';
 
 /// 任务状态机。
+/// 联合态回执构造（ai-capability-export 收编 2026-11-09：ai/complete 受理链
+/// 与 host__on_device_complete 导出工具面**同源**——禁双份 JSON 拼装漂移）。
+/// 契约 = goodhub-mcp-sdk api.md §8.7（0.5.0，键常量 McpContract.AI_KEY_*）。
+Map<String, Object?> deferredReceiptJson(SupplyTaskEntry entry) => {
+      'execution_mode': 'deferred',
+      'task_id': entry.taskId,
+      'status': 'queued',
+      'expiry_ms': entry.expiryAtMs - DateTime.now().millisecondsSinceEpoch,
+    };
+
 enum SupplyTaskStatus {
   queued, // 已入池待消费
   running, // 已认领执行中（崩溃恢复时视同 queued 重排）

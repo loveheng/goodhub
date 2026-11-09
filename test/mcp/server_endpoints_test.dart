@@ -6,18 +6,6 @@ import 'package:goodhub/core/security/secure_key_value.dart';
 import 'package:goodhub/mcp/server_endpoints.dart';
 
 /// 测试用 SharedPreferencesLike 假件（内存 Map，模拟旧单端点键位）。
-class _FakePrefs implements SharedPreferencesLike {
-  _FakePrefs([Map<String, String>? initial]) : _map = initial ?? {};
-
-  final Map<String, String> _map;
-
-  @override
-  Future<String?> read(String key) async => _map[key];
-
-  @override
-  Future<void> remove(String key) async => _map.remove(key);
-}
-
 void main() {
   late Directory tmp;
   late File file;
@@ -33,8 +21,8 @@ void main() {
     if (await tmp.exists()) await tmp.delete(recursive: true);
   });
 
-  ServerEndpointStore buildStore({SharedPreferencesLike? prefs}) =>
-      ServerEndpointStore(file: file, secure: secure, prefs: prefs);
+  ServerEndpointStore buildStore() =>
+      ServerEndpointStore(file: file, secure: secure);
 
   const ep1 = ServerEndpoint(
     id: 'srv_a',
@@ -68,57 +56,9 @@ void main() {
   });
 
   test('文件缺失且无旧键 → 空目录（首启形态）', () async {
-    final store = buildStore(prefs: _FakePrefs());
+    final store = buildStore();
     expect(await store.load(), isEmpty);
     expect(await file.exists(), isFalse, reason: '不应无谓落盘');
-  });
-
-  test('旧单端点迁移：文件缺失 + chat.mcp.* 在位 → 迁为 goodshare 一条', () async {
-    final store = buildStore(
-      prefs: _FakePrefs({
-        'chat.mcp.endpoint': 'http://10.0.2.2:8000/mcp',
-        'chat.mcp.apiKey': 'legacy-token',
-      }),
-    );
-
-    final loaded = await store.load();
-    expect(loaded.single.id, 'goodshare');
-    expect(loaded.single.endpoint, 'http://10.0.2.2:8000/mcp');
-    expect(loaded.single.hasKey, isTrue);
-    expect(await store.apiKey('goodshare'), 'legacy-token',
-        reason: '旧令牌写入安全存储');
-    expect(await file.exists(), isTrue, reason: '迁移即落盘，后续 load 不再走迁移');
-
-    // F12（review-fix-2026-10）：迁移成功即清理旧**明文 apiKey**（endpoint 键
-    // 非机密保留回滚）——此前「旧键保留不删」让明文密钥永久滞留 prefs，本地
-    // 取证即得（§6.3 零明文留痕）。撤修复即红（旧键仍读得到）。
-    final again = await store.load();
-    expect(again.single.id, 'goodshare');
-  });
-
-  test('F12：迁移后旧明文 apiKey 键被删除（endpoint 键保留）', () async {
-    final prefsMap = <String, String>{
-      'chat.mcp.endpoint': 'http://10.0.2.2:8000/mcp',
-      'chat.mcp.apiKey': 'legacy-token',
-    };
-    final prefs = _FakePrefs(prefsMap);
-    final store = buildStore(prefs: prefs);
-
-    await store.load(); // 触发迁移
-    expect(prefsMap.containsKey('chat.mcp.apiKey'), isFalse,
-        reason: 'F12：明文密钥不得滞留（撤修复即红）');
-    expect(prefsMap.containsKey('chat.mcp.endpoint'), isTrue,
-        reason: 'endpoint 非机密，保留供回滚');
-  });
-
-  test('文件在位时不触发旧迁移（文件优先）', () async {
-    final store = buildStore();
-    await store.save([ep2]);
-    final loaded = await buildStore(prefs: _FakePrefs({
-      'chat.mcp.endpoint': 'http://legacy/mcp',
-      'chat.mcp.apiKey': 'legacy-token',
-    })).load();
-    expect(loaded.single.id, 'srv_b', reason: '配置文件已在位，旧键忽略');
   });
 
   test('损坏文件 → 空目录（宁空勿炸，可重新添加）', () async {
@@ -156,14 +96,6 @@ void main() {
 ''');
     final legacy = await buildStore().load();
     expect(legacy.single.enabled, isTrue);
-  });
-
-  test('旧单端点迁移产物 enabled=true（迁移即挂载）', () async {
-    final store = buildStore(
-      prefs: _FakePrefs({'chat.mcp.endpoint': 'http://10.0.2.2:8000/mcp'}),
-    );
-    final loaded = await store.load();
-    expect(loaded.single.enabled, isTrue);
   });
 
   test('tier 隐私分层 round-trip（P1-1）：显式 public 落盘、缺省 private', () async {
@@ -212,14 +144,6 @@ void main() {
 ''');
     final legacy = await buildStore().load();
     expect(legacy.single.isDefault, isFalse);
-  });
-
-  test('旧单端点迁移产物 tier=public（D-B：goodshare 非宿主）', () async {
-    final store = buildStore(
-      prefs: _FakePrefs({'chat.mcp.endpoint': 'http://10.0.2.2:8000/mcp'}),
-    );
-    final loaded = await store.load();
-    expect(loaded.single.tier, ServerPrivacyTier.public);
   });
 
   test('setApiKey 空串/null 即删除密钥（防孤儿）', () async {

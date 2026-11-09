@@ -13,6 +13,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodhub/coordinator/agent_loop.dart';
 import 'package:goodhub/coordinator/host_tool_invoker.dart';
+import 'package:goodhub/coordinator/supply_task_pool.dart';
 import 'package:goodhub/llm/on_device_capability.dart';
 import 'package:goodhub/llm/on_device_engine.dart';
 import 'package:goodhub/coordinator/permission_gateway.dart';
@@ -174,6 +175,8 @@ void main() {
         // W5：供给面注入位补齐（与生产装配一致）——防悬空登记钉要求
         // Allowlist 每一项在执行链上可达；缺注入 = 导出面降级属装配层语义。
         onDeviceCapability: _StubCapability(),
+        // W6-a：任务池同生产装配（防悬空钉口径 = 生产全量注入位）。
+        taskPool: SupplyTaskPool.instance,
       );
 
       expect(kHostExportAllowlist, isNotEmpty,

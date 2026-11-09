@@ -39,6 +39,8 @@ import 'gateway_security.dart';
 import 'gateway_server.dart';
 import 'gateway_service_channel.dart';
 import 'mcp_gateway_handler.dart';
+import '../coordinator/app_capability_profile.dart';
+import '../coordinator/supply_task_pool.dart';
 import '../coordinator/reverse_wiring.dart';
 
 /// host 虚拟服务的一次装配产出（执行端口 + schema 解析端口，同源）。
@@ -197,6 +199,10 @@ class GatewayController {
       // 默认池 + 并发上限 2；K22 事务语义——并发退出即释放、频次实际产出才
       // 计、被动切云不扣）。缺省共享池 host-export；per-caller 精细化接线跟进。
       supplyQuota: SupplyQuota(),
+      // W6-a 任务池（2026-11-08 真机 e2e 揪出：防悬空钉被 OnDevice 层截死
+      // 遮掩——on_device_task_status 在生产网关一直悬空）。驻留单例挂入，
+      // 与 reverse_wiring 双路同源（Pull = 交付真理源）。
+      taskPool: SupplyTaskPool.instance,
     );
     return (invoke: port.invoke, schemaOf: port.schemaOf);
   }
@@ -415,6 +421,20 @@ class GatewayController {
         onDeviceCapability:
             AidlOnDeviceCapabilityService(sharedOnDeviceEngine),
         supplyQuota: SupplyQuota(),
+        // M-C 处理模型：能力档案 + ops 审计（G3 同汇 ops.log——`server:
+        // 'ai-export'` 记调用方/路由/耗时；恒开，写失败 DEGRADE 不阻断）。
+        capabilityRegistry: AppCapabilityRegistry(),
+        auditSink: ({required caller, required method, required route,
+            required ok, required durationMs, note}) =>
+            opsLog.audit(
+                server: 'ai-export',
+                tool: '$method/$caller→$route',
+                ok: ok,
+                durationMs: durationMs,
+                error: note),
+        // 收编（0.5.0）：ai/complete 冷态联合态任务池（驻留单例，与
+        // host__on_device_complete 工具面同池）。
+        taskPool: SupplyTaskPool.instance,
       );
     } on Object catch (e) {
       debugPrint('[DEGRADE] gateway: sampling wiring skipped: $e');

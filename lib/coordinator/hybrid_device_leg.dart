@@ -21,6 +21,7 @@ import '../llm/on_device_dispatch_profile.dart';
 import '../llm/on_device_engine.dart';
 import '../llm/on_device_model_catalog.dart';
 import 'capability_router.dart' show onDeviceInputOverflows;
+import 'ai_complete_service.dart' show AiCompleteService;
 import 'hybrid_cloud_leg.dart';
 import 'hybrid_route_probes.dart';
 
@@ -73,6 +74,12 @@ class HybridDeviceLeg {
       // R-P0 驻留观测面（S-R0-b）：send 腿入口 Piggyback（命中率分子）。
       onDeviceResidencyMetrics.eventSync(
           'send', {'mode': 'device', 'reason': reason});
+      // M-B QoS（ai-capability-export §5「防客大欺主」）：宿主自用会话
+      //（USER_INTERACTIVE）进入 → 对在途外部 ai/complete 任务发协作式打断
+      //（回 PREEMPTED_BY_HOST + retry_after_ms）。best-effort 不阻塞主路径；
+      // 打断未生效不得假设算力已腾出（K11 红线，槽位竞争由引擎受理链裁决），
+      // 禁重启引擎腾算力。
+      unawaited(AiCompleteService.preemptAllForHostUse());
       debugPrint('[HybridEngine] 端侧路径（$reason）：${device.name}');
       try {
         // 端侧对话 prompt 构造与载荷估算（buildDevicePrompt 单源）：消息序列 JSON
@@ -263,13 +270,23 @@ class HybridDeviceLeg {
 /// 过期 / session_model_mismatch 资产变更——均为可自愈中断）不是后端缺陷——
 /// 记 crash 会把正常生命周期/环境事件持久化成坏后端记忆，下轮无故跳开端侧。
 /// 真进程死亡/看门狗/死锁类照记。S3 特征钉 = hybrid_send_golden_test。
+///
+/// ai-capability-export M-B 扩四码（§6.3 风险钉 #2）：外部终止码
+///（preempted_by_host 宿主自用抢占 / device_throttled 硬件自保 /
+/// caller_cancelled 调用方取消 / caller_died 调用方死亡）同样**禁入端侧
+/// 性能画像**——0 token 采样被折算成「端侧严重劣化」会把后续任务误推云端。
+/// 过滤单源 = 本函数（禁第二份过滤）。
 bool evictionLifecycleDied(String diedReason) {
   final r = diedReason.toLowerCase();
   return r.contains('session_aborted_by_eviction') ||
       r.contains('data plane eof') ||
       r.contains('session_loading') ||
       r.contains('session_epoch_mismatch') ||
-      r.contains('session_model_mismatch');
+      r.contains('session_model_mismatch') ||
+      r.contains('preempted_by_host') ||
+      r.contains('device_throttled') ||
+      r.contains('caller_cancelled') ||
+      r.contains('caller_died');
 }
 
 /// 端侧中断真因白话化（错误卡文案，禁裸露内部异常串）：按 reason 关键字

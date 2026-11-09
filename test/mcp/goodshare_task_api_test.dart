@@ -8,7 +8,7 @@ library;
 import 'dart:convert' as json;
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:goodhub/mcp/goodshare_task_api.dart';
+import 'package:goodhub/mcp/mcp_task_queue.dart';
 import 'package:goodhub/mcp/mcp_client.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -34,7 +34,7 @@ void main() {
       'text': '正文',
       'version': 22,
     };
-    final api = GoodshareTaskApi(_clientWith(() => {
+    final api = McpTaskQueueApi(_clientWith(() => {
           'content': [
             {'type': 'text', 'text': json.jsonEncode(payload)},
           ],
@@ -55,7 +55,7 @@ void main() {
       'summary_md': '摘要',
       'version': 23,
     };
-    final api = GoodshareTaskApi(_clientWith(() => {
+    final api = McpTaskQueueApi(_clientWith(() => {
           'content': [
             {'type': 'text', 'text': json.jsonEncode(snapshot)},
           ],
@@ -71,7 +71,7 @@ void main() {
   });
 
   test('touch：非 JSON 文本（ok）原样返回不抛', () async {
-    final api = GoodshareTaskApi(_clientWith(() => {
+    final api = McpTaskQueueApi(_clientWith(() => {
           'content': [
             {'type': 'text', 'text': 'ok'},
           ],

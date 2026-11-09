@@ -30,9 +30,15 @@ import 'supply_task_pool.dart';
 /// 端侧供给面导出执行器。
 class HostOnDeviceToolExecutor implements ToolExecutor {
   HostOnDeviceToolExecutor(this._primitive,
-      {this.quota, this.callerKey, this.taskPool});
+      {this.inner, this.quota, this.callerKey, this.taskPool});
 
   final OnDeviceCapabilityService _primitive;
+
+  /// 链语义（composeToolExecutorChain）：非本工具名**透传内层**——
+  /// 禁「未知名本地拒绝」截断链（截断即后层 TaskStatus/AiComplete 永不可达，
+  /// 2026-11-08 真机 e2e 实证 host__ai_complete 被本层误截）。null = 独立
+  /// 装配（drain 场景单工具，保持拒绝兜底）。
+  final ToolExecutor? inner;
 
   /// 调用方配额（W5；null = 未装配不裁决——既有装配零行为变化）。
   /// 事务语义（K22）：并发 acquire/release 恒配对（try/finally）；频次仅
@@ -49,13 +55,6 @@ class HostOnDeviceToolExecutor implements ToolExecutor {
 
   /// 工具名（裸名，与本机 executor 一致，不带 `host__` 前缀）。
   static const toolName = 'on_device_complete';
-
-  /// Binder 路径私有反向 method（Tier 1 契约，2026-11-04）：同机插件 App 经
-  /// 反向请求转发宿主端侧算力——与 `host__on_device_complete` 工具面同参数
-  /// 语义 {instruction, input}、同 result 形（{role, model, content}）、同源
-  /// 执行器（K22 配额 + 降级语义单源）。method 名单源于此（reverse_wiring
-  /// 分派消费），禁双源漂移。
-  static const reverseMethodName = 'host/onDeviceComplete';
 
   /// 工具声明（§5.1 描述主动引导：写「怎么用才对」+ 降级语义显式声明）。
   static List<CloudToolSchema> toolSchemas() => [
@@ -191,9 +190,12 @@ class HostOnDeviceToolExecutor implements ToolExecutor {
     String? callerKeyOverride,
   }) async {
     if (call.name != toolName) {
-      // 非本工具裸名透传兜底（与 HostStatusToolExecutor 同构：装配链约定）。
-      return const ToolExecutionResult(
-          content: 'on_device_complete 执行器不接受其他工具名', isError: true);
+      // 链语义：非本名透传内层（inner null = 独立装配拒绝兜底）。
+      final next = inner;
+      if (next != null) return next.execute(call);
+      return ToolExecutionResult(
+          content: 'on_device_complete 执行器不接受其他工具名（未接链内层）',
+          isError: true);
     }
     final Object? args;
     try {
@@ -294,14 +296,9 @@ class HostOnDeviceToolExecutor implements ToolExecutor {
             input: input,
           );
           capLog('deferred taskId=${entry.taskId}');
+          // 联合态回执单源（deferredReceiptJson——ai/complete 受理链同源）。
           return ToolExecutionResult(
-            content: jsonEncode({
-              'execution_mode': 'deferred',
-              'task_id': entry.taskId,
-              'status': 'queued',
-              'expiry_ms': entry.expiryAtMs -
-                  DateTime.now().millisecondsSinceEpoch,
-            }),
+            content: jsonEncode(deferredReceiptJson(entry)),
           );
         } on Object catch (pe) {
           capLog('deferred-submit-failed: $pe');
@@ -319,13 +316,17 @@ class HostOnDeviceToolExecutor implements ToolExecutor {
 /// 真理源（freezer 吞 oneway 的唯一对策）——pendingDelivery 态查询即置
 /// delivered 并回结果；M5 身份过滤（callerKey 不匹配 = 不可见）。
 class HostSupplyTaskStatusExecutor implements ToolExecutor {
-  HostSupplyTaskStatusExecutor(this._pool);
+  HostSupplyTaskStatusExecutor(this._pool, {this.inner});
 
   final SupplyTaskPool _pool;
 
+  /// 链语义：非本名透传内层（同 [HostOnDeviceToolExecutor.inner]）。
+  final ToolExecutor? inner;
+
   static const toolName = 'on_device_task_status';
 
-  /// 宿主私有反向 method（Tier 1，与 `host/onDeviceComplete` 并列——W6-a 拉取接缝）。
+  /// 宿主私有反向 method（Tier 1 拉取接缝；推理入口已收编 `ai/complete`，
+/// 私有 method `host/onDeviceComplete` 2026-11-09 退役）。
   static const reverseMethodName = 'host/onDeviceTaskStatus';
 
   /// schema 单源（toolSchemas 清单内同形；owner = 执行面禁 Allowlist 复制）。
@@ -348,8 +349,11 @@ class HostSupplyTaskStatusExecutor implements ToolExecutor {
     String? callerKeyOverride,
   }) async {
     if (call.name != toolName) {
+      final next = inner;
+      if (next != null) return next.execute(call);
       return const ToolExecutionResult(
-          content: 'on_device_task_status 执行器不接受其他工具名', isError: true);
+          content: 'on_device_task_status 执行器不接受其他工具名（未接链内层）',
+          isError: true);
     }
     final callerKey = callerKeyOverride ?? '';
     if (callerKey.isEmpty) {

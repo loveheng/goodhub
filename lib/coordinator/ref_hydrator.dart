@@ -17,6 +17,7 @@ library;
 
 import 'dart:convert';
 
+import '../core/data_source.dart';
 import '../llm/cloud/cloud_llm.dart';
 import 'agent_loop.dart';
 import 'ref_store.dart';
@@ -34,7 +35,7 @@ class HydratingExecutor implements ToolExecutor {
   HydratingExecutor({
     required this.inner,
     required this.refStore,
-    this.targetServerId = 'goodshare',
+    this.targetServerId = kPrimaryDataSourceServerId,
     this.targetResolver,
     this.crossSourceDelegate,
   });

@@ -11,13 +11,13 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:goodhub/mcp/goodshare_task_api.dart';
+import 'package:goodhub/mcp/mcp_task_queue.dart';
+import 'package:goodhub/task/task_source.dart';
 import 'package:goodhub/mcp/mcp_client.dart';
 import 'package:goodhub/mcp/server_endpoints.dart';
 import 'package:goodhub/mcp/transport/mcp_transport.dart';
 import 'package:goodhub/task/task_inference.dart';
 import 'package:goodhub/task/task_loop_service.dart';
-import 'package:goodhub/task/task_source.dart';
 
 /// 计数假传输：close 可观测（协议面最小实现）。
 class _CountingTransport implements McpTransport {
@@ -80,7 +80,9 @@ void main() {
     test('TaskLoopService.close 透传释放底层 client（二次调用仍只关一次）', () {
       final transport = _CountingTransport();
       final service = TaskLoopService(
-        api: GoodshareTaskSource(GoodshareTaskApi(McpClient(transport))),
+        api: McpTaskQueueSource(
+            McpTaskQueueApi(McpClient(transport)),
+            serverId: 'com.zzh.goodshare'),
         inference: _NoopInference(),
       );
       service.close();

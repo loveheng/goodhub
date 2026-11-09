@@ -19,6 +19,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../core/data_source.dart';
 import '../core/errors/inference_error.dart';
 import '../core/tool_result.dart';
 import '../llm/cloud/cloud_llm.dart';
@@ -124,7 +125,7 @@ class AgentLoop {
     this.summarizeThresholdTokens = 1000,
     this.summarizer,
     this.refStore,
-    this.refServerId = 'goodshare',
+    this.refServerId = kPrimaryDataSourceServerId,
     this.serverResolver,
     this.toolsProvider,
     this.onRoundCommitted,

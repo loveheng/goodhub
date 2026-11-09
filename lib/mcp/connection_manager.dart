@@ -19,6 +19,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart' show debugPrint;
 
+import '../core/data_source.dart';
 import '../core/network/backoff.dart';
 import '../core/tool_result.dart';
 import 'connection_face.dart';
@@ -85,7 +86,7 @@ class McpConnection {
     ExponentialBackoff? backoff,
     ConnectionHealth? health,
     this.isAlive,
-    this.serverId = 'goodshare',
+    this.serverId = kPrimaryDataSourceServerId,
   })  : _face = face ??
             (faceFactory != null
                 ? faceFactory(client)

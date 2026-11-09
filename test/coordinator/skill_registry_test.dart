@@ -58,8 +58,7 @@ void main() {
 
     test('builtinSkills 全过预算 + scope 分布齐 + \$ref 正文不被 Dart 插值吞', () {
       final r = SkillRegistry()..registerAll(builtinSkills());
-      expect(r.globals().length, 3, reason: 'ref/task + supply/summarize（S17）');
-      expect(r.forServer('goodshare').length, 1);
+      expect(r.globals().length, 3, reason: 'ref-pipeline + task-discipline + supply/summarize（S17）；goodshare-data 内置 skill 已退役——数据面口径由来源侧 MCP 工具描述/prompts 自带');
       expect(r.onDemand().length, 1);
       expect(r.byName('ref-pipeline')!.content, contains(r'$ref:'),
           reason: '正文里的 \$ref 字面量必须完整（防插值事故）');
@@ -102,8 +101,8 @@ void main() {
       r.register(_skill('cow/y', SkillScope.appScoped, serverId: 's2'));
       expect(
         r.appScoped().map((s) => s.name).toSet(),
-        {'goodshare-data', 'cow/x', 'cow/y'},
-        reason: '全集含官方预置 + CoW 产物，不含 global/onDemand',
+        {'cow/x', 'cow/y'},
+        reason: '全集含 CoW 产物（goodshare-data 内置 skill 已退役），不含 global/onDemand',
       );
     });
   });
@@ -116,7 +115,6 @@ void main() {
       expect(out.startsWith('你是 AI 宿主。'), isTrue, reason: 'base 原样在前');
       expect(out, contains('ref-pipeline'));
       expect(out, contains('task-discipline'));
-      expect(out, contains('goodshare-data'));
       expect(out.contains('deep-organize'), isTrue, reason: '未激活 onDemand 只出现在「可激活」清单');
       expect(out, contains('### 可激活（activate_skill）'));
       expect(out.contains('（已激活）'), isFalse);

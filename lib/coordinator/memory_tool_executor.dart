@@ -21,6 +21,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show debugPrint;
 
+import '../core/data_source.dart';
 import '../llm/cloud/cloud_llm.dart';
 import '../sandbox/memory_store.dart';
 import 'agent_loop.dart';
@@ -29,7 +30,7 @@ class MemoryToolExecutor implements ToolExecutor {
   MemoryToolExecutor({
     required this.inner,
     required this.store,
-    this.serverId = 'goodshare',
+    this.serverId = kPrimaryDataSourceServerId,
   });
 
   final ToolExecutor inner;

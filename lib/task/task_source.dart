@@ -1,4 +1,6 @@
-/// 任务来源抽象（task-capability W4-A 形态 A 多来源接入，2026-11-04）。
+/// 任务来源抽象（task-capability W4-A 形态 A 多来源接入，2026-11-04；
+/// ai-capability-export 通用化 2026-11-09：goodshare 独有支持退役——
+/// 实现类泛化为来源无关的 [McpTaskQueueSource]，契约探测入注册表）。
 ///
 /// **定位**：任务消费循环（claim → 心跳 → apply）对「来源」的最小契约——
 /// 宿主可注册多个任务来源（首个 = goodshare），循环逻辑零双路分支，来源
@@ -6,14 +8,15 @@
 ///
 /// **serverId 随来源携带**：对账账本（task_consume_ledger）按 [serverId]
 /// 分组（既有维度，账本结构零改）；多来源下各来源的自有 id，禁再写死
-/// `kGoodsharePackage`（来源可注册集合的分组键）。
+/// 包名字面量（来源可注册集合的分组键）。
 ///
 /// **依赖方向**：接口住 task 层（与 [TaskInference] 同层位——依赖倒置），
-/// 实现住 mcp 层（GoodshareTaskApi 等）。实现侧可后续增补放弃认领
+/// 实现住 mcp 层（McpTaskQueueApi 等）。实现侧可后续增补放弃认领
 /// （Release/Nack）原语（跨仓 §3.12 增量，见 W4-A 施工记录）。
 library;
 
-import '../mcp/goodshare_task_api.dart';
+import '../core/data_source.dart';
+import '../mcp/mcp_task_queue.dart';
 
 /// 任务来源最小契约。
 abstract interface class TaskSource {
@@ -40,19 +43,17 @@ abstract interface class TaskSource {
   void close();
 }
 
-/// goodshare 来源适配器（首个 TaskSource 实现）：薄委托 [GoodshareTaskApi]
+/// 远程任务队列契约的通用适配器（泛化自 GoodshareTaskSource——
+/// serverId 构造注入，来源无关）：薄委托 [McpTaskQueueApi]
 /// ——适配住 task 层（依赖方向 task→mcp 单向，mcp 不反向依赖 task），
-/// serverId 随来源携带（与对账账本现行分组键同值——`kGoodsharePackage`
-/// `com.zzh.goodshare`，bootstrap 插件识别的 `info.packageName`；双处同值
-/// 禁漂移，消费侧禁再写死包名字面量），消费侧
-/// （task_loop_service / bootstrap / 账本）只认 [TaskSource] 类型。
-class GoodshareTaskSource implements TaskSource {
-  GoodshareTaskSource(this._api);
+/// 消费侧（task_loop_service / bootstrap / 账本）只认 [TaskSource] 类型。
+class McpTaskQueueSource implements TaskSource {
+  McpTaskQueueSource(this._api, {required this.serverId});
 
-  final GoodshareTaskApi _api;
+  final McpTaskQueueApi _api;
 
   @override
-  String get serverId => 'com.zzh.goodshare';
+  final String serverId;
 
   @override
   Future<ClaimedTask> claim() => _api.claim();
@@ -68,4 +69,13 @@ class GoodshareTaskSource implements TaskSource {
 
   @override
   void close() => _api.close();
+}
+
+/// goodshare 来源适配器（**首个 TaskSource 实现**，2026-11-09 退役为过渡
+/// 别名）：serverId 固定 [kPrimaryDataSourcePackage]（首个数据面生态成员，
+/// P2 字面量单源）。存量调用点渐进迁移；新代码用 [McpTaskQueueSource]
+///（serverId 显式注入）。
+@Deprecated('泛化为 McpTaskQueueSource（ai-capability-export 通用化 2026-11-09）')
+class GoodshareTaskSource extends McpTaskQueueSource {
+  GoodshareTaskSource(super.api) : super(serverId: kPrimaryDataSourcePackage);
 }

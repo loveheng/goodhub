@@ -268,6 +268,10 @@ Toolkit（`:goodhub-ai-toolkit`，**二期**）：`StandardPrompts` 模板 / `Te
 
 ## 6. 里程碑切法（各段可独立验收）
 
+> **收编迁移（2026-11-09 用户拍板）**：`host/onDeviceComplete` 的 deferred 语义收编进 `ai/complete`（契约 0.5.0，additive）——设计张力（§6.1 收口意图 vs §3.1 v1 无 deferred，goodshare 消费形态恰依赖 deferred）实现期首次暴露，裁决 = 收编（收口单 method + goodshare 只改 method 名 + 不上 Kotlin client，D2 保留兼容形态继续服务 sampling 标准语义）。goodshare 855 例全绿。
+>
+> **实施状态（2026-11-08 对账，epic ai-capability-export）**：M-A ✅（契约仓 0.4.0：`McpContract.AI_*` 常量组 + api.md §8 + goodshare 两文档成对修 + 门禁全绿）；M-B ✅（`AiCompleteService` 统一受理链 + transport 反向会话钩子多帧承载 + sampling 适配壳（D2）+ `ai/cancel` 幂等 + K17 接线 + QoS 抢占挂点 + 保活三钥匙 + HardwareGuard + 归因四码 + drain 预算；单测 15+2 例）；M-C ✅（宿主 `AppCapabilityProfile` 冻结/解冻/审计 + SDK `:goodhub-ai-client`/`:goodhub-ai-runtime` 双工件四入口 API + 破层断言；lifecyclePolicy 前台探针 v1 未知放行——PACKAGE_USAGE_STATS 特权接线为跟进项）；M-D 部分完成（网关投影 `host__ai__complete` ✅ 过三关 + dummy `aiEcho` 靶子 ✅ + 《业务层 AI 接入规范指南》✅ 随 SDK 0.4.0 + 设置页用户主权面 ✅；**真机 Binder/网关 e2e 待设备在线**）。W6-a 私有 method（`host/onDeviceComplete` 等）迁移期并存，退役待 goodshare 迁 `:goodhub-ai-client` 后收口。
+
 | 里程碑 | 内容 | 验收 |
 |---|---|---|
 | M-A 契约立法 | 契约仓 `:contract` 加 `ai/complete` method 规范与常量 + `_meta.phase` progress 约定 + `ai/cancel` method + 十二码表（含 `DEVICE_THROTTLED` / `PREEMPTED_BY_HOST`）+ `retry_after_ms` 字段 + 版本递增；goodshare 仓两份接缝文档同轮修 | `check-contract-sync` 过；接缝文档 diff 成对 |
@@ -281,7 +285,7 @@ task-capability W5/W6 首包已落地大半底座，实施期严禁重复造轮�
 
 | 设计条目 | 既有资产 | 处置 |
 | --- | --- | --- |
-| `complete` 原语执行器 | `host_on_device_tool.dart` 的 `on_device_complete`（failFast 直通 / 降级显式 / schema 单源）+ 私有反向 method `host/onDeviceComplete`（`reverse_wiring.dart`，与 `wireSampling` 并存） | 升格为标准 `ai/complete`：私有 method 退役或映射为别名，收口单 method |
+| `complete` 原语执行器 | `host_on_device_tool.dart` 的 `on_device_complete`（failFast 直通 / 降级显式 / schema 单源）+ 私有反向 method `host/onDeviceComplete`（`reverse_wiring.dart`，与 `wireSampling` 并存） | ✅ 已收口（2026-11-09 用户拍板「收编进 ai/complete」）：`allow_deferred`/`expiry_ms` 收编进 ai/complete params（契约 0.5.0 §8.7）+ 受理链接 deferred 分支（入池回执单源 `deferredReceiptJson`）；goodshare 消费面已迁 `ai/complete`；✅ 退役清账（2026-11-09）：宿主响应删除（退役钉防复活）+ SDK 0.5.1 `REVERSE_METHOD` 切标准面（插件零改动迁移） |
 | 调用方配额 | `supply_quota.dart`（K22 事务语义：并发 acquire/release 恒配对、频次产出才计） | `AppCapabilityProfile.rateLimit` 直接复用，不重写 |
 | 死亡清理 | K17 `caller_death_interrupt.dart` + BinderTransport `onCallerDied` 独立链路 + 平台侧 `callerDeathRecipient` | 既有三红线原样生效；`ai/cancel` 幂等接进同一注册表 |
 | 异步长任务 | W6 `supply_task_pool.dart`（WAL / 身份过滤 / 毒丸死信 / `allow_deferred`） | `_async` 语义映射进该池，不另起 |
@@ -328,3 +332,7 @@ task-capability W5/W6 首包已落地大半底座，实施期严禁重复造轮�
 - **路由权归属（原 D1，2026-11-08 用户拍板）**：异步受理进入宿主后按**设备主在 goodhub 设置里的选择**路由（端侧 / 云端），不由调用方 config 强制；`completeSync` 便捷壳固定默认端侧。端侧存在时同步即出结果，长任务走 `_async` 异步——均见 §3.4 / §4.1。
 - **D2 sampling 收敛（2026-11-08 用户拍板）**：`sampling/createMessage` 保留兼容对外，实现退化为 `ai/complete` 适配壳，封死双推理路由；配额分池保留。
 - **D3 立项归属（2026-11-08 用户拍板）**：新独立 epic 立项推进，不阻塞 thirdconnect 收尾。
+- **收编裁决（2026-11-09 用户拍板「收编进 ai/complete」）**：实现期暴露的契约张力——原 `host/onDeviceComplete` 私有 method 与 `ai/complete` 双路径并存易致链截断与悬空网关。裁决：拉取面（`allow_deferred`/`expiry_ms` 联合态回执）统一收编进 `ai/complete`，宿主响应侧 `host/onDeviceComplete` 退役（旧调用落 `-32601` + 退役钉防复活），SDK `OnDeviceOutcome.REVERSE_METHOD` 切 `'ai/complete'`（插件零改动迁移）。接缝立法义务同轮补齐（ai-app-split §3.11.2 / §3.13）。
+- **通用化 / C-D 处置裁决（2026-11-09 用户拍板）**：①C——`goodshare-data` 内置 skill 退役（来源侧 MCP 工具描述 / prompts 自带通道，开场不再注入特定来源介绍防幻觉调用未挂载面）；②D——`server_endpoints` 迁移遗留常量与 `_migrateLegacyIfNeeded` 全删，还原 `secure` 内部缺省（顺手修 F16 app→core/security 违矩阵）；③`localReadOnlyTools` 死台账删；④SDK 0.6.0 增 Kotlin `@McpPrompt` 声明式 prompts 能力，补全插件自带 skill 通道缺口，与 goodshare Dart server prompts 同权。
+
+> **收口状态（2026-11-09）**：本 epic 经 `::done` 归档（临时 epic）。设计稿 status 维持 `draft` 待用户封板；正式立项时按 D3 更名 / 迁移，记忆随域搬。AI 能力输出全形态已落地——契约 `:contract` 0.6.0（`ai/complete` + Kotlin prompts 能力）、宿主受理链、处理模型、验收网关面、收编迁移、通用化、接入文档网（AI_ONBOARDING / api.md / GUIDE / MANIFEST_SPEC 四分工互链）。

@@ -5,6 +5,7 @@
 /// （见 `lib/ui/debug_wiring.dart`）。
 library;
 
+
 import 'package:app_debug_bridge/app_debug_bridge.dart' as kit;
 import 'package:flutter/widgets.dart';
 
@@ -74,6 +75,42 @@ Future<Object?> executeDebugAction(String action, Map<String, Object?> args) asy
       return <String, Object?>{
         'ok': true,
         'action': 'drain_supply_pool',
+        'pool': SupplyTaskPool.instance.debugSnapshot(),
+      };
+    case 'asset_probe':
+      // 模型资产目录只读探针（取证面）——实现住 coordinator（R1：UI 禁 dart:io）。
+      return {'ok': true, 'action': 'asset_probe', ...await OnDeviceAdmin.assetProbe()};
+    case 'pool_consume_simulate':
+      // 池产出模拟设施（ai-capability-export 收编 e2e，2026-11-09）：对池中
+      // queued 任务写**模拟产出**（taskId 缺省 = 最旧 queued），驱动消费端
+      // Pull→事件→登记收敛管线（引擎真推理产出路径 = drain_supply_pool，
+      // 需模型资产热态——资产缺失环境下用本设施验证收编迁移的池产出段）。
+      // **显式模拟语义**：产出文本自带 [SIMULATED] 标记，禁与真推理混淆。
+      final pendingTasks = SupplyTaskPool.instance.debugSnapshot();
+      final queued = [
+        for (final t in pendingTasks)
+          if (t['status'] == 'queued') t,
+      ];
+      if (queued.isEmpty) {
+        return <String, Object?>{
+          'ok': false,
+          'action': 'pool_consume_simulate',
+          'error': 'no_queued_task',
+        };
+      }
+      final target = (args['taskId']?.toString().isNotEmpty ?? false)
+          ? queued.firstWhere(
+              (t) => t['taskId'] == args['taskId'],
+              orElse: () => queued.first,
+            )
+          : queued.first;
+      final taskId = target['taskId'] as String;
+      await SupplyTaskPool.instance
+          .completeTask(taskId, '[SIMULATED] e2e-pool-output-${DateTime.now().millisecondsSinceEpoch}');
+      return <String, Object?>{
+        'ok': true,
+        'action': 'pool_consume_simulate',
+        'taskId': taskId,
         'pool': SupplyTaskPool.instance.debugSnapshot(),
       };
     case 'pool_dump':

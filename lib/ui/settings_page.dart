@@ -49,6 +49,7 @@ import '../../coordinator/cow_sync.dart';
 import '../../coordinator/user_prompt_store.dart';
 import '../../core/security/secure_storage_upgrade.dart';
 import 'sections/about_section.dart';
+import 'sections/ai_capability_section.dart';
 import 'sections/cow_section.dart';
 import 'sections/cross_source_section.dart';
 import 'sections/gateway_section.dart';
@@ -171,6 +172,10 @@ class _SettingsPageState extends State<SettingsPage> {
           // 启用偏好 / GenieX 增配运行库 / 电池白名单；资产面（导入/选择/删除）
           // 留在资源中心「端侧模型」tab。
           OnDeviceConfigSection(onFlash: _flash),
+          const SizedBox(height: 12),
+          // AI 能力输出（ai-capability-export M-D 用户主权面）：外部调用路由
+          // 端侧/云端裁决（D1）+ 违规冻结治理（解冻唯一出口）。
+          AiCapabilitySection(onFlash: _flash),
           const SizedBox(height: 12),
           // PC 远程网关（2026-11-02 回迁设置：连接配置归设置，不再混在资源中心
           // 「节点与插件」tab）。

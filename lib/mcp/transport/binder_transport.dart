@@ -62,7 +62,34 @@ abstract interface class CallerIdentityTransport implements McpTransport {
   String get callerKey;
 }
 
-class BinderTransport implements McpTransport, CallerIdentityTransport {
+/// 反向会话帧发射器：每调一次即经 `answerReverse` 透传一帧（oneway）。
+typedef ReverseFrameEmitter = void Function(Map<String, Object?> frame);
+
+/// 反向会话处理器（ai-capability-export M-B · `_async` 多帧承载）：
+/// ai/complete 的「_async ack → progress 通知帧 → 同 id 终帧」须对同一请求 id
+/// 多次调用 answerReverse。会话钩子接线后**全权负责该请求的全部应答帧**
+/// （含终帧；一个终帧都不发 = 调用方悬挂，处理器契约红线）。
+///
+/// 线级惯例（立法 = 契约仓 api.md §8.2）：ack/progress/终帧全部经
+/// answerReverse 透传——无 id 通知帧（progress）被旧插件侧
+/// `pendingReverse.remove(-1)` 天然忽略（向后兼容实证），带 id 终帧唤醒等待方。
+typedef ReverseSessionHandler = Future<void> Function(
+  String method,
+  Object id,
+  Object? params,
+  ResolvedCallerIdentity caller,
+  ReverseFrameEmitter emit,
+);
+
+/// 反向会话传输能力（S1c 能力化惯例）：支持多帧应答的传输实现本接口，
+/// 消费点（reverse_wiring）按接口探测，禁 is 具体类。
+abstract interface class ReverseSessionTransport
+    implements CallerIdentityTransport {
+  set onServerRequestSessionWithCaller(ReverseSessionHandler? handler);
+}
+
+class BinderTransport
+    implements McpTransport, CallerIdentityTransport, ReverseSessionTransport {
   BinderTransport({
     required this.transportId,
     required this.packageName,
@@ -252,6 +279,12 @@ class BinderTransport implements McpTransport, CallerIdentityTransport {
     ResolvedCallerIdentity caller,
   )? onServerRequestWithCaller;
 
+  /// 反向会话钩子（[ReverseSessionTransport] 实现；null = 未接线，回落既有
+  /// 单帧钩子）。接线后反向请求全权交会话处理器应答（多帧）——[M-B ai/complete
+  /// _async 承载]；既有 sampling/onDeviceComplete 路径不接线，零行为变化。
+  @override
+  ReverseSessionHandler? onServerRequestSessionWithCaller;
+
   /// 调用方进程死亡通知钩子（W5 调用方进程死亡联动打断，K17，**新增链路**）。
   ///
   /// 触发源 = 平台侧**独立**死亡代理推来的 `onCallerDied` 事件（见
@@ -412,7 +445,61 @@ class BinderTransport implements McpTransport, CallerIdentityTransport {
     ResolvedCallerIdentity? caller,
   ) async {
     debugPrint(
-        '[reverse] 收到反向请求 method=$method id=$id caller=${caller?.packageName ?? "null"} withCaller=${onServerRequestWithCaller != null}');
+        '[reverse] 收到反向请求 method=$method id=$id caller=${caller?.packageName ?? "null"} withCaller=${onServerRequestWithCaller != null} session=${onServerRequestSessionWithCaller != null}');
+    // M-B 反向会话钩子优先（多帧应答；ai/complete _async 承载）：接线后该请求
+    // 的全部应答帧（含终帧）由处理器经 emit 透传——传输层只负责 answerReverse
+    // 通道与异常兜底帧。身份缺失拒绝规则与既有单帧路径同款（-32001 禁匿名放行）。
+    final session = onServerRequestSessionWithCaller;
+    if (session != null) {
+      if (caller == null) {
+        _sendReverseFrame(<String, Object?>{
+          'jsonrpc': '2.0',
+          'id': id,
+          'error': <String, Object?>{
+            'code': -32001,
+            'message': '调用方身份解析失败（平台侧内核 UID 无包名/签名），按拒绝处置',
+          },
+        });
+        return;
+      }
+      var answered = false;
+      void emit(Map<String, Object?> frame) {
+        answered = true;
+        _sendReverseFrame(frame);
+      }
+
+      try {
+        await session(method, id, params, caller, emit);
+      } on McpRpcException catch (e) {
+        if (!answered) {
+          emit(<String, Object?>{
+            'jsonrpc': '2.0',
+            'id': id,
+            'error': <String, Object?>{
+              'code': e.code,
+              'message': e.message,
+              if (e.data != null) 'data': e.data,
+            },
+          });
+        }
+      } catch (e) {
+        if (!answered) {
+          emit(<String, Object?>{
+            'jsonrpc': '2.0',
+            'id': id,
+            'error': <String, Object?>{
+              'code': -32603,
+              'message': '宿主反向请求处理失败: $e',
+            },
+          });
+        }
+      }
+      if (!answered) {
+        // 会话处理器契约红线（一个终帧都不发 = 调用方悬挂）——可观测留痕。
+        debugPrint('[DEGRADE] reverse session: $method 处理器未发射任何应答帧');
+      }
+      return;
+    }
     final withCaller = onServerRequestWithCaller;
     // 单点构造反向响应帧（final 单一赋值，规避 multi-assign 红线）：
     // - 携带身份的钩子已接线 → 身份缺失（平台侧解析失败）= 拒绝 -32001（S07b
@@ -447,6 +534,12 @@ class BinderTransport implements McpTransport, CallerIdentityTransport {
           : await _reverseFrame(() => handler(method, params), id);
     }
     // 经 answerReverse（oneway）把响应回插件，插件按 id 关联原请求。
+    _sendReverseFrame(frame);
+  }
+
+  /// 反向应答单点（oneway）：既有单帧路径与会话钩子（M-B 多帧）共用同一
+  /// answerReverse 通道——防两处手拼信封漂移。
+  void _sendReverseFrame(Map<String, Object?> frame) {
     _channel
         .invokeMethod<void>('answerReverse', <String, Object>{
           'transportId': transportId,

@@ -327,9 +327,9 @@ void main() {
       // W6-a：on_device_task_status 拉取工具随任务池装配入面（长驻 P1 交付）。
       'on_device_task_status',
     ]));
-    expect(singleNames, hasLength(4),
+    expect(singleNames, hasLength(5),
         reason: 'single 暴露目标服务 + 唯一出口工具 + 端侧供给面导出项（W5）'
-            '+ 任务状态拉取（W6-a）');
+            '+ 任务状态拉取（W6-a）+ AI 能力原语投影（ai-capability-export M-D）');
     final singleCall = await single.toolsCall(
       name: 'get_host_status',
       arguments: const <String, Object?>{},

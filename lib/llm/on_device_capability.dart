@@ -29,6 +29,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/services.dart' show PlatformException;
 
 import 'cloud/cloud_llm.dart';
+import 'llm.dart' show LlmResponseFormat;
 import 'on_device_chat_prompt.dart';
 import 'on_device_engine.dart';
 import 'on_device_model_catalog.dart';
@@ -82,6 +83,7 @@ class OnDevicePrimitiveConfig {
     this.temperature = 0.3,
     this.topP = 0.9,
     this.prefixReuse,
+    this.responseFormat,
   });
 
   /// 产出上限（原语任务输出体量界；摘要默认 256）。
@@ -100,6 +102,12 @@ class OnDevicePrimitiveConfig {
   /// 不支持提示的引擎面静默忽略（能力缺失非降级，
   /// 见 [OnDevicePrefixReuseAware] 契约注）。缺省 null = 既有行为零变化。
   final PrefixReuseHint? prefixReuse;
+
+  /// 约束解码规格（ai-capability-export M-B 贯穿：ai/complete config 透传
+  /// 端侧腿——S17b 既有承载，GenerationConfig.responseFormat 键集单源；
+  /// null = 无约束零变化。GenieSession 后端显式归因拒服务由 :engine 层既有
+  /// 语义承担，本层只透传）。
+  final LlmResponseFormat? responseFormat;
 }
 
 /// 前缀复用句柄（S18b 契约留位）：供给面签发、调用方显式持有与失效的不透明
@@ -557,6 +565,9 @@ class AidlOnDeviceCapabilityService
             maxTokens: config.maxTokens,
             temperature: config.temperature,
             topP: config.topP,
+            // M-B 贯穿（ai/complete config.responseFormat → S17b 承载键集）：
+            // null = 无约束，既有调用零变化。
+            responseFormat: config.responseFormat,
           ),
         );
         return;

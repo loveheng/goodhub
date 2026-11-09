@@ -123,13 +123,8 @@ class ServerEndpoint {
 }
 
 class ServerEndpointStore {
-  ServerEndpointStore({
-    required this.file,
-    SecureKeyValue? secure,
-    SharedPreferencesLike? prefs,
-  })  : _secure = secure ?? FlutterSecureKeyValue(),
-        // ignore: prefer_initializing_formals
-        _prefs = prefs;
+  ServerEndpointStore({required this.file, SecureKeyValue? secure})
+      : _secure = secure ?? FlutterSecureKeyValue();
 
   /// 非敏感配置文件（注入：生产 = 应用支持目录/mcp_servers.json）。
   final File file;
@@ -138,20 +133,12 @@ class ServerEndpointStore {
 
   /// 旧单端点 SharedPreferences 读取口（迁移用；测试注入假件，生产缺省 =
   /// FlutterSharedPreferences 适配，见 [flutterPrefsLike]）。
-  final SharedPreferencesLike? _prefs;
 
   static const _keyPrefix = 'mcpserver.key.';
 
-  /// 旧版单端点键（T3 及以前，chat_page 写入）。
-  static const _legacyEndpointKey = 'chat.mcp.endpoint';
-  static const _legacyApiKeyKey = 'chat.mcp.apiKey';
-  static const _legacyId = 'goodshare';
 
   Future<List<ServerEndpoint>> load() async {
-    if (!await file.exists()) {
-      final migrated = await _migrateLegacyIfNeeded();
-      return migrated;
-    }
+    if (!await file.exists()) return const <ServerEndpoint>[]; // ai-capability-export 通用化（2026-11-09）：旧版单端点迁移代码退役（开发期 App 无存量用户，legacy 配置不再迁移）
     try {
       final data = jsonDecode(await file.readAsString());
       if (data is! List) throw const FormatException('root is not a list');
@@ -191,38 +178,6 @@ class ServerEndpointStore {
   }
 
   /// 旧单端点迁移（文件缺失且旧键在位才走一次；旧键保留不删，回滚无损）。
-  Future<List<ServerEndpoint>> _migrateLegacyIfNeeded() async {
-    final prefs = _prefs;
-    if (prefs == null) return [];
-    final endpoint = await prefs.read(_legacyEndpointKey);
-    if (endpoint == null || endpoint.isEmpty) return [];
-    final key = await prefs.read(_legacyApiKeyKey);
-    if (key != null && key.isNotEmpty) {
-      await setApiKey(_legacyId, key);
-    }
-    final migrated = [
-      ServerEndpoint(
-        id: _legacyId,
-        name: 'goodshare',
-        endpoint: endpoint,
-        hasKey: key != null && key.isNotEmpty,
-        // D-B：goodshare 非宿主——普通外部端点，常驻可混用。
-        tier: ServerPrivacyTier.public,
-      ),
-    ];
-    await save(migrated);
-    // F12（review-fix-2026-10）：迁移成功即清理旧**明文 apiKey**（endpoint 键
-    // 非机密保留回滚；密钥残留 = 本地取证即得，违反 §6.3 零明文留痕）。
-    // remove 抛错不阻断迁移主链（下次启动重试清理）。
-    try {
-      await prefs.remove(_legacyApiKeyKey);
-    } on Object catch (e) {
-      debugPrint('[DEGRADE] server-endpoints: 旧明文密钥清理失败（下次重试）: $e');
-    }
-    debugPrint('[DEGRADE] server-endpoints: 旧单端点配置已迁移'
-        '（endpoint=$endpoint，明文密钥已清理）');
-    return migrated;
-  }
 }
 
 /// SharedPreferences 的最小读取面（避免 sandbox/mcp 层直依插件；生产装配在

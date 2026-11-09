@@ -25,6 +25,7 @@ updated: 2026-11-08
   - [design/local-plugin-access-trust.md](design/local-plugin-access-trust.md) — 本地插件接入规范：私有（同签名）vs 第三方（信任卡片白名单）信任分级 SSOT
   - [design/page-revamp.md](design/page-revamp.md) — 页面整改底子文档（全量 UI 评估结论 + P0~P2 整改分解与验收口径）
   - [design/self-update.md](design/self-update.md) — 打包推 R2 + 应用内自动更新设计（goodshare 同款移植：发布脚本 + lib/update/ 三件 + 更新页）
+  - [design/integration-test-refactor.md](design/integration-test-refactor.md) — integration_test 联调层改造（通用接入解耦：wal 外迁 / 白盒对端换 dummy 插件 / SDK conformance 套件，draft）
   - [design/on-device-capability.md](design/on-device-capability.md) — 端侧能力公共服务设计（芯片平台分发/双后端工厂/分期 P1 接入 App 内会话 + 云端搭配、P2 待定，draft）
   - [design/on-device-npu-deployment.md](design/on-device-npu-deployment.md) — 端侧 NPU 最大化部署系统方案（计算单元协同/量化适配/内存带宽/热调度/端到端评估，draft）
   - [design/on-device-lifecycle-single-source.md](design/on-device-lifecycle-single-source.md) — 端侧引擎生命周期状态单源化（:engine 权威状态机 + 会话票据代次对账 + 入口原子自证 + 资产身份，Expand-Contract 四步，draft）

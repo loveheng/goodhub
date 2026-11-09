@@ -104,6 +104,18 @@ class SamplingQuota {
 /// 单次输出硬顶（D3：宿主 maxTokens clamp；云端预算默认口径）。
 const kSamplingMaxTokensCap = 1024;
 
+/// D2 收敛（ai-capability-export M-B）：sampling 适配壳注入的统一 complete
+/// 核心（coordinator 侧 `AiCompleteService.completeCore` 适配本签名——路由/
+/// 限流/审计与 ai/complete 同一份受理链，禁双推理路径）。失败抛
+/// `McpRpcException`（壳透传 error 帧；AiCompleteFailure 由注入侧适配层
+/// 映射，mcp 域不感知 coordinator 类型）。
+typedef SamplingCompleteCore = Future<({String text, String model})> Function({
+  required String instruction,
+  required String input,
+  int? maxTokens,
+  double? temperature,
+});
+
 /// sampling 反向推理引擎最小端口（arch-hardening ③）：单发文本推理 + 引擎名。
 /// 生产实现 = 云引擎适配（`llm/cloud/sampling_engine.dart`）。
 abstract interface class SamplingEngine {
@@ -124,11 +136,17 @@ abstract interface class SamplingEngine {
 /// `pool` 扩展字段（Tier 1 私有，params 平级 String，缺省/非 String = 默认
 /// 池）：只作配额记账档位透传，本模块不识其业务语义——档位白名单与上限在
 /// [SamplingQuota.caps] 单点。
+///
+/// **D2 收敛（ai-capability-export M-B）**：[completeCore] 非空时本处理器
+/// 退化为统一 complete 受理链的**适配壳**（sampling 反向请求随设备主路由
+/// 裁决走端侧/云端，配额/隔离/审计单源）；null = 过渡期引擎直连路径（既有
+/// 单测与未收敛装配零变化）。生产装配必须传核心（禁长期双路径）。
 Future<Map<String, Object?>?> Function(String method, Object? params)
     samplingRequestHandler({
   required SamplingEngine engine,
   required SamplingQuota quota,
   required String serverKey,
+  SamplingCompleteCore? completeCore,
 }) {
   return (method, params) async {
     if (method != 'sampling/createMessage') {
@@ -156,6 +174,7 @@ Future<Map<String, Object?>?> Function(String method, Object? params)
         ? (rawMax.toInt() > kSamplingMaxTokensCap ? kSamplingMaxTokensCap : rawMax.toInt())
         : kSamplingMaxTokensCap;
     final messages = <ChatMessageData>[];
+    final transcriptParts = <String>[];
     final systemPrompt = p['systemPrompt'];
     if (systemPrompt is String && systemPrompt.isNotEmpty) {
       messages.add(SystemChatMessage(systemPrompt));
@@ -174,6 +193,24 @@ Future<Map<String, Object?>?> Function(String method, Object? params)
       }
       messages.add(
           m['role'] == 'assistant' ? AssistantChatMessage(content: text) : UserChatMessage(text));
+      // D2 适配壳 transcript（角色前缀；与 messages 解析同轮单遍——禁二次遍历双源）。
+      transcriptParts.add('[${m['role'] is String ? m['role'] : 'user'}] $text');
+    }
+    // D2 适配壳：messages 编排映射为 complete 语义（systemPrompt → instruction，
+    // 对话消息 → 角色前缀 transcript），推理走统一受理链（路由随设备主裁决）。
+    if (completeCore != null) {
+      final core = await completeCore(
+        instruction: systemPrompt is String && systemPrompt.isNotEmpty
+            ? systemPrompt
+            : '完成对话中的用户请求，直接输出结果，无寒暄前缀、无解释包裹',
+        input: transcriptParts.join('\n\n'),
+        maxTokens: maxTokens,
+      );
+      return {
+        'role': 'assistant',
+        'model': core.model,
+        'content': {'type': 'text', 'text': core.text},
+      };
     }
     // 单发推理：流式聚合正文（临时会话——无历史、无记忆注入，§15）。
     final buf = StringBuffer();

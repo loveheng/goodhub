@@ -141,6 +141,21 @@ final List<HostExportEntry> kHostExportAllowlist = <HostExportEntry>[
     tags: <String>['core'],
     allowedActors: <Actor>{Actor.owner, Actor.external('gateway')},
   ),
+  // AI 能力原语导出（ai-capability-export M-D，2026-11-08）：`ai_complete`
+  // ——宿主 AI 原语的标准网关投影（complete 语义：任务语义调用方编排）。
+  // 登记三关：① 产品价值 = PC/跨设备调用方经聚合网关统一消费宿主 AI 原语
+  //（端云路由随设备主 D1，替代逐用例特例）；② 隐私 = 受理链单源承载隔离
+  // 临时会话（prompt/产出不入 transcript）+ per-caller 配额 + 内容围栏
+  // fail-closed + 违规 3 次冻结；③ 幂等只读（readOnlyHint = 单轮自足，
+  // 重复调用只是重新推理）。schema 与描述由 `HostAiCompleteExecutor` 单点
+  // 拥有；语义与 Binder `ai/complete` 同源（禁双推理路径）。
+  HostExportEntry(
+    name: 'ai_complete',
+    annotations: <String, Object?>{'readOnlyHint': true},
+    visibility: ToolVisibility.shared,
+    tags: <String>['core'],
+    allowedActors: <Actor>{Actor.owner, Actor.external('gateway')},
+  ),
 ];
 
 /// 控制面原语黑名单：宿主 JIT 元工具，**合成 `tools/list` 前强制剔除、

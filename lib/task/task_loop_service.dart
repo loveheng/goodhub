@@ -15,7 +15,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../core/errors/mcp_error.dart';
-import '../mcp/goodshare_task_api.dart' show ApplyPayload, ClaimedTask, GoodshareTaskApi;
+import '../../core/data_source.dart' as ds;
+import '../mcp/mcp_task_queue.dart' show ApplyPayload, ClaimedTask, McpTaskQueueApi;
 import 'task_source.dart';
 import '../mcp/mcp_client.dart';
 import '../mcp/server_endpoints.dart';
@@ -319,7 +320,10 @@ TaskLoopService buildApi({
   final ep = ServerEndpoint.ephemeral(endpoint: baseUrl, ephemeralKey: apiKey);
   final client = McpClient.http(baseUrl: ep.endpoint, apiKey: ep.ephemeralKey);
   return TaskLoopService(
-    api: GoodshareTaskSource(GoodshareTaskApi(client)),
+    api: McpTaskQueueSource(
+        McpTaskQueueApi(client),
+        serverId: ds.kPrimaryDataSourcePackage, // goodshare HTTP 直连装配（首个来源语义键）
+      ),
     inference: inference,
   );
 }

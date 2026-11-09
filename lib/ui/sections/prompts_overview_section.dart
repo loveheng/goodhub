@@ -237,7 +237,7 @@ class _PromptsOverviewSectionState extends State<PromptsOverviewSection>
           _ServerPromptRow(
             name: 'cow/$n',
             source: SkillSource.cow,
-            description: 'goodshare 模板（CoW 同步）',
+            description: '官方模板（CoW 同步）',
             content: override ?? '',
             version: await cowStore.knownVersion(n),
             overridden: override != null,

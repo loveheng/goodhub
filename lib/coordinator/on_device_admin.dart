@@ -6,10 +6,13 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart'
     show ValueListenable, ValueNotifier, debugPrint;
+import 'package:path_provider/path_provider.dart';
 
+import '../core/data_source.dart';
 import '../llm/geniex_runtime_binding.dart'
     show GenieXRuntimeControl, GenieXStatus, LiteRtLmNpuControl,
     LiteRtLmNpuStatus;
@@ -56,6 +59,7 @@ export '../llm/on_device_history_policy.dart'
     DropOldestHistoryPolicy, OnDeviceHistoryPolicy;
 export '../llm/on_device_history_policy_store.dart'
     show HistoryPolicyIds, HistoryPolicySelection;
+import '../llm/on_device_model_catalog.dart' show ModelRegistry;
 export '../llm/on_device_model_catalog.dart'
     show ImportTarget, ModelRegistry, kOnDeviceLlamaCppEnabled,
     OnDeviceModelOption, OnDeviceModelSelection;
@@ -68,9 +72,78 @@ abstract final class OnDeviceAdmin {
   static final ValueNotifier<OnDeviceGenPerf?> _noGenPerf =
       ValueNotifier<OnDeviceGenPerf?>(null);
 
+  /// 模型资产目录只读探针（ai-capability-export 通用化轮补的取证面）：
+  /// support 路径 + models/ 存在性 + 逐模型完整性对账（各文件字节 vs
+  /// .asset-meta.json 的 totalBytes，口径排除 meta 自身）——scan 空时区分
+  /// 「目录缺」与「条目缺/截断」。UI 层经本面取证（R1：UI 禁 dart:io）。
+  static Future<Map<String, Object?>> assetProbe() async {
+    final support = await getApplicationSupportDirectory();
+    final modelsRoot = Directory('${support.path}/models');
+    final exists = await modelsRoot.exists();
+    final probe = <Map<String, Object?>>[];
+    if (exists) {
+      for (final d in modelsRoot.listSync()) {
+        if (d is! Directory) continue;
+        final name = d.path.split('/').last;
+        if (name.isEmpty || name.startsWith('.')) continue;
+        final files = <Map<String, Object?>>[];
+        var actualBytes = 0;
+        for (final f in d.listSync()) {
+          if (f is! File) continue;
+          final sz = f.lengthSync();
+          // meta 期望值只计资产文件、不含 .asset-meta.json 自身——对账口径
+          // 排除 meta（差值 = meta 大小属正常形态）。
+          final isMeta = f.path.endsWith('/${ModelRegistry.metaFileName}');
+          if (!isMeta) actualBytes += sz;
+          files.add({'name': f.path.split('/').last, 'bytes': sz});
+        }
+        var metaBytes = 0;
+        String metaRaw = '';
+        final metaFile = File('${d.path}/${ModelRegistry.metaFileName}');
+        if (metaFile.existsSync()) {
+          metaRaw = metaFile.readAsStringSync();
+          try {
+            final meta =
+                jsonDecode(metaRaw) as Map<String, dynamic>;
+            metaBytes = (meta['totalBytes'] as num?)?.toInt() ?? 0;
+          } on Object {
+            // meta 解析失败 = 期望大小按 0（对账跳过，探针只读不阻断）
+          }
+        }
+        probe.add({
+          'dirName': name,
+          'files': files,
+          'actualBytes': actualBytes,
+          'metaTotalBytes': metaBytes,
+          'complete': metaBytes == 0 || actualBytes == metaBytes,
+          if (metaRaw.isNotEmpty)
+            'metaJson': metaRaw.length > 800
+                ? '${metaRaw.substring(0, 800)}…'
+                : metaRaw,
+        });
+      }
+    }
+    return {
+      'supportPath': support.path,
+      'modelsDirExists': exists,
+      'models': probe,
+    };
+  }
+
+  /// §6.3 后台排空预算（ai-capability-export）：单轮连续耗时上限（真机调优
+  /// 起步值 30s，非拍板常量）。
+  static const Duration kDrainBatchBudget = Duration(seconds: 30);
+
+  /// §6.3 批间强制冷却（防 allow_deferred 批任务长占单槽触发极端温控）。
+  static const Duration kDrainBatchCooldown = Duration(seconds: 3);
+
   /// W6-b 顺风车排空（on-device-residency 第七节）：WARM 窗口内排空异步
   /// 任务池（≤[maxTasks] 条，K11 抢占回池语义由 requeue 承载）。Run 收口后
   /// 由页面调用（用户阅读空闲期）；失败逐条留痕不反噬主路径。
+  ///
+  /// ai-capability-export §6.3 系统级护栏「后台排空预算」：单轮连续耗时上限
+  /// [kDrainBatchBudget] + 批间冷却 [kDrainBatchCooldown]——防 allow_deferred
+  /// 批任务长占单槽触发极端温控（真机调优起步值，非拍板常量）。
   static Future<void> drainSupplyPool({int maxTasks = 3}) async {
     final pool = SupplyTaskPool.instance;
     pool.debugDump('drain-entry');
@@ -79,7 +152,14 @@ abstract final class OnDeviceAdmin {
       quota: SupplyQuota(),
       taskPool: pool,
     );
+    final sw = Stopwatch()..start();
     for (var i = 0; i < maxTasks; i++) {
+      if (sw.elapsed > kDrainBatchBudget) {
+        debugPrint('[RESIDENCY] drain budget hit '
+            '(${sw.elapsedMilliseconds}ms > ${kDrainBatchBudget.inMilliseconds}ms)，'
+            '余量任务留待下轮');
+        return;
+      }
       final entry = await pool.claimNext();
       debugPrint('[RESIDENCY] drain claimNext[$i]: ${entry?.taskId ?? "null"} status=${entry?.status.name ?? "-"}');
       if (entry == null) return;
@@ -104,6 +184,8 @@ abstract final class OnDeviceAdmin {
         debugPrint('[DEGRADE] supply-drain: $e');
         return;
       }
+      // 批间强制冷却（§6.3：防长占单槽触发极端温控；末条后多等一次无害）。
+      await Future<void>.delayed(kDrainBatchCooldown);
     }
   }
 
@@ -195,7 +277,7 @@ abstract final class OnDeviceAdmin {
         'input': input,
         'allow_deferred': true,
       }),
-    ), callerKeyOverride: 'com.zzh.goodshare');
+    ), callerKeyOverride: kPrimaryDataSourcePackage);
     return r.content;
   }
 

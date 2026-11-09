@@ -1,6 +1,8 @@
-// 外联探针：设备上起网关绑 0.0.0.0:8766（anyIPv4），保活 120s 供 PC 经
-// `adb forward tcp:8766 tcp:8766` + curl 真实打 /mcp（验证 thirdconnect.md §7 物理通道 1）。
-// 非断言测试，仅打印 [probe] READY 后空转，由外部 curl 驱动。
+// [NON-TEST 探针 · 非回归用例] 外联探针：设备上起网关绑 0.0.0.0:8766（anyIPv4），保活
+// 120s 供 PC 经 `adb forward tcp:8766 tcp:8766` + curl 真实打 /mcp（验证 thirdconnect.md
+// §7 物理通道 1）。非断言测试，仅打印 [probe] READY 后空转，由外部 curl 驱动。
+// 标准消费方 = goodhub-mcp-sdk conformance/run.py probe 模式（自动拉起/收探针）；
+// ⚠️ 本探针会以测试壳覆盖安装宿主包（互斥纪律见 SDK 仓 conformance/README）。
 library;
 
 import 'dart:io';

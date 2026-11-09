@@ -9,6 +9,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show debugPrint;
 
+import '../core/data_source.dart';
 import '../core/errors/mcp_error.dart';
 import '../core/tool_visibility.dart';
 import '../llm/cloud/cloud_llm.dart';
@@ -22,7 +23,7 @@ export '../mcp/connection_face.dart' show ToolProgressCallback;
 class McpToolFace implements ToolExecutor, ConnectionFace {
   McpToolFace({
     required this.client,
-    this.serverId = 'goodshare',
+    this.serverId = kPrimaryDataSourceServerId,
     this.onProgress,
     this.opsLog,
   });
