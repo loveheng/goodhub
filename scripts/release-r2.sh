@@ -17,12 +17,20 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# 加载本地 .env：仓库根优先，回退 scripts/.env；均不存在则仅用环境变量
+# 加载本地 .env：仓库根优先，回退 scripts/.env；均不存在则仅用环境变量。
+# ⚠️ .env 只补缺不覆盖：调用方环境变量优先（2026-11-09 事故：.env 里 CHANGELOG=""
+# 在 source 时把调用方显式传入的发布说明清空，清单回退成版本号提交信息）。
+_caller_env_dump="$(mktemp)"
+env | grep -E '^(R2_|REMOTE_PREFIX|CHANGELOG)=' > "$_caller_env_dump" || true
 if [ -f .env ]; then
   source .env
 elif [ -f scripts/.env ]; then
   source scripts/.env
 fi
+while IFS= read -r _line; do
+  export "${_line?}"
+done < "$_caller_env_dump"
+rm -f "$_caller_env_dump"
 
 # ---- 可配置项（环境变量优先）----
 R2_ACCOUNT_ID="${R2_ACCOUNT_ID:-}"
